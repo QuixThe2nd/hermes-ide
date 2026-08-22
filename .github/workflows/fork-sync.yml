@@ -1,14 +1,17 @@
-# Fork-only workflow: keeps QuixThe2nd/hermes-agent main in sync with
+# Fork-only workflow: keeps QuixThe2nd/hermes-ide main in sync with
 # NousResearch/hermes-agent main. Do not upstream this file.
 #
-# Merges upstream/main hourly (at :17 past) and pushes. On merge conflict the job
-# fails without pushing — the fork falls behind until someone resolves by
-# hand (merge upstream locally, resolve, push).
+# Merges upstream/main hourly and pushes. On merge conflict the job fails
+# without pushing — the fork falls behind until someone resolves by hand.
+#
+# Pushes use FORK_SYNC_TOKEN (a user PAT with `workflow` scope) instead of
+# the default GITHUB_TOKEN, because upstream changes to workflow files are
+# rejected when pushed by the Actions app token even with write perms set.
 name: Sync fork with upstream
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -21,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_TOKEN }}
 
       - name: Merge upstream main
         run: |
