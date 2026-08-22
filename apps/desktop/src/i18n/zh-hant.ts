@@ -100,6 +100,12 @@ export const zhHant = defineLocale({
         `先登出已儲存的遠端瀏覽器工作階段，然後開啟${signInLabel}。使用本機閘道可切換至內建後端。`,
       signOutAndSignIn: '登出並重新登入',
       remoteFailureHint: '在「閘道設定」中檢查閘道 URL 與登入，或切換至本機閘道。',
+      cloudDownTitle: 'Nous Cloud 代理已停機',
+      cloudDownDescription:
+        '此閘道連線的 Nous 託管雲端代理正在回傳伺服器錯誤。無法在此處重新啟動——請檢查其狀態、切換至本機閘道，或取得支援。',
+      cloudDownHint: '使用下方按鈕開啟 Nous Portal（檢視執行個體狀態與操作）或加入 Discord 取得支援。',
+      cloudDownCheckPortal: '查看 Portal 狀態',
+      cloudDownDiscord: '在 Discord 取得協助',
       hideRecentLogs: '隱藏最近記錄',
       showRecentLogs: '顯示最近記錄',
       signedInTitle: '已登入',
@@ -196,6 +202,29 @@ export const zhHant = defineLocale({
     openBilling: '開啟帳單',
     addCredits: '新增額度',
     dismiss: '忽略'
+  },
+
+  sendDiagnostics: {
+    title: '向 Nous 傳送診斷資訊',
+    privacyNotice:
+      '這會將偵錯套件上傳到 Nous 內部儲存空間（並非公開貼上板）。內容包括系統資訊（作業系統、版本、服務商、已設定的 API 金鑰種類 — 絕不包含金鑰本身）以及完整的 agent、gateway 與桌面端日誌（每個最多 512 KB，很可能包含對話內容、工具輸出與檔案路徑）。上傳前會先遮罩機密資訊。僅 Nous 員工與獲准的 Discord 版主可檢視，14 天後自動刪除。',
+    upload: '上傳',
+    uploading: '上傳中…',
+    cancel: '取消',
+    close: '關閉',
+    copyLink: '複製連結',
+    uploadIdFallback: id => `未回傳檢視連結 — 請向支援人員提供上傳 ID ${id}`,
+    doneTitle: '診斷資訊已傳送',
+    doneDescription: '偵錯套件已私密上傳。在您的支援討論串中分享以下連結，團隊即可檢視您的日誌。',
+    failedTitle: '上傳失敗',
+    failedHint:
+      '您也可以在終端機執行 `hermes debug share --nous`，或執行 `hermes debug share --local` 在不上傳的情況下檢視報告。',
+    handoffLead: '在以下位置繼續討論:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal 支援',
+      discord: 'Discord'
+    }
   },
 
   titlebar: {
@@ -2658,6 +2687,7 @@ export const zhHant = defineLocale({
       errorOpenLogsFailed: '無法開啟日誌資料夾',
       errorOpenDesktopLogs: '開啟桌面端日誌',
       errorCopyDiagnostics: '複製錯誤詳細資訊',
+      errorSendDiagnostics: '傳送診斷資訊',
       filesChanged: count => `${count} 個檔案已變更`,
       reviewChanges: '檢視',
       readAloudFailed: '朗讀失敗',
