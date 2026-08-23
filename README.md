@@ -29,6 +29,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
   - Gateway — steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context
   - Gateway — `/restart` asks other live chat sessions to park, then auto-continues them after bounce instead of blocking new threads until every turn dies
+  - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
   - Discord — sessions keyed to your stable username, not your per-server nickname
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
