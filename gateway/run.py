@@ -851,7 +851,13 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+    # Opt-in live retry/fallback progress (`display.retry_progress`). The
+    # noisy-status regex below exists to hide exactly these lines when they
+    # are REPLAYED at terminal failure — the user opted into seeing them
+    # DURING the stall, so suppressing them here would make the flag a no-op.
+    # Redaction above still applies; the provider-error rewrite below too.
+    _is_live_retry_progress = event_type == "retry_progress"
+    if not _is_live_retry_progress and _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
         # membership check is derived from the #69550 template constants, so
@@ -6441,6 +6447,20 @@ class TurnRunner:
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
         agent.status_callback = ctx._status_callback_sync
+        # Live retry/fallback progress — mirrors the buffered retry chatter on
+        # the "retry_progress" rail during a stall (display.retry_progress /
+        # display.platforms.<platform>.retry_progress, default off). Assigned
+        # per-message alongside the callbacks above so a cached agent reused
+        # across turns never inherits a stale flag. The throttle bookkeeping
+        # resets with it, so a reused agent doesn't carry the previous turn's
+        # last-emitted line into this one.
+        agent._live_retry_status = bool(
+            ctx.resolve_display_setting(
+                ctx.user_config, platform_key, "retry_progress"
+            )
+        )
+        agent._last_live_retry_emit_ts = 0.0
+        agent._last_live_retry_text = None
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
         # standalone push: render to a single plaintext line and deliver via
