@@ -7708,6 +7708,30 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return " ".join(f"<@{uid}>" for uid in user_ids)
 
+    def _clarify_mention_content(self) -> Optional[str]:
+        """Return a requester mention for clarify prompts when enabled.
+
+        Default-on (unlike approval mentions) because a clarify prompt
+        blocks the agent turn until answered. Opt out via
+        ``discord.clarify_mentions: false`` (bridged to
+        ``DISCORD_CLARIFY_MENTIONS``) or ``config.extra["clarify_mentions"]``.
+        """
+        try:
+            if not _env_bool("DISCORD_CLARIFY_MENTIONS", True):
+                return None
+            extra = getattr(getattr(self, "config", None), "extra", None) or {}
+            if isinstance(extra, dict) and "clarify_mentions" in extra:
+                raw = extra.get("clarify_mentions")
+                if not raw or str(raw).strip().lower() in {"false", "0", "no", "off"}:
+                    return None
+            pending = getattr(self, "_pending_clarify_metadata", None) or {}
+            uid = str((pending or {}).get("mention_user_id") or "")
+            if not uid.isdigit():
+                return None
+            return f"<@{uid}>"
+        except Exception:
+            return None
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -7886,6 +7910,11 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            try:
+                self._pending_clarify_metadata = metadata or {}
+            except Exception:
+                pass
+
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
@@ -7973,7 +8002,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 "❓ **Hermes needs your input**", str(question or "").strip(),
                 tail=clarify_tail,
             )
-            msg = await channel.send(content=content, embed=embed, view=view) if view else await channel.send(content=content, embed=embed)
+            mention = self._clarify_mention_content()
+            if mention:
+                content = f"{mention}\n{content}"
+            send_kwargs: Dict[str, Any] = {"content": content, "embed": embed}
+            if view is not None:
+                send_kwargs["view"] = view
+            if mention:
+                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+                if allowed_mentions_cls is not None:
+                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                        users=True,
+                        roles=False,
+                        everyone=False,
+                        replied_user=False,
+                    )
+            msg = await channel.send(**send_kwargs)
             if view:
                 view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
@@ -10687,6 +10731,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     )
     if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
         os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
+    clarify_mentions_cfg = (
+        discord_cfg["clarify_mentions"] if "clarify_mentions" in discord_cfg
+        else platform_extra_cfg.get("clarify_mentions")
+    )
+    if clarify_mentions_cfg is not None and not os.getenv("DISCORD_CLARIFY_MENTIONS"):
+        os.environ["DISCORD_CLARIFY_MENTIONS"] = str(clarify_mentions_cfg).lower()
     frc = discord_cfg.get("free_response_channels")
     if frc is not None:
         if isinstance(frc, list):
