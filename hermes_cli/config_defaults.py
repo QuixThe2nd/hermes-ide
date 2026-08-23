@@ -203,6 +203,13 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Universal tool-call narration guidance — short prompt block applied
+        # to all models that tells the model to explain each tool call in one
+        # short sentence before making it and briefly note significant
+        # results.  On chat platforms a silent multi-call chain looks like a
+        # frozen client.  Costs ~60 tokens in the cached system prompt.  Set
+        # False to disable globally.
+        "tool_call_narration_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

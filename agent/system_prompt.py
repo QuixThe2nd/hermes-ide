@@ -46,6 +46,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
+    TOOL_CALL_NARRATION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
@@ -413,6 +414,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # (default True) and only injected when tools are actually loaded.
     if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
+
+    # Universal tool-call narration.  Tells the model to explain each tool
+    # call before making it and briefly note significant results — on chat
+    # platforms a silent multi-call chain looks like a frozen client.
+    # Gated by config.yaml ``agent.tool_call_narration_guidance``
+    # (default True) and only injected when tools are actually loaded.
+    if getattr(agent, "_tool_call_narration_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(TOOL_CALL_NARRATION_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
