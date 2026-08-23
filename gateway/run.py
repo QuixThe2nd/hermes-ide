@@ -6600,6 +6600,11 @@ class TurnRunner:
                     exc_info=True,
                 )
 
+            send_metadata = dict(ctx._status_thread_metadata) if ctx._status_thread_metadata else {}
+            _requester_id = str(getattr(ctx.source, "user_id", "") or "")
+            if _requester_id.isdigit():
+                send_metadata.setdefault("mention_user_id", _requester_id)
+
             fut = safe_schedule_threadsafe(
                 ctx._status_adapter.send_clarify(
                     chat_id=ctx._status_chat_id,
@@ -6607,7 +6612,7 @@ class TurnRunner:
                     choices=list(choices) if choices else None,
                     clarify_id=clarify_id,
                     session_key=ctx.session_key or "",
-                    metadata=ctx._status_thread_metadata,
+                    metadata=send_metadata,
                 ),
                 ctx._loop_for_step,
                 logger=logger,
