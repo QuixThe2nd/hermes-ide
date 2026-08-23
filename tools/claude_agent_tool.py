@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""Delegate dev tasks to the Claude Code CLI (Alibaba GLM-5.2) as a subprocess.
+"""Delegate dev tasks to the Claude Code CLI as a subprocess (GLM or Kimi).
+
+The requested ``model`` picks the wrapper lane: model names containing
+"kimi" (case-insensitive) run via the ``claude-kimi`` wrapper (Kimi K3),
+used when Kimi is the target writer; everything else — including no model
+at all — runs via the ``claude-glm`` wrapper (GLM, z.ai coding plan), the
+default lane for general long-running tasks.
 
 Gating
 ------
-The tool registers only when the Claude Code GLM wrapper is resolvable —
-either via the ``CLAUDE_GLM_BIN`` env override, as an executable at
+The tool registers only when the GLM wrapper is resolvable — either via
+the ``CLAUDE_GLM_BIN`` env override, as an executable at
 ``~/.local/bin/claude-glm``, or as ``claude-glm``/``claude`` on PATH.
+Kimi runs additionally need the ``claude-kimi`` wrapper (``CLAUDE_KIMI_BIN``
+override, ``~/.local/bin/claude-kimi``, or ``claude-kimi`` on PATH); a kimi
+request never falls back to the GLM wrapper or bare ``claude``.
 
 Credentials
 -----------
-The ``claude-glm`` wrapper injects the Alibaba coding-plan credentials at
-runtime from ``<HERMES_HOME>/.env`` itself (it ``execve``s the real Claude
+The wrappers inject their provider's coding-plan credentials at runtime
+from ``<HERMES_HOME>/.env`` themselves (they ``execve`` the real Claude
 binary with ``ANTHROPIC_AUTH_TOKEN`` / ``ANTHROPIC_BASE_URL`` set). This tool
 therefore NEVER places credentials in argv or in env additions — it only
 guarantees ``HOME`` and a minimal ``PATH`` so the wrapper survives sparse
@@ -56,22 +65,34 @@ _ALLOWED_PERMISSION_MODES = ("acceptEdits", "plan")
 
 
 # ---------------------------------------------------------------------------
-# Binary resolution + gating
+# Model-family classification + binary resolution/gating
 # ---------------------------------------------------------------------------
+
+MODEL_FAMILY_GLM = "glm"
+MODEL_FAMILY_KIMI = "kimi"
+
+
+def classify_model_family(model: str | None) -> str:
+    """Map a requested model name to a wrapper family.
+
+    Any model string containing ``kimi`` (case-insensitive) belongs to the
+    kimi family; everything else — including empty/None — defaults to the
+    glm family.
+    """
+    if "kimi" in str(model or "").lower():
+        return MODEL_FAMILY_KIMI
+    return MODEL_FAMILY_GLM
+
 
 def _local_bin_claude_glm_path() -> Path:
     return Path.home() / ".local" / "bin" / "claude-glm"
 
 
-def resolve_claude_binary() -> Optional[str]:
-    """Return the Claude Code (GLM) wrapper path, or None if not found.
+def _local_bin_claude_kimi_path() -> Path:
+    return Path.home() / ".local" / "bin" / "claude-kimi"
 
-    Search order:
-    1. ``CLAUDE_GLM_BIN`` env override (must be an executable file).
-    2. ``~/.local/bin/claude-glm``.
-    3. ``claude-glm`` on PATH.
-    4. bare ``claude`` on PATH.
-    """
+
+def _resolve_glm_binary() -> Optional[str]:
     try:
         override = os.environ.get("CLAUDE_GLM_BIN")
         if override:
@@ -95,8 +116,54 @@ def resolve_claude_binary() -> Optional[str]:
     return None
 
 
+def _resolve_kimi_binary() -> Optional[str]:
+    try:
+        override = os.environ.get("CLAUDE_KIMI_BIN")
+        if override:
+            override_path = Path(override).expanduser()
+            if override_path.is_file() and os.access(override_path, os.X_OK):
+                return str(override_path)
+
+        local = _local_bin_claude_kimi_path()
+        if local.is_file() and os.access(local, os.X_OK):
+            return str(local)
+
+        found = shutil.which("claude-kimi")
+        if found:
+            return found
+    except Exception:
+        pass
+    # Deliberately NO fallback to the GLM wrapper or bare claude: silently
+    # routing a kimi request to another provider would run the wrong model.
+    return None
+
+
+def resolve_claude_binary(model: str | None = None) -> Optional[str]:
+    """Return the Claude Code wrapper path for ``model``'s family, or None.
+
+    The ``model`` name picks the lane via ``classify_model_family``; with no
+    model (or any non-kimi model) this resolves the GLM wrapper exactly as
+    before.
+
+    GLM search order:
+    1. ``CLAUDE_GLM_BIN`` env override (must be an executable file).
+    2. ``~/.local/bin/claude-glm``.
+    3. ``claude-glm`` on PATH.
+    4. bare ``claude`` on PATH.
+
+    Kimi search order (returns None when nothing resolves — never falls
+    back to the GLM wrapper or bare ``claude``):
+    1. ``CLAUDE_KIMI_BIN`` env override (must be an executable file).
+    2. ``~/.local/bin/claude-kimi``.
+    3. ``claude-kimi`` on PATH.
+    """
+    if classify_model_family(model) == MODEL_FAMILY_KIMI:
+        return _resolve_kimi_binary()
+    return _resolve_glm_binary()
+
+
 def check_claude_agent_requirements() -> bool:
-    """Return True when the Claude Code (GLM) wrapper binary is available."""
+    """Return True when the default (GLM) Claude Code wrapper binary is available."""
     try:
         return resolve_claude_binary() is not None
     except Exception:
@@ -259,19 +326,27 @@ def delegate_claude_agent(
             ),
         )
 
-    binary = resolve_claude_binary()
+    model_name = str(model or "").strip()
+    binary = resolve_claude_binary(model_name)
     if not binary:
-        return _make_result(
-            success=False,
-            error=(
+        if classify_model_family(model_name) == MODEL_FAMILY_KIMI:
+            wrapper_error = (
+                "Claude Code (Kimi) wrapper binary not found. Install the "
+                "`claude-kimi` wrapper at ~/.local/bin/claude-kimi (or set "
+                "CLAUDE_KIMI_BIN), or place `claude-kimi` on PATH."
+            )
+        else:
+            wrapper_error = (
                 "Claude Code (GLM) wrapper binary not found. Install the "
                 "`claude-glm` wrapper at ~/.local/bin/claude-glm (or set "
                 "CLAUDE_GLM_BIN), or place `claude-glm`/`claude` on PATH."
-            ),
+            )
+        return _make_result(
+            success=False,
+            error=wrapper_error,
         )
 
     clamped_timeout = _clamp_timeout_seconds(timeout_seconds)
-    model_name = str(model or "").strip()
     tools_arg = str(allowed_tools or "").strip() or DEFAULT_ALLOWED_TOOLS
 
     log_dir = get_hermes_home() / "claude-runs"
@@ -376,11 +451,14 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
     "name": "delegate_claude_agent",
     "description": (
         "Delegate a software development task to the Claude Code CLI running "
-        "against Alibaba GLM-5.2 via the local claude-glm wrapper. The CLI "
-        "performs code edits, terminal commands, and multi-step dev work "
-        "inside the specified repository directory. Stdout is captured as "
-        "JSON in a log under the Hermes home directory. Available only when "
-        "the claude-glm wrapper binary is installed."
+        "against a coding-model wrapper: GLM (z.ai coding plan) via the local "
+        "claude-glm wrapper for general long-running tasks, or Kimi K3 via "
+        "the claude-kimi wrapper when Kimi is the target writer (request a "
+        "model containing 'kimi'). The CLI performs code edits, terminal "
+        "commands, and multi-step dev work inside the specified repository "
+        "directory. Stdout is captured as JSON in a log under the Hermes "
+        "home directory. Available only when the relevant wrapper binary is "
+        "installed."
     ),
     "parameters": {
         "type": "object",
@@ -401,8 +479,10 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
             "model": {
                 "type": "string",
                 "description": (
-                    "Model to use for the run (via the claude-glm wrapper). "
-                    "Omit to use the claude-glm wrapper's pinned model."
+                    "Model to use for the run. Models containing 'kimi' "
+                    "route to the claude-kimi wrapper; otherwise the run "
+                    "goes via the claude-glm wrapper. Omit to use the "
+                    "claude-glm wrapper's pinned model."
                 ),
             },
             "timeout_seconds": {

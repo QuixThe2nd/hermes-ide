@@ -17,8 +17,8 @@ import pytest
 _REAL_SUBPROC = pytest.mark.live_system_guard_bypass
 
 
-def _write_fake_binary(tmp_path: Path) -> Path:
-    """Write a fake claude-glm binary driven by FAKE_CLAUDE_* env vars."""
+def _write_fake_binary(tmp_path: Path, name: str = "claude-glm") -> Path:
+    """Write a fake wrapper binary (claude-glm/claude-kimi) driven by FAKE_CLAUDE_* env vars."""
     script = f"""#!{sys.executable}
 import json
 import os
@@ -79,7 +79,7 @@ result = {{
 sys.stdout.write(json.dumps(result) + "\\n")
 sys.stdout.flush()
 """
-    binary = tmp_path / "claude-glm"
+    binary = tmp_path / name
     binary.write_text(script, encoding="utf-8")
     binary.chmod(0o755)
     return binary
@@ -100,7 +100,7 @@ def repo(tmp_path: Path) -> Path:
 def _patch_binary(monkeypatch, binary: Path) -> None:
     monkeypatch.setattr(
         "tools.claude_agent_tool.resolve_claude_binary",
-        lambda: str(binary),
+        lambda model=None: str(binary),
     )
 
 
@@ -208,6 +208,59 @@ def test_resolve_path_fallbacks(monkeypatch, tmp_path):
     # Nothing resolvable → None.
     monkeypatch.setattr("tools.claude_agent_tool.shutil.which", lambda name: None)
     assert resolve_claude_binary() is None
+
+
+def test_classify_model_family():
+    from tools.claude_agent_tool import (
+        MODEL_FAMILY_GLM,
+        MODEL_FAMILY_KIMI,
+        classify_model_family,
+    )
+
+    assert classify_model_family(None) == MODEL_FAMILY_GLM
+    assert classify_model_family("") == MODEL_FAMILY_GLM
+    assert classify_model_family("glm-5.2") == MODEL_FAMILY_GLM
+    assert classify_model_family("kimi-k3") == MODEL_FAMILY_KIMI
+    # Family detection is case-insensitive.
+    assert classify_model_family("Kimi-K3") == MODEL_FAMILY_KIMI
+    assert classify_model_family("KIMI-K3") == MODEL_FAMILY_KIMI
+
+
+def test_resolve_kimi_env_override(monkeypatch, tmp_path):
+    from tools.claude_agent_tool import resolve_claude_binary
+
+    kimi_bin = _write_fake_binary(tmp_path, name="claude-kimi")
+    monkeypatch.setenv("CLAUDE_KIMI_BIN", str(kimi_bin))
+    assert resolve_claude_binary("kimi-k3") == str(kimi_bin)
+    # Case-insensitive family detection routes "Kimi-K3" the same way.
+    assert resolve_claude_binary("Kimi-K3") == str(kimi_bin)
+
+
+def test_resolve_glm_default_ignores_kimi_env(monkeypatch, fake_binary, tmp_path):
+    from tools.claude_agent_tool import resolve_claude_binary
+
+    kimi_bin = _write_fake_binary(tmp_path, name="claude-kimi")
+    monkeypatch.setenv("CLAUDE_GLM_BIN", str(fake_binary))
+    monkeypatch.setenv("CLAUDE_KIMI_BIN", str(kimi_bin))
+    # No model / glm-family models keep using the GLM lane exactly as before,
+    # even when a kimi wrapper is configured.
+    assert resolve_claude_binary() == str(fake_binary)
+    assert resolve_claude_binary("glm-5.2") == str(fake_binary)
+
+
+def test_resolve_kimi_never_falls_back_to_glm(monkeypatch, fake_binary):
+    from tools.claude_agent_tool import resolve_claude_binary
+
+    monkeypatch.setenv("CLAUDE_GLM_BIN", str(fake_binary))
+    monkeypatch.delenv("CLAUDE_KIMI_BIN", raising=False)
+    monkeypatch.setattr(
+        "tools.claude_agent_tool._local_bin_claude_kimi_path",
+        lambda: Path("/nope/claude-kimi"),
+    )
+    monkeypatch.setattr("tools.claude_agent_tool.shutil.which", lambda name: None)
+    # Even with a perfectly good GLM wrapper available, a kimi request
+    # resolves to nothing rather than silently running the wrong provider.
+    assert resolve_claude_binary("kimi-k3") is None
 
 
 # ---------------------------------------------------------------------------
@@ -336,12 +389,36 @@ def test_permission_mode_validation_rejects_unknown(monkeypatch, repo, fake_bina
 def test_binary_missing_returns_error(monkeypatch, repo):
     from tools import claude_agent_tool
 
-    monkeypatch.setattr("tools.claude_agent_tool.resolve_claude_binary", lambda: None)
+    monkeypatch.setattr(
+        "tools.claude_agent_tool.resolve_claude_binary", lambda model=None: None
+    )
     result = json.loads(
         claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
     )
     assert result["success"] is False
     assert "not found" in result["error"]
+
+
+def test_kimi_binary_missing_names_kimi_wrapper(monkeypatch, repo):
+    from tools import claude_agent_tool
+
+    # Seal every kimi resolution route so the real ~/.local/bin/claude-kimi
+    # on this machine cannot leak in.
+    monkeypatch.delenv("CLAUDE_KIMI_BIN", raising=False)
+    monkeypatch.setattr(
+        "tools.claude_agent_tool._local_bin_claude_kimi_path",
+        lambda: Path("/nope/claude-kimi"),
+    )
+    monkeypatch.setattr("tools.claude_agent_tool.shutil.which", lambda name: None)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="x", workdir=str(repo), model="kimi-k3"
+        )
+    )
+    assert result["success"] is False
+    assert "not found" in result["error"]
+    assert "claude-kimi" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +470,29 @@ def test_happy_path_e2e(monkeypatch, repo, fake_binary, tmp_path):
     assert argv[-1] == "implement feature"
     # --dangerously-skip-permissions must never be passed (refused under root).
     assert "--dangerously-skip-permissions" not in argv
+
+
+@_REAL_SUBPROC
+def test_kimi_model_runs_kimi_wrapper(monkeypatch, repo, tmp_path):
+    from tools import claude_agent_tool
+
+    kimi_bin = _write_fake_binary(tmp_path, name="claude-kimi")
+    monkeypatch.setenv("CLAUDE_KIMI_BIN", str(kimi_bin))
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="write kimi docs",
+            workdir=str(repo),
+            model="kimi-k3",
+        )
+    )
+    assert result["success"] is True
+
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert argv[0] == str(kimi_bin)
+    assert argv[argv.index("--model") + 1] == "kimi-k3"
 
 
 @_REAL_SUBPROC
