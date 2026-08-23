@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Hermes IDE" width="100%">
+</p>
+
 # Hermes IDE ☤
 
 A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behavior, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
@@ -46,11 +50,6 @@ For the upstream project, see [NousResearch/hermes-agent](https://github.com/Nou
 
 ---
 
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes IDE" width="100%">
-</p>
-
-# Hermes Agent ☤
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
 </p>
