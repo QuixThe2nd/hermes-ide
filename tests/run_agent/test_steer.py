@@ -23,6 +23,8 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._pending_steer = None
     agent._pending_steer_lock = threading.Lock()
+    agent._steer_delivery_listeners = []
+    agent._steer_delivery_listeners_lock = threading.Lock()
     agent._pending_redirect = None
     agent._pending_redirect_lock = threading.Lock()
     agent._model_request_active = threading.Event()
@@ -646,6 +648,172 @@ class TestPreApiCallSteerDrain:
         # Restash
         agent._pending_steer = _pre_api_steer
         assert agent._pending_steer == "early steer"
+
+
+class TestSteerDeliveryListeners:
+    """One-shot notification lane for REAL steer injection.
+
+    Listeners fire exactly when a pending steer is injected into the
+    model's context at one of the two mid-run drain sites.  The put-back
+    paths and the end-of-turn leftover drain must stay silent — nothing
+    reached the model there, so the "delivered" promise is still unmet.
+    """
+
+    def test_post_tool_batch_injection_fires_once_with_text(self):
+        agent = _bare_agent()
+        fired = []
+        assert agent.register_steer_delivery_listener(fired.append) is True
+        agent.steer("also check the tests")
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert fired == ["also check the tests"]
+        assert agent._pending_steer is None
+        assert "also check the tests" in messages[-1]["content"]
+
+    def test_no_fire_when_steer_put_back_after_tool_batch(self):
+        """No tool result in the batch (all skipped) → the steer goes back
+        into the slot; the listener must NOT be told it was delivered."""
+        agent = _bare_agent()
+        fired = []
+        agent.register_steer_delivery_listener(fired.append)
+        agent.steer("never landed")
+        messages = [{"role": "user", "content": "no tool output here"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert fired == []
+        assert agent._pending_steer == "never landed"
+
+    def test_concatenated_steers_fire_one_notification_with_joined_text(self):
+        """steer() concatenates pending texts with newlines; a single drain
+        therefore surfaces ONE notification carrying the full injected text
+        (the drain is atomic — there is no per-message notification)."""
+        agent = _bare_agent()
+        fired = []
+        agent.register_steer_delivery_listener(fired.append)
+        agent.steer("first note")
+        agent.steer("second note")
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert fired == ["first note\nsecond note"]
+        assert "first note" in messages[-1]["content"]
+        assert "second note" in messages[-1]["content"]
+
+    def test_unregister_stops_notifications(self):
+        agent = _bare_agent()
+        fired = []
+        agent.register_steer_delivery_listener(fired.append)
+        agent.unregister_steer_delivery_listener(fired.append)
+        # Unregistering an absent callback is a no-op, not an error.
+        agent.unregister_steer_delivery_listener(fired.append)
+        agent.steer("quiet please")
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert fired == []
+
+    def test_broken_listener_never_breaks_injection(self):
+        """A raising listener is contained: the marker still lands and the
+        steer slot is still consumed."""
+        agent = _bare_agent()
+
+        def _boom(_text):
+            raise RuntimeError("listener bug")
+
+        agent.register_steer_delivery_listener(_boom)
+        agent.steer("still delivers")
+        messages = [{"role": "tool", "content": "out", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert agent._pending_steer is None
+        assert "still delivers" in messages[-1]["content"]
+
+    def test_register_rejects_non_callable(self):
+        agent = _bare_agent()
+        assert agent.register_steer_delivery_listener("not callable") is False
+
+
+class TestPreApiSteerDeliveryNotification:
+    """Site 1 (pre-API-call drain) through the real conversation loop: the
+    listener fires exactly once when the marker lands on a real tool
+    message, and never fires when the steer is put back and handed to the
+    end-of-turn leftover drain instead (site 3 must stay silent)."""
+
+    def _loop_agent(self):
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        return agent
+
+    def _run_turn(self, agent, history):
+        from unittest.mock import patch
+
+        from tests.run_agent.test_run_agent import _mock_response
+
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="ok", finish_reason="stop"),
+        ]
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            return agent.run_conversation("next", conversation_history=history)
+
+    def test_pre_api_injection_fires_listener_exactly_once(self):
+        agent = self._loop_agent()
+        fired = []
+        agent.register_steer_delivery_listener(fired.append)
+        agent.steer("focus on error handling")
+        history = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
+        ]
+
+        result = self._run_turn(agent, history)
+
+        assert fired == ["focus on error handling"]
+        assert agent._pending_steer is None
+        # Injection-only semantics: nothing was handed to a next turn.
+        assert "pending_steer" not in result
+
+    def test_put_back_then_leftover_drain_never_fires_listener(self):
+        """No tool message in history → the pre-API drain puts the steer
+        back, the model answers without tools, and the finalizer hands the
+        text to the caller as ``pending_steer``.  That is a NEXT-turn user
+        message, not a mid-run injection — the listener must stay silent."""
+        agent = self._loop_agent()
+        fired = []
+        agent.register_steer_delivery_listener(fired.append)
+        agent.steer("late steer")
+        history = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "earlier reply", "finish_reason": "stop"},
+        ]
+
+        result = self._run_turn(agent, history)
+
+        assert fired == []
+        assert result.get("pending_steer") == "late steer"
 
 
 

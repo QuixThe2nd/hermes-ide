@@ -2550,6 +2550,15 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(
                     _display_cfg["busy_steer_ack_enabled"]
                 )
+            # Same preserve-existing-env semantics as busy_steer_ack_enabled
+            # above (service-manager override stays authoritative).
+            if (
+                "busy_steer_delivered_ack_enabled" in _display_cfg
+                and "HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED" not in os.environ
+            ):
+                os.environ["HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED"] = str(
+                    _display_cfg["busy_steer_delivered_ack_enabled"]
+                )
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -10746,6 +10755,135 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return text
         return (enriched_text or text).strip()
 
+    def _steer_delivered_ack_enabled(self, event: MessageEvent) -> bool:
+        """Resolve the busy_steer_delivered_ack_enabled display setting.
+
+        Same pattern as busy_steer_ack_enabled below: the
+        HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED env var wins when
+        set; otherwise per-platform/global display config (default True).
+        """
+        _env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED")
+        if _env is not None:
+            return _env.strip().lower() in {"1", "true", "yes", "on"}
+        from gateway.display_config import resolve_display_setting
+        return bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
+                "busy_steer_delivered_ack_enabled",
+                True,
+            )
+        )
+
+    def _drop_steer_delivered_listener(self, session_key: str) -> None:
+        """Unregister this session's unfired steer-delivery listener, if any.
+
+        Called at turn teardown (``_release_running_agent_state``, while
+        ``state.turn.agent`` is still set) and before registering a
+        replacement on a newer steer, so a listener that never fired can
+        never leak onto a later turn that reuses the same agent object.
+        """
+        state = self._peek_session_state(session_key)
+        if state is None:
+            return
+        listener = state.turn.steer_delivered_listener
+        state.turn.steer_delivered_listener = None
+        if listener is None:
+            return
+        agent = state.turn.agent
+        _unregister = getattr(agent, "unregister_steer_delivery_listener", None)
+        if callable(_unregister):
+            try:
+                _unregister(listener)
+            except Exception:
+                logger.debug(
+                    "Failed to unregister steer-delivery listener for session %s",
+                    session_key,
+                    exc_info=True,
+                )
+
+    def _register_steer_delivered_ack(
+        self, event: MessageEvent, session_key: str, agent: Any
+    ) -> None:
+        """Schedule the one-shot "✅ Steer delivered" follow-up ack.
+
+        The immediate busy-steer bubble promises FUTURE delivery ("Your
+        message arrives after the next tool call"). This registers a
+        listener on the running agent that fires when the steer text is
+        ACTUALLY injected into the model's context (AIAgent's mid-run drain
+        points) and sends the confirmation through the same
+        ``adapter._send_with_retry`` path as the busy ack.
+
+        The listener fires on the agent execution / tool-worker thread, so
+        the send is marshalled onto the gateway loop with
+        ``safe_schedule_threadsafe`` (the existing cross-thread notification
+        lane). One-shot bookkeeping happens inside that coroutine: the
+        TurnState slot doubles as the latch — cleared by the fire itself,
+        by a newer steer replacing this one, or by
+        ``_drop_steer_delivered_listener`` at turn teardown — so the ack is
+        sent at most once and never leaks into a later turn.
+        """
+        _register = getattr(agent, "register_steer_delivery_listener", None)
+        if not callable(_register):
+            return  # agent without the listener lane — nothing to hook
+        adapter = self._adapter_for_source(event.source)
+        if adapter is None:
+            return
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        # Reply threading mirrors the busy-ack send in
+        # _handle_active_session_busy_message (same Telegram DM-topic /
+        # thread handling).
+        reply_to = (
+            reply_anchor
+            if event.source.platform == Platform.TELEGRAM
+            and event.source.chat_type == "dm"
+            and event.source.thread_id
+            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+        )
+        chat_id = event.source.chat_id
+
+        def _listener(_injected_text: str) -> None:
+            # Agent-thread context — hop onto the gateway loop so the
+            # one-shot latch and the send stay single-threaded.
+            async def _deliver() -> None:
+                state = self._peek_session_state(session_key)
+                if state is None or state.turn.steer_delivered_listener is not _listener:
+                    return  # already fired / superseded / turn ended
+                state.turn.steer_delivered_listener = None
+                _unregister = getattr(agent, "unregister_steer_delivery_listener", None)
+                if callable(_unregister):
+                    try:
+                        _unregister(_listener)
+                    except Exception:
+                        logger.debug(
+                            "Failed to unregister steer-delivery listener",
+                            exc_info=True,
+                        )
+                try:
+                    await adapter._send_with_retry(
+                        chat_id=chat_id,
+                        content="✅ Steer delivered — your message is now in the model's context.",
+                        reply_to=reply_to,
+                        metadata=thread_meta,
+                    )
+                except Exception as _ack_err:
+                    logger.debug("Failed to send steer-delivered ack: %s", _ack_err)
+
+            safe_schedule_threadsafe(
+                _deliver(),
+                getattr(self, "_gateway_loop", None),
+                logger=logger,
+                log_message="steer-delivered ack scheduling error",
+            )
+
+        # An earlier steer in this run may still hold the slot; its text
+        # concatenates into the same eventual injection, so one ack is enough.
+        self._drop_steer_delivered_listener(session_key)
+        if not _register(_listener):
+            return
+        self._session_state(session_key).turn.steer_delivered_listener = _listener
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -10967,6 +11105,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as exc:
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
+                if steered and self._steer_delivered_ack_enabled(event):
+                    # The busy-steer bubble below promises FUTURE delivery;
+                    # schedule the one-shot follow-up ack for the moment the
+                    # text actually lands in the model's context.
+                    self._register_steer_delivered_ack(event, session_key, running_agent)
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
@@ -27240,6 +27383,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (agent / started_ts / lease / busy_ack_ts).  Turn-lease tokens
             # are deliberately NOT cleared here — _release_turn_lease owns
             # them (#64934).
+            # Drop any unfired one-shot steer-delivery listener while
+            # ``state.turn.agent`` is still reachable, so it can never fire
+            # on a later turn that reuses the same agent object.
+            self._drop_steer_delivered_listener(session_key)
             state.turn.clear()
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current

@@ -887,6 +887,15 @@ def init_agent(
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
 
+    # One-shot notification lane for the steer mechanism above: listeners
+    # fire exactly when a pending steer is ACTUALLY injected into the
+    # model's context (the two mid-run drain points), never on the
+    # put-back paths or the end-of-turn leftover drain. Surfaces (e.g. the
+    # gateway's "steer delivered" ack) register/unregister via
+    # AIAgent.register_steer_delivery_listener(); zero-cost when empty.
+    agent._steer_delivery_listeners: list = []
+    agent._steer_delivery_listeners_lock = threading.Lock()
+
     # Active-turn redirect mechanism. A regular follow-up sent while the model
     # is generating is different from a hard /stop: preserve the valid turn
     # prefix, cancel only the in-flight model request, and rebuild its tail with

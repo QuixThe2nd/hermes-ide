@@ -2069,6 +2069,8 @@ def run_conversation(
             if not _injected:
                 # No tool message to inject into — put it back so
                 # the post-tool-execution drain picks it up later.
+                # (Deliberately does NOT notify steer-delivery listeners —
+                # nothing reached the model yet.)
                 _lock = getattr(agent, "_pending_steer_lock", None)
                 if _lock is not None:
                     with _lock:
@@ -2079,6 +2081,14 @@ def run_conversation(
                 else:
                     existing = getattr(agent, "_pending_steer", None)
                     agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+            else:
+                # The steer text is now genuinely in the model's context —
+                # notify one-shot listeners (e.g. the gateway's "steer
+                # delivered" ack). getattr keeps object.__new__ test stubs
+                # that predate the listener lane working.
+                _notify_steer = getattr(agent, "_notify_steer_delivery_listeners", None)
+                if callable(_notify_steer):
+                    _notify_steer(_pre_api_steer)
 
         # ── Wall-clock run-budget wrap-up notice ───────────────────────
         # One-shot: when a run budget (agent.run_budget_seconds /

@@ -620,6 +620,16 @@ class TestReplyCapture:
             assert interim.success is True
             assert fut.done() is False
 
+            # The follow-up "steer delivered" bubble is interim chatter too
+            # — it must equally not resolve the blocked A2A RPC future.
+            delivered = await adapter.send(
+                "ctx-final",
+                "✅ Steer delivered — your message is now in the model's context.",
+                metadata={"expect_edits": True},
+            )
+            assert delivered.success is True
+            assert fut.done() is False
+
             final = await adapter.send(
                 "ctx-final",
                 "FINAL_PROOF_PAYLOAD",
