@@ -754,7 +754,7 @@ def _live_install_root() -> Optional[Path]:
             return Path(base) / "hermes"
         import pwd
 
-        pw_dir = pwd.getpwuid(os.getuid()).pw_dir
+        pw_dir = pwd.getpwuid(os.getuid()).pw_dir  # windows-footgun: ok (POSIX branch, gated by sys.platform above)
         if not pw_dir:
             return None
         return Path(pw_dir) / ".hermes"
