@@ -411,8 +411,19 @@ session that was mid-turn when the drain timeout fired. Reasons:
 - `"restart_timeout"` — killed during restart drain
 - `"shutdown_timeout"` — killed during shutdown drain
 - `"restart_interrupted"` — crash recovery (from `suspend_recently_active`)
+- `"cooperative_restart"` — live chat sessions that parked themselves after
+  `/restart` asked them to wind down; startup auto-continues the parked work
 
-All three reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-resume.
+All four reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-resume.
+
+### Cooperative restart wind-down
+
+On in-band `/restart` (and SIGUSR1), the gateway still refuses new turns, but
+it also steers every *other* live chat agent once: park at a safe pause, do
+not start new long work, end the turn. Those sessions are marked
+`resume_pending` with `cooperative_restart` so the new process continues them
+instead of waiting for every long turn to die first. Cron and API-server work
+are not steered; the existing drain wait still covers them.
 
 ### Auto-Resume on Next Access
 

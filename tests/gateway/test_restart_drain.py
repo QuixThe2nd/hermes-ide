@@ -51,7 +51,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     # sides of the equality above would still match. Assert on the catalog
     # output explicitly so a broken locale resolution fails loudly here.
     assert expected != "gateway.draining"
-    assert "Draining" in expected and "1" in expected
+    assert "Asking" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 

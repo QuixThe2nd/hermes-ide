@@ -44,7 +44,7 @@ gateway:
     detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
     no_data:               "No context data available yet. Send a message to start a session."
   approval_expired: "⚠️ انتهت صلاحية الموافقة (لم يعد الوكيل ينتظر). اطلب من الوكيل المحاولة مرة أخرى."
-  draining:         "⏳ جارٍ إنهاء {count} وكيل نشط قبل إعادة التشغيل..."
+  draining:         "⏳ جارٍ طلب إيقاف مؤقت لـ {count} وكيل نشط ثم إعادة التشغيل..."
   goal_cleared:     "✓ تم مسح الهدف."
   no_active_goal:   "لا يوجد هدف نشط."
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"

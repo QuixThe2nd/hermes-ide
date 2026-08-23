@@ -1292,7 +1292,9 @@ def build_resume_recovery_note(
     nowhere (#57056).
     """
     reason_phrase = (
-        "a gateway restart"
+        "a cooperative gateway restart"
+        if reason == "cooperative_restart"
+        else "a gateway restart"
         if reason == "restart_timeout"
         else "a gateway shutdown"
         if reason == "shutdown_timeout"
@@ -1306,6 +1308,18 @@ def build_resume_recovery_note(
         tail_guidance = (
             "Do NOT re-execute old tool calls — skip any "
             "unfinished work from the conversation history."
+        )
+    elif reason == "cooperative_restart":
+        resume_guidance = (
+            "This session parked itself so the gateway could restart. "
+            "No user is waiting on a restore acknowledgement. "
+            "Review the conversation history and CONTINUE the parked "
+            "task from the last safe pause."
+        )
+        tail_guidance = (
+            "Do NOT re-run tool calls whose results already "
+            "appear in the history — resume from the first step "
+            "that has no recorded result. Do not ask what next."
         )
     elif interactive:
         resume_guidance = (
@@ -12468,6 +12482,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
         self._draining = True
+        self._request_cooperative_restart_wind_down()
 
         async def _run_restart() -> None:
             await self._await_active_work_before_restart()
@@ -12504,8 +12519,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # .clean_shutdown marker).  All three mean "the agent was mid-turn and
     # we killed it" — eligible for startup auto-resume.
     _AUTO_RESUME_REASONS = frozenset(
-        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+        {
+            "restart_timeout",
+            "shutdown_timeout",
+            "restart_interrupted",
+            "cooperative_restart",
+        }
     )
+
+    def _request_cooperative_restart_wind_down(self) -> list[str]:
+        """Ask live chat sessions to park, then mark them for auto-continue.
+
+        New turns stay refused (``_draining``). This only steers already-
+        running agents so they can reach a pausable state instead of
+        pinning the drain until they naturally finish.
+        """
+        from gateway.restart_wind_down import (
+            mark_cooperative_restart_sessions,
+            steer_running_agents_for_restart,
+        )
+
+        steered = steer_running_agents_for_restart(self)
+        if not steered:
+            return []
+        existing = list(getattr(self, "_cooperative_restart_sessions", []) or [])
+        for session_key in steered:
+            if session_key not in existing:
+                existing.append(session_key)
+        self._cooperative_restart_sessions = existing
+        marked = mark_cooperative_restart_sessions(self, steered)
+        logger.info(
+            "Cooperative restart: steered %d live session(s) to park "
+            "(%d marked resume_pending)",
+            len(steered),
+            marked,
+        )
+        return steered
 
     async def _run_startup_resume_event(
         self,
@@ -15696,15 +15745,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Drain completed gracefully — all running sessions finished.
                 # Clear the pre-drain resume_pending markers so sessions that
                 # completed during the drain window don't carry a stale flag.
+                # Keep cooperative-restart markers: those sessions parked on
+                # purpose so startup can auto-continue them.
+                from gateway.restart_wind_down import COOPERATIVE_RESTART_REASON
+
+                _coop = set(getattr(self, "_cooperative_restart_sessions", []) or [])
                 for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            await self.async_session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+                    if _sk in self._running_agents:
+                        continue
+                    if _sk in _coop:
+                        continue
+                    _entry = None
+                    try:
+                        _entry = self.session_store._entries.get(_sk)
+                    except Exception:
+                        _entry = None
+                    if getattr(_entry, "resume_reason", None) == COOPERATIVE_RESTART_REASON:
+                        continue
+                    try:
+                        await self.async_session_store.clear_resume_pending(_sk)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending after drain failed for %s: %s",
+                            _sk, _e,
+                        )
 
             if timed_out:
                 logger.warning(
@@ -21205,13 +21269,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 await self._clear_restart_failure_count(session_key)
+                _resume_entry = None
                 try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
+                    if getattr(self, "session_store", None) is not None:
+                        _resume_entry = self.session_store._entries.get(session_key)
+                except Exception:
+                    _resume_entry = None
+                from gateway.restart_wind_down import (
+                    should_preserve_cooperative_restart_marker,
+                )
+
+                if should_preserve_cooperative_restart_marker(
+                    draining=bool(getattr(self, "_draining", False)),
+                    resume_reason=getattr(_resume_entry, "resume_reason", None),
+                ):
+                    logger.info(
+                        "Preserving cooperative-restart resume_pending for %s "
+                        "so startup can continue the parked turn",
+                        session_key,
                     )
+                else:
+                    try:
+                        await self.async_session_store.clear_resume_pending(session_key)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending failed for %s: %s",
+                            session_key, _e,
+                        )
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.

@@ -21,7 +21,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
-  draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
+  draining:         "⏳ 正在請 {count} 個活躍代理暫停後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"
   no_active_goal:   "目前沒有作用中的目標。"
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"

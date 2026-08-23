@@ -21,7 +21,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
-  draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
+  draining:         "⏳ {count} aktív ügynököt kérünk, hogy álljon meg, majd újraindítás..."
   goal_cleared:     "✓ A cél törölve."
   no_active_goal:   "Nincs aktív cél."
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"

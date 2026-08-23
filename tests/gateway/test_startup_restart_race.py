@@ -118,6 +118,11 @@ def make_startup_runner(tmp_path):
     runner.request_restart = gateway_run.GatewayRunner.request_restart.__get__(
         runner, gateway_run.GatewayRunner
     )
+    runner._request_cooperative_restart_wind_down = (
+        gateway_run.GatewayRunner._request_cooperative_restart_wind_down.__get__(
+            runner, gateway_run.GatewayRunner
+        )
+    )
     runner.stop = gateway_run.GatewayRunner.stop.__get__(runner, gateway_run.GatewayRunner)
     return runner
 
