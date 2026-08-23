@@ -19878,6 +19878,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
+
+        # Remember the last REAL user message id per session (persisted via
+        # session metadata, so it survives restarts). Synthetic injections —
+        # async-delegation completions, background-process notifications, loop
+        # wakeups — carry no platform message_id of their own, which left their
+        # turn-final replies without a Discord/Telegram reply anchor and
+        # therefore without a user ping. Those injections now fall back to this
+        # remembered id (see _inject_watch_notification / _loop_wakeup_watcher).
+        if not getattr(event, "internal", False) and getattr(event, "message_id", None):
+            try:
+                await self.async_session_store.set_session_metadata(
+                    session_key,
+                    "_last_user_message_id",
+                    str(event.message_id),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to persist last-user-message-id for %s",
+                    session_key, exc_info=True,
+                )
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(
@@ -21638,13 +21658,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if persist_user_display_kind:
                     _user_entry["display_kind"] = persist_user_display_kind
-                if event.message_id:
+                # Internal synthetic turns borrow the session's remembered
+                # last-user-message-id as a reply anchor; that id already has
+                # its own transcript row, so never stamp it here — the
+                # platform message_id dedupe (#47237) would otherwise drop
+                # the whole internal turn as a duplicate.
+                if event.message_id and not getattr(event, "internal", False):
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
                 # transcript (prevents duplicate user turns on Telegram retries
-                # after transient failures). #47237
+                # after transient failures). #47237. Internal synthetic turns
+                # borrow the remembered anchor id, which IS already in the
+                # transcript — they must never be treated as duplicates.
                 _skip_persist = (
                     event.message_id
+                    and not getattr(event, "internal", False)
                     and await self.async_session_store.has_platform_message_id(
                         session_entry.session_id, str(event.message_id)
                     )
@@ -21682,7 +21710,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if persist_user_display_kind:
                         _user_entry["display_kind"] = persist_user_display_kind
-                    if event.message_id:
+                    # Same internal-anchor rule as the main persist path above.
+                    if event.message_id and not getattr(event, "internal", False):
                         _user_entry["message_id"] = str(event.message_id)
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id,
@@ -22779,11 +22808,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not wakeup:
                         continue
                     try:
+                        # Fall back to the session's remembered last real user
+                        # message id so the wakeup's reply still carries a
+                        # reply anchor (and pings) on Discord/Telegram.
+                        _anchor = None
+                        if session_key:
+                            try:
+                                _stored = await self.async_session_store.get_session_metadata(
+                                    session_key, "_last_user_message_id", None
+                                )
+                                if _stored:
+                                    _anchor = str(_stored)
+                            except Exception:
+                                logger.debug(
+                                    "loop wakeup anchor lookup failed for %s",
+                                    session_key, exc_info=True,
+                                )
                         synth_event = MessageEvent(
                             text=wakeup,
                             message_type=MessageType.TEXT,
                             source=source,
                             internal=True,
+                            message_id=_anchor,
                         )
                         logger.info(
                             "loop wakeup #%s — injecting for %s chat=%s thread=%s",
@@ -26195,12 +26241,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # Synthetic injections carry no platform message_id, which left
+            # their turn-final replies without a reply anchor (and therefore
+            # without a user ping on Discord/Telegram — #48 follow-up).
+            # Fall back to the last REAL user message id remembered for this
+            # session so the completion's answer replies to something the
+            # user actually sent. Best-effort: a missing store or entry just
+            # keeps the historical no-anchor behaviour.
+            _anchor = str(evt.get("message_id") or "").strip() or None
+            if not _anchor:
+                try:
+                    _sk = str(evt.get("session_key") or "").strip()
+                    if _sk and getattr(self, "async_session_store", None) is not None:
+                        _stored = await self.async_session_store.get_session_metadata(
+                            _sk, "_last_user_message_id", None
+                        )
+                        if _stored:
+                            _anchor = str(_stored)
+                except Exception:
+                    logger.debug(
+                        "last-user-message-id lookup failed for %s",
+                        evt.get("session_key"), exc_info=True,
+                    )
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None,
+                message_id=_anchor,
                 metadata=metadata,
             )
             logger.info(
