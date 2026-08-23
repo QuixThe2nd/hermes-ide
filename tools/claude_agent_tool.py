@@ -30,10 +30,13 @@ when the process runs as root.
 Log format
 ----------
 Stdout is streamed to ``<HERMES_HOME>/claude-runs/<timestamp>-<pid>.jsonl``.
-With ``--output-format json`` the CLI emits one JSON document per line; the
-handler scans for the last line that is valid JSON with ``"type": "result"``
-and extracts session metadata, cost, model usage, and permission denials
-from it.
+With ``--output-format stream-json --verbose`` the CLI emits one JSON event
+per line *as the run happens* — session init, tool calls, assistant turns,
+retries — so the log file doubles as a live progress feed for tailers.
+The final line is a ``"type": "result"`` event; the handler scans for the
+last such line and extracts session metadata, cost, model usage, and
+permission denials from it (same contract as the old batch ``json``
+format).
 """
 
 from __future__ import annotations
@@ -368,7 +371,8 @@ def delegate_claude_agent(
             "--allowedTools",
             tools_arg,
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             str(task).strip(),
         ]
     )
