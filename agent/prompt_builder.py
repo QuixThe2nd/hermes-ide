@@ -464,6 +464,28 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
+# Universal tool-call narration guidance.  Addresses a visibility failure
+# mode on chat platforms (Discord/Telegram/Slack): models silently fire long
+# chains of tool calls with no visible explanation, leaving the user staring
+# at a frozen chat with no idea what is happening or whether the agent went
+# off the rails.  This block instructs the model to narrate each tool call —
+# one short sentence before the call saying what it is doing and why, and a
+# brief note on the result after — so the user can follow the work as it
+# happens.
+#
+# Short on purpose — shipped in the cached system prompt to every user, every
+# session. Token cost is paid once at install and amortised across all
+# sessions via prefix caching. Keep it tight.
+TOOL_CALL_NARRATION_GUIDANCE = (
+    "# Tool call narration\n"
+    "Before each tool call, tell the user in one short sentence what you are "
+    "about to do and why; after significant results, note briefly what came "
+    "back. Keep narration terse — a clause, not a paragraph. Do not narrate "
+    "trivial or self-evident calls; do narrate anything long-running, "
+    "destructive, unusual, or part of a multi-step chain so the user can "
+    "follow the work as it happens."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

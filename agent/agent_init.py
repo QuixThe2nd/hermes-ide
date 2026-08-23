@@ -2023,6 +2023,12 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Universal tool-call narration guidance toggle.  Default True.  Separate
+    # flag so a user can silence narration without losing parallel-call
+    # batching.  Steers the model to briefly explain each tool call before
+    # making it and summarize results after.
+    agent._tool_call_narration_guidance = bool(_agent_section.get("tool_call_narration_guidance", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

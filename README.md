@@ -37,6 +37,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Cron — lifecycle guard blocks cron-spawned commands that would restart the gateway or rewrite the live checkout (quote-aware)
   - Memory — per-turn injection skips lines already delivered earlier in the session
   - Config — API retry backoff timing
+  - Agent — tool-call narration guidance: model briefly explains each tool call before making it (`agent.tool_call_narration_guidance`, default on)
   - Config — web search and extract fallback chains
 
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this header is upstream's README.
