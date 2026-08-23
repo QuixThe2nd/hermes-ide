@@ -10,8 +10,16 @@ Hermes is a personal AI agent that runs the same agent core across a CLI, a
 messaging gateway (Telegram, Discord, Slack, and ~20 other platforms), a TUI,
 and an Electron desktop app. It learns across sessions (memory + skills),
 delegates to subagents, runs scheduled jobs, and drives a real terminal and
-browser. It is extended primarily through **plugins and skills**, not by
-growing the core.
+browser.
+
+> **Fork note:** upstream documents a slim-repo philosophy — the repo stays
+> minimal and capability ships externally. This fork takes the opposite
+> stance (Debian vs Ubuntu): it is a **preconfigured, batteries-included
+> distribution**. Important tooling is preinstalled, dev pipelines are
+> prebuilt, and well-integrated capability SHOULD land in this tree when it
+> makes the out-of-box experience better. The core-vs-plugin guidance below
+> still governs *how* capability is wired into the agent runtime (schema
+> cost, prompt caching), but "keep it out of the repo" does not apply here.
 
 Two properties shape almost every design decision and are the lens for
 reviewing any change:
@@ -21,10 +29,12 @@ reviewing any change:
   swaps toolsets, or rebuilds the system prompt mid-conversation invalidates
   that cache and multiplies the user's cost. We do not do it (the one
   exception is context compression).
-- **The core is a narrow waist; capability lives at the edges.** Every model
-  tool we add is sent on every API call, so the bar for a new *core* tool is
-  high. Most new capability should arrive as a CLI command + skill, a
-  service-gated tool, or a plugin — not as core surface.
+- **The agent core is a narrow waist; repo capability is not.** Every model
+  tool we add is sent on every API call, so the bar for a new *core* tool
+  (agent-runtime surface) is high. Most new *runtime* capability should still
+  arrive as a CLI command + skill, a service-gated tool, or a plugin — but the
+  plugin itself can and often should live in this tree (see the fork note at
+  the top).
 
 ## Contribution Rubric — What We Want / What We Don't
 
@@ -46,8 +56,9 @@ providers, models, desktop/TUI features) expands aggressively and on purpose.
 The restraint below is aimed squarely at the **core agent + the model tool
 schema**, the one place where every addition is paid for on every API call.
 "Smallest footprint" governs *how a capability is wired into the core*, NOT
-whether the product is allowed to grow. We are expansive at the edges and
-conservative at the waist.
+whether the product or the repo is allowed to grow. We are expansive at the
+edges, conservative at the waist — and unlike upstream, expansive in the tree
+itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
 
 ### What we want
 
@@ -68,10 +79,12 @@ conservative at the waist.
   (large `+N/-N` refactors merge regularly). The "every line traces to the
   request" test applies to *feature* PRs; a declared refactor's request IS the
   extraction.
-- **Keep the core narrow.** New *model tools* are the expensive exception —
+- **Keep the agent core narrow.** New *model tools* are the expensive exception —
   every tool ships on every API call. Prefer, in order: extend existing code →
-  CLI command + skill → service-gated tool (`check_fn`) → plugin → MCP server
-  in the catalog → new core tool (last resort). See "The Footprint Ladder."
+  CLI command + skill → service-gated tool (`check_fn`) → in-tree plugin →
+  MCP server in the catalog → new core tool (last resort). See "The Footprint
+  Ladder." In this fork, "plugin" means an in-tree plugin by default;
+  out-of-tree is for personal or throwaway capability.
 - **Extend, don't duplicate.** Before adding a module/manager/hook, check
   whether existing infrastructure already covers the use case. When several PRs
   integrate the same *category*, design one shared interface instead of merging
@@ -123,17 +136,15 @@ conservative at the waist.
   without E2E proof, and plugins that touch core files.** Plugins live in their
   own directory and work within the ABCs/hooks we provide; if a plugin needs
   more, widen the generic plugin surface, don't special-case it in core.
-- **Third-party products / other people's projects integrated into the core
-  tree.** Observability backends, vendor SaaS integrations, analytics dashboards,
-  and similar "someone else's product" plugins do NOT land under `plugins/` in
-  this repo. They place an ongoing maintenance burden on us to keep them working
-  against a fast-moving core, for a backend we don't own. Ship them as a
-  **standalone plugin repo** users install into `~/.hermes/plugins/` (or via a
-  pip entry point), and promote them in the Nous Research Discord
-  (`#plugins-skills-and-skins`). This is a coupling-and-maintenance decision, not
-  a quality bar — the plugin can be excellent and still be a close. PRs that add
-  such a directory to the tree are closed with a pointer to publish it as its own
-  repo.
+- **Third-party products integrated without an integration layer.** The
+  upstream rule "third-party plugins never land in this tree" does NOT apply
+  here — this fork deliberately preinstalls well-integrated capability
+  (observability, kanban, dev pipelines, and similar all live in-tree). What
+  we still reject is a raw vendor SDK dumped under `plugins/` with no
+  adapter: wrap the product behind the plugin ABC/hooks so core never
+  special-cases it, keep it gated/off by default when it phones home, and
+  own the maintenance burden knowingly. A plugin can still be rejected for
+  poor integration quality, never for merely being third-party.
 
 ### Before you call it a bug — verify the premise (and when NOT to close)
 
@@ -855,34 +866,26 @@ generic plugin surface (new hook, new ctx method) — never hardcode
 plugin-specific logic into core. PR #5295 removed 95 lines of hardcoded
 honcho argparse from `main.py` for exactly this reason.
 
-**No new in-tree memory providers (policy, May 2026):** the set of
-built-in memory providers under `plugins/memory/` is closed. New memory
-backends must ship as **standalone plugin repos** that users install
-into `~/.hermes/plugins/` (or via pip entry points) — they implement
-the same `MemoryProvider` ABC, register through the same discovery
-path, and integrate via `hermes memory setup` / `post_setup()` without
-landing in this tree. PRs that add a new directory under
-`plugins/memory/` will be closed with a pointer to publish the
-provider as its own repo. Existing in-tree providers stay; bug fixes
-to them are welcome.
+**Memory providers may land in-tree (fork policy, supersedes the upstream
+May 2026 closure):** upstream closed `plugins/memory/` to new providers and
+routes them to standalone plugin repos. This fork is batteries-included, so
+well-integrated memory backends SHOULD ship in `plugins/memory/` here. The
+technical bar from upstream still holds: implement the same
+`MemoryProvider` ABC (`agent/memory_provider.py`), register through the
+same discovery path, and integrate via `hermes memory setup` /
+`post_setup()` — in-tree placement removes the install step, not the
+integration requirements.
 
-**No new third-party-product plugins in-tree (policy, June 2026):** the
-same rule applies beyond memory providers. Plugins that integrate
-someone else's product or project — observability/metrics backends,
-vendor SaaS connectors, analytics dashboards, paid-service tie-ins —
-must ship as **standalone plugin repos** that users install into
-`~/.hermes/plugins/` (or via pip entry points). They register through
-the existing plugin discovery path and use the ABCs/hooks/ctx surface
-we expose; nothing special is needed in core. The reason is
-maintenance load: every product we absorb into the tree becomes our
-burden to keep working against a fast-moving core, for a backend we
-don't own. Promote standalone plugins in the Nous Research Discord
-(`#plugins-skills-and-skins`). PRs that add such a directory under
-`plugins/` are closed with a pointer to publish it as its own repo —
-this is a coupling decision, not a quality judgment. (The
-`observability/`, `kanban/`, `disk-cleanup/`, etc. directories already
-in the tree are existing precedent, not an invitation to add more
-third-party-product plugins alongside them.)
+**Third-party-product plugins may land in-tree (fork policy, supersedes the
+upstream June 2026 closure):** upstream routes observability/metrics
+backends, vendor SaaS connectors, analytics dashboards, and paid-service
+tie-ins to standalone plugin repos. This fork deliberately absorbs
+well-integrated capability into the tree — that's what a batteries-included
+distribution is. The integration requirements still apply: register through
+the existing plugin discovery path, use the ABCs/hooks/ctx surface (never
+special-case in core), and gate anything that phones home off by default.
+The maintenance burden is real and accepted knowingly; it buys an
+out-of-box-complete install.
 
 ### Model-provider plugins (`plugins/model-providers/<name>/`)
 

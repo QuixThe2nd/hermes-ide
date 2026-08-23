@@ -2,6 +2,8 @@
 
 A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behavior, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
 
+**Philosophy:** upstream keeps its repo slim and ships capability externally; this fork is the opposite — a preconfigured, batteries-included distribution (Debian vs Ubuntu). Important tooling comes preinstalled, dev pipelines come prebuilt, and well-integrated capability belongs in the tree.
+
 **What's different here:**
 - **Tools**
   - Delegation — send coding tasks to a Cursor My Machines Cloud Agent in the target checkout, straight from chat
