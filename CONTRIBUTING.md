@@ -67,38 +67,48 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ---
 
-## Memory Providers: Ship as a Standalone Plugin
+## Memory Providers: In-Tree Is Welcome
 
-**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+**Fork note:** upstream no longer accepts new memory providers into its repo and
+routes them to standalone plugin repos. This fork takes the opposite,
+batteries-included stance: a well-integrated memory backend SHOULD ship in
+`plugins/memory/` here, so users get it preinstalled instead of installing it
+themselves.
 
-Standalone memory plugins:
+The upstream technical bar still applies to any in-tree provider:
 
 - Implement the same `MemoryProvider` ABC (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(hermes_home, config)` for setup-wizard integration
 - Use the same discovery system — `discover_memory_providers()` picks them up from user/project plugin directories and pip entry points
 - Integrate with `hermes memory setup` via `post_setup()` — no need to touch core code
-- Can register their own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
-- Get all the same lifecycle hooks and config plumbing as in-tree providers
+- Register your own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
+- Get all the same lifecycle hooks and config plumbing as existing providers
 
-PRs that add a new directory under `plugins/memory/` will be closed with a pointer to publish the provider as its own repo. Existing in-tree providers stay; bug fixes to them are welcome.
-
-This isn't a quality bar — it's a coupling-and-maintenance decision. Memory providers are the most common plugin type and they shouldn't all live in this tree.
+In-tree placement removes the install step, not the integration requirements.
+A provider that only half-integrates is better published as a standalone
+plugin repo users install into `~/.hermes/plugins/`.
 
 ---
 
-## Third-Party Product Integrations: Ship as a Standalone Plugin
+## Third-Party Product Integrations: In-Tree With an Integration Layer
 
-The same rule extends to **any plugin that integrates someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins, and similar third-party integrations. **These do not land in this repo.**
+**Fork note:** upstream rejects all third-party product integrations from its
+repo and points contributors at standalone plugin repos. This fork
+deliberately absorbs well-integrated capability — observability, kanban,
+dev pipelines, and similar already live in-tree, and that is the point of a
+batteries-included distribution.
 
-The reason is maintenance load, not quality. Every external product absorbed into the core tree becomes ours to keep working against a fast-moving codebase, for a backend we don't own and can't control. Hermes ships a lot and the core moves quickly; coupling third-party products into it creates an open-ended burden on the maintainers.
+What we still require:
 
-Publish these as a **standalone plugin repo** instead:
-
-- Implement the relevant ABC and use the existing plugin discovery path (`~/.hermes/plugins/`, project `.hermes/plugins/`, or a pip entry point) — see [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin)
-- Register lifecycle hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), and CLI subcommands (`ctx.register_cli_command`) through the surface we already expose — no core changes needed
+- Wrap the product behind the plugin ABC and discovery path (`~/.hermes/plugins/` layout in-tree under `plugins/<name>/`, or a pip entry point) — see [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin)
+- Register lifecycle hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), and CLI subcommands (`ctx.register_cli_command`) through the existing surface — no core changes needed
 - If your plugin needs a capability the framework doesn't expose, that's a feature request to **widen the generic plugin surface** (a new hook or `ctx` method) — never special-case your plugin in core
-- Promote it in the [Nous Research Discord](https://discord.gg/NousResearch) `#plugins-skills-and-skins` channel so users can find and install it
+- Gate anything that phones home off by default
 
-A well-built third-party-product plugin can clear automated review and still be closed for this reason — it's a placement decision, not a verdict on the code. PRs that add such a directory under `plugins/` will be closed with a pointer to publish it as its own repo.
+The maintenance burden upstream cites is real: absorbing someone else's
+product means keeping it working against a fast-moving core. This fork
+accepts that knowingly — it buys an out-of-box-complete install. What gets
+rejected is poor integration quality (a raw vendor SDK with no adapter,
+ungated telemetry), never the mere fact of being third-party.
 
 ---
 
