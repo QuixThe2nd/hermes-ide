@@ -1308,21 +1308,133 @@ def tail_jsonl_progress(
     return size, events
 
 
+# Tool-name fragments used to classify a stream-json tool_use as file work vs
+# a shell command. Substring matching keeps both lanes covered without a
+# hardcoded tool list: Claude Code (Edit/Write/Read/MultiEdit/Bash) and the
+# Cursor agent (str_replace_based_edit_tool/run_terminal_command) both hit.
+_FILE_TOOL_HINTS = ("edit", "write", "read", "file", "patch", "notebook")
+_CMD_TOOL_HINTS = ("bash", "shell", "terminal", "command", "exec")
+
+# Cap on remembered per-run progress keys ("kind:detail") so a very long job
+# cannot grow run metadata without bound; past the cap the oldest keys age out
+# and may occasionally re-notify — never silently re-spam.
+_PROGRESS_SEEN_CAP = 500
+
+
+def _tool_use_path(tool_input: Any) -> str:
+    """Best file-path field in a tool_use input, or ``''``."""
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("file_path", "path", "absolute_path", "notebook_path"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _tool_use_command(tool_input: Any) -> str:
+    """Best shell-command field in a tool_use input, or ``''``."""
+    if not isinstance(tool_input, dict):
+        return ""
+    value = tool_input.get("command")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        parts = [str(p) for p in value if str(p).strip()]
+        if parts:
+            return " ".join(parts)
+    return ""
+
+
+def _clean_progress_detail(text: str, limit: int = 80) -> str:
+    """One-line, backtick-free detail safe to embed in a chat sentence."""
+    if not text:
+        return ""
+    cleaned = text.replace("`", "'").splitlines()[0].strip()
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1].rstrip() + "…"
+    return cleaned
+
+
+def _relativize_path(path: str, repo_root: str) -> str:
+    """Strip the workspace repo prefix so chat messages show repo-relative paths."""
+    root = (repo_root or "").rstrip("/") + "/"
+    if root != "/" and path.startswith(root):
+        return path[len(root):]
+    return path
+
+
+def _iter_tool_uses(ev: Mapping[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield ``(tool_name, input)`` pairs from the JSONL shapes both lanes write.
+
+    Claude Code and the Cursor agent both emit assistant turns whose
+    ``message.content`` lists ``tool_use`` blocks; flatter runners emit
+    top-level ``tool_call`` events. Both are handled so progress extraction
+    does not depend on the lane.
+    """
+    etype = ev.get("type") or ev.get("event")
+    if etype in {"tool_call", "tool_use", "function_call"}:
+        name = ev.get("tool") or ev.get("name") or "tool"
+        tool_input = ev.get("input") or ev.get("arguments") or {}
+        yield str(name), tool_input if isinstance(tool_input, dict) else {}
+        return
+    message = ev.get("message")
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") in {"tool_use", "tool_call", "function_call"}:
+            name = block.get("name") or "tool"
+            tool_input = block.get("input") or block.get("arguments") or {}
+            yield str(name), tool_input if isinstance(tool_input, dict) else {}
+
+
 def coarse_progress_from_events(
     events: Sequence[dict[str, Any]],
+    repo_root: str = "",
 ) -> list[dict[str, Any]]:
+    """Distill tailed JSONL lines into notifier progress payloads.
+
+    Emits ``file_edited`` when a tool touched a real file path, ``command``
+    for a real shell command, ``checkpoint`` for explicit checkpoint markers;
+    at most one item per distinct (kind, detail). Lines with no extractable
+    tool activity — text turns, usage/token accounting, stream heartbeats —
+    produce NOTHING: the old ``stream_activity`` fallback is exactly what
+    flooded chats with ``RUNNING → RUNNING`` noise.
+    """
     progress: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(kind: str, detail: str) -> None:
+        detail = _clean_progress_detail(detail)
+        if not detail or (kind, detail) in seen:
+            return
+        seen.add((kind, detail))
+        progress.append({"kind": kind, "detail": detail})
+
     for ev in events:
         etype = ev.get("type") or ev.get("event")
-        if etype in {"tool_call", "tool_result"}:
-            name = ev.get("tool") or ev.get("name") or "tool"
-            progress.append({"kind": "command", "detail": str(name)})
-        elif "edit" in json.dumps(ev).lower():
-            progress.append({"kind": "file_edited", "detail": "edit"})
-        elif etype == "checkpoint":
-            progress.append({"kind": "checkpoint", "detail": "checkpoint"})
-    if not progress and events:
-        progress.append({"kind": "stream_activity", "detail": f"{len(events)} events"})
+        if etype == "checkpoint":
+            detail = ev.get("detail") or ev.get("message") or ev.get("summary")
+            _add("checkpoint", str(detail or "checkpoint"))
+            continue
+        for name, tool_input in _iter_tool_uses(ev):
+            name_l = name.lower()
+            path = _relativize_path(_tool_use_path(tool_input), repo_root)
+            command = _tool_use_command(tool_input)
+            if path and any(h in name_l for h in _FILE_TOOL_HINTS):
+                _add("file_edited", path)
+            elif command and any(h in name_l for h in _CMD_TOOL_HINTS):
+                _add("command", command)
+            elif path and "file_path" in tool_input:
+                # Unknown tool but unambiguously file-shaped input.
+                _add("file_edited", path)
+            elif command:
+                _add("command", command)
     return progress
 
 
@@ -2119,7 +2231,27 @@ class DevExecutor:
             else:
                 active_task.last_jsonl_growth_at = new_growth
             size, events = tail_jsonl_progress(jsonl_path, prev_size)
-            for item in coarse_progress_from_events(events):
+            # Coarse progress: only real file/command activity, deduped
+            # against everything already reported for this run so a repeated
+            # Read/Edit never re-fires. When the tail holds nothing worth
+            # saying (the common case — text turns, usage rows), no
+            # dev_phase row is written at all and the chat stays silent.
+            seen_keys = [
+                str(k) for k in (st.get("progress_seen") or [])
+                if isinstance(k, str)
+            ]
+            seen_set = set(seen_keys)
+            fresh_progress: list[dict[str, Any]] = []
+            for item in coarse_progress_from_events(
+                events, repo_root=str(st.get("repo_path") or "")
+            ):
+                key = f"{item.get('kind')}:{item.get('detail')}"
+                if key in seen_set:
+                    continue
+                seen_set.add(key)
+                seen_keys.append(key)
+                fresh_progress.append(item)
+            for item in fresh_progress:
                 record_dev_phase(conn, task_id, run_id, PHASE_RUNNING, item)
             active_task.last_jsonl_size = size
             meta = merge_pipeline_state(
@@ -2127,6 +2259,7 @@ class DevExecutor:
                 {
                     "last_jsonl_size": active_task.last_jsonl_size,
                     "last_jsonl_growth_at": active_task.last_jsonl_growth_at,
+                    "progress_seen": seen_keys[-_PROGRESS_SEEN_CAP:],
                 },
             )
             save_run_metadata(conn, run_id, meta)

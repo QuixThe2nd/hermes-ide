@@ -21,7 +21,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - MoA — `moa_ask` and `moa_debate`, restored from the archive
   - Memory (Honcho) — memory tools surface backend failures (dead API keys, auth 401s, timeouts) as explicit errors instead of silently looking like "nothing stored"
 - **Plugins**
-  - dev-pipeline — hand a repo + task to an automated pipeline: MoA planning, Cursor execution, mechanical verification, dual-model review, draft PR, with stage-progress messages to your chat and a status tool
+  - dev-pipeline — hand a repo + task to an automated pipeline: MoA planning, Cursor execution, mechanical verification, dual-model review, draft PR, with plain-English stage-progress messages to your chat (same-phase heartbeats skipped) and a status tool
   - dev-pipeline claude-endurance lane — Claude Code (claude-glm) builds for broad/long tasks
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs

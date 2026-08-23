@@ -17,7 +17,7 @@ import sqlite3
 import time
 from contextvars import Context
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from agent.i18n import t
 
@@ -93,6 +93,93 @@ async def _to_thread_process_service(func: Callable[..., Any], /, *args: Any) ->
     """Offload blocking process-service work (dispatcher + notifier writers)
     without inheriting request-local ContextVars."""
     return await asyncio.to_thread(_run_in_fresh_context, func, *args)
+
+
+# Plain-English verb for each dev-pipeline phase, so job progress reads as
+# sentences ("finished planning the work and is now writing the code") instead
+# of PHASE → PHASE arrows.
+_DEV_PHASE_VERBS = {
+    "PLANNING": "planning the work",
+    "ROUTING": "picking a build lane",
+    "PREPARING": "setting up the workspace",
+    "RUNNING": "writing the code",
+    "VERIFYING": "checking the result",
+    "REVIEWING": "reviewing the change",
+    "PUBLISHING": "opening the pull request",
+}
+
+# Preference order when one notifier tick claims a burst of same-phase
+# progress events: an edit says more than a command, which says more than a
+# generic checkpoint. ``stream_activity`` is deliberately absent — those
+# heartbeats are never worth a message.
+_DEV_PROGRESS_PRIORITY = {"file_edited": 0, "command": 1, "checkpoint": 2}
+
+
+def _dev_phase_verb(phase: str) -> str:
+    verb = _DEV_PHASE_VERBS.get(str(phase).strip().upper())
+    return verb if verb else str(phase).strip().lower()
+
+
+def _plan_dev_phase_messages(
+    events: Sequence[Any],
+    task_id: str,
+    prev_phase: Optional[str],
+) -> dict[int, str]:
+    """Map dev_phase event indexes to the chat messages worth sending.
+
+    Phase changes narrate themselves (first phase "started …", later ones
+    "finished … and is now …"). Same-phase events only speak up when their
+    payload carries a progress ``kind``/``detail``, and a burst of same-phase
+    progress collapses to ONE message — preferring file_edited over command
+    over checkpoint — so a 15s heartbeat cadence can never flood a chat.
+    Events that should stay silent are simply absent from the map; the claim
+    that fetched them still advances the cursor, so they never replay.
+    """
+    plans: dict[int, str] = {}
+    seen: set[tuple[str, str]] = set()
+    phase = prev_phase
+    burst: Optional[tuple[int, int, str]] = None  # (priority, index, text)
+
+    def _flush_burst() -> None:
+        nonlocal burst
+        if burst is not None:
+            plans[burst[1]] = burst[2]
+            burst = None
+
+    for idx, ev in enumerate(events):
+        if getattr(ev, "kind", None) != "dev_phase":
+            continue
+        payload = ev.payload if isinstance(getattr(ev, "payload", None), dict) else {}
+        ev_phase = str(payload.get("phase") or "")
+        if ev_phase and ev_phase != phase:
+            _flush_burst()
+            if phase:
+                plans[idx] = (
+                    f"Dev job {task_id} finished {_dev_phase_verb(phase)} "
+                    f"and is now {_dev_phase_verb(ev_phase)}."
+                )
+            else:
+                plans[idx] = (
+                    f"Dev job {task_id} started {_dev_phase_verb(ev_phase)}."
+                )
+            phase = ev_phase
+            continue
+        kind = str(payload.get("kind") or "")
+        detail = str(payload.get("detail") or "").strip()
+        priority = _DEV_PROGRESS_PRIORITY.get(kind)
+        if priority is None or not detail or (kind, detail) in seen:
+            continue
+        seen.add((kind, detail))
+        if kind == "file_edited":
+            text = f"Dev job {task_id} is editing `{detail}`."
+        elif kind == "command":
+            text = f"Dev job {task_id} ran `{detail}`."
+        else:
+            text = f"Dev job {task_id}: {detail}."
+        if burst is None or priority < burst[0]:
+            burst = (priority, idx, text)
+    _flush_burst()
+    return plans
 
 
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
@@ -575,8 +662,13 @@ class GatewayKanbanWatchersMixin:
                     # "Task X completed" and re-decomposes work that already
                     # exists on the board.
                     wake_handoff = ""
-                    prev_phase = d.get("prev_phase")
-                    for ev in d["events"]:
+                    # Pre-render every dev_phase event in this claim: silent
+                    # same-phase heartbeats drop out here, and a same-phase
+                    # burst collapses to one message.
+                    dev_phase_msgs = _plan_dev_phase_messages(
+                        d["events"], sub["task_id"], d.get("prev_phase"),
+                    )
+                    for ev_idx, ev in enumerate(d["events"]):
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
@@ -668,23 +760,13 @@ class GatewayKanbanWatchersMixin:
                                 f" — needs a human decision{rc}{reason}"
                             )
                         elif kind == "dev_phase":
-                            phase = ""
-                            if ev.payload and ev.payload.get("phase"):
-                                phase = str(ev.payload["phase"])
-                            extra = ""
-                            if ev.payload:
-                                attempt = ev.payload.get("attempt")
-                                if attempt is not None:
-                                    extra = f" (attempt {attempt})"
-                            if prev_phase and phase:
-                                msg = (
-                                    f"dev job {sub['task_id']}: "
-                                    f"{prev_phase} → {phase}{extra}"
-                                )
-                            else:
-                                msg = f"dev job {sub['task_id']}: {phase}{extra}"
-                            if phase:
-                                prev_phase = phase
+                            msg = dev_phase_msgs.get(ev_idx)
+                            if msg is None:
+                                # Same-phase heartbeat with nothing new to
+                                # report: silent. The claim already covers
+                                # these rows, so the cursor still advances
+                                # and they are never replayed.
+                                continue
                             if not _progress_enabled:
                                 continue
                         else:
