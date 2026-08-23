@@ -1376,11 +1376,22 @@ function handleSessionsGatewayTransition() {
 // relay degrades to whatever subset of connections supports it.
 const RELAY_ROSTER_INTERVAL_MS = 60_000
 const RELAY_DRAIN_INTERVAL_MS = 4_000
+// Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
+// an envelope lands on disk; a burst of signals inside this window collapses
+// to ONE drain. The interval poll above stays as the backstop for older
+// backends (and connections whose events don't reach the tap).
+const RELAY_PUSH_DEBOUNCE_MS = 250
 let relayDisposed = false
 let relayRosterTimer = null
 let relayDrainTimer = null
 let relayRosterBusy = false
 let relayDrainBusy = false
+let relayPushUnsub = null
+let relayPushDebounceTimer = null
+// A push landing while a drain is ALREADY running would be lost forever —
+// the gateway signature is monotone (one event per new envelope, never
+// re-broadcast) — so remember it and re-schedule after the drain finishes.
+let relayDrainRerun = false
 
 /** One representative route per reachable connection id. */
 async function relayConnections() {
@@ -1406,7 +1417,12 @@ async function relayConnections() {
   }
 }
 
-/** The agents living on one connection, as relay roster rows. */
+/** The agents living on one connection, as relay roster rows.
+ *  Returns null on FAILURE (transient RPC blip, slow socket) — distinct from
+ *  a genuine empty profile list. Conflating the two would push a fresh union
+ *  roster missing a LIVE connection's agents, and the gateway-side liveness
+ *  check (bot_relay._target_liveness) reads "absent from a fresh roster" as
+ *  definitively offline → false runtime_offline refusals (#93091 item 2). */
 async function relayAgentsOn(connection) {
   try {
     const res = await host.requestProfile(connection.route, 'profiles.list', { include_sessions: false })
@@ -1426,9 +1442,13 @@ async function relayAgentsOn(connection) {
       }))
       .filter(row => row.profile)
   } catch {
-    return []
+    return null
   }
 }
+
+/** Last good agent rows per connection id — reused when a fetch blips so a
+ *  transient failure never reads as "everyone on that machine went away". */
+const relayAgentsCache = new Map()
 
 /** Push every gateway the union roster of agents on the OTHER connections. */
 async function syncRelayRosters() {
@@ -1448,9 +1468,29 @@ async function syncRelayRosters() {
     const agentsByConnection = new Map()
     await Promise.all(
       connections.map(async connection => {
-        agentsByConnection.set(connection.id, await relayAgentsOn(connection))
+        const agents = await relayAgentsOn(connection)
+
+        if (agents === null) {
+          // Transient fetch failure: reuse the last good rows for this
+          // connection (or contribute nothing this cycle) so the pushed
+          // roster never drops a live machine's agents — absence from a
+          // fresh roster means offline to the gateway-side fail-fast.
+          agentsByConnection.set(connection.id, relayAgentsCache.get(connection.id) || [])
+        } else {
+          relayAgentsCache.set(connection.id, agents)
+          agentsByConnection.set(connection.id, agents)
+        }
       })
     )
+
+    // Connections gone from profileRoutes are genuinely disconnected — drop
+    // their cache so a later reconnect starts from live data.
+    const liveIds = new Set(connections.map(connection => connection.id))
+    for (const id of [...relayAgentsCache.keys()]) {
+      if (!liveIds.has(id)) {
+        relayAgentsCache.delete(id)
+      }
+    }
 
     await Promise.all(
       connections.map(async connection => {
@@ -1478,7 +1518,16 @@ async function syncRelayRosters() {
  *  connection's own socket; the reply (or error) is posted back to the
  *  sender gateway for its waiter. */
 async function drainRelayOutboxes() {
-  if (relayDisposed || relayDrainBusy) {
+  if (relayDisposed) {
+    return
+  }
+
+  if (relayDrainBusy) {
+    // A push signal raced an in-flight drain. The gateway never re-sends it
+    // (monotone signature), so without this flag the envelope would wait out
+    // the full poll interval — exactly the latency the push path removes.
+    relayDrainRerun = true
+
     return
   }
 
@@ -1546,7 +1595,31 @@ async function drainRelayOutboxes() {
     }
   } finally {
     relayDrainBusy = false
+
+    if (relayDrainRerun && !relayDisposed) {
+      // Envelopes signaled mid-drain: schedule one follow-up pass (debounced)
+      // instead of leaving them to the interval poll.
+      relayDrainRerun = false
+      scheduleRelayPushDrain()
+    }
   }
+}
+
+/** Push-notified drain (#93091): collapse a burst of pending signals into
+ *  one drain call ~RELAY_PUSH_DEBOUNCE_MS after the first signal. */
+function scheduleRelayPushDrain() {
+  if (relayDisposed || typeof setTimeout !== 'function') {
+    return
+  }
+
+  if (relayPushDebounceTimer !== null) {
+    return
+  }
+
+  relayPushDebounceTimer = setTimeout(() => {
+    relayPushDebounceTimer = null
+    void drainRelayOutboxes()
+  }, RELAY_PUSH_DEBOUNCE_MS)
 }
 
 function startBotRelay() {
@@ -1566,10 +1639,21 @@ function startBotRelay() {
   if (relayDrainTimer === null) {
     relayDrainTimer = setInterval(() => void drainRelayOutboxes(), RELAY_DRAIN_INTERVAL_MS)
   }
+
+  // Push path: the gateway change watcher broadcasts when an envelope hits
+  // the outbox; drain immediately (debounced) instead of waiting the poll
+  // out. Feature-detected — older shells have no host.onEvent — and the 4s
+  // poll above stays untouched as the backstop either way.
+  if (relayPushUnsub === null && typeof host.onEvent === 'function') {
+    relayPushUnsub = host.onEvent('bot_relay.outbox.pending', () => scheduleRelayPushDrain())
+  }
 }
 
 function stopBotRelay() {
   relayDisposed = true
+  // A rerun remembered mid-drain must not leak into the next start —
+  // it would fire one stale drain after restart.
+  relayDrainRerun = false
 
   if (relayRosterTimer !== null) {
     clearInterval(relayRosterTimer)
@@ -1579,6 +1663,20 @@ function stopBotRelay() {
   if (relayDrainTimer !== null) {
     clearInterval(relayDrainTimer)
     relayDrainTimer = null
+  }
+
+  if (relayPushDebounceTimer !== null) {
+    clearTimeout(relayPushDebounceTimer)
+    relayPushDebounceTimer = null
+  }
+
+  if (relayPushUnsub !== null) {
+    try {
+      relayPushUnsub()
+    } catch {
+      // Disposer from an older shell shape — never break teardown.
+    }
+    relayPushUnsub = null
   }
 }
 
