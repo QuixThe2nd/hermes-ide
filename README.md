@@ -48,6 +48,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Config — API retry backoff timing
   - Agent — tool-call narration guidance: model briefly explains each tool call before making it (`agent.tool_call_narration_guidance`, default on)
   - Config — web search and extract fallback chains
+  - Display — optional native OS notification when a turn finishes (`display.notify_on_complete`, off by default; SSH target supported)
 
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this header is upstream's README.
 
