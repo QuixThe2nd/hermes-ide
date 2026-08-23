@@ -10,6 +10,9 @@ The shipped coding guidance lives on the evidence-based verification-stop nudge
 (``agent/verification_stop.py``), not as a second default stop gate. That keeps
 the default token cost tied to the existing "missing verification evidence"
 decision while preserving ``pre_verify`` for user/plugin policy.
+
+The sibling ``pre_turn_end`` gate (every turn, not only code edits) resolves its
+directive budget here too via :func:`max_pre_turn_end_nudges`.
 """
 
 from __future__ import annotations
@@ -19,6 +22,12 @@ from typing import Any, Optional
 from utils import is_truthy_value
 
 DEFAULT_MAX_VERIFY_NUDGES = 3
+
+# ``pre_turn_end`` fires on EVERY turn end, so its budget must be tight by
+# default (one directive per turn) and hard-capped: an unbounded value here
+# would let a misbehaving hook make a single turn never finish.
+DEFAULT_MAX_PRE_TURN_END_NUDGES = 1
+MAX_PRE_TURN_END_NUDGE_CAP = 2
 
 # Shipped guidance appended to the verification-stop nudge when code lacks fresh
 # verification evidence. Wording mirrors the user-facing "clean your work"
@@ -42,6 +51,23 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return DEFAULT_MAX_VERIFY_NUDGES
 
 
+def max_pre_turn_end_nudges(config: Optional[dict[str, Any]] = None) -> int:
+    """Bound on consecutive ``pre_turn_end`` continue directives per turn.
+
+    Same config-resolution shape as :func:`max_verify_nudges`
+    (``agent.max_pre_turn_end_nudges``) but clamped to
+    ``0..MAX_PRE_TURN_END_NUDGE_CAP`` — the hook fires at every turn end, so
+    a configured value above the cap is treated as the cap, not honored.
+    """
+    agent_cfg = _agent_cfg(config)
+    raw = agent_cfg.get("max_pre_turn_end_nudges")
+    try:
+        value = max(0, int(raw))
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_PRE_TURN_END_NUDGES
+    return min(value, MAX_PRE_TURN_END_NUDGE_CAP)
+
+
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Return the optional guidance appended to verification-stop nudges."""
     if not is_truthy_value(_agent_cfg(config).get("verify_guidance", True), default=True):
@@ -63,7 +89,10 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
 
 __all__ = [
     "CODING_VERIFY_GUIDANCE",
+    "DEFAULT_MAX_PRE_TURN_END_NUDGES",
     "DEFAULT_MAX_VERIFY_NUDGES",
+    "MAX_PRE_TURN_END_NUDGE_CAP",
     "coding_verify_guidance",
+    "max_pre_turn_end_nudges",
     "max_verify_nudges",
 ]

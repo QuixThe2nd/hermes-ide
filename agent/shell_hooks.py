@@ -823,10 +823,11 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
                 return {"action": "modify", "args": new_args}
         return None
 
-    if event == "pre_verify":
+    if event in ("pre_verify", "pre_turn_end"):
         # "continue" (Hermes) / "block" (Claude-Code Stop: block the stop) both
         # mean keep going; the message/reason is the follow-up for the model. A
-        # continue with no message is a no-op — let the turn finish.
+        # continue with no message is a no-op — let the turn finish. Both gates
+        # share the directive contract, so one branch covers them.
         action = str(data.get("action") or data.get("decision") or "").strip().lower()
         if action in {"continue", "block"}:
             message = data.get("message") or data.get("reason")
