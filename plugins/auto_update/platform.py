@@ -131,7 +131,12 @@ def resolve_python_executable() -> str:
     if venv:
         candidate = Path(venv) / "bin" / "python"
         if candidate.is_file():
-            return str(candidate.resolve())
+            # NOTE(future-me): do NOT resolve() here. A venv's ``python`` is a
+            # symlink to the base interpreter; resolving it yields a python
+            # without hermes_cli installed (observed with uv-managed pythons),
+            # producing units that die with ModuleNotFoundError. The symlink
+            # path itself is the correct interpreter for systemd units.
+            return str(candidate)
     return shutil.which("python3") or sys.executable
 
 
