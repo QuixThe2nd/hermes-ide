@@ -1665,7 +1665,13 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+        # Same third-party UV-env isolation as the main update path (#83914):
+        # a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON from unrelated
+        # software must not steer which interpreter uv resolves here.
+        from hermes_cli.managed_uv import managed_python_env
+
+        uv_env = managed_python_env()
+        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -6300,7 +6306,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         check=False,
                     )
                 if repair_uv:
-                    repair_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+                    # Isolated from third-party UV env vars (#83914), same as
+                    # the main-path and git-path dependency syncs.
+                    from hermes_cli.managed_uv import managed_python_env
+
+                    repair_env = managed_python_env()
+                    repair_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
                     _m()._install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )
@@ -6638,7 +6649,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+            # Use official managed_python_env() isolation so third-party
+            # UV_PYTHON_INSTALL_DIR (e.g. WorkBuddy) cannot hijack uv; then
+            # point VIRTUAL_ENV at this install's venv.
+            from hermes_cli.managed_uv import managed_python_env
+
+            uv_env = managed_python_env()
+            uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
             if _m()._is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
@@ -7873,11 +7890,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 for proc in find_profile_gateway_processes(exclude_pids=service_pids)
                 if proc.pid in manual_pids
             }
+            # Profile gateways we could not arm a relaunch for.  These must
+            # NOT be left running: their modules are the pre-update ones and
+            # every lazy import from here on mixes versions against the new
+            # code on disk (#88654).  Handing them to the unmapped sweep
+            # below stops them and surfaces them in the "Stopped N manual
+            # gateway process(es) / Restart manually" summary, which is the
+            # contract already used for gateways with no profile mapping.
+            unrestartable_pids = set()
             for pid, proc in profile_processes.items():
                 restart_mode = _prepare_profile_gateway_update_restart(
                     proc.profile, pid
                 )
                 if restart_mode is None:
+                    # Previously a bare ``continue``: the gateway was neither
+                    # relaunched nor stopped nor mentioned, so it kept serving
+                    # from stale modules with no operator signal at all.
+                    print(
+                        f"  ⚠ {proc.profile}: could not arm an automatic "
+                        f"gateway restart for PID {pid} — stopping it instead "
+                        "so it cannot keep running pre-update code"
+                    )
+                    unrestartable_pids.add(pid)
                     continue
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
@@ -7944,7 +7978,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
-                if pid in profile_processes:
+                if pid in profile_processes and pid not in unrestartable_pids:
                     continue
                 try:
                     os.kill(pid, _signal.SIGTERM)
