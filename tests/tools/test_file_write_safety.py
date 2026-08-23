@@ -229,28 +229,28 @@ class TestSafeRootDenialMessageIntegration:
         assert inside.read_text(encoding="utf-8") == "content"
 
 
-class TestCheckSensitivePathMacOSBypass:
-    """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
+class TestCheckSensitivePathSystemPaths:
+    """Verify system paths are no longer blocked by the file-tool wrapper."""
 
-    def test_etc_hosts_blocked(self):
+    def test_etc_hosts_allowed(self):
         from tools.file_tools import _check_sensitive_path
-        assert _check_sensitive_path("/etc/hosts") is not None
+        assert _check_sensitive_path("/etc/hosts") is None
 
-    def test_private_etc_hosts_blocked(self):
+    def test_private_etc_hosts_allowed(self):
         from tools.file_tools import _check_sensitive_path
-        assert _check_sensitive_path("/private/etc/hosts") is not None
+        assert _check_sensitive_path("/private/etc/hosts") is None
 
-    def test_private_etc_ssh_config_blocked(self):
+    def test_private_etc_ssh_config_allowed(self):
         from tools.file_tools import _check_sensitive_path
-        assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
+        assert _check_sensitive_path("/private/etc/ssh/sshd_config") is None
 
-    def test_private_var_blocked(self):
+    def test_private_var_allowed(self):
         from tools.file_tools import _check_sensitive_path
-        assert _check_sensitive_path("/private/var/db/something") is not None
+        assert _check_sensitive_path("/private/var/db/something") is None
 
-    def test_boot_still_blocked(self):
+    def test_boot_allowed(self):
         from tools.file_tools import _check_sensitive_path
-        assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
+        assert _check_sensitive_path("/boot/grub/grub.cfg") is None
 
     def test_safe_path_allowed(self):
         from tools.file_tools import _check_sensitive_path

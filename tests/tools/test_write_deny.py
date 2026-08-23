@@ -86,6 +86,9 @@ class TestWriteAllowed:
     def test_tmp_file(self):
         assert _is_write_denied("/tmp/safe_file.txt") is False
 
+    def test_systemd_unit(self):
+        assert _is_write_denied("/etc/systemd/system/example.service") is False
+
 
     def test_hermes_control_files_requested_writable(self):
         from hermes_constants import get_hermes_home

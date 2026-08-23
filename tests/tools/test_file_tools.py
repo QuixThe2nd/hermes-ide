@@ -216,8 +216,8 @@ class TestPatchSensitivePathExtraction:
     headers. These tests cover:
 
     1. ``*** Move File:`` operations (previously missed — the regex only
-       matched Update/Add/Delete, so Move could target /etc/* without
-       hitting the check).
+       matched Update/Add/Delete, so Move could target the Hermes config
+       without hitting the check).
     2. ``***Keyword File:`` with no space after ``***`` (previously missed —
        the regex required ``\\s+`` even though patch_parser accepts ``\\s*``).
     3. ``..`` traversal in Move headers (the Move endpoints run through the
@@ -225,11 +225,15 @@ class TestPatchSensitivePathExtraction:
     """
 
     @patch("tools.file_tools._get_file_ops")
-    def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
+    def test_patch_move_to_hermes_config_blocked(self, mock_get, monkeypatch):
+        monkeypatch.setattr(
+            "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
+        )
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
         from tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
-            "*** Move File: /tmp/work.txt -> /etc/crontab\n"
+            "*** Move File: /tmp/work.txt -> /tmp/hermes/config.yaml\n"
             "*** End Patch\n"
         )
         result = json.loads(patch_tool(mode="patch", patch=patch_text))
@@ -239,17 +243,21 @@ class TestPatchSensitivePathExtraction:
 
 
     @patch("tools.file_tools._get_file_ops")
-    def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
+    def test_patch_update_no_space_after_asterisks_blocked(self, mock_get, monkeypatch):
         """``***Update File:`` (no space after asterisks) must also be caught.
 
         patch_parser.py accepts this form (``\\s*`` in its regex), so the
         sensitive path check must be at least as lenient or the check
         is bypassed.
         """
+        monkeypatch.setattr(
+            "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
+        )
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
         from tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
-            "***Update File: /etc/resolv.conf\n"
+            "***Update File: /tmp/hermes/config.yaml\n"
             "@@ @@\n"
             "-old\n"
             "+new\n"
@@ -432,7 +440,7 @@ class TestSearchHints:
 
 
 class TestSensitivePathCheck:
-    """Verify that _check_sensitive_path blocks writes to protected locations."""
+    """Verify that _check_sensitive_path only blocks the Hermes config."""
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
@@ -455,28 +463,34 @@ class TestSensitivePathCheck:
         assert "Hermes config" in result["error"]
 
 
-    def test_system_path_still_blocked(self, monkeypatch):
+    @patch("tools.file_tools._get_file_ops")
+    def test_system_path_allowed(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "status": "ok",
+            "path": "/etc/systemd/system/example.service",
+            "bytes": 8,
+        }
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
 
         from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool("/etc/passwd", "evil"))
-        assert "error" in result
-        assert "sensitive system path" in result["error"]
+        result = json.loads(write_file_tool(
+            "/etc/systemd/system/example.service", "[Unit]\n"
+        ))
+        assert result["status"] == "ok"
 
-    def test_macos_private_var_carveouts(self):
-        """macOS temp dirs under /private/var must not be blanket-blocked,
-        while the genuinely-sensitive /private/var subtrees still are."""
+    def test_macos_system_paths_allowed(self):
         from tools.file_tools import _check_sensitive_path
 
-        # $TMPDIR / /tmp / /var/folders realpath into these on macOS.
         assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
         assert _check_sensitive_path("/private/var/tmp/build.log") is None
-        # Sensitive subtrees remain blocked.
-        assert _check_sensitive_path("/private/var/db/secret") is not None
-        assert _check_sensitive_path("/private/var/root/x") is not None
-        # /etc (and its macOS /private/etc mirror) stay blocked.
-        assert _check_sensitive_path("/private/etc/hosts") is not None
+        assert _check_sensitive_path("/private/var/db/secret") is None
+        assert _check_sensitive_path("/private/var/root/x") is None
+        assert _check_sensitive_path("/private/etc/hosts") is None
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):

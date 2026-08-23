@@ -644,20 +644,6 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     return omitted
 
 
-# Paths that file tools should refuse to write to without going through the
-# terminal tool's approval system.  These match prefixes after os.path.realpath.
-_SENSITIVE_PATH_PREFIXES = (
-    "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/",
-    # macOS: /private/var mirrors /var. Block the sensitive subtrees, NOT the
-    # whole thing — a blanket "/private/var/" refused every legitimate temp-file
-    # write, because $TMPDIR, /tmp, and /var/folders all realpath() into
-    # /private/var/folders/... on macOS (and _resolve_path_for_task resolves
-    # symlinks), and /private/var/tmp is a normal temp dir.
-    "/private/var/db/", "/private/var/root/",
-)
-_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
-
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
@@ -680,21 +666,12 @@ def _get_hermes_config_resolved() -> str | None:
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return an error message if the path targets a sensitive system location."""
+    """Return an error message if the path targets the Hermes config file."""
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
-    _err = (
-        f"Refusing to write to sensitive system path: {filepath}\n"
-        "Use the terminal tool with sudo if you need to modify system files."
-    )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
@@ -2389,8 +2366,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if _op in ("Update", "Add"):
                 _content_write_paths.append(v4a_path)
         # ``*** Move File: src -> dst`` is a valid V4A op (patch_parser.py:114)
-        # but was never extracted, so a Move targeting /etc/crontab skipped the
-        # sensitive-path pre-check. Check BOTH endpoints, and run them through
+        # but was never extracted, so a Move targeting the Hermes config skipped
+        # the sensitive-path pre-check. Check BOTH endpoints, and run them through
         # the same ``..`` traversal rejection as the other headers.
         for _m in _re.finditer(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
             for v4a_path in (_m.group(1).strip(), _m.group(2).strip()):

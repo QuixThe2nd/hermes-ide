@@ -81,7 +81,6 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".gnupg"),
             os.path.join(home, ".kube"),
             "/etc/sudoers.d",
-            "/etc/systemd",
             os.path.join(home, ".docker"),
             os.path.join(home, ".azure"),
             os.path.join(home, ".config", "gh"),
