@@ -31,6 +31,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
+  - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
   - Discord — typing indicator stays lit while a background delegated task is still running
   - Discord — MoA consult/debate progress renders as one self-editing embed per call
