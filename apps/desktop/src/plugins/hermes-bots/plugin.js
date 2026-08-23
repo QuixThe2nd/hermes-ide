@@ -5278,11 +5278,17 @@ async function openBotCanonicalChat(owner) {
   const existing = await findExistingCanonicalChat(owner)
 
   if (existing?.id && typeof host.openSession === 'function') {
-    await openStoredBotChat(owner, existing.resolved_id || existing.id, existing)
-    return existing.id
+    const openedId = existing.resolved_id || existing.id
+    await openStoredBotChat(owner, openedId, existing)
+    // Both identities matter downstream: the durable registry row names the
+    // chat; the resolved lineage tip is what actually takes session focus.
+    // Callers matching focus against only the registry id mistook every
+    // compressed Bot Chat for a stale open (first click bounced to the home).
+    return { registryId: String(existing.id), openedId: String(openedId) }
   }
 
-  return createCanonicalChat(owner)
+  const created = await createCanonicalChat(owner)
+  return created ? { registryId: String(created), openedId: String(created) } : null
 }
 
 async function prepareBotSource(bot) {
@@ -5375,17 +5381,26 @@ async function openRosterBot(bot) {
   }
 
   try {
-    const registryId = await openBotCanonicalChat(bot)
+    const opened = await openBotCanonicalChat(bot)
 
     if (generation !== botOpenGeneration) {
       return false
     }
 
-    if (registryId) {
+    if (opened) {
       // This is not an identity preference: opening already completed through
       // the name registry. Keep only enough ephemeral state to release the
-      // home if another tab later claims the center.
-      $openBotChat.set({ key, openedRegistryId: String(registryId) })
+      // home if another tab later claims the center. Track BOTH identities —
+      // session focus reports the compression-lineage tip (openedId), not the
+      // durable registry row, and matching focus against the registry id
+      // alone released this claim on the first click of every compressed
+      // Bot Chat (home bounced over the chat; a second click stuck only
+      // because no new focus edge fired).
+      $openBotChat.set({
+        key,
+        openedRegistryId: opened.registryId,
+        openedSessionId: opened.openedId
+      })
       closeBotsHomeWorkspace()
       return true
     }
@@ -5960,11 +5975,43 @@ function rotateGroupSpeakers(members, round) {
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
-/** Transcript form of a room speaker's profile name. The primary profile is
- *  literally named "default" — render it as Hermes (matching displayName and
- *  the @hermes handle) so the main agent never loses its name in rooms. */
+/** Transcript form of a room speaker's profile name. Friendly identity wins:
+ *  a Bot Mode title or a core profile display_name (e.g. default renamed to
+ *  "Lucy") labels the speaker everywhere this helper feeds — the "X is
+ *  thinking…" working line, the activity feed, and transcript lines — so a
+ *  renamed bot never shows up as its raw profile id or a stale "Hermes"
+ *  (community report, Aug 21 2026: renamed default still read "Hermes is
+ *  thinking…" in group rooms). The untitled primary profile is literally
+ *  named "default" — render it as Hermes (matching displayName and the
+ *  @hermes handle) so the main agent never loses its name in rooms. */
 function groupSpeakerLabel(name) {
-  return (name || '').trim().toLowerCase() === 'default' ? 'Hermes' : name
+  const trimmed = (name || '').trim()
+
+  if (!trimmed) {
+    return trimmed
+  }
+
+  // Bot Mode title (edit dialog) — same first rung as displayName().
+  const title = String($botMeta.get()?.[trimmed]?.title || '').trim()
+
+  if (title) {
+    return title
+  }
+
+  // Core profile display_name (`hermes profile rename …` / dashboard) from
+  // the ACTIVE gateway's roster row. Source-scoped remote speakers carry
+  // their device suffix separately and keep their raw name here.
+  const roster = $lastRoster.get()
+  const row = Array.isArray(roster)
+    ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource && !bot?.sourceScoped)
+    : null
+  const renamed = typeof row?.display_name === 'string' ? row.display_name.trim() : ''
+
+  if (renamed) {
+    return renamed
+  }
+
+  return trimmed.toLowerCase() === 'default' ? 'Hermes' : trimmed
 }
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
@@ -12644,7 +12691,12 @@ function releaseStaleOpenBotChat(focusedStoredId) {
   }
 
   const focused = focusedStoredId === null || focusedStoredId === undefined ? '' : String(focusedStoredId)
-  const stale = open.openedRegistryId ? focused !== open.openedRegistryId : Boolean(focused)
+  // The focused stored id is the compression-lineage TIP; the claim carries
+  // both the durable registry id and the tip it actually opened. Either
+  // match keeps the claim — comparing only the registry id released it on
+  // the very focus edge the open itself caused (first-click home bounce).
+  const owned = [open.openedSessionId, open.openedRegistryId].filter(Boolean)
+  const stale = owned.length ? !owned.includes(focused) : Boolean(focused)
 
   if (stale) {
     $openBotChat.set(null)
@@ -14039,6 +14091,58 @@ export default {
             })
           : null
 
+      // Proactive reclaim refresh: when the gateway reaps the runtime behind
+      // the OPEN bot chat (idle TTL, LRU cap, WS-orphan reap — the mass-reap
+      // shape hits every background bot at once), re-resume the canonical
+      // chat immediately instead of letting the user's next send eat the
+      // stale-id error + recovery retry. Matched on the STORED id (the
+      // claim's ids are stored ids; the payload carries both). Best-effort:
+      // a failed re-resume (backend still down) leaves the lazy recovery on
+      // next send as the backstop. Feature-detected — older shells have no
+      // host.onEvent.
+      const stopReclaimSync =
+        typeof host.onEvent === 'function'
+          ? host.onEvent('session.reclaimed', event => {
+              const payload = event?.payload || {}
+              const stored = String(payload.stored_session_id || '')
+              const claim = $openBotChat.get()
+
+              if (!stored || !claim) {
+                return
+              }
+
+              const owned = [claim.openedSessionId, claim.openedRegistryId].filter(Boolean)
+
+              if (!owned.includes(stored)) {
+                return
+              }
+
+              const bot = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
+
+              if (!bot) {
+                return
+              }
+
+              const generation = botOpenGeneration
+              void openBotCanonicalChat(bot)
+                .then(opened => {
+                  // A user action while the re-resume ran owns the center now.
+                  if (!opened || generation !== botOpenGeneration) {
+                    return
+                  }
+
+                  $openBotChat.set({
+                    key: claim.key,
+                    openedRegistryId: opened.registryId,
+                    openedSessionId: opened.openedId
+                  })
+                })
+                .catch(() => {
+                  /* backend still down — next send recovers via the ladder */
+                })
+            })
+          : null
+
       $botsPaneVisible.set(Boolean($sidebarVisible.get()))
       $botChatFocused.set(sessionOwnsWorkspace())
       $botsHomeFronted.set(Boolean(homeVisibleStore.get()))
@@ -14057,6 +14161,7 @@ export default {
           stopGroupSync()
           stopHomeVisibleSync()
           stopFocusSync?.()
+          stopReclaimSync?.()
           $botsHomeFronted.set(false)
           closeBotsHomeWorkspace()
         })

@@ -226,6 +226,68 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     return migrate_config(interactive=interactive, quiet=quiet)
 
 
+def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
+    """Migrate every SIBLING profile's config.yaml to the current version.
+
+    #91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the
+    shared checkout serves every profile, but ``hermes update`` historically
+    migrated only the active profile's config — siblings drifted versions
+    until their gateway hit a config the new code couldn't read.
+
+    Per profile home (skipping the active one, already migrated by the
+    caller): scope config reads/writes via the context-local HERMES_HOME
+    override (thread-safe — never ``os.environ``), check the version, and
+    run the NON-INTERACTIVE, quiet migration. Prompt-requiring settings are
+    left for the profile's own next interactive session, identical to the
+    gateway-mode contract for the active profile.
+
+    Returns ``[(profile_name, from_version, to_version), ...]`` for profiles
+    actually migrated. Never raises; a failing profile is skipped (its own
+    startup migration remains the fallback).
+    """
+    migrated: list[tuple[str, int, int]] = []
+    try:
+        from hermes_constants import (
+            get_process_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.profiles import _get_profiles_root, _PROFILE_ID_RE
+
+        active_home = get_process_hermes_home()
+        root = _get_profiles_root()
+        if not root.is_dir():
+            return migrated
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
+                continue
+            try:
+                if entry.resolve() == Path(active_home).resolve():
+                    continue
+            except OSError:
+                continue
+            if not (entry / "config.yaml").is_file():
+                continue  # profile never configured — nothing to migrate
+            token = set_hermes_home_override(entry)
+            try:
+                current_ver, latest_ver = _run_config_check_fresh()
+                if current_ver >= latest_ver:
+                    continue
+                _run_migrate_config_fresh(interactive=False, quiet=True)
+                after_ver, _ = _run_config_check_fresh()
+                if after_ver > current_ver:
+                    migrated.append((entry.name, current_ver, after_ver))
+            except Exception as exc:
+                logger.debug(
+                    "Config migration for profile %s failed: %s", entry.name, exc
+                )
+            finally:
+                reset_hermes_home_override(token)
+    except Exception as exc:
+        logger.debug("Sibling profile enumeration failed: %s", exc)
+    return migrated
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -5040,6 +5102,8 @@ def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     """Print an explicit incomplete-update warning for unrestarted units."""
+    from hermes_cli.gateway import is_macos
+
     if not failed_units:
         return
     # Preserve discovery order while de-duplicating.
@@ -5054,6 +5118,18 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     print("⚠ Update incomplete — some units were not restarted:")
     for name in ordered:
         print(f"    - {name}")
+    if is_macos():
+        # A launchd label reaches this list when launchd was not supervising a
+        # live process after the restart (#88848), so the unit is not merely
+        # stale — it is very likely deregistered, and `launchctl kickstart`
+        # cannot revive a job launchd no longer knows about.
+        print("  Listed services may be deregistered from launchd, or still")
+        print("  running pre-update code (mixed sys.modules). Recover with:")
+        print("    hermes gateway status")
+        print("    launchctl list | grep <label>")
+        print("    launchctl bootstrap gui/$(id -u) "
+              "~/Library/LaunchAgents/<label>.plist")
+        return
     print("  Skipped units may still be running pre-update code (mixed")
     print("  sys.modules). Restart them manually, then verify:")
     print("    hermes gateway status")
@@ -5095,6 +5171,7 @@ def _restart_macos_launchd_gateways(
         _launchd_service_registered,
         _locate_launchd_gateway_service,
         _wait_for_launchd_service_pid,
+        wait_for_launchd_gateway_supervision,
     )
 
     # --- Current profile: unchanged single-service path ---------------------
@@ -5112,11 +5189,38 @@ def _restart_macos_launchd_gateways(
         ):
             try:
                 launchd_restart()
-                restarted_services.append(current_label)
             except subprocess.CalledProcessError as e:
                 stderr = (getattr(e, "stderr", "") or "").strip()
                 print(f"  ⚠ Gateway restart failed: {stderr}")
                 failed_or_stale_units.append(current_label)
+            else:
+                # Siblings below are only counted as restarted once launchd
+                # reports a fresh supervised pid; the invoking profile was
+                # counted on "launchd_restart() did not raise" alone. That is
+                # not the same claim: launchd_restart() returns as soon as the
+                # restart has been REQUESTED -- the self-restart branch hands
+                # the work to the running gateway and returns immediately, and
+                # a plist reload is handed to a detached helper. Both are
+                # asynchronous, so a helper that dies before its first
+                # bootstrap (#88848), or a `launchctl bootstrap` that exits 0
+                # without registering (measured on macOS 26.6.1), both reached
+                # "Update complete!" with nothing supervising the gateway.
+                #
+                # Verified domain-agnostically, NOT via
+                # _wait_for_launchd_service_pid: that needs an explicit domain,
+                # and the gate above deliberately avoids a domain locate
+                # because it fails on macOS-26 hosts whose per-user domains
+                # reject service management even though launchd_restart() owns
+                # that fallback.
+                if wait_for_launchd_gateway_supervision(label=current_label):
+                    restarted_services.append(current_label)
+                else:
+                    failed_or_stale_units.append(current_label)
+                    print(
+                        f"  ✗ {current_label} restarted but launchd is not "
+                        "supervising it.\n"
+                        "    Check logs, then: hermes gateway restart"
+                    )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
@@ -5702,6 +5806,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # running Hermes runtime, its supervisor, and its running code version —
     # into the receipt, so a post-mortem can compare what the update SAW
     # against what it did. Read-only; a probe failure records nothing.
+    # ``_pre_update_plan`` is read again AFTER the restart phase to reconcile
+    # every planned runtime against the phase's bookkeeping (restart via
+    # declared mechanism — the plan is the worklist, not just a printout).
+    _pre_update_plan = None
     try:
         from hermes_cli.update_inventory import (
             collect_runtime_inventory,
@@ -7138,6 +7246,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             print("  ✓ Configuration is up to date")
 
+        # Fleet-wide config migration (#91277 Phase 2; #20438 earliest report,
+        # #54926, #79048): the shared checkout serves EVERY profile, but the
+        # migration above only touched the active profile's config.yaml.
+        # Sibling profiles kept their old _config_version and silently
+        # drifted (field repro: sibling gateway restarted onto new code but
+        # stayed at config v33 vs v37). Run the same NON-INTERACTIVE safe
+        # migration for every sibling profile home, scoped via the
+        # context-local HERMES_HOME override (never os.environ — other
+        # threads must not see it).
+        try:
+            _migrated_siblings = _migrate_sibling_profile_configs()
+            for _name, _from_ver, _to_ver in _migrated_siblings:
+                print(
+                    f"  ✓ Profile '{_name}': config format updated "
+                    f"(v{_from_ver} → v{_to_ver})"
+                )
+        except Exception as exc:
+            logger.debug("Sibling config migration failed: %s", exc)
+
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
         # job (issue #34600). The desktop scheduler can also overwrite with
@@ -8192,6 +8319,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 gateway_fleet_restart_incomplete = True
         except Exception as _fleet_exc:
             logger.debug("Fleet version verification failed: %s", _fleet_exc)
+
+        # Plan-vs-execution reconciliation (#91277 Phase 2, restart via
+        # declared mechanism): every runtime the PLAN saw must be accounted
+        # for by the restart phase's bookkeeping. An unaccounted runtime is
+        # the silent-miss class (a platform branch re-discovered its own
+        # targets and skipped one the inventory knew about) — escalate it
+        # exactly like a STALE/DOWN fleet row.
+        _runtime_outcomes: list = []
+        try:
+            if _pre_update_plan is not None and _pre_update_plan.runtimes:
+                from hermes_cli.update_inventory import (
+                    match_runtime_outcomes,
+                    report_unaccounted_runtimes,
+                )
+
+                _runtime_outcomes = match_runtime_outcomes(
+                    _pre_update_plan,
+                    restarted_services=restarted_services,
+                    relaunched_profiles=relaunched_profiles,
+                    externally_supervised_profiles=externally_supervised_profiles,
+                    killed_pids=killed_pids,
+                    failed_units=failed_or_stale_units,
+                )
+                if report_unaccounted_runtimes(_runtime_outcomes):
+                    gateway_fleet_restart_incomplete = True
+                try:
+                    import hermes_cli.update_receipt as _ur
+
+                    if _ur._current is not None:
+                        _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+                except Exception:
+                    pass
+        except Exception as _outcome_exc:
+            logger.debug("Runtime-outcome reconciliation failed: %s", _outcome_exc)
 
         try:
             from hermes_cli.update_receipt import finalize_update_receipt
