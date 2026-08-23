@@ -2104,6 +2104,42 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+def _shutdown_notification_path() -> Path:
+    return _hermes_home / ".shutdown_notify.json"
+
+
+def _shutdown_notification_pending() -> bool:
+    """Return True when shutdown-warned targets are owed a back-online notice."""
+    return _shutdown_notification_path().exists()
+
+
+def _clear_shutdown_notification() -> None:
+    _shutdown_notification_path().unlink(missing_ok=True)
+
+
+async def _write_shutdown_notification_marker(
+    targets: List[Dict[str, Any]],
+) -> None:
+    """Persist the targets that actually received the ⚠️ shutdown warning.
+
+    The next boot pairs each of them with a ♻️ back-online notice (see
+    ``_send_shutdown_comeback_notifications``). Best-effort, like the warning
+    sends themselves: a failed write is logged, never raised, so it cannot
+    block the shutdown sequence.
+    """
+    if not targets:
+        return
+    try:
+        await asyncio.to_thread(
+            atomic_json_write,
+            _shutdown_notification_path(),
+            {"requested_at": time.time(), "targets": targets},
+            indent=None,
+        )
+    except Exception as e:
+        logger.debug("Failed to write shutdown notify marker: %s", e)
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -11582,6 +11618,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
+        # Routing snapshot per target that actually received the ⚠️, so the
+        # next boot can pair it with a ♻️ back-online notice. Keyed by the
+        # same dedup key as ``notified`` and populated only after a
+        # successful send — a chat that never got the warning is owed no
+        # comeback. Persisted at every exit of this method, including the
+        # two that skip the home-channel broadcast below.
+        warned_targets: dict[tuple[str, str, Optional[str]], Dict[str, Any]] = {}
         for session_key in active:
             source = None
             try:
@@ -11645,11 +11688,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
+                chat_type = getattr(source, "chat_type", None) if source is not None else None
                 metadata = self._thread_metadata_for_target(
                     platform,
                     chat_id,
                     thread_id,
-                    chat_type=getattr(source, "chat_type", None) if source is not None else None,
+                    chat_type=chat_type,
                     reply_to_message_id=reply_to_message_id,
                     adapter=adapter,
                 )
@@ -11665,6 +11709,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 notified.add(dedup_key)
+                # Persist enough routing state to re-target the ♻️ comeback
+                # notice after reboot — same shape .restart_notify.json uses.
+                entry: Dict[str, Any] = {
+                    "platform": platform_str,
+                    "chat_id": chat_id,
+                }
+                if thread_id:
+                    entry["thread_id"] = str(thread_id)
+                if chat_type:
+                    entry["chat_type"] = chat_type
+                if reply_to_message_id:
+                    entry["message_id"] = str(reply_to_message_id)
+                if getattr(source, "delivered_via_upstream_relay", False) is True:
+                    entry["delivered_via_upstream_relay"] = True
+                    if getattr(source, "user_id", None):
+                        entry["user_id"] = str(source.user_id)
+                    if getattr(source, "scope_id", None):
+                        entry["scope_id"] = str(source.scope_id)
+                warned_targets[dedup_key] = entry
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
                     platform_str, chat_id,
@@ -11677,6 +11740,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
+            # Active sessions above still got the ⚠️ and are owed the ♻️ pair;
+            # the /restart requester itself is deduped at boot against
+            # .restart_notify.json.
+            await _write_shutdown_notification_marker(list(warned_targets.values()))
             return
 
         # Suppress ONLY the home-channel broadcast when the drain that is ending
@@ -11699,6 +11766,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Home-channel shutdown broadcast suppressed by drain marker "
                     "(suppress_notification=true)"
                 )
+                # Only the home-channel broadcast is suppressed — the
+                # active-session ⚠️ pings above still went out, so their ♻️
+                # pair is still owed. No home-channel comeback targets are
+                # invented here; only what was actually warned gets one.
+                await _write_shutdown_notification_marker(list(warned_targets.values()))
                 return
         except Exception as e:
             # Never let the suppression check block the shutdown broadcast —
@@ -11748,6 +11820,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 notified.add(dedup_key)
+                home_entry: Dict[str, Any] = {
+                    "platform": platform.value,
+                    "chat_id": str(home.chat_id),
+                }
+                if home.thread_id:
+                    home_entry["thread_id"] = str(home.thread_id)
+                warned_targets[dedup_key] = home_entry
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,
@@ -11760,6 +11839,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.chat_id,
                     e,
                 )
+
+        # Pairs the ⚠️ each warned target received with a ♻️ notice on the
+        # next boot — including raw SIGTERM shutdowns, which write neither
+        # .restart_notify.json nor .restart_pending.json.
+        if warned_targets:
+            await _write_shutdown_notification_marker(list(warned_targets.values()))
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -12770,14 +12855,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
-            await self._send_restart_notification()
+            # Collect every chat a boot notice already reached, so the
+            # shutdown comeback notice never double-pings a target that just
+            # heard "we're back" from /restart or the home-channel send.
+            skip_targets: set[tuple[str, str, Optional[str]]] = set()
+            restart_target = await self._send_restart_notification()
+            if restart_target is not None:
+                skip_targets.add(restart_target)
             if planned_restart_notification_pending:
                 try:
-                    await self._send_home_channel_startup_notifications(
-                        skip_targets=None,
+                    delivered_home = await self._send_home_channel_startup_notifications(
+                        skip_targets=skip_targets,
                     )
+                    # Fresh set, never an in-place |= : the object handed to
+                    # the home-channel send stays exactly what it saw.
+                    skip_targets = skip_targets | delivered_home
                 finally:
                     _clear_planned_restart_notification()
+            await self._send_shutdown_comeback_notifications(skip_targets=skip_targets)
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())
@@ -14081,11 +14176,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # of a restart cycle (see _is_stale_restart_redelivery).
         if chat_restart_notification_pending:
             self._booted_from_restart = True
-        # Restart notification, home-channel startup notice, and obligation
-        # redelivery all call adapter.send(). Those sends must not pin the
-        # inbound restore gate — a Telegram flood-control sleep on this path
-        # froze every platform for the full penalty (#91969). Bound them the
-        # same way _finish_startup_restore bounds resume turns.
+        # Restart notification, home-channel startup notice, shutdown
+        # comeback notice, and obligation redelivery all call adapter.send().
+        # Those sends must not pin the inbound restore gate — a Telegram
+        # flood-control sleep on this path froze every platform for the full
+        # penalty (#91969). Bound them the same way _finish_startup_restore
+        # bounds resume turns.
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=planned_restart_notification_pending,
         )
@@ -25364,6 +25460,123 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         finally:
             notify_path.unlink(missing_ok=True)
+
+    async def _send_shutdown_comeback_notifications(
+        self,
+        *,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> set[tuple[str, str, Optional[str]]]:
+        """Pair the pre-shutdown ⚠️ warning with a ♻️ back-online notice.
+
+        ``_notify_active_sessions_of_shutdown`` persisted every chat that
+        actually received the warning to ``.shutdown_notify.json``; this sends
+        each of them the matching notice once adapters are back — including
+        after raw SIGTERM/systemd restarts, which no other marker covers.
+        Deterministic adapter send, never an LLM turn.
+
+        ``skip_targets`` dedups against the /restart and home-channel startup
+        notices that may have just fired for the same chat, so no chat gets
+        two "we're back" messages in one boot. Best-effort: the marker is
+        unlinked after delivery is attempted (success or failure), so a dead
+        chat can never re-trigger pings on every later boot.
+        """
+        marker = _shutdown_notification_path()
+        if not marker.exists():
+            return set()
+
+        delivered: set[tuple[str, str, Optional[str]]] = set()
+        try:
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning("Shutdown comeback marker unreadable, discarding: %s", e)
+                return set()
+            entries = data.get("targets")
+            if not isinstance(entries, list):
+                return set()
+
+            skipped = skip_targets or set()
+            message = "♻️ Gateway back online — ready when you are."
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                platform_str = entry.get("platform")
+                chat_id = entry.get("chat_id")
+                if not platform_str or not chat_id:
+                    continue
+                thread_id = entry.get("thread_id")
+                target = (str(platform_str), str(chat_id), str(thread_id) if thread_id else None)
+                if target in skipped or target in delivered:
+                    logger.info(
+                        "Skipping shutdown comeback notice for %s:%s — already notified this boot",
+                        platform_str,
+                        chat_id,
+                    )
+                    continue
+
+                try:
+                    platform = Platform(platform_str)
+                    platform_cfg = self.config.platforms.get(platform)
+                    if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                        logger.info(
+                            "Shutdown comeback notice suppressed: %s has gateway_restart_notification=false",
+                            platform_str,
+                        )
+                        continue
+
+                    transport = resolve_delivery_transport(platform, self.config, self.adapters)
+                    if transport is None:
+                        logger.debug(
+                            "Shutdown comeback notice skipped: no live transport for %s",
+                            platform_str,
+                        )
+                        continue
+
+                    metadata = self._thread_metadata_for_target(
+                        platform,
+                        chat_id,
+                        thread_id,
+                        chat_type=entry.get("chat_type"),
+                        reply_to_message_id=entry.get("message_id"),
+                        adapter=transport.adapter,
+                    )
+                    if entry.get("delivered_via_upstream_relay") is True:
+                        metadata = dict(metadata or {})
+                        if entry.get("user_id"):
+                            metadata["user_id"] = str(entry["user_id"])
+                        if entry.get("scope_id"):
+                            metadata["scope_id"] = str(entry["scope_id"])
+                    result = await transport.send(
+                        platform,
+                        str(chat_id),
+                        message,
+                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                    )
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.warning(
+                            "Shutdown comeback notice to %s:%s was not delivered: %s",
+                            platform_str,
+                            chat_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        continue
+
+                    delivered.add(target)
+                    logger.info(
+                        "Sent gateway back-online notification to %s:%s",
+                        platform_str,
+                        chat_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Shutdown comeback notice to %s:%s failed: %s",
+                        platform_str,
+                        chat_id,
+                        e,
+                    )
+            return delivered
+        finally:
+            _clear_shutdown_notification()
 
     async def _send_home_channel_startup_notifications(
         self,
