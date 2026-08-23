@@ -1,0 +1,5 @@
+name: fallback_quota_reorder
+version: 1.0.0
+description: "Reorder fallback_providers from Discord quota voice-channel names written by quota_channels."
+author: Hermes Agent
+kind: backend
