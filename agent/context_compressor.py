@@ -1220,6 +1220,13 @@ _FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
 # protected region — but always keep this many trailing messages verbatim so
 # the active user ask / latest tool pair remain readable.  Issue #61932.
 _PRESSURE_KEEP_RECENT_MESSAGES = 3
+# Native vision_analyze / computer_use screenshots that sit inside the
+# protected tail cannot be demoted by pass 2, so they ride every later
+# request until anti-thrash disables compression (#92699).  Keep this many
+# newest image-bearing tool results verbatim; retire older image payloads
+# even when they fall inside ``protect_last_n``.  Matches the Anthropic
+# adapter's outbound keep-window.
+_MAX_KEEP_TOOL_IMAGES = 3
 
 # Models with context windows below this get their compression threshold
 # floored at ``_SMALL_CTX_THRESHOLD_PERCENT`` (raise-only — an explicitly
@@ -1558,6 +1565,60 @@ def _strip_image_parts_from_parts(parts: Any) -> Any:
         else:
             out.append(part)
     return out if had_image else None
+
+
+def _tool_content_has_images(content: Any) -> bool:
+    """True when a tool-result body carries embedded image bytes.
+
+    Handles both unwrapped OpenAI-style part lists and the native
+    ``{_multimodal: True, content: [...]}`` envelope vision_analyze returns.
+    """
+    if isinstance(content, dict) and content.get("_multimodal"):
+        return _content_has_images(content.get("content"))
+    return _content_has_images(content)
+
+
+def _retire_stale_tool_result_images(
+    result: List[Dict[str, Any]],
+    keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
+) -> int:
+    """Replace image payloads on older tool results with text placeholders.
+
+    Walks newest-first, keeps the most recent ``keep_newest`` image-bearing
+    tool messages intact (follow-up screenshot QA still sees the latest
+    frames), and retires the rest.  User-role uploads are not touched.
+
+    Mutates ``result`` in place.  Returns the number of messages rewritten.
+    """
+    if keep_newest < 0:
+        keep_newest = 0
+    seen = 0
+    pruned = 0
+    for i in range(len(result) - 1, -1, -1):
+        msg = result[i]
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not _tool_content_has_images(content):
+            continue
+        seen += 1
+        if seen <= keep_newest:
+            continue
+        if isinstance(content, dict) and content.get("_multimodal"):
+            summary = content.get("text_summary") or "[screenshot removed to save context]"
+            new_msg = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
+            drop_stale_api_content(new_msg)
+            result[i] = new_msg
+            pruned += 1
+            continue
+        stripped = _strip_image_parts_from_parts(content)
+        if stripped is None:
+            continue
+        new_msg = {**msg, "content": stripped}
+        drop_stale_api_content(new_msg)
+        result[i] = new_msg
+        pruned += 1
+    return pruned
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
@@ -3779,6 +3840,13 @@ class ContextCompressor(ContextEngine):
         for i in range(max(0, prune_boundary)):
             _truncate_tool_call_args_at(i)
 
+        # Pass 3.5 (#92699): retire image payloads that pass 2 cannot reach
+        # because they sit inside the protected tail.  Native vision_analyze
+        # embeds re-sent on every turn otherwise make compression look
+        # ineffective (savings < 10%) and anti-thrash disables it.  Newest
+        # frames stay live for follow-up QA; older ones become placeholders.
+        pruned += _retire_stale_tool_result_images(result)
+
         # Pass 4 (issue #61932): protected-tail pressure demotion.
         # After multiple in-place compactions the transcript can be short
         # enough that nearly every remaining message sits inside the
@@ -3874,16 +3942,19 @@ class ContextCompressor(ContextEngine):
         threshold (≈100K tokens on a 1M window) and would protect the entire
         session, pruning nothing.
 
-        ``_prune_old_tool_results`` runs all three deterministic passes:
+        ``_prune_old_tool_results`` runs all deterministic passes:
         (1) dedup byte-identical tool results — keeps the newest full copy and
         back-references older exact duplicates ANYWHERE in the list (including
         the protected tail), so no unique content is ever lost; (2) summarize
         non-tail tool results larger than ``min_prune_chars``; (3) truncate
-        oversized tool_call arguments on non-tail assistant messages. Only
-        pass (2)'s floor is raised by ``proactive_prune_min_result_chars``;
-        passes (1) and (3) keep their own fixed floors. The recent-tail
-        protection applies to passes (2) and (3); pass (1) is tail-agnostic by
-        design because dedup is lossless.
+        oversized tool_call arguments on non-tail assistant messages;
+        (3.5) retire image payloads on all but the newest
+        ``_MAX_KEEP_TOOL_IMAGES`` image-bearing tool results — tail-agnostic
+        and lossy by design (#92699). Only pass (2)'s floor is raised by
+        ``proactive_prune_min_result_chars``; passes (1) and (3) keep their
+        own fixed floors. The recent-tail protection applies to passes (2)
+        and (3); pass (1) is tail-agnostic by design because dedup is
+        lossless.
 
         PROMPT-CACHE CONTRACT: a committed prune rewrites message bodies the
         provider has already seen, invalidating the cached prefix from the
@@ -3907,7 +3978,7 @@ class ContextCompressor(ContextEngine):
         before = sum(_estimate_msg_budget_tokens(m) for m in messages)
         if before < self._proactive_prune_rearm_tokens:
             return messages, 0
-        # Capability gate BEFORE the expensive 3-pass scan: a bound store that
+        # Capability gate BEFORE the expensive multi-pass scan: a bound store that
         # can't persist the prune atomically (duck-typed/plugin session store
         # without archive_and_compact) makes every prune a permanent no-op, so
         # don't pay the scan for it on every eligible iteration.
