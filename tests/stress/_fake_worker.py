@@ -9,12 +9,25 @@ exactly the way `hermes chat -q` would be, minus the LLM cost.
 import json
 import os
 import subprocess
+import sys
 import time
+from pathlib import Path
+
+# Make the worktree importable even when run manually without PYTHONPATH.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from hermes_cli.kanban_db import require_disposable_board
 
 
 def main():
     tid = os.environ["HERMES_KANBAN_TASK"]
     workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "")
+
+    # Fresh-process guard (pc_fa9ca887ebc61dc8): fail closed before any
+    # mutation unless this process resolves a disposable board. A missing
+    # HERMES_HOME/HERMES_KANBAN_DB override would otherwise silently write
+    # heartbeats/completions onto the live board.
+    require_disposable_board(expect_under=os.environ.get("HERMES_HOME") or None)
 
     # Announce via CLI (goes through real argparse + init_db + etc)
     subprocess.run(

@@ -73,6 +73,12 @@ exec {PY} -m hermes_cli.main "$@"
     kb.init_db()
     conn = kb.connect()
 
+    # Fresh-process guard (pc_fa9ca887ebc61dc8): the whole point of this
+    # harness is a disposable board — assert that's what actually resolved
+    # before creating tasks, so a routing regression fails loudly here
+    # instead of leaking ready cards onto the live board.
+    kb.require_disposable_board(expect_under=home)
+
     # ============ SCENARIO A: happy path, 3 tasks ============
     print("=" * 60)
     print("A. Real-subprocess happy path (3 tasks)")
