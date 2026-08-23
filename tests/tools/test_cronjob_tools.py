@@ -280,6 +280,50 @@ class TestUnifiedCronjobTool:
         assert resumed["success"] is True
         assert resumed["job"]["state"] == "scheduled"
 
+    def test_create_rejects_unknown_enabled_toolset(self):
+        # A typo'd toolset name must fail setup instead of silently storing a
+        # job whose tool allowlist is empty at fire time (papercut pc_5ebb19eaec1c).
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Run the live test",
+                schedule="every 1h",
+                enabled_toolsets=["terminal", "clarify_live"],
+            )
+        )
+        assert result["success"] is False
+        assert "Unknown enabled_toolsets" in result.get("error", "")
+        assert "clarify_live" in result.get("error", "")
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["count"] == 0  # nothing was stored
+
+    def test_create_accepts_known_enabled_toolsets(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Monitor",
+                schedule="every 1h",
+                enabled_toolsets=["web", "terminal"],
+            )
+        )
+        assert result["success"] is True
+
+    def test_update_rejects_unknown_enabled_toolset(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, enabled_toolsets=["not-a-real-toolset"])
+        )
+        assert updated["success"] is False
+        assert "Unknown enabled_toolsets" in updated.get("error", "")
+
+        from cron.jobs import get_job
+        stored = get_job(job_id)
+        assert stored is not None
+        assert stored["enabled_toolsets"] is None  # unchanged
+
 
     @staticmethod
     def _patch_named_legit(monkeypatch):

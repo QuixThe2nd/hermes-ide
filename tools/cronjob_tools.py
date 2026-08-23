@@ -661,6 +661,35 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
+def _validate_cron_enabled_toolsets(
+    enabled_toolsets: Optional[List[str]],
+) -> Optional[str]:
+    """Validate per-job ``enabled_toolsets`` names at the API boundary.
+
+    A job created with a typo'd toolset name silently runs with an empty
+    toolset allowlist (or falls back to defaults), so a scheduled job can
+    discover at fire time that the tool it was written to call is absent
+    (papercut pc_5ebb19eaec1c). Fail setup early instead: reject unknown
+    names on create/update rather than storing them.
+
+    Returns an error string if any name is unknown, else None (valid).
+    """
+    if not enabled_toolsets:
+        return None  # empty/None = no per-job override, always OK
+
+    from toolsets import validate_toolset
+
+    names = [str(t).strip() for t in enabled_toolsets if str(t).strip()]
+    unknown = sorted({n for n in names if not validate_toolset(n)})
+    if unknown:
+        return (
+            f"Unknown enabled_toolsets: {', '.join(unknown)}. "
+            "Use `hermes tools` to see available toolset names before "
+            "creating or updating the job."
+        )
+    return None
+
+
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
@@ -1293,6 +1322,10 @@ def cronjob(
                 if monitor_error:
                     return tool_error(monitor_error, success=False)
 
+            toolsets_error = _validate_cron_enabled_toolsets(enabled_toolsets)
+            if toolsets_error:
+                return tool_error(toolsets_error, success=False)
+
             # Reject a model-supplied base_url that would route a named
             # provider's stored credential to an attacker endpoint (F8).
             base_url_error = _validate_cron_base_url(provider, base_url)
@@ -1630,6 +1663,9 @@ def cronjob(
                             )
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
+                toolsets_error = _validate_cron_enabled_toolsets(enabled_toolsets)
+                if toolsets_error:
+                    return tool_error(toolsets_error, success=False)
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
