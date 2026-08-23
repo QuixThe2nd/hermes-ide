@@ -1344,6 +1344,23 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Native OS notification when an agent turn finishes — the
+        # desktop-toast sibling of bell_on_complete, titled with the
+        # chat/session title. Interrupted turns stay silent.
+        #   notify_on_complete: false (default) — no-op.
+        #   true + empty ssh/command — local dispatcher (osascript on
+        #     macOS, notify-send on Linux).
+        #   true + notify_on_complete_ssh — run the AppleScript on that
+        #     host over SSH (BatchMode). How a Linux gateway notifies the
+        #     user's Mac, e.g. "parsas-macbook-pro".
+        #   notify_on_complete_command — shell command that wins over the
+        #     built-in dispatchers; receives HERMES_NOTIFY_TITLE,
+        #     HERMES_NOTIFY_SUBTITLE, HERMES_NOTIFY_BODY,
+        #     HERMES_NOTIFY_PLATFORM and HERMES_NOTIFY_SESSION_ID in its
+        #     environment. 10s timeout, failures swallowed.
+        "notify_on_complete": False,
+        "notify_on_complete_command": "",
+        "notify_on_complete_ssh": "",
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
         # seconds, and with this off the user stares at a spinner the whole

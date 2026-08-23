@@ -1611,6 +1611,22 @@ display:
   #   false: Silent (default)
   bell_on_complete: false
 
+  # Native OS notification when an agent turn finishes (titled with the
+  # chat/session title; interrupted turns stay silent). Off by default.
+  #   notify_on_complete:          true to enable; empty command + empty ssh
+  #                                uses the built-in local dispatcher
+  #                                (osascript on macOS, notify-send on Linux)
+  #   notify_on_complete_command:  optional shell command override; receives
+  #                                HERMES_NOTIFY_TITLE, HERMES_NOTIFY_SUBTITLE,
+  #                                HERMES_NOTIFY_BODY, HERMES_NOTIFY_PLATFORM,
+  #                                HERMES_NOTIFY_SESSION_ID in its environment
+  #   notify_on_complete_ssh:      optional SSH target (e.g. "parsas-macbook-pro")
+  #                                — runs the AppleScript on that Mac; how a
+  #                                Linux gateway notifies your desktop
+  notify_on_complete: false
+  notify_on_complete_command: ""
+  notify_on_complete_ssh: ""
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
