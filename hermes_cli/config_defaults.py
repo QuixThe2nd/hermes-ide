@@ -1293,6 +1293,11 @@ DEFAULT_CONFIG = {
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
+        # Follow-up "✅ Steer delivered" bubble sent the moment the steered
+        # text is actually injected into the model's context (the initial
+        # ack only promises that it will arrive). Set false to keep only
+        # the initial acknowledgment.
+        "busy_steer_delivered_ack_enabled": True,
         # Classic CLI multiline fallbacks beyond Alt+Enter.
         # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
         # a newline, a trailing backslash followed by Enter continues the draft,

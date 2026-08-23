@@ -3,6 +3,7 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -401,6 +402,180 @@ class TestBusySessionAck:
         assert "21/60" in content  # iteration
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
+
+
+class TestSteerDeliveredAck:
+    """Follow-up "✅ Steer delivered" bubble for busy_input_mode=steer.
+
+    The immediate busy-steer ack promises FUTURE delivery; a one-shot
+    listener registered on the running agent fires when the steer text is
+    actually injected into the model's context and sends the confirmation
+    through the same adapter._send_with_retry lane as the busy ack.
+    """
+
+    class _SteerAgent:
+        """Minimal agent exposing the real steer-delivery listener lane."""
+
+        def __init__(self):
+            self.steer_calls = []
+            self.listeners = []
+
+        def steer(self, text):
+            self.steer_calls.append(text)
+            return True
+
+        def register_steer_delivery_listener(self, cb):
+            self.listeners.append(cb)
+            return True
+
+        def unregister_steer_delivery_listener(self, cb):
+            if cb in self.listeners:
+                self.listeners.remove(cb)
+
+        def fire_injection(self, text):
+            """Simulate AIAgent's mid-run drain notifying its listeners."""
+            for cb in list(self.listeners):
+                cb(text)
+
+        def get_activity_summary(self):
+            return {}
+
+    def _setup_steer_run(self, monkeypatch, config=None):
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.delenv(
+            "HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED", raising=False
+        )
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: config or {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+        event = _make_event(text="also check the tests")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        agent = self._SteerAgent()
+        runner._running_agents[sk] = agent
+        return runner, adapter, event, sk, agent
+
+    @pytest.mark.asyncio
+    async def test_delivered_ack_sent_once_when_listener_fires(self, monkeypatch):
+        runner, adapter, event, sk, agent = self._setup_steer_run(monkeypatch)
+        runner._gateway_loop = asyncio.get_running_loop()
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+        # Only the immediate busy-steer bubble so far — delivery hasn't happened.
+        assert adapter._send_with_retry.await_count == 1
+        assert "Steered" in adapter._send_with_retry.call_args.kwargs["content"]
+        assert agent.steer_calls == ["also check the tests"]
+        assert len(agent.listeners) == 1
+
+        # Mid-run injection fires the listener (agent thread); the follow-up
+        # bubble is marshalled onto the gateway loop. A duplicate drain
+        # before the loop ticks must not double-ack (one-shot latch).
+        agent.fire_injection("also check the tests")
+        agent.fire_injection("also check the tests")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert adapter._send_with_retry.await_count == 2
+        delivered = adapter._send_with_retry.call_args.kwargs
+        assert "Steer delivered" in delivered["content"]
+        assert delivered["chat_id"] == event.source.chat_id
+
+        # One-shot: the listener removed itself from the agent and cleared
+        # the turn slot, so a later injection cannot re-send.
+        assert agent.listeners == []
+        assert runner._session_state(sk).turn.steer_delivered_listener is None
+        agent.fire_injection("also check the tests")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert adapter._send_with_retry.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_setting_off_registers_no_listener(self, monkeypatch):
+        """display.busy_steer_delivered_ack_enabled=false → the steer still
+        happens and the immediate ack still sends, but no delivered bubble
+        can ever follow."""
+        runner, adapter, event, sk, agent = self._setup_steer_run(
+            monkeypatch,
+            config={"display": {"busy_steer_delivered_ack_enabled": False}},
+        )
+        runner._gateway_loop = asyncio.get_running_loop()
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        assert agent.steer_calls == ["also check the tests"]
+        assert agent.listeners == []
+        assert runner._session_state(sk).turn.steer_delivered_listener is None
+        assert adapter._send_with_retry.await_count == 1  # immediate ack only
+
+    @pytest.mark.asyncio
+    async def test_env_override_off_disables_delivered_ack(self, monkeypatch):
+        runner, adapter, event, sk, agent = self._setup_steer_run(
+            monkeypatch,
+            config={"display": {"busy_steer_delivered_ack_enabled": True}},
+        )
+        # Set AFTER setup — its delenv scrub cleans any inherited value first.
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_STEER_DELIVERED_ACK_ENABLED", "0")
+        runner._gateway_loop = asyncio.get_running_loop()
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        # Env var wins over the enabled config value.
+        assert agent.listeners == []
+        assert adapter._send_with_retry.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unfired_listener_dropped_at_turn_teardown(self, monkeypatch):
+        """A steer that never lands must not leave a live listener on the
+        agent — otherwise a later turn reusing the agent object would get a
+        spurious 'delivered' bubble."""
+        runner, adapter, event, sk, agent = self._setup_steer_run(monkeypatch)
+        runner._gateway_loop = asyncio.get_running_loop()
+
+        await runner._handle_active_session_busy_message(event, sk)
+        assert len(agent.listeners) == 1
+
+        assert runner._release_running_agent_state(sk) is True
+        assert agent.listeners == []
+        assert runner._session_state(sk).turn.steer_delivered_listener is None
+
+        # The run is over — a stale injection notification must not send.
+        agent.fire_injection("leftover")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert adapter._send_with_retry.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_second_steer_replaces_pending_listener(self, monkeypatch):
+        """Two steers before any injection concatenate into one drain, so
+        the older listener is replaced — exactly one delivered bubble."""
+        runner, adapter, event, sk, agent = self._setup_steer_run(monkeypatch)
+        runner._gateway_loop = asyncio.get_running_loop()
+
+        await runner._handle_active_session_busy_message(event, sk)
+        first = runner._session_state(sk).turn.steer_delivered_listener
+        assert first is not None
+
+        second = MessageEvent(
+            text="and the migrations",
+            message_type=MessageType.TEXT,
+            source=event.source,  # same platform object → same adapter
+            message_id="m2",
+        )
+        await runner._handle_active_session_busy_message(second, sk)
+
+        assert agent.steer_calls == ["also check the tests", "and the migrations"]
+        assert len(agent.listeners) == 1
+        assert runner._session_state(sk).turn.steer_delivered_listener is not first
+
+        agent.fire_injection("also check the tests\nand the migrations")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # Immediate ack (second is debounce-suppressed) + one delivered bubble.
+        assert adapter._send_with_retry.await_count == 2
+        assert "Steer delivered" in adapter._send_with_retry.call_args.kwargs["content"]
 
 
 class TestBusySessionOnboardingHint:

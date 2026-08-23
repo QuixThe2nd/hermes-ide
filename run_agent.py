@@ -3617,6 +3617,80 @@ class AIAgent:
             self._pending_steer = None
         return text
 
+    def register_steer_delivery_listener(self, callback) -> bool:
+        """Register a one-shot notification for real steer injection.
+
+        The callback is invoked as ``callback(steer_text)`` exactly when a
+        pending steer is injected into the model's context at one of the two
+        mid-run drain points (pre-API-call injection and the post-tool-batch
+        injection). It is NOT invoked when a drained steer is put back for a
+        later attempt, nor for the end-of-turn leftover drain that hands the
+        text to the caller as a next-turn user message.
+
+        Listeners are expected to be one-shot (unregister themselves when
+        fired); callers that outlive the run must unregister their callback
+        so it cannot fire on a later turn reusing this agent object.
+
+        Returns:
+            True if the callback was registered, False if it is not callable.
+        """
+        if not callable(callback):
+            return False
+        listeners = getattr(self, "_steer_delivery_listeners", None)
+        if listeners is None:
+            # Test stubs that built AIAgent via object.__new__ skip __init__.
+            listeners = []
+            try:
+                self._steer_delivery_listeners = listeners
+            except Exception:
+                return False
+        _lock = getattr(self, "_steer_delivery_listeners_lock", None)
+        if _lock is not None:
+            with _lock:
+                listeners.append(callback)
+        else:
+            listeners.append(callback)
+        return True
+
+    def unregister_steer_delivery_listener(self, callback) -> None:
+        """Remove a previously registered steer-delivery listener (no-op if absent)."""
+        listeners = getattr(self, "_steer_delivery_listeners", None)
+        if not listeners:
+            return
+        _lock = getattr(self, "_steer_delivery_listeners_lock", None)
+        try:
+            if _lock is not None:
+                with _lock:
+                    listeners.remove(callback)
+            else:
+                listeners.remove(callback)
+        except ValueError:
+            pass  # never registered / already unregistered
+
+    def _notify_steer_delivery_listeners(self, steer_text: str) -> None:
+        """Notify listeners that ``steer_text`` is now in the model's context.
+
+        Called only from the two real mid-run injection sites.  Thread-safe:
+        the listener list is snapshotted under the lock (the post-tool-batch
+        site can run on a concurrent-tool worker thread) and each callback is
+        wrapped so a broken listener can never break the agent loop.  No-op —
+        a single attribute check — when no listeners are registered.
+        """
+        listeners = getattr(self, "_steer_delivery_listeners", None)
+        if not listeners:
+            return
+        _lock = getattr(self, "_steer_delivery_listeners_lock", None)
+        if _lock is not None:
+            with _lock:
+                snapshot = list(listeners)
+        else:
+            snapshot = list(listeners)
+        for _cb in snapshot:
+            try:
+                _cb(steer_text)
+            except Exception:
+                logger.debug("Steer delivery listener failed", exc_info=True)
+
     def _record_file_mutation_result(
         self,
         tool_name: str,

@@ -4369,6 +4369,15 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+    # The marker just landed on a real tool result — the steer is now in the
+    # model's context. Notify one-shot listeners (e.g. the gateway's "steer
+    # delivered" ack). The no-tool-result put-back path above stays silent:
+    # nothing reached the model. This can run on a concurrent-tool worker
+    # thread; the notifier snapshots + try/excepts each listener. getattr
+    # keeps object.__new__ test stubs predating the listener lane working.
+    _notify_steer = getattr(agent, "_notify_steer_delivery_listeners", None)
+    if callable(_notify_steer):
+        _notify_steer(steer_text)
 
 
 

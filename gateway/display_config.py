@@ -52,6 +52,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Disable when the platform should steer silently (the text still lands in
     # the active run; only the confirmation echo is suppressed).
     "busy_steer_ack_enabled": True,
+    # Whether steer mode ALSO sends the follow-up "✅ Steer delivered" bubble
+    # at the moment the steered text is actually injected into the model's
+    # context (the immediate ack only promises that it WILL arrive). Disable
+    # to keep only the initial acknowledgment.
+    "busy_steer_delivered_ack_enabled": True,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -273,6 +278,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "long_running_notifications",
         "busy_ack_detail",
         "busy_steer_ack_enabled",
+        "busy_steer_delivered_ack_enabled",
         "thinking_progress",
     }:
         if isinstance(value, str):

@@ -73,6 +73,14 @@ class TurnState:
     # preserves that: release/rebind only match when generation is current.
     lease_token: Any = None
     lease_generation: Optional[int] = None
+    # One-shot "steer delivered" listener registered on ``agent`` when a
+    # busy follow-up is steered into this run (fires when the steer text is
+    # actually injected into the model's context). ``clear()`` only drops
+    # the reference — the agent-side unregistration is done by
+    # ``GatewayRunner._drop_steer_delivered_listener`` BEFORE ``clear()``
+    # (it needs ``self.agent``, mirroring the lease handling above), so a
+    # listener that never fired cannot survive into a later turn.
+    steer_delivered_listener: Optional[Callable[[str], None]] = None
 
     def clear(self) -> None:
         """Reset the per-turn slot (agent / start ts / lease / busy-ack).
@@ -85,6 +93,7 @@ class TurnState:
         self.started_ts = 0.0
         self.lease = None
         self.busy_ack_ts = 0.0
+        self.steer_delivered_listener = None
 
 
 @dataclass
