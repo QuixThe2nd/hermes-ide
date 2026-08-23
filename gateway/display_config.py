@@ -73,6 +73,13 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # (Slack's default), and costs no extra API calls — the existing typing
     # refresh cadence just renders different text.
     "live_status": "full",
+    # Opt-in LIVE retry/fallback progress. Retry chatter is buffered by design
+    # (dropped on recovery, flushed only on terminal failure) so a transient
+    # 429 doesn't flood the chat. Turning this on ALSO mirrors those buffered
+    # lines live on the "retry_progress" status rail, so a user stuck in a
+    # multi-minute provider stall sees why instead of a silent spinner.
+    # Deliberately absent from every tier: no platform gets it by default.
+    "retry_progress": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -280,6 +287,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "busy_steer_ack_enabled",
         "busy_steer_delivered_ack_enabled",
         "thinking_progress",
+        "retry_progress",
     }:
         if isinstance(value, str):
             val = value.strip().lower()
