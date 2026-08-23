@@ -90,22 +90,26 @@ DEFAULT_CONFIG = {
         # Force-interrupt budget once gateway stop()/drain has begun
         # (seconds). Applies to SIGTERM/external stop and to the final
         # phase of in-band restart after any after-turn wait. 0 = interrupt
-        # immediately (the default).
+        # immediately (upstream default).
         #
-        # Keep this short and under systemd TimeoutStopSec — a long value
-        # here invites SIGKILL-mid-cleanup. For in-band restart
+        # NOTE(hermes-ide): fork default is a 24h drain. The drain loop
+        # refuses new sessions and waits for running turns/cron/api work —
+        # restarts must never interrupt live sessions (Parsa directive
+        # 2026-08-23). systemd unit generation derives
+        # TimeoutStopSec = drain + 30s from this same value, so regenerated
+        # units stay consistent automatically. For in-band restart
         # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
         # active turns finish *before* stop() begins (#77184).
-        "restart_drain_timeout": 0,
+        "restart_drain_timeout": 86400,
         # Cron-only floor under the stop()/drain wait (seconds). A chat turn
         # interrupted by a restart is announced to the user and resumed on
         # their next message; an interrupted cron run is written to jobs.json
         # as a permanent failure that nobody is waiting on, so it must not
         # inherit restart_drain_timeout's 0 (#82161). Clamped at runtime to
-        # the shutdown-watchdog leash minus teardown headroom, so raising it
-        # past ~50s has no effect unless TimeoutStopSec is raised too.
-        # 0 = opt out (cron drains on restart_drain_timeout, legacy).
-        "cron_drain_timeout": 30,
+        # the shutdown-watchdog leash minus teardown headroom.
+        # NOTE(hermes-ide): matches restart_drain_timeout's 24h for the same
+        # reason — in-flight cron runs drain instead of dying mid-flight.
+        "cron_drain_timeout": 86400,
         # In-band restart wait for active turns to finish before stop()
         # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
         # this cap for in-flight agents/cron/api runs to complete naturally
@@ -203,6 +207,13 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Universal tool-call narration guidance — short prompt block applied
+        # to all models that tells the model to explain each tool call in one
+        # short sentence before making it and briefly note significant
+        # results.  On chat platforms a silent multi-call chain looks like a
+        # frozen client.  Costs ~60 tokens in the cached system prompt.  Set
+        # False to disable globally.
+        "tool_call_narration_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP
