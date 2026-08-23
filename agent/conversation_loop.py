@@ -8258,6 +8258,68 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # End-of-turn gate: a registered `pre_turn_end` hook may keep
+                # the agent going once more before the turn finalizes — the
+                # fork's "inbox sparks" moment where the agent weighs starting
+                # a conversation with the user (start_conversation). Fires on
+                # EVERY turn end (the pre_verify gate above covers code-edit
+                # turns) and is bounded by agent.max_pre_turn_end_nudges
+                # (default 1, hard cap 2). Short-circuits on has_hook so a
+                # stock setup pays one dict probe per turn.
+                _turn_end_nudge = None
+                _te_attempt = getattr(agent, "_pre_turn_end_nudges", 0)
+                try:
+                    from agent.verify_hooks import max_pre_turn_end_nudges
+                    from hermes_cli.lifecycle import has_hook
+                    from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+                    if (
+                        has_hook("pre_turn_end")
+                        and _te_attempt < max_pre_turn_end_nudges()
+                    ):
+                        from agent.message_content import flatten_message_text
+
+                        _te_user_text = flatten_message_text(user_message)
+                        _turn_end_nudge = get_pre_turn_end_continue_message(
+                            session_id=getattr(agent, "session_id", None) or "",
+                            platform=getattr(agent, "platform", "") or "",
+                            model=getattr(agent, "model", "") or "",
+                            attempt=_te_attempt,
+                            final_response=final_response or "",
+                            last_user_text=_te_user_text if isinstance(_te_user_text, str) else "",
+                        )
+                except Exception:
+                    logger.debug("pre_turn_end hook check failed", exc_info=True)
+                    _turn_end_nudge = None
+
+                if _turn_end_nudge:
+                    agent._pre_turn_end_nudges = _te_attempt + 1
+                    final_msg["finish_reason"] = "pre_turn_end_continue"
+                    # Same interim-persist contract as the verify gates above:
+                    # the assistant response is real content — persist it and
+                    # emit it to the UI; only the nudge is flagged synthetic
+                    # so it is stripped from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
+                    append_message(messages, final_msg)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("pre_turn_end interim flush failed", exc_info=True)
+                    append_message(messages, {
+                        "role": "user",
+                        "content": _turn_end_nudge,
+                        "_pre_turn_end_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.debug("pre_turn_end nudge issued (attempt %d)",
+                                 agent._pre_turn_end_nudges)
+                    _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
+                    final_response = None
+                    continue
+
                 # ── Kanban worker terminal-tool stop guard ─────────────
                 # Workers must end with kanban_complete / kanban_block.
                 # Models sometimes narrate the next step ("Let me write the

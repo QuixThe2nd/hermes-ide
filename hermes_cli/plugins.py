@@ -187,6 +187,17 @@ VALID_HOOKS: Set[str] = {
     # verification-stop nudge; this hook is for user/plugin policy and is
     # bounded by agent.max_verify_nudges.
     "pre_verify",
+    # End-of-turn gate. Fired once per turn, right after the pre_verify gate
+    # and BEFORE the turn finalizes, on EVERY turn (not only code-edit
+    # turns). Same directive contract as pre_verify: a callback keeps the
+    # agent going — e.g. to weigh starting a conversation with the user —
+    # by returning:
+    #   {"action": "continue", "message": "<follow-up instruction>"}
+    # (the Claude-Code Stop shape {"decision": "block", "reason": "..."} is
+    # accepted too). Anything else lets the turn finish. Bounded by
+    # agent.max_pre_turn_end_nudges (default 1, hard cap 2); the fire site
+    # short-circuits on has_hook so a stock setup pays one dict probe.
+    "pre_turn_end",
     "pre_api_request",
     "post_api_request",
     "api_request_error",
@@ -6589,6 +6600,56 @@ def get_pre_verify_continue_message(
         attempt=attempt,
         final_response=final_response,
         changed_paths=list(changed_paths or []),
+    )
+
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        if action not in ("continue", "block"):
+            continue
+        message = result.get("message") or result.get("reason")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+
+    return None
+
+
+def get_pre_turn_end_continue_message(
+    *,
+    session_id: str = "",
+    platform: str = "",
+    model: str = "",
+    attempt: int = 0,
+    final_response: str = "",
+    last_user_text: str = "",
+) -> Optional[str]:
+    """Check ``pre_turn_end`` hooks for a directive to keep the agent going.
+
+    Fired once per turn, right before the turn finalizes (after the
+    ``pre_verify`` gate) on every turn. Same directive contract as
+    :func:`get_pre_verify_continue_message`: a hook keeps the turn going by
+    returning::
+
+        {"action": "continue", "message": "<follow-up for the model>"}
+
+    The Claude-Code Stop shape ``{"decision": "block", "reason": "..."}`` (block
+    the stop == keep going) is accepted too. The first directive carrying a
+    non-empty message wins; any other return lets the turn finish.
+
+    ``last_user_text`` carries the current turn's user message text so a hook
+    can scope itself without reading the transcript; ``attempt`` lets a hook
+    self-throttle, the same way a ``pre_tool_call`` hook scopes on
+    ``tool_name``.
+    """
+    hook_results = invoke_hook(
+        "pre_turn_end",
+        session_id=session_id,
+        platform=platform,
+        model=model,
+        attempt=attempt,
+        final_response=final_response,
+        last_user_text=last_user_text,
     )
 
     for result in hook_results:
