@@ -21,7 +21,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
-  draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
+  draining:         "⏳ Bitte {count} aktive(n) Agent(en) um Pause, dann Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."
   no_active_goal:   "Kein aktives Ziel."
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"

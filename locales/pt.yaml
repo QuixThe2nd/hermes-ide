@@ -21,7 +21,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
-  draining:         "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
+  draining:         "⏳ A pedir a {count} agente(s) ativo(s) que pausem, depois reiniciar..."
   goal_cleared:     "✓ Objetivo removido."
   no_active_goal:   "Não há objetivo ativo."
   config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"

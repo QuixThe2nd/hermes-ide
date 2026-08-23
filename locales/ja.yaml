@@ -21,7 +21,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
-  draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
+  draining:         "⏳ {count} 個のアクティブエージェントに一時停止を依頼してから再起動します..."
   goal_cleared:     "✓ 目標をクリアしました。"
   no_active_goal:   "アクティブな目標はありません。"
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"

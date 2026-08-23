@@ -21,7 +21,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
-  draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
+  draining:         "⏳ 활성 에이전트 {count}명에게 일시 중지를 요청한 뒤 재시작합니다..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."
   no_active_goal:   "활성 목표가 없습니다."
   config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
