@@ -337,6 +337,42 @@ def test_parse_no_result_event_returns_empty():
     assert parse_claude_agent_log('{"type":"assistant","message":{}}') == {}
 
 
+def test_parse_stream_json_skips_events_finds_final_result():
+    """stream-json logs carry many event types before the final result line."""
+    from tools.claude_agent_tool import parse_claude_agent_log
+
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "sess-9"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Edit", "input": {"file_path": "/x/y.py"}}
+                ]
+            },
+        },
+        {"type": "user", "message": {"content": [{"type": "tool_result"}]}},
+    ]
+    result = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "Done via stream.",
+            "session_id": "sess-9",
+            "num_turns": 3,
+            "total_cost_usd": 0.11,
+            "modelUsage": {"kimi-k3": {"input_tokens": 1}},
+        }
+    )
+    log_text = "\n".join(json.dumps(e) for e in events) + "\n" + result + "\n"
+    parsed = parse_claude_agent_log(log_text)
+    assert parsed["result"] == "Done via stream."
+    assert parsed["session_id"] == "sess-9"
+    assert parsed["models_used"] == ["kimi-k3"]
+
+
 # ---------------------------------------------------------------------------
 # Validation paths (no subprocess spawned)
 # ---------------------------------------------------------------------------
@@ -466,7 +502,8 @@ def test_happy_path_e2e(monkeypatch, repo, fake_binary, tmp_path):
     assert "--allowedTools" in argv
     assert argv[argv.index("--allowedTools") + 1] == "Read,Write,Edit,Glob,Grep,Bash"
     assert "--output-format" in argv
-    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
     assert argv[-1] == "implement feature"
     # --dangerously-skip-permissions must never be passed (refused under root).
     assert "--dangerously-skip-permissions" not in argv
