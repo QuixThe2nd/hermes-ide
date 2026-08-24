@@ -4,7 +4,7 @@ import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $selectedStoredSessionId } from '@/store/session'
+import { $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   $sessionStates,
@@ -12,12 +12,14 @@ import {
   blankDraftTile,
   focusedSessionNeedsRoute,
   focusOpenSession,
+  knownOwnerForSession,
   markSelectionRestore,
   nextSessionTileForWorkspace,
   openSessionTile,
   orderTilesByTree,
   patchSessionTile,
   releaseSessionTranscript,
+  requestForOwnedSession,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
@@ -58,7 +60,7 @@ describe('resetTileRuntimeBindings', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
   })
 
-  it('keeps exact-owner Bot runtimes when only the primary gateway reconnects', () => {
+  it('keeps Bot runtimes owned by a different connection', () => {
     const invalidateRuntimeBindings = vi.fn()
     setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
     $sessionTiles.set([
@@ -76,10 +78,89 @@ describe('resetTileRuntimeBindings', () => {
       }
     ])
 
-    resetTileRuntimeBindings()
+    resetTileRuntimeBindings('work-vps')
 
     expect($sessionTiles.get()[0]?.runtimeId).toBe('runtime-bot')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-bot']))
+  })
+
+  it('rebinds only the restarted connection while preserving other Bot gateways', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'barry', mode: 'remote', profile: 'oxcoder', targetProfile: 'oxcoder' },
+        runtimeId: 'runtime-barry-dead',
+        storedSessionId: 'stored-barry-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:barry::oxcoder'
+      },
+      {
+        ownerRoute: { connectionId: 'barry', mode: 'remote', profile: 't2oracle', targetProfile: 't2oracle' },
+        runtimeId: 'runtime-barry-sibling-live',
+        storedSessionId: 'stored-barry-sibling-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:barry::t2oracle'
+      },
+      {
+        ownerRoute: { connectionId: 'work-vps', mode: 'remote', profile: 'ceo', targetProfile: 'ceo' },
+        runtimeId: 'runtime-work-live',
+        storedSessionId: 'stored-work-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:work-vps::ceo'
+      },
+      { runtimeId: 'runtime-session-dead', storedSessionId: 'stored-session' }
+    ])
+
+    resetTileRuntimeBindings({ connectionId: 'barry', profile: 'oxcoder' })
+
+    const [barryBot, barrySibling, workBot, ordinarySession] = $sessionTiles.get()
+
+    expect(barryBot).toMatchObject({ storedSessionId: 'stored-barry-bot' })
+    expect(barryBot).not.toHaveProperty('runtimeId')
+    expect(barrySibling).toMatchObject({
+      runtimeId: 'runtime-barry-sibling-live',
+      storedSessionId: 'stored-barry-sibling-bot'
+    })
+    expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
+    expect(ordinarySession).toMatchObject({ storedSessionId: 'stored-session' })
+    expect(ordinarySession).not.toHaveProperty('runtimeId')
+    expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-barry-sibling-bot', 'stored-work-bot']))
+  })
+
+  it('unknown restarted identity preserves only Bot runtimes owned by provably-live connections', () => {
+    // Legacy remote primary: no registry connectionId to scope by. The dead
+    // owner can't be named, so keep only owners we know are alive elsewhere —
+    // the restarted backend's own Bot tile must still drop its binding.
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'legacy-remote', mode: 'remote', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-legacy-dead',
+        storedSessionId: 'stored-legacy-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:legacy-remote::writer'
+      },
+      {
+        ownerRoute: { connectionId: 'work-vps', mode: 'remote', profile: 'ceo', targetProfile: 'ceo' },
+        runtimeId: 'runtime-work-live',
+        storedSessionId: 'stored-work-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:work-vps::ceo'
+      },
+      { runtimeId: 'runtime-session-dead', storedSessionId: 'stored-session' }
+    ])
+
+    resetTileRuntimeBindings({ liveConnectionIds: new Set(['work-vps']) })
+
+    const [legacyBot, workBot, ordinarySession] = $sessionTiles.get()
+
+    expect(legacyBot).toMatchObject({ storedSessionId: 'stored-legacy-bot' })
+    expect(legacyBot).not.toHaveProperty('runtimeId')
+    expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
+    expect(ordinarySession).not.toHaveProperty('runtimeId')
+    expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-work-bot']))
   })
 })
 
@@ -494,5 +575,55 @@ describe('sessionTileOwnerRoute', () => {
     $sessionTiles.set([])
 
     expect(sessionTileOwnerRoute('missing')).toBeUndefined()
+  })
+})
+
+describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', () => {
+  beforeEach(() => {
+    // Earlier suites leave profile-scoped tile buckets behind; pin the profile
+    // BEFORE seeding tiles so the bucket subscriber cannot clobber the seed.
+    $activeGatewayProfile.set('default')
+    $sessionTiles.set([])
+  })
+  afterEach(() => {
+    $sessionTiles.set([])
+    setSessions([])
+  })
+
+  it('resolves the tile owner route first, translating a runtime id to its stored id', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'conn-a', profile: 'work' },
+        runtimeId: 'rt-1',
+        storedSessionId: 'stored-1'
+      }
+    ])
+
+    expect(knownOwnerForSession('rt-1')).toEqual({ connectionId: 'conn-a', profile: 'work' })
+    expect(knownOwnerForSession('stored-1')).toEqual({ connectionId: 'conn-a', profile: 'work' })
+  })
+
+  it('falls back to the session row profile when no tile route exists', () => {
+    setSessions([{ id: 'stored-2', profile: 'loki' } as never])
+
+    expect(knownOwnerForSession('stored-2')).toBe('loki')
+  })
+
+  it('returns undefined (ambient) when no owner is known, and for null ids', () => {
+    expect(knownOwnerForSession('unknown-session')).toBeUndefined()
+    expect(knownOwnerForSession(null)).toBeUndefined()
+    expect(knownOwnerForSession(undefined)).toBeUndefined()
+  })
+
+  it('requestForOwnedSession dispatches ambient with the exact 2-arg shape when no owner is known', async () => {
+    const ambient = vi.fn(async (method: string, params?: Record<string, unknown>) => ({ method, params }))
+
+    await requestForOwnedSession('unknown-session', ambient as never, 'approval.respond', {
+      choice: 'once',
+      session_id: 'unknown-session'
+    })
+
+    expect(ambient).toHaveBeenCalledTimes(1)
+    expect(ambient.mock.calls[0]).toEqual(['approval.respond', { choice: 'once', session_id: 'unknown-session' }])
   })
 })

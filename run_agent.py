@@ -162,6 +162,7 @@ from agent.usage_pricing import normalize_usage
 from agent.context_compressor import (  # noqa: F401
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
+    user_originated_turn_view,
 )
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
@@ -977,7 +978,15 @@ class AIAgent:
         callers. The CLI may still want compact progress hints when no callback
         owns rendering. Embedded/library callers, on the other hand, expect
         quiet mode to be truly silent.
+
+        ``suppress_status_output`` (the strict machine-readable mode used by
+        ``hermes chat -Q``) always wins: those flows neutralize the rendering
+        callbacks, and without this gate the "no callback owns rendering"
+        fallback would print ``[tool]``/``[done]`` spinner lines into the
+        captured stdout it exists to keep clean (#93220).
         """
+        if getattr(self, "suppress_status_output", False):
+            return False
         return (
             self.quiet_mode
             and not self.tool_progress_callback
@@ -2421,6 +2430,7 @@ class AIAgent:
                         "hidden"
                         if (
                             msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                            and user_originated_turn_view(msg) is None
                             and (
                                 ContextCompressor.classify_summary_content(
                                     msg.get("content")
@@ -3312,7 +3322,13 @@ class AIAgent:
                 logging.warning(f"Failed to save session log: {e}")
 
 
-    def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False) -> None:
+    def interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        hard_cancel: bool = False,
+        tool_reason: Optional[str] = None,
+    ) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -3328,6 +3344,8 @@ class AIAgent:
             hard_cancel: Mark this as an explicit stop rather than a redirect or
                          incoming-message interrupt. Compression may honor this
                          atomic signal even while ordinary interrupts are masked.
+            tool_reason: Trusted fixed category safe to expose in tool output.
+                         Arbitrary diagnostic or caller text belongs in message.
         
         Example (CLI):
             # In a separate input thread:
@@ -3363,17 +3381,28 @@ class AIAgent:
                     )
             event.set()
 
+        # Keep tool cancellation attribution separate from _interrupt_message:
+        # ordinary interrupts may carry the user's full next message, which
+        # must not be copied into tool output.
+        tool_interrupt_reason = (
+            (tool_reason or "explicit stop requested")
+            if hard_cancel
+            else ("user sent a new message" if message else "user interrupt")
+        )
+
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
                 self._interrupt_requested = True
                 self._interrupt_message = message
+                self._tool_interrupt_reason = tool_interrupt_reason
                 if hard_cancel:
                     _admit_hard_cancel()
                 self._pending_redirect = None
         else:
             self._interrupt_requested = True
             self._interrupt_message = message
+            self._tool_interrupt_reason = tool_interrupt_reason
             if hard_cancel:
                 _admit_hard_cancel()
             self._pending_redirect = None
@@ -3406,7 +3435,11 @@ class AIAgent:
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
         if self._execution_thread_id is not None:
-            _set_interrupt(True, self._execution_thread_id)
+            _set_interrupt(
+                True,
+                self._execution_thread_id,
+                reason=tool_interrupt_reason,
+            )
             self._interrupt_thread_signal_pending = False
         else:
             # The interrupt arrived before run_conversation() finished
@@ -3430,7 +3463,7 @@ class AIAgent:
                 _worker_tids = list(_tracker)
             for _wtid in _worker_tids:
                 try:
-                    _set_interrupt(True, _wtid)
+                    _set_interrupt(True, _wtid, reason=tool_interrupt_reason)
                 except Exception:
                     pass
         # Propagate interrupt to any running child agents (subagent delegation)
@@ -3439,7 +3472,11 @@ class AIAgent:
         for child in children_copy:
             try:
                 if hard_cancel:
-                    request_hard_interrupt(child, message)
+                    request_hard_interrupt(
+                        child,
+                        message,
+                        tool_reason=tool_interrupt_reason,
+                    )
                 else:
                     child.interrupt(message)
             except Exception as e:
@@ -3447,7 +3484,12 @@ class AIAgent:
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
-    def hard_interrupt(self, message: Optional[str] = None) -> None:
+    def hard_interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        tool_reason: Optional[str] = None,
+    ) -> None:
         """Request an explicit stop while preserving ``interrupt()`` ABI.
 
         Frontends can feature-detect this method and fall back to the legacy
@@ -3456,7 +3498,12 @@ class AIAgent:
         # Deliberately bypass dynamic dispatch: subclasses written against the
         # legacy interrupt(message=None) ABI may override interrupt without the
         # newer keyword-only hard_cancel argument.
-        AIAgent.interrupt(self, message, hard_cancel=True)
+        AIAgent.interrupt(
+            self,
+            message,
+            hard_cancel=True,
+            tool_reason=tool_reason,
+        )
 
     def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal.
@@ -3472,6 +3519,7 @@ class AIAgent:
                     return False
                 self._interrupt_requested = False
                 self._interrupt_message = None
+                self._tool_interrupt_reason = None
                 getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
                 if not preserve_redirect:
                     self._pending_redirect = None
@@ -3480,6 +3528,7 @@ class AIAgent:
                 return False
             self._interrupt_requested = False
             self._interrupt_message = None
+            self._tool_interrupt_reason = None
             getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
                 self._pending_redirect = None
@@ -4044,6 +4093,13 @@ class AIAgent:
                 prefix
                 + "an error occurred near the iteration limit before a final "
                 "answer. Check the tool output above, then send `continue`."
+            )
+        if reason.startswith("repeated_outer_errors"):
+            return (
+                prefix
+                + "the turn kept failing with repeated errors and was stopped "
+                "early instead of retrying forever. Check the errors above, "
+                "then send `continue` to retry."
             )
         if reason == "pending_tool_result":
             return (

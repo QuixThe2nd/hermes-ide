@@ -271,16 +271,45 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     scheduler provider here (no live adapters; delivery falls back to the
     per-platform send path).
 
+    Every local profile's store is ticked, not just this backend's own
+    (#69377's desktop sibling): the desktop pools per-profile backends and
+    reaps them after ~10 idle minutes, so a secondary profile's ticker dies
+    with its backend and that profile's jobs silently stop firing until the
+    user next opens it ("tasks on the sleeping profile could be idle" —
+    community report, Aug 2026). The primary backend outlives the pool, so it
+    owns every profile's tick, exactly like a multiplex gateway. External
+    providers keep the single-store behavior — their registries are not
+    profile-scoped (see _notify_cron_provider_for_profile).
+
     Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
+    the per-store ``cron/.tick.lock`` file lock, so this never double-fires
+    alongside a real gateway or a live pool backend on the same profile home —
+    whichever process grabs the lock first wins the tick.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
+
+    start_kwargs: dict = {"interval": interval}
+    if isinstance(provider, InProcessCronScheduler):
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            profile_homes = list(profiles_to_serve(multiplex=True))
+            if len(profile_homes) > 1:
+                start_kwargs["profile_homes"] = profile_homes
+                _log.info(
+                    "Desktop cron scheduler will tick %d profile(s): %s",
+                    len(profile_homes),
+                    [name for name, _home in profile_homes],
+                )
+        except Exception:
+            # Fail open to the single-store ticker — the active profile's
+            # jobs must keep firing even if profile enumeration breaks.
+            _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    provider.start(stop_event, **start_kwargs)
 
 
 def _warm_gateway_module() -> None:
@@ -649,6 +678,28 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _dashboard_public_hosts() -> frozenset[str]:
+    """Return the exact hostname declared by ``dashboard.public_url``.
+
+    ``public_url`` is already Hermes' canonical browser-facing URL behind a
+    reverse proxy. Reusing its validated hostname here keeps OAuth redirects,
+    HTTP Host validation, and WebSocket Origin validation on one source of
+    truth. Malformed or unset values fail closed as an empty set.
+    """
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+    public_url = resolve_public_url()
+    if not public_url:
+        return frozenset()
+    try:
+        hostname = urllib.parse.urlparse(public_url).hostname
+    except ValueError:
+        return frozenset()
+    if not hostname:
+        return frozenset()
+    return frozenset({hostname.lower()})
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
@@ -671,34 +722,83 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def should_require_dashboard_auth(
+    host: str,
+    trusted_public_hosts: Optional[frozenset[str]] = None,
+) -> bool:
+    """Return whether the dashboard auth gate must be active.
+
+    The browser-facing URL is part of the exposure boundary: a non-loopback
+    ``dashboard.public_url`` requires authentication even when a reverse proxy
+    reaches a backend bound to loopback. Callers may pass the already-resolved
+    host set so startup and request validation use the same snapshot.
+    """
+    if trusted_public_hosts is None:
+        trusted_public_hosts = _dashboard_public_hosts()
+    return should_require_auth(host) or any(
+        candidate not in _LOOPBACK_HOST_VALUES
+        for candidate in trusted_public_hosts
+    )
+
+
+def _host_header_hostname(host_header: str) -> str:
+    """Return a normalized hostname from a valid HTTP Host authority.
+
+    Host headers are authorities, not full URLs. Reject ambiguous ports,
+    malformed IPv6 brackets, and URL syntax so validation always fails closed.
+    """
+    value = (host_header or "").strip()
+    if not value:
+        return ""
+    if any(char in value for char in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+        return ""
+    if "://" in value or any(char in value for char in ("/", "?", "#", "@")):
+        return ""
+
+    if value.startswith("["):
+        close = value.find("]")
+        if close == -1:
+            return ""
+        hostname = value[1:close]
+        # Bracket notation is reserved for IPv6 literals.
+        if ":" not in hostname:
+            return ""
+        suffix = value[close + 1:]
+        if suffix and not re.fullmatch(r":\d+", suffix):
+            return ""
+        return hostname.lower()
+
+    # Unbracketed IPv6 authorities are ambiguous with a port separator.
+    if value.count(":") > 1:
+        return ""
+    if ":" in value:
+        hostname, port = value.rsplit(":", 1)
+        if not hostname or not port.isdigit():
+            return ""
+        return hostname.lower()
+    return value.lower()
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    trusted_public_hosts: frozenset[str] = frozenset(),
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Exact operator-declared public hosts (with or without port suffix)
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
-    if not host_header:
+    host_only = _host_header_hostname(host_header)
+    if not host_only:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+
+    if host_only in trusted_public_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -732,13 +832,18 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        trusted_public_hosts = getattr(
+            app.state, "trusted_public_hosts", frozenset()
+        )
+        if not _is_accepted_host(
+            host_header, bound_host, trusted_public_hosts
+        ):
             return JSONResponse(
                 status_code=400,
                 content={
                     "detail": (
-                        "Invalid Host header. Dashboard requests must use "
-                        "the hostname the server was bound to."
+                        "Invalid Host header. Dashboard requests must use the "
+                        "bound hostname or the configured public hostname."
                     ),
                 },
             )
@@ -7165,6 +7270,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "approval",
     "mcp",
     "title_generation",
+    "review",
     "triage_specifier",
     "kanban_decomposer",
     "profile_describer",
@@ -16121,8 +16227,14 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    trusted_public_hosts = getattr(
+        app.state, "trusted_public_hosts", frozenset()
+    )
+
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _is_accepted_host(
+        host_header, bound_host, trusted_public_hosts
+    ):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -16139,7 +16251,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(
+        parsed.netloc, bound_host, trusted_public_hosts
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -17295,6 +17409,12 @@ async def pty_ws(ws: WebSocket) -> None:
             _forget_active_session_file(active_session_file)
         elif not resume:
             resume = _read_active_session_file(active_session_file)
+            if resume:
+                # The client only knows to pin the viewport to the bottom
+                # when it requested `?resume=`. Tell it a replay is coming
+                # anyway so the implicit active-session fallback gets the
+                # same follow-scroll treatment as an explicit resume (#93518).
+                await ws.send_json({"type": "resume", "id": resume})
 
     resolve_kwargs = {
         "resume": resume,
@@ -19178,11 +19298,18 @@ def start_server(
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
-    # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
-    # injection / WS-auth paths can branch on it consistently.  Phase 3.5
-    # uses this to decide whether to refuse the bind, log the gate-on
-    # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host)
+    # A configured browser-facing URL is also the exact Host/Origin trust
+    # declaration for reverse-proxy deployments. Resolve it once at startup so
+    # request middleware never reloads config. Any non-loopback public hostname
+    # engages the auth gate even when the backend itself remains on loopback;
+    # otherwise the SPA's local session token would become remotely reachable.
+    app.state.trusted_public_hosts = _dashboard_public_hosts()
+    # Stash the auth-gate flag on app.state so middleware / SPA-token injection /
+    # WS-auth paths can branch on it consistently. It also decides whether to
+    # refuse startup, log the gate-on banner, and enable uvicorn proxy_headers.
+    app.state.auth_required = should_require_dashboard_auth(
+        host, app.state.trusted_public_hosts
+    )
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public
@@ -19220,8 +19347,42 @@ def start_server(
             except Exception:
                 pass
 
+            # Name the exact reason the gate engaged. When the bind itself is
+            # loopback the ONLY trigger is dashboard.public_url — an operator
+            # (or a stale config.yaml entry) declared external exposure. Say
+            # so explicitly, print the offending URL, and give the two exits:
+            # configure auth, or remove public_url to restore local-only mode.
+            if host in _LOOPBACK_HOST_VALUES:
+                _public_url_for_msg = ""
+                try:
+                    from hermes_cli.dashboard_auth.prefix import (
+                        resolve_public_url as _rpu,
+                    )
+
+                    _public_url_for_msg = _rpu()
+                except Exception:
+                    pass
+                _gate_reason = (
+                    f"dashboard.public_url is set to "
+                    f"{_public_url_for_msg or '<a non-loopback URL>'} — an "
+                    f"operator-declared external URL engages the auth gate "
+                    f"even on a loopback bind"
+                )
+                _local_only_hint = (
+                    "If this dashboard should be LOCAL-ONLY (no reverse "
+                    "proxy), remove dashboard.public_url from config.yaml "
+                    "(and unset HERMES_DASHBOARD_PUBLIC_URL) to restore the "
+                    "unauthenticated loopback mode.\n"
+                )
+            else:
+                _gate_reason = (
+                    f"the auth gate engages on non-loopback binds ({host})"
+                )
+                _local_only_hint = ""
+
             _fix_hint = (
-                "Configure an auth provider before exposing the dashboard:\n"
+                _local_only_hint
+                + "Configure an auth provider before exposing the dashboard:\n"
                 "  • Password: set dashboard.basic_auth.username + "
                 "password_hash in config.yaml\n"
                 "    (hash with: python -c \"from "
@@ -19229,8 +19390,10 @@ def start_server(
                 "print(hash_password('your-password'))\")\n"
                 "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
                 "install a DashboardAuthProvider plugin.\n"
-                "There is no unauthenticated public-bind option — to keep it "
-                "local, bind 127.0.0.1 and tunnel in (SSH / Tailscale)."
+                "There is no unauthenticated public-dashboard option. For "
+                "local-only use, bind 127.0.0.1 and leave dashboard.public_url "
+                "unset; a configured external public URL requires auth even "
+                "when a local reverse proxy reaches a loopback backend."
             )
             # Hint when credentials exist but the bundled provider is blocked
             # (#54489).
@@ -19260,18 +19423,16 @@ def start_server(
                 pass
             if skip_reasons:
                 raise SystemExit(
-                    f"Refusing to bind dashboard to {host} — the auth gate "
-                    f"engages on non-loopback binds, but no auth providers "
-                    f"are registered.\n\n"
+                    f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                    f"but no auth providers are registered.\n\n"
                     f"Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
                     + "\n\n"
                     + _fix_hint
                 )
             raise SystemExit(
-                f"Refusing to bind dashboard to {host} — the auth gate "
-                f"engages on non-loopback binds, but no auth providers are "
-                f"registered.\n\n" + _fix_hint
+                f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                f"but no auth providers are registered.\n\n" + _fix_hint
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
@@ -19316,6 +19477,20 @@ def start_server(
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    # Non-loopback ping cadence is config-driven (dashboard.ws_ping_interval /
+    # dashboard.ws_ping_timeout, #79635); the 20/20 defaults keep the
+    # Cloudflare-Tunnel-friendly behaviour when unset or invalid.
+    try:
+        _dash_cfg = load_config().get("dashboard") or {}
+    except Exception:
+        _dash_cfg = {}
+
+    def _ws_ping_setting(key: str, default: float = 20.0) -> float:
+        try:
+            return float(_dash_cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -19330,8 +19505,8 @@ def start_server(
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still
         # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else 20.0,
-        ws_ping_timeout=None if _is_loopback else 20.0,
+        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
+        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)

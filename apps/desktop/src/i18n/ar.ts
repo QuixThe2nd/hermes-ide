@@ -96,6 +96,8 @@ export const ar = defineLocale({
       backendStopped: 'توقف الخلفية',
       desktopBootFailed: 'فشل تشغيل سطح المكتب',
       gatewayConnectionLost: 'انقطع الاتصال بالبوابة',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'تسجيل الدخول للبوابة مطلوب',
       ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.'
     },
@@ -884,6 +886,10 @@ export const ar = defineLocale({
         title_generation: {
           label: 'توليد العناوين',
           hint: 'عناوين الجلسات'
+        },
+        review: {
+          label: 'المراجعة',
+          hint: 'وكيل المراجعة الفرعي /review'
         },
         curator: {
           label: 'المنسّق',
@@ -2249,6 +2255,7 @@ export const ar = defineLocale({
       gateway: 'البوابة',
       gatewayReady: 'البوابة جاهزة',
       gatewayNeedsSetup: 'البوابة تحتاج إعدادا',
+      gatewayUnavailable: 'الاستدلال غير متاح',
       gatewayChecking: 'جار فحص البوابة',
       gatewayConnecting: 'جار اتصال البوابة',
       gatewayOffline: 'البوابة غير متصلة',

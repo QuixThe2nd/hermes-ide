@@ -81,6 +81,8 @@ export const ja = defineLocale({
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewayConnectionLost: 'ゲートウェイへの接続が切断されました',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
@@ -996,6 +998,7 @@ export const ja = defineLocale({
         approval: { label: '承認', hint: 'スマート自動承認' },
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
+        review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },
@@ -2520,6 +2523,7 @@ export const ja = defineLocale({
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
+      gatewayUnavailable: '推論を利用できません',
       gatewayChecking: '確認中',
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',

@@ -1127,6 +1127,20 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
+        # /review — the independent reviewer subagent's model. Unlike other
+        # aux tasks this is not a single LLM call: the reviewer is a full
+        # subagent (all normal subagent tools) spawned on the async
+        # delegation rail. provider/model/base_url/api_key/api_mode are
+        # resolved through the same credential system as delegation.provider
+        # pins. Leave provider "auto" + model empty to run the reviewer on
+        # the main agent's model.
+        "review": {
+            "provider": "auto",    # auto (= inherit main model) | openrouter | nous | anthropic | ...
+            "model": "",           # e.g. "anthropic/claude-opus-4.6" — a strong reviewer model
+            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
+            "api_key": "",         # API key for base_url / provider override
+            "api_mode": "",        # force transport: chat_completions | anthropic_messages | codex_responses
+        },
         "mcp": {
             "provider": "auto",
             "model": "",
@@ -1269,6 +1283,16 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # Aggregate INPUT-token budget for one review fork (issue #93057).
+            # The fork's FIRST request replays the full snapshot as a warm
+            # prompt-cache read (compaction is deferred until the first
+            # provider response arrives); after that it compacts an oversized
+            # snapshot in memory before further provider calls. This caps the
+            # SUM of input tokens replayed across the whole review tool loop
+            # (iterations are separately capped at 16). The loop stops before
+            # the provider call that would cross the budget. 0 or a negative
+            # value = unlimited.
+            "max_input_tokens": 600000,
         },
         "moa_reference": {
             "provider": "auto",
@@ -1599,6 +1623,30 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # WebSocket keepalive for the dashboard/desktop web server (#79635).
+        # Applied to NON-loopback binds only: loopback always disables the
+        # protocol ping (see hermes_cli/web_server.py — an event-loop stall
+        # must never kill a healthy local connection). Values are seconds.
+        "ws_ping_interval": 20.0,
+        "ws_ping_timeout": 20.0,
+        # Grace window (seconds) before a WS-orphaned gateway session is
+        # interrupted/reaped after its client disconnects (#79635). The
+        # HERMES_TUI_WS_ORPHAN_REAP_GRACE_S env var remains an internal
+        # override for backward compatibility. 0 disables the reap
+        # (park forever).
+        "ws_orphan_reap_grace_s": 20.0,
+        # Startup sweep of session rows orphaned by a dead gateway process
+        # (#65194).  The ws-orphan grace timer above is in-process, so a
+        # gateway restart (update, crash, systemd) leaves disconnected
+        # sessions ``ended_at IS NULL`` forever — phantom "active" rows in
+        # /resume and dashboards.  On every gateway boot (stdio TUI *and*
+        # the desktop/dashboard WS sidecar), tui/desktop/subagent rows whose
+        # start time AND newest message are both older than the session TTL
+        # (HERMES_TUI_SESSION_TTL_S, default 6h) are closed with
+        # end_reason='startup_orphan_reap'.  Messaging-gateway sessions
+        # (telegram, discord, ...) are never touched; live in-memory
+        # sessions are excluded; swept sessions stay resumable.
+        "startup_orphan_sweep": True,
         # OAuth gate configuration (engaged when ``--host`` is set and
         # ``--insecure`` is not). The bundled Nous Portal plugin reads
         # both keys at startup; they are the canonical surface for these
@@ -1663,8 +1711,11 @@ DEFAULT_CONFIG = {
         # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
         # When set, this is the complete authority — scheme + host +
         # optional path prefix (e.g. ``https://example.com/hermes``) —
-        # the OAuth ``redirect_uri`` is built from. Set this for deploys
-        # behind reverse proxies that don't reliably forward
+        # the OAuth ``redirect_uri`` is built from. Its exact hostname is also
+        # trusted by the HTTP Host / WebSocket Origin guards and engages the
+        # auth gate when it is non-loopback, even if the backend binds to
+        # loopback. Set this for deploys behind reverse proxies that don't
+        # reliably forward
         # ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` / ``X-Forwarded-Prefix``
         # (manual nginx setups, on-prem ingresses, custom-domain Fly
         # deploys without proper proxy headers). When set,

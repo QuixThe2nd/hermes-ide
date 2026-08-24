@@ -99,6 +99,7 @@ import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, Usag
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
+import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import {
   appendLiveSessionProjection,
@@ -1196,21 +1197,23 @@ export function useSessionActions({
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
 
-        const resumePromise = requestForSession<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96,
-          source: 'desktop',
-          defer_history: !watchWindow,
-          // REST is the transcript authority for Desktop. Avoid duplicating a
-          // potentially huge compression lineage in the WebSocket response.
-          // Watch windows attach lazily (live mirror). Every other cold resume
-          // gets the gateway's default deferred build: the RPC returns the
-          // transcript immediately instead of blocking the switch on _make_agent
-          // (MCP discovery / prompt build), and the agent pre-warms in the
-          // background while the prefetch above paints the transcript.
-          ...(watchWindow ? { lazy: true } : { omit_messages: true }),
-          ...(sessionProfile ? { profile: sessionProfile } : {})
-        }).then(resumed => {
+        const resumePromise = singleFlightSessionResume(storedSessionId, () =>
+          requestForSession<SessionResumeResponse>('session.resume', {
+            session_id: storedSessionId,
+            cols: 96,
+            source: 'desktop',
+            defer_history: !watchWindow,
+            // REST is the transcript authority for Desktop. Avoid duplicating a
+            // potentially huge compression lineage in the WebSocket response.
+            // Watch windows attach lazily (live mirror). Every other cold resume
+            // gets the gateway's default deferred build: the RPC returns the
+            // transcript immediately instead of blocking the switch on _make_agent
+            // (MCP discovery / prompt build), and the agent pre-warms in the
+            // background while the prefetch above paints the transcript.
+            ...(watchWindow ? { lazy: true } : { omit_messages: true }),
+            ...(sessionProfile ? { profile: sessionProfile } : {})
+          })
+        ).then(resumed => {
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
 
@@ -1646,8 +1649,6 @@ export function useSessionActions({
           routedSessionId
         )
 
-        // The branch opens as its own tile in the parent's worktree, not as the
-        // primary session — keep its runtime out of the main composer atoms.
         const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false })
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
@@ -1655,13 +1656,20 @@ export function useSessionActions({
           updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
         }
 
-        // Open the branch as its own tab and switch to it, leaving the parent
-        // chat exactly where it is. Prime the tile with the create runtime so it
-        // skips a redundant resume. Do NOT select it as the primary session
-        // first — openSessionTile no-ops when the id is already primary.
-        openSessionTile(routedSessionId, 'center')
-        patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
-        revealTreePane(`session-tile:${routedSessionId}`)
+        // Only take over the main pane when the chat being branched is the one
+        // already open there — branching a background/sidebar session must
+        // not yank the user's current view away from what they're looking at
+        // (the #69750 focus-stealing bug, reintroduced if this fires
+        // unconditionally). resumeSession reuses the runtime warm-cached above
+        // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
+        if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
+          await resumeSession(routedSessionId)
+        } else {
+          openSessionTile(routedSessionId, 'center')
+          patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
+          revealTreePane(`session-tile:${routedSessionId}`)
+        }
+
         broadcastSessionsChanged()
 
         return true
@@ -1675,7 +1683,15 @@ export function useSessionActions({
         }, 0)
       }
     },
-    [copy, creatingSessionRef, ensureSessionState, requestGateway, updateSessionState]
+    [
+      copy,
+      creatingSessionRef,
+      ensureSessionState,
+      requestGateway,
+      resumeSession,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
   )
 
   // Branch the open chat — optionally from a specific message — off its live transcript.
