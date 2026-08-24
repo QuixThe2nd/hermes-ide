@@ -1368,7 +1368,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
+#   - sethomeserver: Discord-only by design (it provisions Discord categories,
+#     channels, and webhooks — on Slack it can only ever answer "Discord
+#     only"); reached via /hermes sethomeserver on Slack. Without this entry
+#     its native slot tips the registry past the 50-cap and silently clamps
+#     /insights, breaking Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform", "sethomeserver"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
