@@ -64,6 +64,25 @@ MIN_ESTIMATED_MINUTES = 1
 MAX_ESTIMATED_MINUTES = 480
 CURSOR_LANE_MAX_MINUTES = 30
 
+# systemd scope vocabulary shared by the config accessor and the executor.
+SYSTEMD_SCOPE_USER = "user"
+SYSTEMD_SCOPE_SYSTEM = "system"
+VALID_SYSTEMD_SCOPES = frozenset({SYSTEMD_SCOPE_USER, SYSTEMD_SCOPE_SYSTEM})
+
+
+def normalize_systemd_scope(value: Any) -> str | None:
+    """Return ``"user"``/``"system"`` for a recognized scope value, else ``None``.
+
+    Case-insensitive and whitespace-tolerant; anything unrecognized reads as
+    "unset" so the executor's env/euid fallback tiers decide (a typo in
+    config.yaml must not silently pin scope).
+    """
+    if not isinstance(value, str):
+        return None
+    scope = value.strip().lower()
+    return scope if scope in VALID_SYSTEMD_SCOPES else None
+
+
 # Config code defaults (not written to DEFAULT_CONFIG — merged at read time).
 _DEFAULT_DEV_PIPELINE_ENABLED = False
 _DEFAULT_DEV_PIPELINE_BOARD = "dev"
@@ -483,6 +502,11 @@ def get_dev_pipeline_config() -> dict[str, Any]:
         "tick_seconds": tick_seconds,
         "max_attempts": max_attempts,
         "verify_command_timeout": verify_timeout,
+        # None when unset/invalid → the executor's env/euid tiers decide
+        # (see resolve_systemd_scope in executor.py).
+        "systemd_scope": normalize_systemd_scope(
+            cfg_get(cfg, "dev_pipeline", "systemd_scope")
+        ),
         "progress_notifications": bool(
             cfg_get(
                 cfg,
