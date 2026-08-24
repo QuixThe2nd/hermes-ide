@@ -40,6 +40,7 @@ from plugins.dev_pipeline.pipeline import (
     scan_diff_for_secrets,
     validate_plan_contract,
 )
+from plugins.dev_pipeline.pipeline import DEFAULT_ATTEMPT_MEMORY_MAX
 from tools.agent_cli_runner import run_agent_cli
 from tools.claude_agent_tool import resolve_claude_binary
 from tools.cursor_agent_tool import resolve_cursor_agent_binary
@@ -226,6 +227,7 @@ def systemd_run_attempt(
     working_directory: Path,
     env: Mapping[str, str],
     argv: Sequence[str],
+    memory_max: str = DEFAULT_ATTEMPT_MEMORY_MAX,
 ) -> tuple[bool, Optional[int], Optional[int]]:
     """Spawn a transient attempt unit. Returns ``(ok, pid, host_start_time)``.
 
@@ -234,6 +236,12 @@ def systemd_run_attempt(
     round-trip — the bare system-scope default is what a non-root executor
     was denied on). A failed spawn returns ``(False, None, None)`` after a
     warning; the caller blocks the task.
+
+    ``memory_max`` is the cgroup ceiling for the attempt
+    (``dev_pipeline.attempt_memory_max`` in config.yaml, default ``6G``) —
+    an OOM at that ceiling is an ``infra_broken`` block, so a job that
+    legitimately needs more headroom than the default must be able to ask
+    for it.
     """
     cmd: list[str] = ["systemd-run"]
     if resolve_systemd_scope() == SYSTEMD_SCOPE_USER:
@@ -242,7 +250,7 @@ def systemd_run_attempt(
         [
             f"--unit={unit}",
             f"--property=RuntimeMaxSec={runtime_max_sec}",
-            "--property=MemoryMax=6G",
+            f"--property=MemoryMax={memory_max}",
             "--property=OOMScoreAdjust=500",
             f"--working-directory={working_directory}",
         ]
@@ -2233,6 +2241,9 @@ class DevExecutor:
             working_directory=repo_dir,
             env=env,
             argv=argv,
+            memory_max=str(
+                self.cfg.get("attempt_memory_max") or DEFAULT_ATTEMPT_MEMORY_MAX
+            ),
         )
         if not ok:
             block_dev_task(
