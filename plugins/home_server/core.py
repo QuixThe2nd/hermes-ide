@@ -837,6 +837,10 @@ def reconcile(
             state["welcome_embeds"][key] = message_id
             report["embeds_posted"].append(f"{spec.category}/{first_name}")
 
+    # Persist before wiring: the hermes_starts hook discovers the shared inbox
+    # by reading this state file, so it must exist on the very first run too.
+    save_state(state)
+
     if modules["chat"] and state["channels"].get("chat", {}).get("home"):
         report["home_channel"] = link_home_channel(
             guild_id, state["channels"]["chat"]["home"]
@@ -852,7 +856,6 @@ def reconcile(
     if modules["speeds"] and state["channels"].get("speeds"):
         report["wired"]["speed_channels"] = wire_speed_channels(state)
 
-    save_state(state)
     return report
 
 
