@@ -64,6 +64,11 @@ for _name in models_str.split(","):
     if _name:
         model_usage[_name] = {{"input_tokens": 100, "output_tokens": 50}}
 
+prelude = os.environ.get("FAKE_CLAUDE_PRELUDE")
+if prelude:
+    sys.stdout.write(prelude + "\\n")
+    sys.stdout.flush()
+
 result = {{
     "type": "result",
     "subtype": os.environ.get("FAKE_CLAUDE_SUBTYPE", "success"),
@@ -646,3 +651,120 @@ def test_child_env_guarantees_home_and_local_bin(monkeypatch, repo, fake_binary,
     assert captured["HOME"] == str(Path.home())
     # ~/.local/bin is prepended so binary resolution works under minimal PATH.
     assert captured["PATH"].split(os.pathsep)[0] == str(Path.home() / ".local" / "bin")
+
+
+# ---------------------------------------------------------------------------
+# Completion signals: empty-report guard + degraded-run warnings
+# ---------------------------------------------------------------------------
+
+def test_extract_log_warnings_finds_unrecognized_model_line():
+    from tools.claude_agent_tool import extract_log_warnings
+
+    log_text = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init", "session_id": "s"}),
+            'warning: unrecognized_model "glm-5.3", falling back to default model',
+            json.dumps({"type": "result", "subtype": "success", "result": "Done."}),
+        ]
+    )
+    warnings = extract_log_warnings(log_text)
+    assert len(warnings) == 1
+    assert "unrecognized_model" in warnings[0]
+
+
+def test_extract_log_warnings_clean_log_is_empty():
+    from tools.claude_agent_tool import extract_log_warnings
+
+    assert extract_log_warnings("") == []
+    assert extract_log_warnings("not json\n") == []
+    assert extract_log_warnings('{"type": "result", "result": "ok"}\n') == []
+
+
+def test_extract_log_warnings_dedupes_and_caps():
+    from tools.claude_agent_tool import extract_log_warnings
+
+    line = 'warning: unrecognized_model "glm-5.3"'
+    warnings = extract_log_warnings("\n".join([line, line, line]))
+    assert warnings == [line]
+
+    many = [f'warning: unrecognized_model "m{i}"' for i in range(10)]
+    assert len(extract_log_warnings("\n".join(many))) == 5
+
+
+@_REAL_SUBPROC
+def test_success_with_empty_final_report_is_failure(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", "")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is False
+    assert "empty final report" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_success_with_whitespace_final_report_is_failure(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", "   ")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is False
+    assert "empty final report" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_error_subtype_keeps_original_error_for_empty_report(
+    monkeypatch, repo, fake_binary
+):
+    """The empty-report guard must not rewrite genuine failure results."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv("FAKE_CLAUDE_SUBTYPE", "error")
+    monkeypatch.setenv("FAKE_CLAUDE_IS_ERROR", "true")
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", "")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is False
+    assert "subtype" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_unrecognized_model_warning_surfaced_in_result(
+    monkeypatch, repo, fake_binary
+):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_PRELUDE",
+        'warning: unrecognized_model "glm-5.3", falling back to default model',
+    )
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert any("unrecognized_model" in w for w in result["warnings"])
+
+
+@_REAL_SUBPROC
+def test_clean_run_has_empty_warnings(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert result["warnings"] == []
