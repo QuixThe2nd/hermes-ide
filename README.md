@@ -46,6 +46,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Config — API retry backoff timing
   - Agent — tool-call narration guidance: model briefly explains each tool call before making it (`agent.tool_call_narration_guidance`, default on)
   - Config — web search and extract fallback chains
+  - Config — `security.allow_agent_config_writes` opts out of the write_file/patch guard on the Hermes config file (operator request; default off)
 
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this header is upstream's README.
 

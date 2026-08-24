@@ -2474,6 +2474,11 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Operator opt-out of the config-file write guard. When true, the
+        # agent's write_file/patch tools may edit the Hermes config file
+        # directly instead of refusing and deferring to `hermes config`.
+        # Trades away prompt-injection protection for approvals.mode etc.
+        "allow_agent_config_writes": False,
         # Persisted acknowledgement for unattended model overrides whose tier
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.
