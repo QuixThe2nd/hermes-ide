@@ -27,9 +27,11 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs
   - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox
+  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Honcho Memory / Quotas / Speeds), fully wired; idempotent, never deletes, existing home channels are never clobbered
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent off-hours timer (`hermes auto_update status|enable|disable|reconcile`; default 04:00–08:00 local with randomized delay)
   - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
+  - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
@@ -44,6 +46,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
   - Discord — typing indicator stays lit while a background delegated task is still running
   - Discord — MoA consult/debate progress renders as one self-editing embed per call
+  - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), then re-syncs at most hourly
   - Cron — lifecycle guard blocks cron-spawned commands that would restart the gateway or rewrite the live checkout (quote-aware)
   - Memory — per-turn injection skips lines already delivered earlier in the session
   - Config — API retry backoff timing
