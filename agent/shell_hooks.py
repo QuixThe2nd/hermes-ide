@@ -120,6 +120,7 @@ emitted by each built-in hook site.
     interrupted     – bool, True when the user interrupted
     model           – model name
     platform        – platform identifier
+    title           – chat/session title (display_name, else title, else "Hermes")
 
 ``subagent_stop`` (emitted from ``tools/delegate_tool.py``)::
 

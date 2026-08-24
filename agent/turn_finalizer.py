@@ -824,6 +824,40 @@ def finalize_turn(
     # handled by the CLI (atexit / /reset) and gateway (session expiry /
     # _reset_session).
 
+    # Chat/session title, resolved once for both the optional OS
+    # notification below and the on_session_end payload, so shell hooks
+    # get `title` without doing their own state.db lookup. Best-effort —
+    # any failure falls back to the generic title.
+    _session_title = "Hermes"
+    try:
+        from hermes_cli.os_notify import resolve_session_title
+        _session_title = resolve_session_title(agent.session_id)
+    except Exception as _title_err:
+        logger.debug("resolve_session_title failed: %s", _title_err)
+
+    # Optional native OS notification (display.notify_on_complete) — the
+    # desktop-toast sibling of bell_on_complete. Primary use case: the
+    # gateway runs on a headless Linux box and the user sits at a Mac, so
+    # notify_on_complete_ssh ships the AppleScript to the Mac. Interrupted
+    # turns stay silent inside notify_session_complete; every failure is
+    # swallowed there so this can never delay or break the turn.
+    try:
+        from hermes_cli.config import load_config_readonly
+        _display_cfg = (load_config_readonly() or {}).get("display") or {}
+        if _display_cfg.get("notify_on_complete", False):
+            from hermes_cli.os_notify import notify_session_complete
+            notify_session_complete(
+                session_id=agent.session_id,
+                platform=getattr(agent, "platform", None) or "",
+                interrupted=interrupted,
+                completed=completed,
+                ssh_target=str(_display_cfg.get("notify_on_complete_ssh") or ""),
+                command=str(_display_cfg.get("notify_on_complete_command") or ""),
+                title=_session_title,
+            )
+    except Exception as _notify_err:
+        logger.debug("notify_session_complete failed: %s", _notify_err)
+
     # Plugin hook: on_session_end
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
@@ -840,6 +874,7 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            title=_session_title,
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

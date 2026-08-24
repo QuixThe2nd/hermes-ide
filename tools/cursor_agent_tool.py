@@ -1370,6 +1370,20 @@ def _tool_result_already_present(
     return False
 
 
+_CLOUD_ERROR_FALLBACK = "Cursor Cloud Agent run failed"
+
+
+def _cloud_error_detail(final_report: str, run: Dict[str, Any]) -> str:
+    """Pick a user-visible ERROR detail from run.result or provider diagnostics."""
+    if isinstance(final_report, str) and final_report.strip():
+        return final_report
+    if isinstance(run, dict):
+        reason = run.get("failureReason")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    return _CLOUD_ERROR_FALLBACK
+
+
 def _build_cloud_tool_result_from_run(
     *,
     agent: Optional[Dict[str, Any]],
@@ -1409,7 +1423,7 @@ def _build_cloud_tool_result_from_run(
             cloud_status,
         )
     if cloud_status == "ERROR":
-        detail = fields.get("final_report") or "Cursor Cloud Agent run failed"
+        detail = _cloud_error_detail(fields.get("final_report") or "", run)
         return (
             _make_cloud_tool_result(success=False, error=detail, attempt_id=attempt_id, **fields),
             False,

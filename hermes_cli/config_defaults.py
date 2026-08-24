@@ -1344,6 +1344,23 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Native OS notification when an agent turn finishes — the
+        # desktop-toast sibling of bell_on_complete, titled with the
+        # chat/session title. Interrupted turns stay silent.
+        #   notify_on_complete: false (default) — no-op.
+        #   true + empty ssh/command — local dispatcher (osascript on
+        #     macOS, notify-send on Linux).
+        #   true + notify_on_complete_ssh — run the AppleScript on that
+        #     host over SSH (BatchMode). How a Linux gateway notifies the
+        #     user's Mac, e.g. "parsas-macbook-pro".
+        #   notify_on_complete_command — shell command that wins over the
+        #     built-in dispatchers; receives HERMES_NOTIFY_TITLE,
+        #     HERMES_NOTIFY_SUBTITLE, HERMES_NOTIFY_BODY,
+        #     HERMES_NOTIFY_PLATFORM and HERMES_NOTIFY_SESSION_ID in its
+        #     environment. 10s timeout, failures swallowed.
+        "notify_on_complete": False,
+        "notify_on_complete_command": "",
+        "notify_on_complete_ssh": "",
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
         # seconds, and with this off the user stares at a spinner the whole
@@ -2734,6 +2751,24 @@ DEFAULT_CONFIG = {
         # so stale rows don't accumulate and get scanned on every notifier
         # tick forever. Set 0 to disable the sweep.
         "done_sub_retention_days": 30,
+    },
+
+    # Bot Mode cross-connection relay (tools/bot_relay.py). Envelopes queued
+    # by message_agent for agents on other connections wait in an on-disk
+    # outbox until the Desktop drains them.
+    "bot_mode": {
+        # Drain-time TTL (seconds): an envelope older than this is NOT
+        # delivered when the Desktop finally drains the outbox — the sender
+        # gets an error reply (reason 'queued_expired') instead, so a DM
+        # written while the Desktop was away can't land hours late as a
+        # confusing zombie message. 0 disables drain-time expiry (the 6h
+        # stale-artifact sweep still applies).
+        "envelope_ttl_seconds": 900,
+        # How long a second delivery into an already-busy target profile
+        # queues behind the current turn before failing with a structured
+        # 'target_busy' error. Deliveries are serialized per profile with a
+        # cross-process file lock so two turns never race one Bot Chat.
+        "turn_wait_seconds": 120,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

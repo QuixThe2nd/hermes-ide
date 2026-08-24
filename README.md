@@ -13,6 +13,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Delegation — send coding tasks to a Cursor My Machines Cloud Agent in the target checkout, straight from chat
   - Delegation — send coding tasks to the Claude Code CLI, straight from chat
   - Delegation — `delegate_claude_agent` supports Claude Code `/goal` headless: pass a `/goal <condition>` task and the run loops until a model judge confirms the condition met (verified with the claude-glm wrapper)
+  - Delegation — `delegate_claude_agent` writes stream-json run logs, so claude-runs logs are live-tailable for progress reporting
   - Delegation — delegate coding tools run unbounded by default; stall watchdog is the only kill switch
   - Delegation — `delegate_task action='list'` surfaces per-child liveness (current tool, iteration, seconds since activity, stalled flag) so a wedged subagent is distinguishable from a slow one
   - Delegation — one shared agent-CLI runner powers both delegate tools and the dev-pipeline build lanes
@@ -21,7 +22,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - MoA — `moa_ask` and `moa_debate`, restored from the archive
   - Memory (Honcho) — memory tools surface backend failures (dead API keys, auth 401s, timeouts) as explicit errors instead of silently looking like "nothing stored"
 - **Plugins**
-  - dev-pipeline — hand a repo + task to an automated pipeline: MoA planning, Cursor execution, mechanical verification, dual-model review, draft PR, with stage-progress messages to your chat and a status tool
+  - dev-pipeline — hand a repo + task to an automated pipeline: MoA planning, Cursor execution, mechanical verification, dual-model review, draft PR, with plain-English stage-progress messages to your chat (same-phase heartbeats skipped) and a status tool
   - dev-pipeline claude-endurance lane — Claude Code (claude-glm) builds for broad/long tasks
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs
@@ -30,9 +31,11 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent off-hours timer (`hermes auto_update status|enable|disable|reconcile`; default 04:00–08:00 local with randomized delay)
   - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
 - **Other**
+  - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
   - Gateway — steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context
   - Gateway — `/restart` asks other live chat sessions to park, then auto-continues them after bounce instead of blocking new threads until every turn dies
+  - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
   - Discord — sessions keyed to your stable username, not your per-server nickname
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
@@ -47,6 +50,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Agent — tool-call narration guidance: model briefly explains each tool call before making it (`agent.tool_call_narration_guidance`, default on)
   - Config — web search and extract fallback chains
   - Config — `security.allow_agent_config_writes` opts out of the write_file/patch guard on the Hermes config file (operator request; default off)
+  - Display — optional native OS notification when a turn finishes (`display.notify_on_complete`, off by default; SSH target supported)
 
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this header is upstream's README.
 

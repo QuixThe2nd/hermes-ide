@@ -1155,6 +1155,13 @@ class AIAgent:
         - ``"warn"``    -> replays via ``_emit_warning``
         Used to defer noisy retry chatter until we know whether the
         turn ultimately recovered or failed.
+
+        Opt-in live mirror (``display.retry_progress``, default off): when the
+        gateway sets ``self._live_retry_status``, the buffered line is ALSO
+        emitted immediately on the ``"retry_progress"`` event rail.  That rail
+        is throttled (see ``_maybe_emit_live_retry_status``) and the buffered
+        copy above is still stored, so drop-on-success / flush-on-failure
+        semantics are byte-identical whether or not the flag is set.
         """
         try:
             buf = getattr(self, "_retry_status_buffer", None)
@@ -1165,6 +1172,48 @@ class AIAgent:
         except Exception:
             # Never break the retry loop on a buffer hiccup.
             pass
+        self._maybe_emit_live_retry_status(message)
+
+    # Throttle window for the live retry-progress mirror. Retries back off
+    # exponentially (5s, 10s, 20s, ...) so one line per 5s is enough to show
+    # "still retrying, attempt N" during a stall without turning a 10-retry
+    # chain into 10 chat bubbles.
+    _LIVE_RETRY_EMIT_MIN_INTERVAL = 5.0
+
+    def _maybe_emit_live_retry_status(self, message: str) -> None:
+        """Mirror a buffered retry line live when the user opted in.
+
+        No-op unless the gateway armed ``self._live_retry_status`` this turn
+        (``display.retry_progress`` / ``display.platforms.<p>.retry_progress``).
+        Skips the emission when the previous live emission was less than
+        ``_LIVE_RETRY_EMIT_MIN_INTERVAL`` seconds ago, or when the text is
+        byte-identical to it — a provider wedged on the same error repeats the
+        same line every backoff tick.  Throttle state is only advanced on a
+        real emission, so a suppressed line never starves a later distinct one.
+
+        Never raises: this sits on the retry/failure path, where a delivery
+        hiccup must not compound the outage it was reporting.
+        """
+        if not getattr(self, "_live_retry_status", False):
+            return
+        try:
+            now = time.time()
+            if (now - getattr(self, "_last_live_retry_emit_ts", 0.0)) < (
+                self._LIVE_RETRY_EMIT_MIN_INTERVAL
+            ):
+                return
+            if message == getattr(self, "_last_live_retry_text", None):
+                return
+            callback = getattr(self, "status_callback", None)
+            if callback is None:
+                return
+            # Record BEFORE delivering so a raising callback can't leave the
+            # throttle unset and cause a re-fire storm on the next line.
+            self._last_live_retry_emit_ts = now
+            self._last_live_retry_text = message
+            callback("retry_progress", message)
+        except Exception:
+            logger.debug("live retry_progress emission failed", exc_info=True)
 
     def _buffer_vprint(self, message: str) -> None:
         """Buffer a vprint(force=True) retry/fallback line."""
