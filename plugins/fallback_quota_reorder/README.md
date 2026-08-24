@@ -63,30 +63,34 @@ Readings older than six hours never trigger staleness alone: if the previous tic
 
 Use `--force-quota` to bypass the freeze for one run.
 
-## Cron setup
+## Scheduling (self-installed systemd timer)
 
-Schedule this plugin to run shortly after **quota_channels** refreshes channel names. Use an absolute path to `run.py` so imports bootstrap from any working directory.
+No manual cron setup. On Linux hosts with a systemd **user** manager, enabling this plugin is all it takes: on every gateway start it idempotently installs and reconciles a user-scope oneshot+timer pair (same pattern as **auto_update** and **dev_pipeline**):
+
+- `~/.config/systemd/user/hermes-fallback-quota-reorder.service` — oneshot running `run.py` from the repo venv (fallback: the running interpreter), with `HERMES_HOME=%h/.hermes`.
+- `~/.config/systemd/user/hermes-fallback-quota-reorder.timer` — `Persistent=true`, `WantedBy=timers.target`.
+
+The schedule derives from `quota_channels.quota_interval_seconds` (default 1800) via `recommended_cron_spec`, converted to an `OnCalendar` expression. The default 1800s interval fires at minutes 2 and 32 of every hour (~120s after each 30-minute quota refresh):
+
+```ini
+OnCalendar=*-*-* *:02,32:00
+```
 
 ```python
 from plugins.fallback_quota_reorder.core import recommended_cron_spec
 recommended_cron_spec(1800)  # -> '2,32 * * * *'
 ```
 
-Example crontab line for the default 1800s quota interval (fires at minute 2 and 32 of each hour, ~120s after each 30-minute refresh boundary):
+Units are rewritten only when their content actually changes; an unchanged, already-enabled timer is left alone. Disabling the plugin (`plugins.disabled` or `plugins.fallback_quota_reorder.enabled: false`) stops and disables the timer on the next gateway start. Non-Linux hosts or hosts without a reachable user manager skip self-install with a log line.
 
-```cron
-2,32 * * * * python3 /path/to/hermes-agent/plugins/fallback_quota_reorder/run.py
-```
+### Removing legacy cron entries
 
-Or via Hermes cron:
+Older setups scheduled this plugin by hand. Both of these are obsolete and should be removed so the reorder does not run twice per tick:
 
-```bash
-hermes cron add \
-  --schedule "2,32 * * * *" \
-  --script "python3 /path/to/hermes-agent/plugins/fallback_quota_reorder/run.py" \
-  --no-agent \
-  --name "fallback-quota-reorder"
-```
+- Hermes cron jobs named **"Quota-based fallback reorder"** (or similar): `hermes cron list` → `hermes cron remove <id>`.
+- The copied script `~/.hermes/scripts/quota_reorder.py` — the timer runs `plugins/fallback_quota_reorder/run.py` from the repo directly; the copy is dead weight.
+
+### Manual runs
 
 Dry run (no writes, no state update):
 
