@@ -14,7 +14,7 @@ channel is only PATCHed when its name actually changes, and the category label
 — which is touched every tick — skips on 429 rather than raising.
 
 Downloader API shapes, env-file names and label formats follow the reference
-script the live deployment ran; the peer's ``/root/.hermes`` paths are resolved
+script the live deployment ran; the peer's absolute secret paths are resolved
 relative to ``HERMES_HOME`` here instead.
 """
 
@@ -73,7 +73,7 @@ def state_path() -> Path:
 
 
 def _secret_env(name: str) -> Path:
-    """Secret env files live under HERMES_HOME/secrets/ (never a fixed /root)."""
+    """Secret env files always resolve under HERMES_HOME, never a fixed path."""
     return _hermes_home() / "secrets" / name
 
 
