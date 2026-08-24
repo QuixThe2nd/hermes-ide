@@ -10,7 +10,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -58,7 +58,7 @@ class QuotaReading:
     provider: str
     channel_name: str
     pct: int
-    reset_seconds: int
+    reset_seconds: float
 
 
 def _hermes_home() -> Path:
@@ -261,13 +261,73 @@ def fetch_channel_names(
     return names
 
 
-def readings_from_names(names: Mapping[str, str]) -> Dict[str, QuotaReading]:
+def readings_from_names(
+    names: Mapping[str, str],
+    precise_readings: Optional[Mapping[str, Tuple[int, float]]] = None,
+) -> Dict[str, QuotaReading]:
     readings: Dict[str, QuotaReading] = {}
     for key in CHANNEL_KEYS:
-        reading = parse_channel_name(key, names.get(key, ""))
+        name = names.get(key, "")
+        reading = parse_channel_name(key, name)
+        precise = (precise_readings or {}).get(key)
+        if precise is not None:
+            # precise state beats the day-rounded channel name; it also scores
+            # providers whose name did not parse strictly
+            pct, reset_seconds = precise
+            base = reading or QuotaReading(
+                channel_key=key,
+                provider=CHANNEL_KEY_TO_PROVIDER[key],
+                channel_name=name,
+                pct=pct,
+                reset_seconds=reset_seconds,
+            )
+            reading = replace(base, pct=pct, reset_seconds=reset_seconds)
         if reading is not None:
             readings[reading.provider] = reading
     return readings
+
+
+def load_precise_readings(
+    quota_interval_seconds: int,
+    *,
+    now_fn: NowFn = time.time,
+) -> Dict[str, Tuple[int, float]]:
+    """Map provider slug -> (pct, reset_seconds) from quota_channels state.
+
+    Empty when the state file is missing/corrupt, predates the readings
+    schema, or its last_quota_success is older than 2 * quota_interval_seconds
+    — callers then fall back to strict channel-name parsing.
+    """
+    from plugins.quota_channels.core import state_path as quota_state_path
+
+    try:
+        raw = json.loads(quota_state_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        last_success = float(raw.get("last_quota_success") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if last_success <= 0:
+        return {}
+    if now_fn() - last_success > 2 * quota_interval_seconds:
+        return {}
+    entries = raw.get("readings")
+    if not isinstance(entries, Mapping):
+        return {}
+    precise: Dict[str, Tuple[int, float]] = {}
+    for slug, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            pct = int(entry["pct"])
+            reset_seconds = float(entry["reset_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        precise[str(slug)] = (pct, reset_seconds)
+    return precise
 
 
 def _entry_identity(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
@@ -516,7 +576,10 @@ def run_reorder(
     channel_ids, quota_interval_seconds = validate_channel_config(raw)
 
     names = fetch_channel_names(channel_ids, http_fn=http_fn)
-    readings = readings_from_names(names)
+    name_readings = readings_from_names(names)
+    readings = readings_from_names(
+        names, load_precise_readings(quota_interval_seconds, now_fn=now_fn)
+    )
 
     from hermes_cli.config import load_config
 
@@ -533,8 +596,10 @@ def run_reorder(
     desired_sig = chain_signature({**config, "fallback_providers": desired_entries})
 
     state = load_state()
+    # staleness freeze stays channel-name based: byte-identical names plus
+    # name-parsed reset thresholds, unaffected by precise state
     new_state = update_staleness_state(
-        names, readings, state, quota_interval_seconds, now_fn=now_fn
+        names, name_readings, state, quota_interval_seconds, now_fn=now_fn
     )
     frozen = is_frozen(new_state) and not force_quota
     would_change = desired_sig != current_sig and not frozen
