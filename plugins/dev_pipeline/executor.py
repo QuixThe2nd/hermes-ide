@@ -29,10 +29,13 @@ from typing import Any, Callable, Iterator, Mapping, MutableMapping, Optional, S
 
 from hermes_cli import kanban_db as kb
 from plugins.dev_pipeline.pipeline import (
+    SYSTEMD_SCOPE_SYSTEM,
+    SYSTEMD_SCOPE_USER,
     build_attempt_env,
     get_dev_pipeline_config,
     is_https_repo_url,
     is_local_git_repo,
+    normalize_systemd_scope,
     route_plan_contract,
     scan_diff_for_secrets,
     validate_plan_contract,
@@ -108,6 +111,57 @@ _ASSETS_AGENTS_DIR = (
 )
 
 # ---------------------------------------------------------------------------
+# systemd scope resolution — ONE seam for every executor↔systemd call
+# ---------------------------------------------------------------------------
+
+# Internal bridge env var for unit files/wrappers that cannot express a
+# config.yaml override. config.yaml (dev_pipeline.systemd_scope) is the
+# documented knob; this is not a user-facing setting.
+DEV_PIPELINE_SYSTEMD_SCOPE_ENV = "DEV_PIPELINE_SYSTEMD_SCOPE"
+
+
+def resolve_systemd_scope(cfg: Optional[Mapping[str, Any]] = None) -> str:
+    """Resolve the systemd scope every systemctl/systemd-run call must use.
+
+    Precedence: ``dev_pipeline.systemd_scope`` in config.yaml (via
+    ``get_dev_pipeline_config``) > ``DEV_PIPELINE_SYSTEMD_SCOPE`` > euid
+    auto-detection (non-root → user, root → system). Root hosts therefore
+    keep the historical system-scope argv byte-for-byte, while a user-scope
+    executor (the self-installed ``--user`` service) talks to its own user
+    manager instead of hitting polkit with bare ``systemd-run``.
+
+    Never raises: an unreadable config falls through to the env/euid tiers
+    so a scope problem degrades into systemd's own error surface (handled
+    by the warning-and-block paths below), not an executor crash.
+    """
+    if cfg is None:
+        try:
+            cfg = get_dev_pipeline_config()
+        except Exception:
+            cfg = None
+    if cfg is not None:
+        configured = normalize_systemd_scope(cfg.get("systemd_scope"))
+        if configured is not None:
+            return configured
+    env_scope = normalize_systemd_scope(
+        os.environ.get(DEV_PIPELINE_SYSTEMD_SCOPE_ENV)
+    )
+    if env_scope is not None:
+        return env_scope
+    geteuid = getattr(os, "geteuid", None)  # windows-footgun: ok — POSIX probe, None on Windows
+    if geteuid is not None and geteuid() != 0:
+        return SYSTEMD_SCOPE_USER
+    return SYSTEMD_SCOPE_SYSTEM
+
+
+def systemctl_scope_argv(scope: str, *args: str) -> list[str]:
+    """systemctl argv for *scope*; system scope stays bare (byte-identical)."""
+    if scope == SYSTEMD_SCOPE_USER:
+        return ["systemctl", "--user", *args]
+    return ["systemctl", *args]
+
+
+# ---------------------------------------------------------------------------
 # Thin subprocess / systemctl wrappers (mockable in tests)
 # ---------------------------------------------------------------------------
 
@@ -136,19 +190,27 @@ def run_subprocess(
 
 def systemctl_is_active(unit: str) -> tuple[bool, str]:
     """Return ``(is_active, raw_status_line)``."""
-    proc = run_subprocess(["systemctl", "is-active", unit], timeout=30)
+    proc = run_subprocess(
+        systemctl_scope_argv(resolve_systemd_scope(), "is-active", unit),
+        timeout=30,
+    )
     status = (proc.stdout or proc.stderr or "").strip()
     return proc.returncode == 0 and status == "active", status
 
 
 def systemctl_stop(unit: str) -> bool:
-    proc = run_subprocess(["systemctl", "stop", unit], timeout=120)
+    proc = run_subprocess(
+        systemctl_scope_argv(resolve_systemd_scope(), "stop", unit),
+        timeout=120,
+    )
     return proc.returncode == 0
 
 
 def systemctl_show(unit: str, prop: str) -> Optional[str]:
     proc = run_subprocess(
-        ["systemctl", "show", unit, f"-p{prop}", "--value"],
+        systemctl_scope_argv(
+            resolve_systemd_scope(), "show", unit, f"-p{prop}", "--value"
+        ),
         timeout=30,
     )
     if proc.returncode != 0:
@@ -165,15 +227,26 @@ def systemd_run_attempt(
     env: Mapping[str, str],
     argv: Sequence[str],
 ) -> tuple[bool, Optional[int], Optional[int]]:
-    """Spawn a transient attempt unit. Returns ``(ok, pid, host_start_time)``."""
-    cmd: list[str] = [
-        "systemd-run",
-        f"--unit={unit}",
-        f"--property=RuntimeMaxSec={runtime_max_sec}",
-        "--property=MemoryMax=6G",
-        "--property=OOMScoreAdjust=500",
-        f"--working-directory={working_directory}",
-    ]
+    """Spawn a transient attempt unit. Returns ``(ok, pid, host_start_time)``.
+
+    Scope comes from :func:`resolve_systemd_scope`: a user-scope executor
+    spawns via ``systemd-run --user`` into its own user manager (no polkit
+    round-trip — the bare system-scope default is what a non-root executor
+    was denied on). A failed spawn returns ``(False, None, None)`` after a
+    warning; the caller blocks the task.
+    """
+    cmd: list[str] = ["systemd-run"]
+    if resolve_systemd_scope() == SYSTEMD_SCOPE_USER:
+        cmd.append("--user")
+    cmd.extend(
+        [
+            f"--unit={unit}",
+            f"--property=RuntimeMaxSec={runtime_max_sec}",
+            "--property=MemoryMax=6G",
+            "--property=OOMScoreAdjust=500",
+            f"--working-directory={working_directory}",
+        ]
+    )
     for key, value in env.items():
         cmd.append(f"--setenv={key}={value}")
     cmd.extend(argv)
