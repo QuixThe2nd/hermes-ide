@@ -14144,7 +14144,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # gateway connect, and the very first provision is always an explicit
         # /sethomeserver — this path is a no-op until state.json exists.
         try:
-            asyncio.get_running_loop().create_task(self._sync_home_server_if_due())
+            task = asyncio.get_running_loop().create_task(
+                self._sync_home_server_if_due()
+            )
+            # create_task() keeps only a weak reference; hold a strong one so
+            # the loop cannot GC the sync mid-flight (same pattern as the
+            # startup-resume tasks above).
+            background = getattr(self, "_background_tasks", None)
+            if background is not None:
+                background.add(task)
+                task.add_done_callback(background.discard)
         except RuntimeError:
             pass
 
