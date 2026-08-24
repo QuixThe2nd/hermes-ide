@@ -7,7 +7,6 @@ run at most once per hour after that.
 
 from __future__ import annotations
 
-from conftest import FakeDiscord
 from plugins.home_server.core import (
     SYNC_DEBOUNCE_SECONDS,
     reconcile,
@@ -16,24 +15,24 @@ from plugins.home_server.core import (
 )
 
 
-def test_unconfigured_is_inert(hermes, write_config):
+def test_unconfigured_is_inert(hermes, make_discord, write_config):
     write_config({"guild_id": ""})
-    result = sync_if_due(http_fn=FakeDiscord())
+    result = sync_if_due(http_fn=make_discord())
     assert result["enabled"] is False
     assert result.get("synced") is False
 
 
-def test_never_provisioned_does_not_sync(hermes):
+def test_never_provisioned_does_not_sync(hermes, make_discord):
     """The first provision must be an explicit /sethomeserver, never a side
     effect of the gateway connecting."""
-    result = sync_if_due(http_fn=FakeDiscord())
+    result = sync_if_due(http_fn=make_discord())
     assert result["synced"] is False
     assert result["reason"] == "never provisioned"
     assert not (hermes / "home_server" / "state.json").exists()
 
 
-def test_syncs_once_then_debounces(hermes):
-    discord = FakeDiscord()
+def test_syncs_once_then_debounces(hermes, make_discord):
+    discord = make_discord()
     # Provision once (what /sethomeserver does) so state.json exists.
     reconcile(http_fn=discord, now_fn=lambda: 1000.0)
 
