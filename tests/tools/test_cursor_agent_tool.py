@@ -2384,3 +2384,110 @@ def test_delegate_requires_cursor_login_for_cloud_api(monkeypatch, tmp_path):
     assert result["success"] is False
     assert "API key" not in (result.get("error") or "") or result["error"]
     assert _FakePopen.instances == []
+
+def _init_repo_with_origin(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a real repo with a bare `origin` remote, both in tmp_path."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args: str, cwd: Path = repo) -> None:
+        subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        )
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (repo / "file.txt").write_text("one\n", encoding="utf-8")
+    git("add", "file.txt")
+    git("commit", "-m", "c1")
+    bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "clone", "--bare", str(repo), str(bare)],
+        check=True, capture_output=True, text=True,
+    )
+    git("remote", "add", "origin", str(bare))
+    git("push", "-u", "origin", "main")
+    return repo, bare
+
+
+def test_detect_unpushed_head_commits_synced(tmp_path):
+    from tools import cursor_agent_tool
+
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    assert cursor_agent_tool.detect_unpushed_head_commits(str(repo)) is None
+
+
+def test_detect_unpushed_head_commits_ahead(tmp_path):
+    from tools import cursor_agent_tool
+
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    (repo / "file.txt").write_text("two\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "commit", "-am", "c2"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    reason = cursor_agent_tool.detect_unpushed_head_commits(str(repo))
+    assert reason is not None
+    assert "1 unpushed commit" in reason
+    assert "'main'" in reason
+
+
+def test_detect_unpushed_head_commits_behind_or_non_repo(tmp_path):
+    from tools import cursor_agent_tool
+
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    # Behind origin: local HEAD older than origin tip -> not unpushed work.
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    (repo / "file.txt").write_text("local-only\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "commit", "-am", "c2"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "reset", "--hard", head_sha],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    assert cursor_agent_tool.detect_unpushed_head_commits(str(repo)) is None
+    # Not a git repo at all -> cannot determine, no rejection.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert cursor_agent_tool.detect_unpushed_head_commits(str(plain)) is None
+
+
+def test_delegate_refuses_unpushed_workdir(monkeypatch, tmp_path):
+    from tools import cursor_agent_tool
+
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "CURSOR_CLOUD_ENV_PATH",
+        tmp_path / "cursor-cloud.env",
+    )
+    (tmp_path / "cursor-cloud.env").write_text(
+        "CURSOR_API_KEY=test-secret-key\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cursor_agent_tool, "resolve_cursor_agent_binary", lambda: "/usr/bin/agent")
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "resolve_workdir_origin",
+        lambda workdir: "https://github.com/acme/demo",
+    )
+    called = []
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "create_agent_with_timeout_dedupe",
+        lambda payload, api_key: called.append(payload) or ({}, {}),
+    )
+    repo, _bare = _init_repo_with_origin(tmp_path)
+    (repo / "file.txt").write_text("two\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "commit", "-am", "c2"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    result = json.loads(
+        _delegate(task="should refuse", workdir=str(repo.resolve()))
+    )
+    assert result["success"] is False
+    assert "unpushed commit" in result["error"]
+    assert called == []
