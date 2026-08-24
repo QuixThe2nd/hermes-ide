@@ -290,6 +290,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "无法保存主频道：{error}"
     success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
+    discord_pointer:       "💡 想要完整配置？`/sethomeserver` 一键部署整个主服务器——聊天、记忆、配额、速率，全部接好。"
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` 仅在 Discord 上可用——它创建 Discord 分类、频道和 Webhook。"
+    relay_blocked:        "⚠️ 这条消息经由无法认证 Discord 服务器目标的中转送达。请在原生 Discord 消息中运行 `/sethomeserver`。"
+    no_guild:             "⚠️ 无法确定要使用的服务器。请在你的 Discord 主服务器内运行 `/sethomeserver`。"
+    progress:             "🏗️ 正在部署主服务器…（创建缺失的频道并接线——需要几秒钟）"
+    confirm_required:     "⚠️ 你的主服务器已设置为服务器 `{current}`。
+运行 `/sethomeserver confirm` 可将其移至服务器 `{guild_id}`。绝不会删除任何内容，但新服务器将从头部署。"
+    save_failed:          "保存主服务器设置失败：{error}"
+    provision_failed:     "❌ 部署失败：{error}"
+    success:              "🏠 已为服务器 `{guild_id}` 部署主服务器。
+**已创建（{created_count} 个）：** {created_list}
+**已发送欢迎消息：** {embeds_count}
+**已接线：** {wired_list}（{wired_count}）
+**已启用模块：** {modules_count}/4
+主频道：{home_channel_state}——绝不会覆盖现有主频道。
+重新同步最多每小时自动运行一次。"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

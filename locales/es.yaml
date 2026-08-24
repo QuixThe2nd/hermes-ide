@@ -287,6 +287,24 @@ gateway:
   set_home:
     save_failed:           "No se pudo guardar el canal principal: {error}"
     success:               "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."
+    discord_pointer:       "💡 ¿Quieres la configuración completa? `/sethomeserver` aprovisiona un servidor doméstico entero — chat, memoria, cuotas y velocidades — todo conectado."
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` solo funciona en Discord — aprovisiona categorías, canales y webhooks de Discord."
+    relay_blocked:        "⚠️ Este mensaje llegó a través de un relé que no puede autenticar destinos de guild de Discord. Ejecuta `/sethomeserver` desde un mensaje nativo de Discord."
+    no_guild:             "⚠️ No se pudo determinar el servidor. Ejecuta `/sethomeserver` dentro de tu servidor doméstico de Discord."
+    progress:             "🏗️ Aprovisionando tu servidor doméstico… (creando los canales que faltan y conectándolos — tarda unos segundos)"
+    confirm_required:     "⚠️ Tu servidor doméstico ya está fijado al guild `{current}`.
+Ejecuta `/sethomeserver confirm` para moverlo al guild `{guild_id}`. Nunca se elimina nada, pero el guild nuevo se aprovisiona desde cero."
+    save_failed:          "No se pudo guardar la configuración del servidor doméstico: {error}"
+    provision_failed:     "❌ El aprovisionamiento falló: {error}"
+    success:              "🏠 Servidor doméstico aprovisionado para el guild `{guild_id}`.
+**Creados ({created_count}):** {created_list}
+**Mensajes de bienvenida publicados:** {embeds_count}
+**Conectado:** {wired_list} ({wired_count})
+**Módulos activados:** {modules_count}/4
+Canal doméstico: {home_channel_state} — los canales domésticos existentes nunca se sobrescriben.
+La resincronización se ejecuta automáticamente como máximo una vez por hora."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

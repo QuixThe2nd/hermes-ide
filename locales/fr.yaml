@@ -290,6 +290,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Impossible d'enregistrer le canal principal : {error}"
     success:               "✅ Canal principal défini sur **{name}** (ID : {chat_id}).\nLes tâches cron et les messages multi-plateformes seront livrés ici."
+    discord_pointer:       "💡 Vous voulez l'installation complète ? `/sethomeserver` provisionne tout un serveur domestique — chat, mémoire, quotas et vitesses — entièrement câblé."
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` ne fonctionne que sur Discord — il provisionne des catégories, des canaux et des webhooks Discord."
+    relay_blocked:        "⚠️ Ce message est arrivé via un relais qui ne peut pas authentifier les cibles de guild Discord. Lancez `/sethomeserver` depuis un message Discord natif."
+    no_guild:             "⚠️ Impossible de déterminer le serveur. Lancez `/sethomeserver` dans votre serveur domestique Discord."
+    progress:             "🏗️ Provisionnement de votre serveur domestique… (création des canaux manquants et câblage — cela prend quelques secondes)"
+    confirm_required:     "⚠️ Votre serveur domestique est déjà défini sur le guild `{current}`.
+Lancez `/sethomeserver confirm` pour le déplacer vers le guild `{guild_id}`. Rien n'est jamais supprimé, mais le nouveau guild sera provisionné de zéro."
+    save_failed:          "Échec de l'enregistrement du paramètre de serveur domestique : {error}"
+    provision_failed:     "❌ Échec du provisionnement : {error}"
+    success:              "🏠 Serveur domestique provisionné pour le guild `{guild_id}`.
+**Créés ({created_count}) :** {created_list}
+**Messages de bienvenue publiés :** {embeds_count}
+**Câblé :** {wired_list} ({wired_count})
+**Modules activés :** {modules_count}/4
+Canal domestique : {home_channel_state} — les canaux domestiques existants ne sont jamais écrasés.
+Les resynchronisations s'exécutent automatiquement au maximum une fois par heure."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

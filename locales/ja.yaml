@@ -290,6 +290,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "ホームチャンネルを保存できませんでした: {error}"
     success:               "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"
+    discord_pointer:       "💡 完全なセットアップが欲しいですか？ `/sethomeserver` はチャット・メモリ・クォータ・速度を備えたホームサーバー全体をまるごとプロビジョニングします。"
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` は Discord 専用です — Discord のカテゴリ・チャンネル・ウェブフックをプロビジョニングします。"
+    relay_blocked:        "⚠️ このメッセージは Discord ギルドターゲットを認証できないリレー経由で届きました。ネイティブな Discord メッセージから `/sethomeserver` を実行してください。"
+    no_guild:             "⚠️ サーバーを特定できませんでした。Discord のホームサーバー内で `/sethomeserver` を実行してください。"
+    progress:             "🏗️ ホームサーバーをプロビジョニング中…（不足チャンネルの作成と接続中 — 数秒かかります）"
+    confirm_required:     "⚠️ ホームサーバーはすでにギルド `{current}` に設定されています。
+ギルド `{guild_id}` へ移動するには `/sethomeserver confirm` を実行してください。削除されることはありませんが、新しいギルドはゼロからプロビジョニングされます。"
+    save_failed:          "ホームサーバー設定を保存できませんでした: {error}"
+    provision_failed:     "❌ プロビジョニングに失敗しました: {error}"
+    success:              "🏠 ギルド `{guild_id}` のホームサーバーをプロビジョニングしました。
+**作成（{created_count}）:** {created_list}
+**投稿されたウェルカムメッセージ:** {embeds_count}
+**接続済み:** {wired_list}（{wired_count}）
+**有効なモジュール:** {modules_count}/4
+ホームチャンネル: {home_channel_state} — 既存のホームチャンネルは上書きされません。
+再同期は最大で1時間に1回自動実行されます。"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
