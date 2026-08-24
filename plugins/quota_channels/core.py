@@ -132,8 +132,22 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(now_fn: NowFn = time.time) -> int:
-    state = {"last_quota_success": int(now_fn())}
+def save_state(
+    readings: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    now_fn: NowFn = time.time,
+) -> int:
+    # readings: per-provider slug -> {'pct', 'reset_seconds', 'label'} from the
+    # tick that just succeeded; failed providers stay absent (no stale merge).
+    state: Dict[str, Any] = {"last_quota_success": int(now_fn())}
+    if readings is not None:
+        state["readings"] = {
+            str(key): {
+                "pct": entry["pct"],
+                "reset_seconds": entry["reset_seconds"],
+                "label": entry["label"],
+            }
+            for key, entry in readings.items()
+        }
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -1427,6 +1441,7 @@ def run_tick(
 
     if did_quota:
         entries: List[Tuple[str, str, float]] = []
+        readings: Dict[str, Dict[str, Any]] = {}
         for key, label, channel_id in config["providers"]:
             try:
                 prov_label, reset_secs, channel_name, rename, token_info = (
@@ -1441,18 +1456,24 @@ def run_tick(
                     msg = f"{type(exc).__name__}: {exc}"
                 provider_results[label] = {"error": msg}
                 continue
+            remaining = _remaining_from_name(channel_name, prov_label)
             provider_results[prov_label] = {
-                "remaining": _remaining_from_name(channel_name, prov_label),
+                "remaining": remaining,
                 "reset_seconds": reset_secs,
                 "rename": rename,
                 **token_info,
+            }
+            readings[key] = {
+                "pct": _reading_pct(remaining),
+                "reset_seconds": reset_secs,
+                "label": prov_label,
             }
             entries.append((label, channel_id, reset_secs))
         if entries:
             sorted_channels = sort_voice_channels(
                 config, entries, headers, http_fn=http_fn
             )
-            last = save_state(now_fn=now_fn)
+            last = save_state(readings, now_fn=now_fn)
 
     category_status = update_category(
         config["category_id"],
@@ -1481,3 +1502,10 @@ def _remaining_from_name(channel_name: str, label: str) -> Any:
     body = channel_name.split(":", 1)[1].strip()
     pct = body.split("\u2022", 1)[0].strip().rstrip("%")
     return int(pct)
+
+
+def _reading_pct(remaining: Any) -> int:
+    # cursor carries auto/api remaining; precise state scores the weaker one
+    if isinstance(remaining, Mapping):
+        return min(int(remaining["auto"]), int(remaining["api"]))
+    return int(remaining)
