@@ -306,6 +306,7 @@ gateway:
 
   set_home_server:
     discord_only:          "⚠️ `/sethomeserver` only works on Discord — it provisions Discord categories, channels, and webhooks."
+    relay_blocked:         "⚠️ This message arrived through a relay that can't authenticate Discord guild targets. Run `/sethomeserver` from a native Discord message."
     no_guild:              "⚠️ Couldn't tell which server to use. Run `/sethomeserver` inside your Discord home server."
     progress:              "🏗️ Provisioning your home server… (creating missing channels and wiring them up — this takes a few seconds)"
     confirm_required:      "⚠️ Your home server is already set to guild `{current}`.\nRun `/sethomeserver confirm` to move it to guild `{guild_id}`. Nothing is ever deleted, but the new guild will be provisioned from scratch."

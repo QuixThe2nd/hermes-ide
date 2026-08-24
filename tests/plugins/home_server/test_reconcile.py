@@ -41,7 +41,7 @@ def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
         assert len(under) == len(spec.channels), key
 
 
-def test_second_run_is_a_noop(hermes, guild, make_discord):
+def test_second_run_is_idempotent(hermes, guild, make_discord):
     discord = make_discord()
     reconcile(http_fn=discord)
 
@@ -56,6 +56,29 @@ def test_second_run_is_a_noop(hermes, guild, make_discord):
     assert discord.channels == before_channels
     assert discord.messages == before_messages
     # The second run issued no mutating call at all.
+    assert len(discord.mutations) == mutations_after_first
+
+
+def test_dryrun_double_provision_second_run_creates_nothing(hermes, guild, make_discord):
+    """The operator's dogfood gate in miniature: provision twice against a
+    fresh HERMES_HOME and a mocked transport, and prove by *call counts* that
+    the second run creates no channels, mints no webhooks, and reposts no
+    embeds."""
+    discord = make_discord()
+
+    first = reconcile(http_fn=discord)
+    mutations_after_first = len(discord.mutations)
+
+    second = reconcile(http_fn=discord)
+
+    assert len(first["created"]) == FIRST_RUN_CREATES
+    assert second["created"] == []
+    assert second["embeds_posted"] == []
+    # Zero new channel creates, webhook creates, or message posts on run two.
+    assert discord.count("POST", f"/guilds/{guild}/channels") == FIRST_RUN_CREATES
+    assert discord.count("POST", "/channels/") == len(discord.messages) + len(
+        discord.webhooks
+    )
     assert len(discord.mutations) == mutations_after_first
 
 

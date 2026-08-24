@@ -48,13 +48,15 @@ def _make_runner(tmp_path):
     return runner
 
 
-def _event(platform, *, scope_id=None, args="", chat_id="c1"):
+def _event(platform, *, scope_id=None, args="", chat_id="c1", via_relay=False):
     source = SessionSource(
         chat_id=chat_id,
         user_id="user1",
         platform=platform,
         scope_id=scope_id,
     )
+    if via_relay:
+        source.delivered_via_upstream_relay = True
     event = MessageEvent(text="/sethomeserver", message_type=MessageType.TEXT, source=source)
     event.get_command_args = lambda: args
     return event
@@ -107,6 +109,46 @@ async def test_relay_fronted_source_is_rejected(runner, stub_reconcile):
     )
     assert "only works on Discord" in result
     assert stub_reconcile == []
+
+
+@pytest.mark.asyncio
+async def test_relay_delivered_discord_source_is_rejected(runner, stub_reconcile):
+    """Relay-guard parity with /sethome: a Discord-platform source that
+    arrived via an upstream relay passes the platform check, so it must be
+    refused unless the relay actually fronts Discord AND authenticated the
+    sender. Here no relay adapter fronts Discord, so nothing may run."""
+    runner._adapter_for_source = lambda source: None
+    result = await runner._handle_set_home_server_command(
+        _event(Platform.DISCORD, scope_id="900000000000000001", via_relay=True)
+    )
+    assert "relay" in result.lower()
+    assert stub_reconcile == []
+
+    # And an authenticating relay still needs a sender identity.
+    fronting = MagicMock()
+    fronting.fronts_platform = lambda platform: platform is Platform.DISCORD
+    runner._adapter_for_source = lambda source: fronting
+    no_user = _event(Platform.DISCORD, scope_id="900000000000000001", via_relay=True)
+    no_user.source.user_id = None
+    result = await runner._handle_set_home_server_command(no_user)
+    assert "relay" in result.lower()
+    assert stub_reconcile == []
+
+
+@pytest.mark.asyncio
+async def test_authenticating_relay_fronting_discord_is_allowed(
+    runner, hermes, stub_reconcile
+):
+    """The other side of parity: a relay that fronts Discord and authenticated
+    the sender may drive provisioning, exactly as it may set a home channel."""
+    fronting = MagicMock()
+    fronting.fronts_platform = lambda platform: platform is Platform.DISCORD
+    runner._adapter_for_source = lambda source: fronting
+    result = await runner._handle_set_home_server_command(
+        _event(Platform.DISCORD, scope_id="900000000000000001", via_relay=True)
+    )
+    assert len(stub_reconcile) == 1
+    assert "900000000000000001" in result
 
 
 @pytest.mark.asyncio

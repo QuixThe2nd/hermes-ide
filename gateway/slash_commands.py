@@ -3292,6 +3292,22 @@ class GatewaySlashCommandsMixin:
         if source.platform is not Platform.DISCORD:
             return t("gateway.set_home_server.discord_only")
 
+        # Relay guard, same posture as /sethome: a relay-fronted Discord
+        # message passes the platform check above, but only a relay that
+        # actually fronts Discord and authenticated the sender may drive a
+        # guild-level config write + provisioning.
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        if via_relay:
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
+            if (
+                not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(Platform.DISCORD)
+            ):
+                return t("gateway.set_home_server.relay_blocked")
+
         raw_args = event.get_command_args().strip()
         confirmed = raw_args.lower() in {"confirm", "yes", "--confirm"}
 
