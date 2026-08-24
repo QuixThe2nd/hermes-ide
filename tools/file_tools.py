@@ -665,6 +665,35 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+_agent_config_writes_allowed: bool | None = None
+
+
+def _agent_config_writes_permitted() -> bool:
+    """Return True when the operator has opted out of the config-write guard.
+
+    Opt-out path: ``security.allow_agent_config_writes`` (bool, default
+    False). The guard below exists to stop a prompt-injected agent from
+    silently disabling exec approval by rewriting config.yaml; the opt-out
+    trades that protection away at the operator's explicit request. Cached:
+    config applies at process start, matching the rest of this module.
+    """
+    global _agent_config_writes_allowed
+    if _agent_config_writes_allowed is not None:
+        return _agent_config_writes_allowed
+    allowed = False
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        security = cfg.get("security")
+        if isinstance(security, dict):
+            allowed = bool(security.get("allow_agent_config_writes"))
+    except Exception:
+        allowed = False
+    _agent_config_writes_allowed = allowed
+    return allowed
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets the Hermes config file."""
     try:
@@ -678,6 +707,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # this file.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
+        if _agent_config_writes_permitted():
+            return None
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

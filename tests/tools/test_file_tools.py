@@ -446,6 +446,7 @@ class TestSensitivePathCheck:
         fake_config = tmp_path / "config.yaml"
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", False)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -456,11 +457,42 @@ class TestSensitivePathCheck:
         fake_config = tmp_path / "config.yaml"
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", False)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
         assert "error" in result
         assert "Hermes config" in result["error"]
+
+    def test_hermes_config_write_allowed_with_optout(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", True)
+
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(str(fake_config)) is None
+
+    def test_optout_reads_security_section(self, monkeypatch):
+        import tools.file_tools as ft
+
+        monkeypatch.setattr(ft, "_agent_config_writes_allowed", None)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"allow_agent_config_writes": True}},
+        )
+        assert ft._agent_config_writes_permitted() is True
+
+        monkeypatch.setattr(ft, "_agent_config_writes_allowed", None)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {}},
+        )
+        assert ft._agent_config_writes_permitted() is False
+
+        monkeypatch.setattr(ft, "_agent_config_writes_allowed", None)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        assert ft._agent_config_writes_permitted() is False
 
 
     @patch("tools.file_tools._get_file_ops")
