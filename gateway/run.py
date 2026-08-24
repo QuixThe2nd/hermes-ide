@@ -14138,7 +14138,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
-        
+
+        # Discord Home Server re-sync (debounced to <=1/hour). Fire-and-forget
+        # and fully failure-isolated: provisioning must never delay or break
+        # gateway connect, and the very first provision is always an explicit
+        # /sethomeserver — this path is a no-op until state.json exists.
+        try:
+            asyncio.get_running_loop().create_task(self._sync_home_server_if_due())
+        except RuntimeError:
+            pass
+
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory
@@ -18689,6 +18698,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
+
+        if canonical == "sethomeserver":
+            return await self._handle_set_home_server_command(event)
 
         if canonical == "compress":
             return await self._handle_compress_command(event)

@@ -302,6 +302,16 @@ gateway:
   set_home:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
+    discord_pointer:       "💡 Want the full setup? `/sethomeserver` provisions a whole home server — chat, memory, quotas, and speeds — all wired up."
+
+  set_home_server:
+    discord_only:          "⚠️ `/sethomeserver` only works on Discord — it provisions Discord categories, channels, and webhooks."
+    no_guild:              "⚠️ Couldn't tell which server to use. Run `/sethomeserver` inside your Discord home server."
+    progress:              "🏗️ Provisioning your home server… (creating missing channels and wiring them up — this takes a few seconds)"
+    confirm_required:      "⚠️ Your home server is already set to guild `{current}`.\nRun `/sethomeserver confirm` to move it to guild `{guild_id}`. Nothing is ever deleted, but the new guild will be provisioned from scratch."
+    save_failed:           "Failed to save home server setting: {error}"
+    provision_failed:      "❌ Provisioning failed: {error}"
+    success:               "🏠 Home server provisioned for guild `{guild_id}`.\n**Created {created_count}:** {created_list}\n**Welcome messages posted:** {embeds_count}\n**Wired:** {wired_list} ({wired_count})\n**Modules enabled:** {modules_count}/4\nHome channel: {home_channel_state} — existing home channels are never overwritten.\nRe-syncs run automatically at most once per hour."
 
   context:
     header:                "🧠 **Context Window**"

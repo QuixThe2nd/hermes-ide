@@ -233,6 +233,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("sethomeserver", "Provision and wire the Discord home server", "Session",
+               gateway_only=True, args_hint="[confirm]"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 
