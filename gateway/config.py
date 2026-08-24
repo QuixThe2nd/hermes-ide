@@ -1029,6 +1029,13 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    # Restart-progress channel renaming (opt-in). When configured with a
+    # platform + channel_id, the channel is renamed to
+    # "restarting-<N>-agents" while draining for shutdown/restart and
+    # restored to its base name once the gateway finishes booting. See
+    # gateway/restart_channel_rename.py. None = disabled.
+    restart_channel_rename: Optional[dict] = None
+
     def __post_init__(self) -> None:
         self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(
             self.multiplex_profile_allowlist
@@ -1338,6 +1345,11 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            restart_channel_rename=(
+                data["restart_channel_rename"]
+                if isinstance(data.get("restart_channel_rename"), dict)
+                else None
+            ),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1550,6 +1562,14 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data[_wd_key] = yaml_cfg[_wd_key]
                 elif isinstance(gateway_section, dict) and _wd_key in gateway_section:
                     gw_data[_wd_key] = gateway_section[_wd_key]
+
+            # Restart-progress channel rename config: nested
+            # ``gateway.restart_channel_rename`` form only (it is a dict, so
+            # the flat top-level spelling would collide with other sections).
+            if isinstance(gateway_section, dict) and "restart_channel_rename" in gateway_section:
+                _rcr = gateway_section["restart_channel_rename"]
+                if isinstance(_rcr, dict):
+                    gw_data["restart_channel_rename"] = _rcr
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[

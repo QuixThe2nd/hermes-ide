@@ -12895,6 +12895,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 finally:
                     _clear_planned_restart_notification()
             await self._send_shutdown_comeback_notifications(skip_targets=skip_targets)
+            try:
+                from gateway.restart_channel_rename import restore_on_startup
+
+                await restore_on_startup(self)
+            except Exception:
+                logger.debug(
+                    "restart-channel-rename startup hook failed", exc_info=True
+                )
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())
@@ -15812,6 +15820,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
             await self._notify_active_sessions_of_shutdown()
+            try:
+                from gateway.restart_channel_rename import rename_on_shutdown
+
+                await rename_on_shutdown(self)
+            except Exception:
+                logger.debug(
+                    "restart-channel-rename shutdown hook failed", exc_info=True
+                )
             logger.info(
                 "Shutdown phase: notify_active_sessions done at +%.2fs",
                 _phase_elapsed(),
