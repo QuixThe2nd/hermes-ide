@@ -622,7 +622,7 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                     "can watch (and steer) the run live at claude.ai/code or in "
                     "the Claude mobile app while it executes. Defaults to false, "
                     "which uses the GLM/Kimi wrapper lanes unchanged. "
-                    "Requirements and limits: needs a POSIX pseudo-terminal, "
+                    "Requirements and limits: needs a POSIX pseudo-terminal (PTY), "
                     "`claude auth login` with a first-party claude.ai "
                     "subscription, and no custom provider configured — Remote "
                     "Control is unavailable with a custom ANTHROPIC_BASE_URL, "
@@ -647,7 +647,7 @@ def _handle_delegate_claude_agent(args, **kw):
         timeout_seconds=args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
         allowed_tools=args.get("allowed_tools", DEFAULT_ALLOWED_TOOLS),
         permission_mode=args.get("permission_mode", DEFAULT_PERMISSION_MODE),
-        remote_control=bool(args.get("remote_control", False)),
+        remote_control=args.get("remote_control", False) is True,
         task_id=kw.get("task_id"),
     )
 

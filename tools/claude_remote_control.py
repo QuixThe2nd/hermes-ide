@@ -637,7 +637,7 @@ class TranscriptWatcher:
         self.projects_root = Path(projects_root)
         self.appear_deadline = appear_deadline
         self._offset = 0
-        self._partial = ""
+        self._partial = b""
         self._events: List[Dict[str, Any]] = []
         self._last_growth_mono = time.monotonic()
         self._appeared = False
@@ -686,7 +686,7 @@ class TranscriptWatcher:
             # Truncated/rotated underneath us — restart from the top rather
             # than silently reading garbage.
             self._offset = 0
-            self._partial = ""
+            self._partial = b""
             self._events = []
 
         try:
@@ -700,20 +700,20 @@ class TranscriptWatcher:
             return []
 
         self._last_growth_mono = time.monotonic()
-        text = self._partial + chunk.decode("utf-8", errors="replace")
+        data = self._partial + chunk
 
         # Hold back everything after the final newline: it is still arriving.
-        cut = text.rfind("\n")
+        cut = data.rfind(b"\n")
         if cut < 0:
-            self._check_partial_budget(text)
-            self._partial = text
+            self._check_partial_budget(data)
+            self._partial = data
             return []
-        complete, self._partial = text[: cut + 1], text[cut + 1 :]
+        complete, self._partial = data[: cut + 1], data[cut + 1 :]
         self._check_partial_budget(self._partial)
 
         newly_read: List[Dict[str, Any]] = []
-        for raw_line in complete.split("\n"):
-            stripped = raw_line.strip()
+        for raw_line in complete.split(b"\n"):
+            stripped = raw_line.decode("utf-8", errors="replace").strip()
             if not stripped:
                 continue
             if len(stripped) > _TRANSCRIPT_MAX_LINE_BYTES:
@@ -731,7 +731,7 @@ class TranscriptWatcher:
         return newly_read
 
     @staticmethod
-    def _check_partial_budget(partial: str) -> None:
+    def _check_partial_budget(partial: bytes) -> None:
         if len(partial) > _TRANSCRIPT_MAX_LINE_BYTES:
             raise RemoteControlRunError(
                 f"transcript line exceeds {_TRANSCRIPT_MAX_LINE_BYTES} bytes"
@@ -775,6 +775,7 @@ class RemoteControlRun:
         timeout_seconds: int = 0,
         stall_watchdog_seconds: float = STALL_WATCHDOG_SECONDS,
         startup_timeout_seconds: float = STARTUP_URL_TIMEOUT_SECONDS,
+        transcript_appear_grace_seconds: float = _TRANSCRIPT_APPEAR_GRACE_SECONDS,
         log_path: Optional[Path] = None,
         pty_log_path: Optional[Path] = None,
     ) -> None:
@@ -787,6 +788,7 @@ class RemoteControlRun:
         self.timeout_seconds = int(timeout_seconds)
         self.stall_watchdog_seconds = float(stall_watchdog_seconds)
         self.startup_timeout_seconds = float(startup_timeout_seconds)
+        self.transcript_appear_grace_seconds = float(transcript_appear_grace_seconds)
         self.log_path = Path(log_path) if log_path else None
         self.pty_log_path = Path(pty_log_path) if pty_log_path else None
 
@@ -918,9 +920,14 @@ class RemoteControlRun:
         """Block until the CLI publishes a strict Remote Control URL.
 
         Any PTY byte resets the idle clock, so this is a genuine wall-clock
-        bound rather than a quiet-detector.
+        bound rather than a quiet-detector.  Interrupt and the run's overall
+        wall-clock timeout (``timeout_seconds``) are honored the same way as in
+        :meth:`await_report`.
         """
         deadline = self._started_mono + self.startup_timeout_seconds
+        hard_deadline = (
+            self._started_mono + self.timeout_seconds if self.timeout_seconds > 0 else None
+        )
         while True:
             url = extract_progress_url(self.ansi_stripped_pty_text())
             if url:
@@ -931,7 +938,12 @@ class RemoteControlRun:
                 raise RemoteControlStartupError(
                     "Claude Code exited before publishing a Remote Control URL"
                 )
-            if time.monotonic() >= deadline:
+            if _check_interrupted():
+                raise RemoteControlRunError("interrupted")
+            now = time.monotonic()
+            if hard_deadline is not None and now >= hard_deadline:
+                raise RemoteControlRunError("timeout")
+            if now >= deadline:
                 raise RemoteControlStartupError(
                     "Claude Code did not publish a Remote Control URL within "
                     f"{int(self.startup_timeout_seconds)}s — Remote Control is "
@@ -968,7 +980,7 @@ class RemoteControlRun:
             self.transcript_path,
             self.session_id,
             projects_root=self.projects_root,
-            appear_deadline=time.monotonic() + _TRANSCRIPT_APPEAR_GRACE_SECONDS,
+            appear_deadline=time.monotonic() + self.transcript_appear_grace_seconds,
         )
         self._log_line(
             {
@@ -1018,7 +1030,7 @@ class RemoteControlRun:
                 raise RemoteControlRunError(
                     "Claude Code created no session transcript at "
                     f"{self.transcript_path} within "
-                    f"{int(_TRANSCRIPT_APPEAR_GRACE_SECONDS)}s"
+                    f"{int(self.transcript_appear_grace_seconds)}s"
                 )
 
             if _check_interrupted():
@@ -1058,14 +1070,15 @@ class RemoteControlRun:
         died first.
         """
         try:
-            self._signal_group(_SIGTERM)
-            if not self._wait_leader_gone(_TERM_GRACE_SECONDS):
+            if self.pid is not None:
+                self._signal_group(_SIGTERM)
+                if not self._wait_leader_gone(_TERM_GRACE_SECONDS):
+                    self._signal_group(_SIGKILL)
+                    self._wait_leader_gone(_KILL_GRACE_SECONDS)
+                # Kill whatever the leader left behind (its own children), then
+                # wait for the group to actually disappear.
                 self._signal_group(_SIGKILL)
-                self._wait_leader_gone(_KILL_GRACE_SECONDS)
-            # Kill whatever the leader left behind (its own children), then
-            # wait for the group to actually disappear.
-            self._signal_group(_SIGKILL)
-            self._wait_group_empty(_KILL_GRACE_SECONDS)
+                self._wait_group_empty(_KILL_GRACE_SECONDS)
         finally:
             self._close_pty()
             self._join_reader()
@@ -1082,9 +1095,7 @@ class RemoteControlRun:
         if self.pgid is None or not _KILLPG_SUPPORTED:
             return
         try:
-            # windows-footgun: ok — guarded by _KILLPG_SUPPORTED plus the
-            # remote_control_platform_supported() gate that fail-closes the lane.
-            os.killpg(self.pgid, sig)
+            os.killpg(self.pgid, sig)  # windows-footgun: ok — _KILLPG_SUPPORTED + platform gate
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
@@ -1104,9 +1115,7 @@ class RemoteControlRun:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                # windows-footgun: ok — guarded by _KILLPG_SUPPORTED plus the
-                # POSIX platform gate that fail-closes the lane.
-                os.killpg(self.pgid, 0)
+                os.killpg(self.pgid, 0)  # windows-footgun: ok — _KILLPG_SUPPORTED + platform gate
             except (ProcessLookupError, OSError):
                 return
             time.sleep(_REAP_POLL_SECONDS)
@@ -1189,7 +1198,7 @@ def incompatible_model_reason(model: str | None) -> Optional[str]:
     for marker in _INCOMPATIBLE_MODEL_MARKERS:
         if marker not in name:
             continue
-        provider = "Kimi" if marker == "kimi" else "GLM"
+        provider = "Kimi" if marker in ("kimi", "moonshot") else "GLM"
         return (
             f"model {model!r} requests the {provider} wrapper lane; Remote "
             "Control runs only on the locally authenticated first-party "
@@ -1278,6 +1287,8 @@ def run_remote_control_delegation(
     allowed_tools: str = "Read,Write,Edit,Glob,Grep,Bash",
     permission_mode: str = "acceptEdits",
     stall_watchdog_seconds: float = STALL_WATCHDOG_SECONDS,
+    startup_timeout_seconds: float = STARTUP_URL_TIMEOUT_SECONDS,
+    transcript_appear_grace_seconds: float = _TRANSCRIPT_APPEAR_GRACE_SECONDS,
     log_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Execute one Remote Control delegation; return the delegate result fields.
@@ -1378,36 +1389,35 @@ def run_remote_control_delegation(
             projects_root=claude_projects_root(),
             timeout_seconds=clamped_timeout,
             stall_watchdog_seconds=stall_watchdog_seconds,
+            startup_timeout_seconds=startup_timeout_seconds,
+            transcript_appear_grace_seconds=transcript_appear_grace_seconds,
             log_path=log_path,
             pty_log_path=pty_log_path,
         )
-        run._log_line(
-            {
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "event": "start",
-                "lane": "remote_control",
-                "argv": argv,
-                "workdir": resolved_workdir,
-                "session_name": session_name,
-                "session_id": session_id,
-                "auth": auth_summary,
-                "timeout_seconds": clamped_timeout,
-            }
-        )
-
         started = time.monotonic()
         try:
             run.start()
-            try:
-                url = run.await_progress_url()
-                fields["progress_url"] = url
-                metadata["progress_url"] = url
-                report = run.await_report()
-            finally:
-                # The interactive CLI is still alive here by design; stop it on
-                # every path so no orphan outlives the tool call.
-                run.stop()
+            run._log_line(
+                {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "event": "start",
+                    "lane": "remote_control",
+                    "argv": argv,
+                    "workdir": resolved_workdir,
+                    "session_name": session_name,
+                    "session_id": session_id,
+                    "auth": auth_summary,
+                    "timeout_seconds": clamped_timeout,
+                }
+            )
+            url = run.await_progress_url()
+            fields["progress_url"] = url
+            metadata["progress_url"] = url
+            report = run.await_report()
         finally:
+            # The interactive CLI is still alive here by design; stop it on
+            # every path so no orphan outlives the tool call.
+            run.stop()
             fields["duration_seconds"] = round(time.monotonic() - started, 3)
 
         fields["final_report"] = report["final_report"]

@@ -14,6 +14,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Delegation — `delegate_cursor_agent` states its real contract (cloud checkout from pushed refs only) and refuses to start when local HEAD has unpushed commits, so cloud runs can't silently target the wrong repository shape
   - Delegation — send coding tasks to the Claude Code CLI, straight from chat
   - Delegation — `delegate_claude_agent` supports Claude Code `/goal` headless: pass a `/goal <condition>` task and the run loops until a model judge confirms the condition met (verified with the claude-glm wrapper)
+  - Delegation — `delegate_claude_agent` gains opt-in `remote_control=true`: the task runs on your locally authenticated first-party Claude Code (bare `claude` on a real PTY, never the GLM/Kimi wrappers) and returns a `progress_url` so you can watch and steer the run live at claude.ai/code or the Claude mobile app
   - Delegation — `delegate_claude_agent` writes stream-json run logs, so claude-runs logs are live-tailable for progress reporting
   - Delegation — delegate coding tools run unbounded by default; stall watchdog is the only kill switch
   - Delegation — `delegate_task action='list'` surfaces per-child liveness (current tool, iteration, seconds since activity, stalled flag) so a wedged subagent is distinguishable from a slow one
