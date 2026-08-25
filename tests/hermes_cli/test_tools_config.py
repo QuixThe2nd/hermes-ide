@@ -93,10 +93,11 @@ def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     config = {"platform_toolsets": {"cli": ["hermes"]}}
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
-        _get_platform_tools(config, "cli")
+        enabled = _get_platform_tools(config, "cli")
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("#38798" in m and "hermes" in m for m in warnings), warnings
+    assert "hermes" not in enabled
 
 
 def test_valid_platform_toolsets_no_runtime_warning(caplog):
@@ -109,16 +110,64 @@ def test_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
-def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
-    """When at least one configured toolset is valid, tools still resolve, so
-    the runtime zero-tools warning must not fire (the migration-time check still
-    flags the individual bad name)."""
+def test_configured_mcp_name_is_not_warned_or_dropped(caplog):
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {
+        "mcp_servers": {"custom-mcp": {"command": "example"}},
+        "platform_toolsets": {"cli": ["hermes-cli", "custom-mcp"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "custom-mcp" in enabled
+    assert not any("custom-mcp" in r.getMessage() for r in caplog.records)
+
+
+def test_plugin_toolset_name_is_not_warned_or_dropped(caplog):
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "custom-plugin"]}}
+
+    with patch("hermes_cli.tools_config._get_plugin_toolset_keys", return_value={"custom-plugin"}), \
+         caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "custom-plugin" in enabled
+    assert not any("custom-plugin" in r.getMessage() for r in caplog.records)
+
+
+def test_partially_valid_platform_toolsets_warns_and_drops_unknown_name(caplog):
+    """A typo alongside a valid composite must not survive as a phantom toolset."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("cli")
     config = {"platform_toolsets": {"cli": ["hermes-cli", "bogus"]}}
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
-        _get_platform_tools(config, "cli")
+        enabled = _get_platform_tools(config, "cli")
 
-    assert not any("#38798" in r.getMessage() for r in caplog.records)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("platform_toolsets: bogus" in m for m in warnings), warnings
+    assert "bogus" not in enabled
+    assert "terminal" in enabled
+
+
+def test_unknown_disabled_toolset_logs_runtime_warning(caplog):
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("telegram")
+    config = {"agent": {"disabled_toolsets": ["terminal", "termnial"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "telegram")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("agent.disabled_toolsets: termnial" in m for m in warnings), warnings
+    assert "terminal" not in enabled
 
 
 

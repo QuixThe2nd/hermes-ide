@@ -70,7 +70,7 @@ def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
             pass
     return flags
 
-# Platforms already warned about an all-invalid platform_toolsets list, so the
+# Platforms already warned about invalid configured toolset names, so the
 # runtime check in _get_platform_tools warns once per platform instead of on
 # every tool resolution for a persistently-corrupt config (#38798).
 _warned_invalid_platform_toolsets: Set[str] = set()
@@ -2414,7 +2414,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import resolve_toolset, validate_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -2679,6 +2679,7 @@ def _get_platform_tools(
     # JSON-mode editor save; parse it so the list is not silently dead (#86661).
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    disabled_set: Set[str] = set()
     if disabled_toolsets:
         from agent.skill_utils import parse_config_string_list
 
@@ -2687,30 +2688,51 @@ def _get_platform_tools(
         }
         enabled_toolsets -= disabled_set
 
-    # #38798: if this platform was explicitly configured but every toolset name
-    # is invalid (e.g. a migration or hand-edit left `hermes` instead of
-    # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends
-    # up with no native tools — silently, with no error. Surface it at the point
-    # tools are resolved for a session so an already-corrupted config is caught
-    # at runtime, not only during the next `hermes update`/`hermes doctor`.
+    # #38798: surface unknown names at runtime, including mixed lists such as
+    # ["hermes-whatsapp", "image"]. The old all-invalid-only check missed that
+    # common typo and explicit_passthrough then reported the phantom name as
+    # enabled even though it resolved to zero tools.
     _explicit = platform_toolsets.get(platform)
-    if isinstance(_explicit, list) and _explicit:
-        from toolsets import validate_toolset
+    _named = (
+        [str(t) for t in _explicit if isinstance(t, str) and t]
+        if isinstance(_explicit, list)
+        else []
+    )
+    mcp_cfg = config.get("mcp_servers") or {}
+    configured_mcp_names = set(mcp_cfg) if isinstance(mcp_cfg, dict) else set()
+    unknown_platform_names = sorted({
+        name for name in _named
+        if name != "no_mcp"
+        and name not in configured_mcp_names
+        and name not in plugin_ts_keys
+        and not validate_toolset(name)
+    })
+    unknown_disabled_names = sorted({
+        name for name in disabled_set
+        if name not in plugin_ts_keys and not validate_toolset(name)
+    })
 
-        _named = [str(t) for t in _explicit if isinstance(t, str) and t]
-        if (
-            _named
-            and not any(validate_toolset(t) for t in _named)
-            and platform not in _warned_invalid_platform_toolsets
-        ):
-            _warned_invalid_platform_toolsets.add(platform)
-            logger.warning(
-                "platform '%s' has no valid toolsets configured (unknown "
-                "name(s): %s) - tools will be unavailable. Run `hermes tools` "
-                "to reconfigure. See issue #38798.",
-                platform,
-                ", ".join(_named),
-            )
+    # Never claim an unresolved passthrough name is enabled. Registered plugin,
+    # custom, and MCP names remain valid through the allowlists above.
+    enabled_toolsets.difference_update(unknown_platform_names)
+
+    if (
+        (unknown_platform_names or unknown_disabled_names)
+        and platform not in _warned_invalid_platform_toolsets
+    ):
+        _warned_invalid_platform_toolsets.add(platform)
+        sources = []
+        if unknown_platform_names:
+            sources.append("platform_toolsets: " + ", ".join(unknown_platform_names))
+        if unknown_disabled_names:
+            sources.append("agent.disabled_toolsets: " + ", ".join(unknown_disabled_names))
+        logger.warning(
+            "platform '%s' references unknown toolset name(s) (%s) - unknown "
+            "names resolve no tools and were ignored. Run `hermes tools` to "
+            "reconfigure. See issue #38798.",
+            platform,
+            "; ".join(sources),
+        )
 
     return enabled_toolsets
 
