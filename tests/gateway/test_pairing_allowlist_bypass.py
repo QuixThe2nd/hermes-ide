@@ -392,3 +392,96 @@ def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
     assert adapter._live_dm_allow_from() == set()
     assert adapter._is_dm_intake_allowed("15551234567") is False
     assert adapter._is_dm_allowed("15551234567") is False
+
+
+# --------------------------------------------------------------------------
+# profile-scoped stores: the global allowlist belongs to the default profile
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def profile_store(tmp_path, monkeypatch):
+    """A secondary-profile (assistant) PairingStore backed by a temp home."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir(parents=True, exist_ok=True)
+    import importlib
+
+    import gateway.pairing as pairing_mod
+    importlib.reload(pairing_mod)
+    return pairing_mod.PairingStore(profile="assistant")
+
+
+@pytest.fixture
+def capture_env_writes(monkeypatch):
+    """Capture hermes_cli.config env writes instead of touching a real .env."""
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    monkeypatch.setattr(
+        cfg,
+        "remove_env_value",
+        lambda k: (saved.__setitem__("<removed>" + k, True), os.environ.pop(k, None)),
+    )
+    return saved
+
+
+def test_profile_scoped_approval_does_not_touch_global_allowlist(
+    profile_store, monkeypatch, capture_env_writes
+):
+    """Approving on a secondary profile must not authorize as the default.
+
+    Mission dispatch pairs the contact on the serving profile (e.g.
+    ``assistant``); mirroring that grant into WHATSAPP_ALLOWED_USERS would
+    leave the contact answered by default-me after the mission closes.
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "owner1")
+
+    profile_store._approve_user("whatsapp", "61491234567@s.whatsapp.net", "Mission Contact")
+
+    assert profile_store.is_approved("whatsapp", "61491234567@s.whatsapp.net") is True
+    assert capture_env_writes == {}  # no mirror write happened at all
+    assert os.environ.get("WHATSAPP_ALLOWED_USERS") == "owner1"
+
+
+def test_profile_scoped_revoke_does_not_strip_global_allowlist(
+    profile_store, monkeypatch, capture_env_writes
+):
+    """Profile-scoped revoke must not remove a default-profile grant."""
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "owner1,61491234567")
+
+    profile_store._approve_user("whatsapp", "61491234567", "")
+    assert profile_store.revoke("whatsapp", "61491234567@s.whatsapp.net") is True
+    assert profile_store.is_approved("whatsapp", "61491234567") is False
+
+    assert capture_env_writes == {}
+    assert os.environ.get("WHATSAPP_ALLOWED_USERS") == "owner1,61491234567"
+
+
+def test_default_profile_store_still_mirrors_allowlist(tmp_path, monkeypatch, capture_env_writes):
+    """profile="default" IS the global store — mirror behavior is unchanged."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir(parents=True, exist_ok=True)
+    import importlib
+
+    import gateway.pairing as pairing_mod
+    importlib.reload(pairing_mod)
+    store = pairing_mod.PairingStore(profile="default")
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+    store._approve_user("telegram", "newuser99", "")
+
+    assert store.is_approved("telegram", "newuser99") is True
+    assert capture_env_writes.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser99"
+
+
+def test_unscoped_store_still_mirrors_allowlist(store, monkeypatch, capture_env_writes):
+    """The unscoped (global) store keeps the option-i mirror."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+
+    store._approve_user("telegram", "newuser99", "")
+
+    assert capture_env_writes.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser99"

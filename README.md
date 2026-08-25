@@ -46,6 +46,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
   - Gateway — system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context
+  - Gateway — WhatsApp mission-only DMs (`platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`, off by default): DMs answered only while a dispatched assistant-mission is bound to the chat; profile-scoped pairing no longer mirrors into the global allowlist
   - Discord — typing indicator stays lit while a background delegated task is still running
   - Discord — MoA consult/debate progress renders as one self-editing embed per call
   - Cron — lifecycle guard blocks cron-spawned commands that would restart the gateway or rewrite the live checkout (quote-aware)
