@@ -12819,28 +12819,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         New turns stay refused (``_draining``). This only steers already-
         running agents so they can reach a pausable state instead of
         pinning the drain until they naturally finish.
+
+        The active-chat snapshot is written even when nobody accepts a
+        steer, including the empty set. Startup then resumes only that
+        list instead of every leftover ``resume_pending`` flag.
         """
         from gateway.restart_wind_down import (
             mark_cooperative_restart_sessions,
+            snapshot_active_sessions_for_restart,
             steer_running_agents_for_restart,
         )
 
+        snapshotted = snapshot_active_sessions_for_restart(self)
         steered = steer_running_agents_for_restart(self)
-        if not steered:
-            return []
         existing = list(getattr(self, "_cooperative_restart_sessions", []) or [])
-        for session_key in steered:
+        for session_key in snapshotted:
             if session_key not in existing:
                 existing.append(session_key)
         self._cooperative_restart_sessions = existing
         marked = mark_cooperative_restart_sessions(self, steered)
         logger.info(
-            "Cooperative restart: steered %d live session(s) to park "
+            "Cooperative restart: snapshotted %d active chat(s), steered %d "
             "(%d marked resume_pending)",
+            len(snapshotted),
             len(steered),
             marked,
         )
         return steered
+
+    def _resume_allowlist_for_this_boot(self):
+        """Steer-time snapshot for this process, or None on the crash path.
+
+        The file is consumed once so a later unclean exit is a real crash
+        again. The in-memory copy covers reconnect reschedule in the same
+        process.
+        """
+        if "_cooperative_resume_allowlist" not in self.__dict__:
+            from gateway.restart_wind_down import consume_resume_allowlist
+
+            allowlist = consume_resume_allowlist()
+            self._cooperative_resume_allowlist = allowlist
+            if allowlist is not None:
+                logger.info(
+                    "Cooperative restart allowlist: resume %d snapshotted chat(s)",
+                    len(allowlist),
+                )
+        return self._cooperative_resume_allowlist
 
     async def _run_startup_resume_event(
         self,
@@ -13256,6 +13280,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         scheduled at startup is never resumed a second time.
         """
         window = _auto_continue_freshness_window()
+        from gateway.restart_wind_down import should_auto_resume_session
+
+        allowlist = self._resume_allowlist_for_this_boot()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
@@ -13266,6 +13293,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
                     and (platform is None or entry.origin.platform == platform)
+                    and should_auto_resume_session(entry.session_key, allowlist)
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
