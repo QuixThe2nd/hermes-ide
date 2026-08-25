@@ -830,17 +830,25 @@ def reconcile(
         state["channels"][key] = outcome["channels"]
 
         if key not in state["welcome_embeds"]:
-            first_name = spec.channels[0].name
-            first_id = outcome["channels"][first_name]
-            message_id = client.post_embed(
-                first_id,
-                {
-                    "title": spec.embed_title,
-                    "description": spec.embed_description,
-                },
+            # Voice channels are display-only (the name IS the UI). Posting
+            # a welcome embed there contradicts the Speeds/Quotas copy.
+            text_spec = next(
+                (c for c in spec.channels if c.kind == CHANNEL_TYPE_TEXT),
+                None,
             )
-            state["welcome_embeds"][key] = message_id
-            report["embeds_posted"].append(f"{spec.category}/{first_name}")
+            if text_spec is None:
+                state["welcome_embeds"][key] = "skipped-no-text-channel"
+            else:
+                first_id = outcome["channels"][text_spec.name]
+                message_id = client.post_embed(
+                    first_id,
+                    {
+                        "title": spec.embed_title,
+                        "description": spec.embed_description,
+                    },
+                )
+                state["welcome_embeds"][key] = message_id
+                report["embeds_posted"].append(f"{spec.category}/{text_spec.name}")
 
     # Persist before wiring: the hermes_starts hook discovers the shared inbox
     # by reading this state file, so it must exist on the very first run too.

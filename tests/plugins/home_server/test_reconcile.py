@@ -138,22 +138,36 @@ def test_existing_home_channel_is_never_clobbered(
     assert read_config()["platforms"]["discord"]["home_channel"]["chat_id"] == "111"
 
 
-def test_welcome_embeds_posted_once_per_category_into_first_channel(
+def test_welcome_embeds_posted_once_per_text_category_and_skipped_for_voice(
     hermes, make_discord, state
 ):
+    from plugins.home_server.core import CHANNEL_TYPE_TEXT
+
     discord = make_discord()
     reconcile(http_fn=discord)
 
-    assert len(discord.messages) == len(TEMPLATE)
+    text_keys = [
+        key
+        for key, spec in TEMPLATE.items()
+        if any(c.kind == CHANNEL_TYPE_TEXT for c in spec.channels)
+    ]
+    voice_keys = [key for key in TEMPLATE if key not in text_keys]
+
+    assert len(discord.messages) == len(text_keys)
     assert set(state()["welcome_embeds"]) == set(TEMPLATE)
 
-    for key, spec in TEMPLATE.items():
-        first_id = state()["channels"][key][spec.channels[0].name]
+    for key in text_keys:
+        spec = TEMPLATE[key]
+        first_text = next(c for c in spec.channels if c.kind == CHANNEL_TYPE_TEXT)
+        first_id = state()["channels"][key][first_text.name]
         posted = [m for m in discord.messages.values() if m["channel_id"] == first_id]
         assert len(posted) == 1, key
 
+    for key in voice_keys:
+        assert state()["welcome_embeds"][key] == "skipped-no-text-channel"
+
     reconcile(http_fn=discord)
-    assert len(discord.messages) == len(TEMPLATE)
+    assert len(discord.messages) == len(text_keys)
 
 
 def test_hermes_starts_is_prewired_to_the_shared_inbox(hermes, make_discord, state):
