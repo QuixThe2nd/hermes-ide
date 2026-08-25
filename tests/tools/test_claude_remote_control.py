@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import stat
 import sys
 import time
 import uuid as uuid_module
@@ -578,7 +579,7 @@ def test_no_new_env_var_steers_the_lane(monkeypatch, _isolated_home):
         {"CLAUDE_CODE_USE_VERTEX": "1"},
         {"CLOUD_ML_REGION": "us-east5"},
         {"CLAUDE_CODE_USE_FOUNDRY": "1"},
-        {"ANTHROPY_FOUNDRY_BASE_URL": "https://foundry"},
+        {"ANTHROPIC_FOUNDRY_BASE_URL": "https://foundry"},
     ],
 )
 def test_custom_provider_env_is_reported(env):
@@ -1076,7 +1077,16 @@ def test_rejects_missing_native_binary(monkeypatch, repo, _isolated_home):
     assert "claude-glm" in payload["error"]  # names why the wrappers can't help
 
 
-@pytest.mark.parametrize("var", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"])
+@pytest.mark.parametrize(
+    "var",
+    [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+    ],
+)
 def test_rejects_inherited_custom_provider_env(monkeypatch, repo, native_claude, var):
     monkeypatch.setenv(var, "https://some-custom-provider.example")
     payload = _delegate(monkeypatch, repo)
@@ -1085,11 +1095,12 @@ def test_rejects_inherited_custom_provider_env(monkeypatch, repo, native_claude,
     assert var in payload["error"]
 
 
-def test_provider_env_is_rejected_not_stripped(monkeypatch, repo, native_claude):
+@pytest.mark.parametrize("var", ["ANTHROPIC_BASE_URL", "ANTHROPIC_FOUNDRY_BASE_URL"])
+def test_provider_env_is_rejected_not_stripped(monkeypatch, repo, native_claude, var):
     """The run must not proceed on silently-removed provider config."""
     from tools import claude_remote_control as rc
 
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://relay.example")
+    monkeypatch.setenv(var, "https://relay.example")
     spawned = []
     real_start = rc.RemoteControlRun.start
 
@@ -1203,14 +1214,36 @@ def test_live_happy_path_and_reaping_after_completion(
     log = Path(payload["log_path"])
     assert log.is_file()
     assert "claude-runs" in str(log)
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert stat.S_IMODE(log.parent.stat().st_mode) == 0o700
+    assert not list(log.parent.glob("*.pty.log"))
     logged = log.read_text(encoding="utf-8", errors="replace")
     log_lines = [json.loads(line) for line in logged.strip().split("\n") if line.strip()]
     assert any(rec.get("event") == "start" for rec in log_lines)
+    assert all("argv" not in rec for rec in log_lines)
     for banned in ("sk-", "token", "emailAddress", "organizationName", "accessToken"):
         assert banned not in logged
 
     # The interactive child (and its descendant) were reaped.
     assert _no_survivors(payload["remote_control"]["session_uuid"])
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_structured_log_excludes_task_prompt(monkeypatch, repo, native_claude, fast_poll):
+    """The structured log must never persist the delegated task prompt."""
+    canary = "PROMPT-CANARY-9f3e7d2a1b"
+    task = f"inspect the repo and report {canary}"
+    payload = _delegate(monkeypatch, repo, task=task)
+    assert payload["success"] is True, payload["error"]
+    log = Path(payload["log_path"])
+    logged = log.read_text(encoding="utf-8", errors="replace")
+    assert canary not in logged
+    assert task not in logged
+    log_lines = [json.loads(line) for line in logged.strip().split("\n") if line.strip()]
+    assert any(rec.get("event") == "start" for rec in log_lines)
+    assert all("argv" not in rec for rec in log_lines)
+    assert not list(log.parent.glob("*.pty.log"))
 
 
 @_REAL_PTY

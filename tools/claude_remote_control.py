@@ -171,7 +171,6 @@ _REAP_POLL_SECONDS = 0.05
 
 #: PTY byte budgets — a TUI repaints constantly, so its raw output is noise.
 _PTY_BUFFER_BYTES = 256 * 1024
-_PTY_LOG_BYTES = 2 * 1024 * 1024
 
 #: Transcript budgets.
 _TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024
@@ -307,7 +306,7 @@ _FORBIDDEN_PROVIDER_ENV: Dict[str, str] = {
     "ANTHROPIC_VERTEX_PROJECT_ID": "Google Vertex",
     "CLOUD_ML_REGION": "Google Vertex",
     "CLAUDE_CODE_USE_FOUNDRY": "Microsoft Foundry",
-    "ANTHROPY_FOUNDRY_BASE_URL": "Microsoft Foundry",
+    "ANTHROPIC_FOUNDRY_BASE_URL": "Microsoft Foundry",
 }
 
 
@@ -744,6 +743,15 @@ class TranscriptWatcher:
 # ── PTY runner ────────────────────────────────────────────────────────────
 
 
+def _open_private_log(path: Path):
+    """Open a structured run log with owner-only directory and file modes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.chmod(path, 0o600)
+    return os.fdopen(fd, "ab")
+
+
 class RemoteControlRun:
     """One Remote Control delegation: PTY child + transcript correlation.
 
@@ -777,7 +785,6 @@ class RemoteControlRun:
         startup_timeout_seconds: float = STARTUP_URL_TIMEOUT_SECONDS,
         transcript_appear_grace_seconds: float = _TRANSCRIPT_APPEAR_GRACE_SECONDS,
         log_path: Optional[Path] = None,
-        pty_log_path: Optional[Path] = None,
     ) -> None:
         self.argv = list(argv)
         self.workdir = workdir
@@ -790,7 +797,6 @@ class RemoteControlRun:
         self.startup_timeout_seconds = float(startup_timeout_seconds)
         self.transcript_appear_grace_seconds = float(transcript_appear_grace_seconds)
         self.log_path = Path(log_path) if log_path else None
-        self.pty_log_path = Path(pty_log_path) if pty_log_path else None
 
         self.pid: Optional[int] = None
         self.pgid: Optional[int] = None
@@ -798,9 +804,7 @@ class RemoteControlRun:
         self._reader_thread: Optional[threading.Thread] = None
         self._reader_done = threading.Event()
         self._raw_pty_tail = ""
-        self._pty_bytes_logged = 0
         self._log_handle = None
-        self._pty_log_handle = None
         self._last_pty_mono = time.monotonic()
         self._started_mono = time.monotonic()
         self.progress_url: Optional[str] = None
@@ -818,11 +822,7 @@ class RemoteControlRun:
         assert pty is not None  # for the type checker; guaranteed above
 
         if self.log_path is not None:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._log_handle = open(self.log_path, "ab")
-        if self.pty_log_path is not None:
-            self.pty_log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._pty_log_handle = open(self.pty_log_path, "ab")
+            self._log_handle = _open_private_log(self.log_path)
 
         self._started_mono = time.monotonic()
         pid, master_fd = pty.fork()
@@ -897,14 +897,6 @@ class RemoteControlRun:
     def _on_pty_bytes(self, chunk: bytes) -> None:
         """Record PTY activity; the text is used for the URL and nothing else."""
         self._last_pty_mono = time.monotonic()
-        if self._pty_log_handle is not None and self._pty_bytes_logged < _PTY_LOG_BYTES:
-            budget = _PTY_LOG_BYTES - self._pty_bytes_logged
-            self._pty_log_handle.write(chunk[:budget])
-            self._pty_bytes_logged += min(len(chunk), budget)
-            try:
-                self._pty_log_handle.flush()
-            except (OSError, ValueError):
-                pass
         # Keep a bounded tail so a URL split across reads still matches and so
         # the buffer cannot grow without bound on a chatty TUI.
         combined = self._raw_pty_tail + chunk.decode("utf-8", errors="replace")
@@ -1082,14 +1074,12 @@ class RemoteControlRun:
         finally:
             self._close_pty()
             self._join_reader()
-            for handle in (self._log_handle, self._pty_log_handle):
-                if handle is not None:
-                    try:
-                        handle.close()
-                    except OSError:
-                        pass
+            if self._log_handle is not None:
+                try:
+                    self._log_handle.close()
+                except OSError:
+                    pass
             self._log_handle = None
-            self._pty_log_handle = None
 
     def _signal_group(self, sig: int) -> None:
         if self.pgid is None or not _KILLPG_SUPPORTED:
@@ -1373,10 +1363,8 @@ def run_remote_control_delegation(
         fields["remote_control"] = metadata
 
         directory = Path(log_dir) if log_dir else get_hermes_home() / "claude-runs"
-        directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         log_path = directory / f"{stamp}-rc-{session_id[:8]}.jsonl"
-        pty_log_path = directory / f"{stamp}-rc-{session_id[:8]}.pty.log"
         fields["log_path"] = str(log_path)
         metadata["log_path"] = str(log_path)
 
@@ -1392,7 +1380,6 @@ def run_remote_control_delegation(
             startup_timeout_seconds=startup_timeout_seconds,
             transcript_appear_grace_seconds=transcript_appear_grace_seconds,
             log_path=log_path,
-            pty_log_path=pty_log_path,
         )
         started = time.monotonic()
         try:
@@ -1402,7 +1389,6 @@ def run_remote_control_delegation(
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "event": "start",
                     "lane": "remote_control",
-                    "argv": argv,
                     "workdir": resolved_workdir,
                     "session_name": session_name,
                     "session_id": session_id,
