@@ -614,6 +614,92 @@ def resolve_workdir_starting_ref(workdir: str) -> Optional[str]:
     return ref
 
 
+def remote_branch_tip(workdir: str, ref: str, remote: str = "origin") -> Optional[str]:
+    """Return origin's current SHA for ``refs/heads/<ref>``, or None."""
+    if not ref or "/" in remote:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workdir, "ls-remote", "--heads", remote, f"refs/heads/{ref}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    expected = f"refs/heads/{ref}"
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[1].strip() == expected:
+            sha = parts[0].strip()
+            return sha or None
+    return None
+
+
+def detect_unpushed_head_commits(workdir: str) -> Optional[str]:
+    """Return a rejection reason when local HEAD has commits absent from origin.
+
+    Cursor Cloud Agents edit a cloud checkout built from pushed refs only:
+    unpushed commits are invisible to the run, so delegating in that state
+    silently targets the wrong repository shape. Returns None when HEAD
+    matches or is behind origin's branch tip, or when the state cannot be
+    determined cheaply (the tool description carries that caveat).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workdir, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        branch = (proc.stdout or "").strip()
+        if not branch or branch == "HEAD":
+            return None
+        tip = remote_branch_tip(workdir, branch)
+        if not tip:
+            return None
+        head = subprocess.run(
+            ["git", "-C", workdir, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if head.returncode != 0:
+            return None
+        head_sha = (head.stdout or "").strip()
+        if head_sha == tip:
+            return None
+        # Behind origin yields count 0; ahead or diverged both yield > 0.
+        count = subprocess.run(
+            ["git", "-C", workdir, "rev-list", "--count", f"{tip}..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        try:
+            ahead = int((count.stdout or "0").strip())
+        except ValueError:
+            ahead = 0
+        if ahead <= 0:
+            return None
+        return (
+            f"workdir HEAD has {ahead} unpushed commit(s) on branch '{branch}'; "
+            "delegate_cursor_agent edits a Cursor cloud checkout built from "
+            "pushed origin refs only. Push '" + branch + "' to origin first, "
+            "or use a local delegation tool."
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def new_machine_name() -> str:
     return f"hermes-{uuid.uuid4().hex[:12]}"
 
@@ -2036,6 +2122,10 @@ def delegate_cursor_agent(
     except UnsupportedOriginError as exc:
         return _make_result(success=False, error=str(exc))
 
+    unpushed_reason = detect_unpushed_head_commits(str(workdir_path))
+    if unpushed_reason:
+        return _make_result(success=False, error=unpushed_reason)
+
     clamped_timeout = _clamp_timeout_seconds(timeout_seconds)
     force_enabled = is_truthy_value(force, default=True)
     model_name = str(model or "").strip() or None
@@ -2151,10 +2241,13 @@ CURSOR_AGENT_SCHEMA = {
     "name": "delegate_cursor_agent",
     "description": (
         "Delegate a software development task to a Cursor My Machines Cloud "
-        "Agent on this host. Starts a short-lived worker in workdir, POSTs "
-        "/v1/agents with env.type=machine for the checkout's GitHub origin, "
-        "and waits for the run to finish. Does not open a PR or request "
-        "reviewers. Available only when the Cursor Agent CLI binary is installed."
+        "Agent. The run happens in a Cursor-managed CLOUD checkout built from "
+        "what is already PUSHED to workdir's GitHub origin (origin URL, plus "
+        "the local branch as startingRef when that branch exists on origin). "
+        "Unpushed commits and dirty working-tree changes are invisible to the "
+        "run; the tool refuses to start when local HEAD is ahead of origin. "
+        "Nothing runs on this host. Does not open a PR or request reviewers. "
+        "Available only when the Cursor Agent CLI binary is installed."
     ),
     "parameters": {
         "type": "object",
