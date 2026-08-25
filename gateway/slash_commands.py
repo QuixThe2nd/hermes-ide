@@ -32,7 +32,14 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from gateway.config import (
+    HomeChannel,
+    Platform,
+    PlatformConfig,
+    clear_notification_channel,
+    persist_home_channel,
+    persist_notification_channel,
+)
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -2644,34 +2651,69 @@ class GatewaySlashCommandsMixin:
         # auto_continue / hidden); clients never count them as user turns.
         # Without this filter /retry rewrote the transcript around a marker
         # and re-sent opaque bookkeeping text (same class as the TUI ordinal).
-        last_user_msg = None
         last_user_idx = None
-        # is_user_originated_turn: excludes display_kind bookkeeping AND
-        # compaction handoffs (durable role=user, sometimes without
-        # display_kind on legacy sessions; #80622) — /retry must never
-        # re-send a reference-only summary as if the user asked it.
-        from agent.context_compressor import is_user_originated_turn
+        # The canonical projection excludes bookkeeping and pure handoffs while
+        # still recognizing a real ask embedded in a compaction carrier.
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            split_user_originated_turn,
+            user_originated_turn_view,
+        )
 
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_msg = msg.get("content", "")
+            if user_originated_turn_view(msg) is not None:
                 last_user_idx = i
                 break
-        
-        if not last_user_msg:
+
+        if last_user_idx is None:
             return t("gateway.retry.no_previous")
-        
-        # Truncate history to before the last user message and persist only the
-        # live view. After in-place compaction the pre-compaction transcript
-        # lives on as active=0/compacted=1 rows under this same session id, and
-        # a bare rewrite (active_only=False) would DELETE them (same class as
-        # #61145). /retry never intends to purge archived history, so avoid a
-        # separate existence probe: it could fail open or race with the write.
-        truncated = history[:last_user_idx]
-        await self.async_session_store.rewrite_transcript(
-            session_entry.session_id, truncated, active_only=True
-        )
+
+        # Resolve the live text and the scaffold-preserving prefix before any
+        # transcript write. Messaging retries cannot reconstruct attachments;
+        # reject media/unknown content without truncating the session.
+        try:
+            truncated, live_view = history_before_user_originated_turn(
+                history, last_user_idx
+            )
+            last_user_msg = retryable_user_text(live_view.get("content"))
+            handoff, _ = split_user_originated_turn(history[last_user_idx])
+        except ValueError as exc:
+            return f"Cannot retry that message safely: {exc}"
+
+        if handoff is not None:
+            # A composite carrier is one physical row containing both the
+            # retained summary and the live ask. Let the carrier-aware rewind
+            # archive that row/tail and insert its pure scaffold atomically.
+            # Plain turns keep the existing rewrite path below; #84078 owns
+            # its separate archive_dropped/prefix-CAS semantics.
+            try:
+                rewind_result = await self.async_session_store.rewind_session(
+                    session_entry.session_id,
+                    1,
+                    require_retryable_composite=True,
+                )
+            except ValueError as exc:
+                return f"Cannot retry that message safely: {exc}"
+            if rewind_result is None:
+                return "Retry failed; transcript was not changed."
+            # The store reselects and validates the latest carrier on the same
+            # snapshot used by the atomic rewind.  A concurrent newer turn can
+            # therefore never be removed while this handler resends stale text.
+            last_user_msg = rewind_result["target_text"]
+        else:
+            # After in-place compaction the pre-compaction transcript lives on
+            # as active=0/compacted=1 rows under this session id. active_only
+            # preserves that archive; a separate existence probe could fail
+            # open or race with the write.
+            if not await self.async_session_store.rewrite_transcript(
+                session_entry.session_id,
+                truncated,
+                active_only=True,
+                reject_active_turn_lease=True,
+            ):
+                return "Retry failed; transcript was not changed."
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
 
@@ -2996,6 +3038,64 @@ class GatewaySlashCommandsMixin:
             f"any memory/skill updates will be reported when done."
         )
 
+    async def _handle_review_command(self, event: "MessageEvent") -> str:
+        """Handle /review — spawn an independent reviewer subagent.
+
+        Snapshots the last 10 chat messages from the session's cached agent,
+        wraps them (plus any argument text) in a reviewer briefing, and
+        dispatches a full-privilege background subagent on the async
+        delegation rail. The completed review re-enters this session as a
+        normal async-delegation completion turn.
+
+        The approval session-key contextvar is only bound during agent
+        turns, so it is bound explicitly here — without it the completion
+        event would carry no gateway route and never re-enter this chat.
+        """
+        args = (event.get_command_args() or "").strip()
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+        if not quick_key:
+            return "Review unavailable (no session)."
+        if quick_key in self._running_agents:
+            return "Agent is running — wait for the turn to finish, then /review."
+
+        agent = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = self._agent_cache.get(quick_key)
+                agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+        if agent is None:
+            return "Nothing to review yet — send a message first."
+
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+
+        from tools.approval import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        loop = asyncio.get_running_loop()
+
+        def _dispatch():
+            token = set_current_session_key(quick_key)
+            try:
+                from agent.review_engine import start_review
+
+                return start_review(agent, snapshot, args)
+            finally:
+                reset_current_session_key(token)
+
+        try:
+            result = await loop.run_in_executor(None, _dispatch)
+        except ValueError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"/review failed to start: {exc}"
+
+        from agent.review_engine import format_dispatch_note
+
+        return format_dispatch_note(result, args)
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 
@@ -3170,15 +3270,22 @@ class GatewaySlashCommandsMixin:
             preview=preview,
         )
 
-    async def _handle_set_home_command(self, event: MessageEvent) -> str:
-        """Handle /sethome command -- set the current chat as the platform's home channel."""
-        from gateway.run import _home_target_env_var, _home_thread_env_var
-        source = event.source
-        platform_name = source.platform.value if source.platform else "unknown"
-        chat_id = source.chat_id
-        chat_name = source.chat_name or chat_id
+    def _logical_channel_from_source(self, source) -> tuple[Optional[HomeChannel], Optional[str]]:
+        """Build the HomeChannel a channel-picking command should persist.
+
+        Shared by /sethome and /setnotify so both targets get identical
+        authentication and durability treatment: a Relay-fronted logical
+        target must carry authenticated provenance (user_id/scope_id from the
+        relay itself — a target the relay cannot vouch for would leave every
+        later bare-platform delivery unroutable), and Slack's synthetic
+        per-message session thread must never pin the target (see
+        ``_home_thread_from_source``).
+
+        Returns ``(channel, None)`` on success or ``(None, error_detail)``
+        when the source cannot name a durable, authenticated target.
+        """
         if source.platform is None:
-            return t("gateway.set_home.save_failed", error="Missing logical platform")
+            return None, "Missing logical platform"
 
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
@@ -3191,16 +3298,13 @@ class GatewaySlashCommandsMixin:
                 or not callable(fronts_platform)
                 or not fronts_platform(source.platform)
             ):
-                return t(
-                    "gateway.set_home.save_failed",
-                    error="Relay does not authenticate this logical home target",
-                )
+                return None, "Relay does not authenticate this logical target"
 
         thread_id = _home_thread_from_source(source)
-        home = HomeChannel(
+        channel = HomeChannel(
             platform=source.platform,
-            chat_id=str(chat_id),
-            name=chat_name,
+            chat_id=str(source.chat_id),
+            name=source.chat_name or source.chat_id,
             thread_id=str(thread_id) if thread_id else None,
             user_id=(
                 str(source.user_id)
@@ -3213,6 +3317,20 @@ class GatewaySlashCommandsMixin:
                 else None
             ),
         )
+        return channel, None
+
+    async def _handle_set_home_command(self, event: MessageEvent) -> str:
+        """Handle /sethome command -- set the current chat as the platform's home channel."""
+        from gateway.run import _home_target_env_var, _home_thread_env_var
+        source = event.source
+        platform_name = source.platform.value if source.platform else "unknown"
+        chat_id = source.chat_id
+        chat_name = source.chat_name or chat_id
+        home, error = self._logical_channel_from_source(source)
+        if error is not None:
+            return t("gateway.set_home.save_failed", error=error)
+
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
 
         # config.yaml is canonical because it can persist the authenticated
         # logical-target provenance required by Relay after a restart.
@@ -3227,7 +3345,7 @@ class GatewaySlashCommandsMixin:
         try:
             from hermes_cli.config import save_env_value
             save_env_value(env_key, str(chat_id))
-            save_env_value(thread_env_key, str(thread_id or ""))
+            save_env_value(thread_env_key, str(home.thread_id or ""))
         except Exception as e:
             logger.warning("Home config saved but legacy env persistence failed: %s", e)
 
@@ -3392,6 +3510,56 @@ class GatewaySlashCommandsMixin:
             home_channel_state=home_channel,
             guild_id=guild_id,
         )
+    async def _handle_set_notify_command(self, event: MessageEvent) -> str:
+        """Handle /setnotify -- route gateway lifecycle broadcasts to this chat.
+
+        Mirrors /sethome but persists the platform's ``notification_channel``:
+        shutdown/startup broadcasts land here while the home channel stays
+        free for conversation (e.g. a dedicated "#gateway-restarts" channel).
+        """
+        source = event.source
+        chat_name = source.chat_name or source.chat_id
+        channel, error = self._logical_channel_from_source(source)
+        if error is not None:
+            return t("gateway.set_notify.save_failed", error=error)
+
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+
+        try:
+            persist_notification_channel(channel, enabled_if_new=not via_relay)
+        except Exception as e:
+            return t("gateway.set_notify.save_failed", error=e)
+
+        # Keep the running gateway config in sync too. The shutdown
+        # broadcast reads self.config before the process reloads config.yaml.
+        platform_config = getattr(self, "config").platforms.setdefault(
+            source.platform,
+            PlatformConfig(enabled=not via_relay),
+        )
+        platform_config.notification_channel = channel
+
+        return t("gateway.set_notify.success", name=chat_name, chat_id=source.chat_id)
+
+    async def _handle_clear_notify_command(self, event: MessageEvent) -> str:
+        """Handle /clearnotify -- return lifecycle broadcasts to the home channel."""
+        source = event.source
+        if source.platform is None:
+            return t("gateway.clear_notify.failed", error="Missing logical platform")
+
+        try:
+            clear_notification_channel(source.platform)
+        except Exception as e:
+            return t("gateway.clear_notify.failed", error=e)
+
+        # Mirror /setnotify's in-sync update so the very next shutdown
+        # broadcast already routes back to the home channel.
+        platform_config = getattr(self, "config", None)
+        if platform_config is not None:
+            platform_config = platform_config.platforms.get(source.platform)
+        if platform_config is not None:
+            platform_config.notification_channel = None
+
+        return t("gateway.clear_notify.success")
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

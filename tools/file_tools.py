@@ -204,6 +204,9 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
                 return "modal"
             if "daytona" in name:
                 return "daytona"
+            stamped = getattr(env, "_hermes_backend_name", None)
+            if isinstance(stamped, str) and stamped:
+                return stamped
         cfg = _get_env_config()
         return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
     except Exception:
@@ -211,12 +214,13 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
+    env_type = _terminal_env_type_for_task(task_id)
     try:
-        from tools.terminal_tool import _CONTAINER_BACKENDS
-        container_backends = _CONTAINER_BACKENDS
+        from tools.terminal_tool import _is_container_backend
+
+        return _is_container_backend(env_type)
     except Exception:
-        container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
-    return _terminal_env_type_for_task(task_id) in container_backends
+        return env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
@@ -665,6 +669,35 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+_agent_config_writes_allowed: bool | None = None
+
+
+def _agent_config_writes_permitted() -> bool:
+    """Return True when the operator has opted out of the config-write guard.
+
+    Opt-out path: ``security.allow_agent_config_writes`` (bool, default
+    False). The guard below exists to stop a prompt-injected agent from
+    silently disabling exec approval by rewriting config.yaml; the opt-out
+    trades that protection away at the operator's explicit request. Cached:
+    config applies at process start, matching the rest of this module.
+    """
+    global _agent_config_writes_allowed
+    if _agent_config_writes_allowed is not None:
+        return _agent_config_writes_allowed
+    allowed = False
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        security = cfg.get("security")
+        if isinstance(security, dict):
+            allowed = bool(security.get("allow_agent_config_writes"))
+    except Exception:
+        allowed = False
+    _agent_config_writes_allowed = allowed
+    return allowed
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets the Hermes config file."""
     try:
@@ -678,6 +711,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # this file.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
+        if _agent_config_writes_permitted():
+            return None
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
@@ -895,6 +930,7 @@ def _request_protected_instruction_approval(
         choice = _approval.prompt_dangerous_approval(
             display, description,
             allow_permanent=False,
+            allow_session=False,
             approval_callback=callback,
         )
         if choice in {"once", "session", "always"}:
@@ -987,6 +1023,11 @@ def _check_approval_required_write(paths: list[str],
         display_target=f"<write to {display_targets}>",
         cron_deny_message=blocked.format(
             why="requires approval but this cron session denies it."),
+        single_query_deny_message=blocked.format(
+            why="requires approval but single-query (-q) sessions run "
+                "without a user present to approve it. To allow flagged "
+                "actions in single-query mode, set approvals.single_query_mode: "
+                "approve in config.yaml."),
         autoapprove_log_prefix="ssh_config_write",
         fail_closed_when_no_human=True,
         no_human_block_message=blocked.format(
@@ -1521,7 +1562,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+            from tools.terminal_tool import _is_container_backend as _is_container
+
+            if _is_container(env_type):
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),

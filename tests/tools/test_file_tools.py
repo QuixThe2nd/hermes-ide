@@ -446,6 +446,7 @@ class TestSensitivePathCheck:
         fake_config = tmp_path / "config.yaml"
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", False)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -456,11 +457,42 @@ class TestSensitivePathCheck:
         fake_config = tmp_path / "config.yaml"
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", False)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
         assert "error" in result
         assert "Hermes config" in result["error"]
+
+    def test_hermes_config_write_allowed_with_optout(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", True)
+
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(str(fake_config)) is None
+
+    def test_optout_reads_security_section(self, monkeypatch):
+        import tools.file_tools as ft
+
+        monkeypatch.setattr(ft, "_agent_config_writes_allowed", None)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"allow_agent_config_writes": True}},
+        )
+        assert ft._agent_config_writes_permitted() is True
+
+        monkeypatch.setattr(ft, "_agent_config_writes_allowed", None)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {}},
+        )
+        assert ft._agent_config_writes_permitted() is False
+
+        monkeypatch.setattr(ft, "_agent_config_writes_allowed", None)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        assert ft._agent_config_writes_permitted() is False
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -1013,4 +1045,37 @@ class TestNotFoundCache:
 
         assert _check_not_found_cache("read", "/tmp/never-exists-notify", tid) is None, (
             "notify_other_tool_call must clear cached misses"
+        )
+
+
+class TestSSHConfigWriteGateSingleQuery:
+    """Regression: the ssh-config write guard must pass
+    single_query_deny_message to _run_approval_gate (required kwarg since
+    1596148ff). Missing it raises TypeError instead of routing through the
+    approval flow — see issue #93201."""
+
+    def test_gate_call_passes_single_query_deny_message(self):
+        import inspect as _inspect
+        import re as _re
+        import tools.file_tools as ft
+
+        src = _inspect.getsource(ft)
+        idx = src.find("_approval._run_approval_gate(")
+        assert idx != -1, "ssh_config_write gate call not found"
+        block = src[idx:idx + 900]
+        assert "pattern_key=\"ssh_config_write\"" in block
+
+        from tools.approval import _run_approval_gate
+        required = [
+            name for name, param in _inspect.signature(
+                _run_approval_gate).parameters.items()
+            if param.kind == _inspect.Parameter.KEYWORD_ONLY
+            and param.default is _inspect.Parameter.empty
+        ]
+        missing = [k for k in required if not _re.search(
+            rf"\b{k}\s*=", block)]
+        assert missing == [], (
+            f"_run_approval_gate call at ssh_config_write gate is missing "
+            f"required kwargs {missing}; it would raise TypeError instead "
+            f"of showing an approval prompt"
         )

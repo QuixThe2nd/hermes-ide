@@ -24,6 +24,25 @@ On the first `start` action, if no channel exists yet, the plugin auto-runs setu
 
 You can also provision explicitly with `action='setup'`.
 
+## How a start lands
+
+Each start is **one message in the channel**: the full opening in Hermes's own voice,
+with a `*Where I'd take this:*` paragraph when there is a next move. A public thread
+named `Start #N — <kind>` is anchored on that message, so replies stay out of the
+channel. Openings longer than the message limit split on paragraph boundaries — the
+first part is the channel message, the rest go in the thread. If thread creation fails,
+the whole opening stays in the channel and the start still reports success.
+
+### Settings
+
+Under `plugins.entries.hermes_starts.settings` in `config.yaml`:
+
+| Key | Default | What it does |
+|---|---|---|
+| `mention_user_id` | *(unset)* | Discord user ID pinged on each start. The mention prefixes the opening, and the same user is added to the thread so replies and subscription keep working. |
+| `quiet_hours` | `23:00-08:00` | Window in `quiet_tz` where starts still post but neither ping nor thread-add happens. Empty string disables the gate. |
+| `quiet_tz` | `Australia/Sydney` | IANA zone used to evaluate `quiet_hours`. |
+
 ## Multi-guild bots
 
 If the bot is in more than one Discord server, setup returns the guild list and asks you to

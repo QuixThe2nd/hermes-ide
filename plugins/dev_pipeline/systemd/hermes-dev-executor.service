@@ -1,19 +1,26 @@
+# Reference copy of the canonical user-scope unit. The plugin renders and
+# installs the real unit at load time (plugins/dev_pipeline/executor_setup.py)
+# with paths resolved from the running interpreter — the values below are
+# examples. See README.md for manual override / system-scope setup.
 [Unit]
 Description=Hermes dev-pipeline executor (durable Cursor lane)
 After=network.target
 
 [Service]
 Type=simple
+ExecStart=/opt/hermes-agent/.venv/bin/python -m plugins.dev_pipeline.executor run
+Environment="HOME=/home/user"
+Environment="HERMES_HOME=/home/user/.hermes"
+Environment="PYTHONPATH=/opt/hermes-agent"
+Environment="PATH=/opt/hermes-agent/.venv/bin:/home/user/.hermes/node/bin:/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=/opt/hermes-agent
 Restart=always
-# Resolve the venv python at install time (example path — adjust for your host).
-ExecStart=/root/hermes-agent/.venv/bin/python -m plugins.dev_pipeline.executor run
-Environment=HOME=/root
-Environment=PYTHONPATH=/root/hermes-agent
-WorkingDirectory=/root/hermes-agent
 TimeoutStopSec=30
 # KillMode=mixed is acceptable HERE only: attempt units run as separate
 # transient systemd units outside this service cgroup (hermes-dev-<task>-<run>).
 KillMode=mixed
+StandardOutput=journal
+StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

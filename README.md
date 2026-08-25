@@ -11,6 +11,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
 **What's different here:**
 - **Tools**
   - Delegation — send coding tasks to a Cursor My Machines Cloud Agent in the target checkout, straight from chat
+  - Delegation — `delegate_cursor_agent` states its real contract (cloud checkout from pushed refs only) and refuses to start when local HEAD has unpushed commits, so cloud runs can't silently target the wrong repository shape
   - Delegation — send coding tasks to the Claude Code CLI, straight from chat
   - Delegation — `delegate_claude_agent` supports Claude Code `/goal` headless: pass a `/goal <condition>` task and the run loops until a model judge confirms the condition met (verified with the claude-glm wrapper)
   - Delegation — `delegate_claude_agent` writes stream-json run logs, so claude-runs logs are live-tailable for progress reporting
@@ -26,32 +27,36 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - dev-pipeline claude-endurance lane — Claude Code (claude-glm) builds for broad/long tasks
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs
-  - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox
-  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Honcho Memory / Quotas / Speeds), fully wired; idempotent, never deletes, existing home channels are never clobbered
+  - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox, and each opening is a single message that anchors its own thread
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent off-hours timer (`hermes auto_update status|enable|disable|reconcile`; default 04:00–08:00 local with randomized delay)
   - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
+  - fallback_quota_reorder — ranks fallback_providers by remaining quota × time-to-reset × recent API success, not soonest-reset-first
+  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Honcho Memory / Quotas / Speeds), fully wired; idempotent, never deletes, existing home channels are never clobbered
   - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
   - Gateway — steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context
-  - Gateway — `/restart` asks other live chat sessions to park, then auto-continues them after bounce instead of blocking new threads until every turn dies
+  - Gateway — `/restart` parks only live chats, resumes only that snapshot, and shows each accepted LLM park steer in its shutdown warning
   - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
+  - Gateway — lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`)
+  - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), then re-syncs at most hourly
   - Discord — sessions keyed to your stable username, not your per-server nickname
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
   - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
+  - Gateway — system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context
   - Discord — typing indicator stays lit while a background delegated task is still running
   - Discord — MoA consult/debate progress renders as one self-editing embed per call
-  - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), then re-syncs at most hourly
   - Cron — lifecycle guard blocks cron-spawned commands that would restart the gateway or rewrite the live checkout (quote-aware)
   - Memory — per-turn injection skips lines already delivered earlier in the session
   - Config — API retry backoff timing
   - Agent — tool-call narration guidance: model briefly explains each tool call before making it (`agent.tool_call_narration_guidance`, default on)
   - Config — web search and extract fallback chains
+  - Config — `security.allow_agent_config_writes` opts out of the write_file/patch guard on the Hermes config file (operator request; default off)
   - Display — optional native OS notification when a turn finishes (`display.notify_on_complete`, off by default; SSH target supported)
 
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this header is upstream's README.

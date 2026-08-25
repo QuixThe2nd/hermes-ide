@@ -314,6 +314,14 @@ gateway:
     provision_failed:      "❌ Provisioning failed: {error}"
     success:               "🏠 Home server provisioned for guild `{guild_id}`.\n**Created {created_count}:** {created_list}\n**Welcome messages posted:** {embeds_count}\n**Wired:** {wired_list} ({wired_count})\n**Modules enabled:** {modules_count}/4\nHome channel: {home_channel_state} — existing home channels are never overwritten.\nRe-syncs run automatically at most once per hour."
 
+  set_notify:
+    save_failed:           "Failed to save notification channel: {error}"
+    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here instead of the home channel."
+
+  clear_notify:
+    failed:                "Failed to clear notification channel: {error}"
+    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts return to the home channel."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

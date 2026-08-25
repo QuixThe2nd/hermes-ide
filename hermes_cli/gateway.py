@@ -7935,6 +7935,20 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "uninstall":
+        # Uninstall stops the managed service before removing it. Gate on
+        # PID-file ownership like stop/restart (#92560): the env marker is
+        # inherited by every descendant, and CLI sessions spawned under the
+        # gateway tree must stay able to manage it.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
+            print_error(
+                "Refusing to uninstall the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent the gateway from terminating itself.\n"
+                "Use `hermes gateway uninstall` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
         if is_managed():
             managed_error("uninstall gateway service")
             return
@@ -8045,7 +8059,13 @@ def _gateway_command_inner(args):
     elif subcmd == "stop":
         # Defense: refuse self-targeting gateway stop from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        # The supervised probe also PASSES a plain foreground `hermes gateway run`
+        # (env set, PID owned, but no supervisor): that is intentional and
+        # harmless — with no supervisor there is no KeepAlive, so a self-stop is
+        # a one-shot exit rather than a respawn loop.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
@@ -8138,7 +8158,13 @@ def _gateway_command_inner(args):
     elif subcmd == "restart":
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        # The supervised probe also PASSES a plain foreground `hermes gateway run`
+        # (env set, PID owned, but no supervisor): that is intentional and
+        # harmless — with no supervisor there is no KeepAlive, so a self-restart
+        # is a single relaunch rather than a respawn loop.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"

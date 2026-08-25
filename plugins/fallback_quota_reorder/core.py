@@ -10,10 +10,15 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+from plugins.fallback_quota_reorder.reliability import (
+    ReliabilityRates,
+    rates_for_providers,
+)
 
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
 NowFn = Callable[[], float]
@@ -34,6 +39,8 @@ STALE_MAX_AGE_SECONDS = 6 * 3600
 STATE_FILENAME = "fallback_quota_reorder_state.json"
 BACKUP_SUBDIR = Path("config-backups") / "fallback_quota_reorder"
 MAX_BACKUPS = 20
+LOW_QUOTA_PCT = 5
+MIN_HOURS_REMAINING = 1.0 / 60.0  # 1 minute; zero hours would zero the score
 
 DISCORD_USER_AGENT = "Hermes Agent (https://hermes-agent.nousresearch.com)"
 
@@ -58,7 +65,7 @@ class QuotaReading:
     provider: str
     channel_name: str
     pct: int
-    reset_seconds: int
+    reset_seconds: float
 
 
 def _hermes_home() -> Path:
@@ -261,13 +268,73 @@ def fetch_channel_names(
     return names
 
 
-def readings_from_names(names: Mapping[str, str]) -> Dict[str, QuotaReading]:
+def readings_from_names(
+    names: Mapping[str, str],
+    precise_readings: Optional[Mapping[str, Tuple[int, float]]] = None,
+) -> Dict[str, QuotaReading]:
     readings: Dict[str, QuotaReading] = {}
     for key in CHANNEL_KEYS:
-        reading = parse_channel_name(key, names.get(key, ""))
+        name = names.get(key, "")
+        reading = parse_channel_name(key, name)
+        precise = (precise_readings or {}).get(key)
+        if precise is not None:
+            # precise state beats the day-rounded channel name; it also scores
+            # providers whose name did not parse strictly
+            pct, reset_seconds = precise
+            base = reading or QuotaReading(
+                channel_key=key,
+                provider=CHANNEL_KEY_TO_PROVIDER[key],
+                channel_name=name,
+                pct=pct,
+                reset_seconds=reset_seconds,
+            )
+            reading = replace(base, pct=pct, reset_seconds=reset_seconds)
         if reading is not None:
             readings[reading.provider] = reading
     return readings
+
+
+def load_precise_readings(
+    quota_interval_seconds: int,
+    *,
+    now_fn: NowFn = time.time,
+) -> Dict[str, Tuple[int, float]]:
+    """Map provider slug -> (pct, reset_seconds) from quota_channels state.
+
+    Empty when the state file is missing/corrupt, predates the readings
+    schema, or its last_quota_success is older than 2 * quota_interval_seconds
+    — callers then fall back to strict channel-name parsing.
+    """
+    from plugins.quota_channels.core import state_path as quota_state_path
+
+    try:
+        raw = json.loads(quota_state_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        last_success = float(raw.get("last_quota_success") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if last_success <= 0:
+        return {}
+    if now_fn() - last_success > 2 * quota_interval_seconds:
+        return {}
+    entries = raw.get("readings")
+    if not isinstance(entries, Mapping):
+        return {}
+    precise: Dict[str, Tuple[int, float]] = {}
+    for slug, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            pct = int(entry["pct"])
+            reset_seconds = float(entry["reset_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        precise[str(slug)] = (pct, reset_seconds)
+    return precise
 
 
 def _entry_identity(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
@@ -295,31 +362,62 @@ def format_entry_label(entry: Mapping[str, Any]) -> str:
     return f"{provider}/{model}"
 
 
-def format_readings_line(readings: Mapping[str, QuotaReading]) -> str:
+def format_readings_line(
+    readings: Mapping[str, QuotaReading],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
+    scores: Optional[Mapping[str, float]] = None,
+) -> str:
     parts: List[str] = []
     for key in CHANNEL_KEYS:
         provider = CHANNEL_KEY_TO_PROVIDER[key]
         reading = readings.get(provider)
         if reading is None:
             parts.append(f"{key}=unreadable")
-        else:
-            parts.append(
-                f"{key}={reading.pct}%@{reading.reset_seconds}s ({provider})"
+            continue
+        chunk = f"{key}={reading.pct}%@{reading.reset_seconds}s ({provider})"
+        rates = (reliability or {}).get(provider)
+        if rates is not None:
+            chunk += (
+                f" up24={rates.rate_24h:.0%}/{rates.samples_24h}"
+                f" up1h={rates.rate_1h:.0%}/{rates.samples_1h}"
             )
+        if scores is not None and provider in scores:
+            chunk += f" score={scores[provider]:.2f}"
+        parts.append(chunk)
     return ", ".join(parts)
+
+
+def score_provider(
+    reading: QuotaReading,
+    rates: Optional[ReliabilityRates] = None,
+) -> float:
+    """Higher is better: burn the fat wallets first, then derate flaky ones.
+
+    score = hours_remaining * quota_frac * rate_24h * rate_1h
+
+    Unknown reliability stays 1.0 so a quiet provider is not punished.
+    Hours remaining floor at one minute so a nearly-reset provider with
+    leftover quota still ranks above a true empty wallet.
+    """
+    hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
+    quota_frac = max(0.0, min(float(reading.pct) / 100.0, 1.0))
+    resolved = rates or ReliabilityRates()
+    return hours * quota_frac * resolved.rate_24h * resolved.rate_1h
 
 
 def compute_desired_order(
     entries: Sequence[Mapping[str, Any]],
     readings_by_provider: Mapping[str, QuotaReading],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
 ) -> List[dict]:
     if not entries:
         return []
 
+    rates = reliability or {}
     indexed = list(enumerate(entries))
     openrouter: List[Tuple[int, dict]] = []
-    scored_healthy: List[Tuple[int, dict, int]] = []
-    scored_low: List[Tuple[int, dict, int]] = []
+    scored_healthy: List[Tuple[int, dict, float]] = []
+    scored_low: List[Tuple[int, dict, float]] = []
     unscored: List[Tuple[int, dict]] = []
 
     for index, entry in indexed:
@@ -333,14 +431,15 @@ def compute_desired_order(
             unscored.append((index, dict(entry)))
             continue
 
-        item = (index, dict(entry), reading.reset_seconds)
-        if reading.pct < 5:
+        item = (index, dict(entry), score_provider(reading, rates.get(provider)))
+        if reading.pct < LOW_QUOTA_PCT:
             scored_low.append(item)
         else:
             scored_healthy.append(item)
 
-    scored_healthy.sort(key=lambda item: (item[2], item[0]))
-    scored_low.sort(key=lambda item: (item[2], item[0]))
+    # highest score first; original index breaks exact ties
+    scored_healthy.sort(key=lambda item: (-item[2], item[0]))
+    scored_low.sort(key=lambda item: (-item[2], item[0]))
 
     ordered: List[dict] = [entry for _, entry in openrouter]
     ordered.extend(entry for _, entry, _ in scored_healthy)
@@ -516,7 +615,10 @@ def run_reorder(
     channel_ids, quota_interval_seconds = validate_channel_config(raw)
 
     names = fetch_channel_names(channel_ids, http_fn=http_fn)
-    readings = readings_from_names(names)
+    name_readings = readings_from_names(names)
+    readings = readings_from_names(
+        names, load_precise_readings(quota_interval_seconds, now_fn=now_fn)
+    )
 
     from hermes_cli.config import load_config
 
@@ -528,13 +630,25 @@ def run_reorder(
     ]
     validate_fallback_entries(current_entries)
 
-    desired_entries = compute_desired_order(current_entries, readings)
+    reliability = rates_for_providers(
+        (str(entry.get("provider") or "") for entry in current_entries),
+        now_fn=now_fn,
+    )
+    scores = {
+        provider: score_provider(reading, reliability.get(provider))
+        for provider, reading in readings.items()
+    }
+    desired_entries = compute_desired_order(
+        current_entries, readings, reliability=reliability
+    )
     current_sig = chain_signature(config)
     desired_sig = chain_signature({**config, "fallback_providers": desired_entries})
 
     state = load_state()
+    # staleness freeze stays channel-name based: byte-identical names plus
+    # name-parsed reset thresholds, unaffected by precise state
     new_state = update_staleness_state(
-        names, readings, state, quota_interval_seconds, now_fn=now_fn
+        names, name_readings, state, quota_interval_seconds, now_fn=now_fn
     )
     frozen = is_frozen(new_state) and not force_quota
     would_change = desired_sig != current_sig and not frozen
@@ -542,6 +656,8 @@ def run_reorder(
     result = {
         "names": names,
         "readings": readings,
+        "reliability": reliability,
+        "scores": scores,
         "current_entries": current_entries,
         "desired_entries": desired_entries,
         "current_signature": current_sig,

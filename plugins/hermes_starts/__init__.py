@@ -1,7 +1,8 @@
 """Hermes Starts — agent-initiated conversations for Hermes Agent.
 
 Registers one action-based tool, ``start_conversation``, that posts opening messages to a
-self-provisioned Discord channel when Hermes has something worth saying first.
+self-provisioned Discord channel when Hermes has something worth saying first. Each opening
+is a single message in the channel that anchors its own public thread.
 """
 
 from __future__ import annotations
@@ -245,19 +246,10 @@ def adopt_home_server_inbox() -> str:
     return "wired"
 
 
-def _compose_message(
-    number: int,
-    kind: str,
-    tone: str,
-    message: str,
-    next_move: str,
-) -> str:
-    text = (
-        f"**💬 Hermes started something #{number} — {kind} [{tone}]**\n"
-        f"{message}"
-    )
+def _compose_message(message: str, next_move: str) -> str:
+    text = f"{message}"
     if next_move:
-        text += f"\n*Where I'd take this:* {next_move}"
+        text += f"\n\n*Where I'd take this:* {next_move}"
     return text
 
 
@@ -333,6 +325,21 @@ def _split_message(content: str, max_len: int = _MAX_MESSAGE_LEN) -> List[str]:
         else:
             messages.extend(_wrap_oversized_piece(chunk, max_len))
     return messages
+
+
+def _split_delivery(content: str, mention_uid: str) -> List[str]:
+    """Split an opening for delivery, reserving room for the mention prefix.
+
+    The channel anchor is the opening itself, so the mention is prepended
+    after splitting rather than before: the first part always carries
+    opening text alongside the ping — never the ping alone — and every
+    part still fits within ``_MAX_MESSAGE_LEN``.
+    """
+    if not mention_uid:
+        return _split_message(content)
+    prefix = f"<@{mention_uid}>\n"
+    parts = _split_message(content, _MAX_MESSAGE_LEN - len(prefix))
+    return [prefix + parts[0]] + parts[1:]
 
 
 def _discord_request(token: str, method: str, url: str, body: Any = None) -> Dict[str, Any]:
@@ -463,10 +470,6 @@ def _handle_setup(args: Dict[str, Any], token: str) -> str:
     channel_name = str(args.get("channel_name") or _DEFAULT_CHANNEL_NAME).strip()
     force = bool(args.get("force") or False)
 
-    # Adopt the home_server shared inbox before considering self-provisioning,
-    # so a provisioned home server never ends up with two inbox channels.
-    adopt_home_server_inbox()
-
     state = _load_state()
     if state["channel_id"] and not force:
         return json.dumps(
@@ -508,6 +511,182 @@ def _post_channel_message(token: str, channel_id: str, content: str) -> str:
     return str(payload.get("id", ""))
 
 
+def _create_thread_for_message(
+    token: str,
+    channel_id: str,
+    message_id: str,
+    name: str,
+) -> str:
+    """Create a public thread (type 11) anchored on an existing message."""
+    payload = _discord_request(
+        token,
+        "POST",
+        f"{_DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}/threads",
+        {
+            "name": name[:100],
+            "type": 11,
+            "auto_archive_duration": 4320,
+        },
+    )
+    return str(payload.get("id", ""))
+
+
+def _add_thread_member(token: str, thread_id: str, user_id: str) -> None:
+    """Add a user to a thread so their replies and thread subscription work.
+
+    Returns 204 No Content on success. A mention in the anchor message pings
+    the user, but a ping alone does not make them a thread member — without
+    this, replying from outside the thread means opting in again.
+    """
+    _discord_request(
+        token,
+        "PUT",
+        f"{_DISCORD_API_BASE}/channels/{thread_id}/thread-members/{user_id}",
+    )
+
+
+def _quiet_hours_active(settings: Dict[str, Any], now=None) -> bool:
+    """True when the local time in the configured timezone is inside the
+    quiet window during which starts still post but do NOT ping Quix.
+
+    Settings (plugins.entries.hermes_starts.settings):
+      quiet_hours: ``"23:00-08:00"`` (default). Empty string disables the gate.
+      quiet_tz: IANA zone name, default ``"Australia/Sydney"``.
+
+    Overnight windows (start later than end) wrap past midnight. Any
+    misconfiguration fails open (pinging), since a missed ping is worse
+    than an extra one.
+    """
+    raw_window = settings.get("quiet_hours")
+    # NOTE: unset means default-on; explicit empty string disables the gate.
+    # `or` would conflate the two because "" is falsy.
+    window = str("23:00-08:00" if raw_window is None else raw_window).strip()
+    if not window:
+        return False
+    tz_name = str(settings.get("quiet_tz") or "Australia/Sydney").strip()
+    try:
+        from datetime import datetime as _dt
+
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        start_s, end_s = window.split("-", 1)
+        sh, sm = (int(x) for x in start_s.strip().split(":"))
+        eh, em = (int(x) for x in end_s.strip().split(":"))
+    except Exception:
+        return False
+    moment = now if now is not None else _dt.now(tz)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=tz)
+    cur = moment.hour * 60 + moment.minute
+    start = sh * 60 + sm
+    end = eh * 60 + em
+    if start == end:
+        return False
+    if start < end:
+        return start <= cur < end
+    return cur >= start or cur < end
+
+
+def _mention_user_id() -> str:
+    """Discord user ID to ping on new starts.
+
+    Read live from ``plugins.entries.hermes_starts.settings.mention_user_id``
+    in config.yaml. The mention prefixes the opening message in the channel,
+    which both pings the user and anchors the thread. The same ID is then
+    added as a member of the created thread. Empty string disables both.
+    Both are also suppressed (the post still happens) during the configured
+    quiet hours so a 3 a.m. observation doesn't ring the doorbell.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return ""
+    entry = ((cfg.get("plugins") or {}).get("entries") or {}).get("hermes_starts") or {}
+    settings = entry.get("settings") or {}
+    uid = str(settings.get("mention_user_id") or "").strip()
+    if not uid.isdigit():
+        return ""
+    if _quiet_hours_active(settings):
+        return ""
+    return uid
+
+
+def _mark_participated_thread(thread_id: str) -> None:
+    """Record the thread so Discord follow-ups do not need an @mention.
+    The gateway only skips the mention gate for threads in
+    ThreadParticipationTracker (~/.hermes/discord_threads.json). REST-created
+    starts never go through the adapter's send path, so they must be marked
+    here or replies in #inbox are silently dropped.
+    """
+    if not thread_id:
+        return
+    try:
+        from gateway.platforms.helpers import ThreadParticipationTracker
+
+        ThreadParticipationTracker("discord").mark(str(thread_id))
+        return
+    except Exception:
+        pass
+
+    path = get_hermes_home() / "discord_threads.json"
+    threads: List[str] = []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            threads = [str(item) for item in raw]
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        threads = []
+    if thread_id in threads:
+        return
+    threads.append(thread_id)
+    if len(threads) > 500:
+        threads = threads[-500:]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(threads, indent=None) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _seed_thread_session(thread_id: str, thread_name: str, opening_text: str) -> Optional[str]:
+    """Seed the thread's session transcript with the opening as turn one.
+
+    Discord history backfill stops at the bot's own messages, so without this
+    a reply to a start opens a blank conversation. Writing the opening into
+    the session the gateway will route the thread to (key format verified:
+    ``agent:main:discord:thread:<id>:<id>``) makes the first reply continue
+    the started conversation. Assistant-role keeps message alternation valid.
+    """
+    try:
+        from gateway.config import GatewayConfig, Platform
+        from gateway.session import SessionSource, SessionStore
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(thread_id),
+            chat_name=f"Big Steve / {thread_name}",
+            chat_type="thread",
+            user_id="1487993851930214410",
+            user_name="Hermes Starts",
+            thread_id=str(thread_id),
+        )
+        store = SessionStore(get_hermes_home() / "sessions", GatewayConfig())
+        entry = store.get_or_create_session(source)
+        store.append_to_transcript(
+            entry.session_id,
+            {
+                "role": "assistant",
+                "content": opening_text,
+                "observed": True,
+            },
+        )
+        return entry.session_key
+    except Exception:
+        return None  # never fail the tool call over seeding
+
+
 def _handle_start(args: Dict[str, Any], token: str) -> str:
     kind = str(args.get("kind") or "").strip()
     message = str(args.get("message") or "").strip()
@@ -524,7 +703,6 @@ def _handle_start(args: Dict[str, Any], token: str) -> str:
         return json.dumps({"success": False, "error": f"invalid tone: {tone}"})
 
     try:
-        adopt_home_server_inbox()
         state = _load_state()
         if not state["channel_id"]:
             setup_result = json.loads(_handle_setup({"channel_name": _DEFAULT_CHANNEL_NAME}, token))
@@ -538,22 +716,104 @@ def _handle_start(args: Dict[str, Any], token: str) -> str:
         state["counter"] = number
         _save_state(state)
 
-        composed = _compose_message(number, kind, tone, message, next_move)
-        parts = _split_message(composed)
+        thread_name = f"Start #{number} — {kind}"
+        composed = _compose_message(message, next_move)
 
-        message_ids: List[str] = []
-        for part in parts:
-            message_ids.append(_post_channel_message(token, state["channel_id"], part))
+        # The full opening is the one visible starter message: it lands in the
+        # channel first, and the public thread is anchored on it. The mention
+        # prefixes only the first part, with its room reserved up front, so a
+        # long opening still splits into parts that each stay within the limit
+        # and the anchor keeps real opening text.
+        mention_uid = _mention_user_id()
+        parts = _split_delivery(composed, mention_uid)
 
-        return json.dumps(
-            {
-                "success": True,
-                "action": "start",
-                "start_number": number,
-                "channel_id": state["channel_id"],
-                "channel_message_ids": message_ids,
-            }
-        )
+        anchor_id = _post_channel_message(token, state["channel_id"], parts[0])
+        channel_message_ids: List[str] = [anchor_id]
+
+        thread_id = ""
+        warnings: List[str] = []
+        try:
+            thread_id = _create_thread_for_message(
+                token,
+                state["channel_id"],
+                anchor_id,
+                thread_name,
+            )
+        except urllib.error.HTTPError as exc:
+            warnings.append(f"thread creation failed: HTTP {exc.code}")
+        except urllib.error.URLError as exc:
+            reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
+            warnings.append(f"thread creation failed: {reason}")
+        except Exception as exc:
+            # The opening is already posted, so this is a degraded start, not a
+            # failed one — a failure here would read as "nothing was sent".
+            warnings.append(f"thread creation failed: {type(exc).__name__}: {exc}")
+        if not thread_id and not warnings:
+            warnings.append("thread creation returned no id")
+
+        thread_message_ids: List[str] = []
+        if thread_id:
+            if mention_uid:
+                try:
+                    _add_thread_member(token, thread_id, mention_uid)
+                except urllib.error.HTTPError as exc:
+                    warnings.append(
+                        f"thread member add failed for {mention_uid}: HTTP {exc.code}"
+                    )
+                except urllib.error.URLError as exc:
+                    reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
+                    warnings.append(
+                        f"thread member add failed for {mention_uid}: {reason}"
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"thread member add failed for {mention_uid}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            for part in parts[1:]:
+                thread_message_ids.append(_post_channel_message(token, thread_id, part))
+        else:
+            # Thread creation failed — the opening already exists in the
+            # channel, so continue it there instead of losing the tail or
+            # posting the anchor twice.
+            for part in parts[1:]:
+                channel_message_ids.append(
+                    _post_channel_message(token, state["channel_id"], part)
+                )
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "action": "start",
+            "start_number": number,
+            "channel_id": state["channel_id"],
+            "channel_message_id": anchor_id,
+            "channel_message_ids": channel_message_ids,
+            "thread_message_ids": thread_message_ids,
+        }
+        if mention_uid:
+            result["mentioned_user_id"] = mention_uid
+        if thread_id:
+            result["thread_id"] = thread_id
+            result["thread_name"] = thread_name
+            try:
+                _mark_participated_thread(thread_id)
+            except Exception as exc:
+                warnings.append(f"thread listen mark failed: {exc}")
+            seeded_key: Optional[str] = None
+            try:
+                seeded_key = _seed_thread_session(
+                    thread_id,
+                    thread_name,
+                    composed,
+                )
+            except Exception as exc:
+                seeded_key = None
+                warnings.append(f"session seed failed: {exc}")
+            if seeded_key:
+                result["session_seed_key"] = seeded_key
+        if warnings:
+            result["warning"] = "; ".join(warnings)
+        return json.dumps(result)
     except urllib.error.HTTPError as exc:
         return json.dumps({"success": False, "error": f"HTTP error: {exc.code}"})
     except urllib.error.URLError as exc:

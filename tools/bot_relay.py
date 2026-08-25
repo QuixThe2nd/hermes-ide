@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import time
@@ -124,7 +125,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         return None
     if not handle:
         handle = "hermes" if profile == "default" else profile
-    if not _HANDLE_RE.match(handle) or not _HANDLE_RE.match(profile):
+    if (
+        not _HANDLE_RE.match(handle)
+        or not _HANDLE_RE.match(profile)
+        or not _HANDLE_RE.match(connection_id)
+    ):
         return None
     out = {
         "profile": profile,
@@ -486,22 +491,41 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     interpreter.
     """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
-    label = f"@{envelope['target_handle']} on {envelope['target_connection']}"
+    label = (
+        f"@{envelope.get('target_handle', '')} "
+        f"on {envelope.get('target_connection', '')}"
+    )
+    # Encode label with !r so roster fields cannot break out of the generated
+    # python -c source (quotes, parens, or extra statements in connection_id).
+    # The raw-string prefix keeps Windows paths viable: repr escapes each
+    # backslash ("C:\\Users\\..."), but the Windows execution layer the
+    # waiter runs under folds "\\" back to "\", which turns "\U" into an
+    # invalid unicode escape and SyntaxErrors the whole script (#93590).
+    # With the r prefix the folded single backslash parses as a literal.
+    # POSIX paths contain no backslashes, so the prefix is a no-op there,
+    # and \' inside a raw literal still cannot terminate the string, so
+    # the injection defense above is unchanged.
     code = (
         "import json,os,sys,time\n"
-        f"p = {reply_path!r}\n"
+        f"p = r{reply_path!r}\n"
+        f"label = r{label!r}\n"
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
         "        if d.get('error'):\n"
-        f"            print('Delivery to {label} failed: ' + d['error'])\n"
+        # The typed reason code (#93091) rides ahead of the free text so the
+        # sending agent can branch on it (auth vs rate limit vs offline)
+        # without parsing provider prose.
+        "            code = str(d.get('reason') or '').strip()\n"
+        "            tag = ' [reason: ' + code + ']' if code else ''\n"
+        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
         "            sys.exit(1)\n"
-        f"        print('Reply from {label}:')\n"
+        "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"
         "    time.sleep(2)\n"
-        f"print('No reply from {label} within {REPLY_WAIT_SECONDS}s. The message may "
+        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
         "sys.exit(1)\n"
     )
@@ -511,10 +535,33 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 # ── delivery command (used by the deliver RPC on the TARGET gateway) ────────
 
 
+def _hermes_cli() -> str:
+    """Resolve the hermes CLI beside this gateway's own interpreter.
+
+    The deliver RPC runs on the target gateway, whose process is the venv
+    python — its bin/Scripts directory holds the matching ``hermes``
+    entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
+    service contexts (systemd units, desktop launchers, non-login SSH
+    shells) do not provide, so delivery died with ENOENT there (#93590).
+    When no sibling exists (e.g. running from a source tree without an
+    installed script), a ``shutil.which`` lookup runs next — it honors
+    whatever PATH the process does have — before falling back to the bare
+    name, preserving today's behavior for interactive shells.
+    """
+    exe = Path(sys.executable or "")
+    sibling = exe.parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    if sibling.is_file():
+        return str(sibling)
+    found = shutil.which("hermes")
+    if found:
+        return found
+    return "hermes"
+
+
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
     return [
-        "hermes",
+        _hermes_cli(),
         "-p",
         profile,
         "chat",

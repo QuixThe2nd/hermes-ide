@@ -60,7 +60,9 @@ def main(argv: list[str] | None = None) -> int:
         readings = result["readings"]
         current_entries = result["current_entries"]
         desired_entries = result["desired_entries"]
-        print(f"READINGS: {format_readings_line(readings)}")
+        print(
+            f"READINGS: {format_readings_line(readings, result.get('reliability'), result.get('scores'))}"
+        )
         print(
             "CURRENT: "
             + ", ".join(format_entry_label(entry) for entry in current_entries)

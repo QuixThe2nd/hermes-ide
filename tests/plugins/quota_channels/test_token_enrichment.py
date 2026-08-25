@@ -322,7 +322,7 @@ class TestV1ConfigAutoEnrichment:
 
         monkeypatch.setattr(
             "plugins.quota_channels.core.save_state",
-            lambda now_fn=None: self.LAST_SUCCESS,
+            lambda *args, **kwargs: self.LAST_SUCCESS,
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -388,7 +388,7 @@ class TestKimiGrokNoTokenHttp:
             return _provider_http_router()[0](req, timeout)
 
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -437,7 +437,7 @@ class TestTokenFailurePreservesSegment:
             return fake_http(req, timeout)
 
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -473,7 +473,7 @@ class TestTokenFailurePreservesSegment:
             return fake_http(req, timeout)
 
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -513,7 +513,7 @@ class TestQuotaFailureIsolation:
             return fake_http(req, timeout)
 
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -552,7 +552,7 @@ class TestSortingUnchanged:
             "plugins.quota_channels.core.sort_voice_channels", fake_sort
         )
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -592,7 +592,7 @@ class TestNoTokenUsageReferences:
         config = validate_quota_config(_base_section())
         fake_http, fixed_now = _provider_http_router()
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
         monkeypatch.setattr(
             "plugins.quota_channels.core.load_state",
@@ -729,7 +729,7 @@ class TestToolRunParity:
             lambda: {"last_quota_success": 0},
         )
         monkeypatch.setattr(
-            "plugins.quota_channels.core.save_state", lambda now_fn=None: 1
+            "plugins.quota_channels.core.save_state", lambda *args, **kwargs: 1
         )
 
         from plugins.quota_channels.core import load_quota_config, run_tick

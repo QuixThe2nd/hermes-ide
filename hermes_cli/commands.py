@@ -211,6 +211,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
+    CommandDef("review", "Spawn an independent subagent to review the work just discussed (PR, code, docs)", "Session",
+               args_hint="[review instructions]"),
     CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",
                aliases=("proactive",),
                args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
@@ -233,6 +235,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("setnotify", "Set this chat as the gateway lifecycle-notification channel", "Session",
+               gateway_only=True, aliases=("set-notify",)),
+    CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel (back to home)", "Session",
+               gateway_only=True, aliases=("clear-notify",)),
     CommandDef("sethomeserver", "Provision and wire the Discord home server", "Session",
                gateway_only=True, args_hint="[confirm]"),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -1368,12 +1374,16 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
+#   - setnotify / clearnotify: one-time notification-channel setup; reached
+#     via /hermes setnotify on Slack. Demoted at the 50-cap — a user routes
+#     lifecycle broadcasts once, so a native slot would clamp the recurring
+#     /insights and /usage lookups off the native list, breaking parity.
 #   - sethomeserver: Discord-only by design (it provisions Discord categories,
 #     channels, and webhooks — on Slack it can only ever answer "Discord
 #     only"); reached via /hermes sethomeserver on Slack. Without this entry
 #     its native slot tips the registry past the 50-cap and silently clamps
 #     /insights, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform", "sethomeserver"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "setnotify", "clearnotify", "sethomeserver"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
