@@ -37,6 +37,18 @@ The final line is a ``"type": "result"`` event; the handler scans for the
 last such line and extracts session metadata, cost, model usage, and
 permission denials from it (same contract as the old batch ``json``
 format).
+
+Completion signals
+------------------
+A ``"type": "result"`` event with ``subtype == "success"`` and
+``is_error`` false is treated as success only when it carries a non-empty
+final report; a "successful" run with an empty report is surfaced as a
+failure so the caller can retry instead of acting on nothing. Lines in the
+log containing known degraded-run markers (currently
+``unrecognized_model`` — the provider rejected the pinned model and the
+CLI silently fell back) are collected into the payload's ``warnings``
+list, so a technically-OK exit that burned the run on the wrong model is
+visible to the caller.
 """
 
 from __future__ import annotations
@@ -220,6 +232,42 @@ def parse_claude_agent_log(log_text: str) -> Dict[str, Any]:
     }
 
 
+# Markers that mean the run degraded silently even when the exit code and
+# result event look fine. ``unrecognized_model``: the wrapper pinned a
+# model the provider does not know, and the CLI fell back to another model
+# while still exiting 0 — the run then burns turns on the wrong model.
+_LOG_WARNING_MARKERS = ("unrecognized_model",)
+_MAX_LOG_WARNINGS = 5
+_MAX_WARNING_CHARS = 300
+
+
+def extract_log_warnings(log_text: str) -> List[str]:
+    """Collect degraded-run warning lines from a Claude Code log.
+
+    Scans every line (JSON event or plain text) for
+    ``_LOG_WARNING_MARKERS`` and returns one deduplicated, length-capped
+    entry per distinct matching line, oldest first, capped at
+    ``_MAX_LOG_WARNINGS``. Returns an empty list for clean logs.
+    """
+    warnings: List[str] = []
+    seen = set()
+    for raw_line in (log_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not any(marker in line for marker in _LOG_WARNING_MARKERS):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        if len(line) > _MAX_WARNING_CHARS:
+            line = line[:_MAX_WARNING_CHARS] + "..."
+        warnings.append(line)
+        if len(warnings) >= _MAX_LOG_WARNINGS:
+            break
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # Subprocess helpers
 # ---------------------------------------------------------------------------
@@ -246,6 +294,7 @@ def _make_result(
     models_used: Optional[List[str]] = None,
     permission_denials: Optional[List[Any]] = None,
     log_path: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
     **extra: Any,
 ) -> str:
     payload: Dict[str, Any] = {
@@ -259,6 +308,7 @@ def _make_result(
         "models_used": models_used or [],
         "permission_denials": permission_denials,
         "log_path": log_path,
+        "warnings": list(warnings or []),
     }
     payload.update(extra)
     return json.dumps(payload, ensure_ascii=False)
@@ -403,6 +453,7 @@ def delegate_claude_agent(
         "models_used": parsed.get("models_used") or [],
         "permission_denials": parsed.get("permission_denials") or [],
         "log_path": log_path,
+        "warnings": extract_log_warnings(log_text),
     }
 
     if watchdog_error:
@@ -430,12 +481,22 @@ def delegate_claude_agent(
     is_error = parsed.get("is_error")
     subtype = parsed.get("subtype")
     success = is_error is False and subtype == "success"
+    error = None if success else (
+        f"Claude Code result subtype={subtype!r} is_error={is_error!r}"
+    )
+
+    if success and not base_fields["final_report"].strip():
+        # A "successful" run with an empty final report hands the caller no
+        # usable outcome (observed with GLM-pinned delegations that stalled
+        # or fell back after an unrecognized_model warning). Surface it as
+        # a failure so the caller can retry or investigate instead of
+        # treating silence as a completed delegation.
+        success = False
+        error = "Claude Code reported success but returned an empty final report"
 
     return _make_result(
         success=success,
-        error=None if success else (
-            f"Claude Code result subtype={subtype!r} is_error={is_error!r}"
-        ),
+        error=error,
         **base_fields,
     )
 
