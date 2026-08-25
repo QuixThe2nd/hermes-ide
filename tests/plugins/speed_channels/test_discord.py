@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import FAKE_TOKEN_VALUE
+
 from plugins.speed_channels.core import (
     SpeedChannelsError,
     discord_headers,
@@ -55,4 +57,4 @@ def test_channel_429_still_raises(hermes, transport):
 def test_authorization_header_shape(hermes):
     headers = discord_headers()
     assert headers["Authorization"].startswith("Bot ")
-    assert "t0ken" in headers["Authorization"]
+    assert FAKE_TOKEN_VALUE in headers["Authorization"]
