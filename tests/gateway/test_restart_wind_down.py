@@ -125,6 +125,9 @@ async def test_request_restart_steers_other_sessions_and_marks_them(
     assert runner._cooperative_restart_sessions == [
         "agent:main:telegram:dm:other"
     ]
+    assert runner._cooperative_restart_steered_sessions == [
+        "agent:main:telegram:dm:other"
+    ]
     if runner._restart_task is not None:
         runner._restart_task.cancel()
         with pytest.raises(asyncio.CancelledError):
