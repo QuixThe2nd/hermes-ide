@@ -43,6 +43,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Gateway — lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`)
   - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), then re-syncs at most hourly
   - Discord — sessions keyed to your stable username, not your per-server nickname
+  - Discord — `DISCORD_ALLOWED_GUILDS`: any member of a listed server can talk to the bot (DMs unaffected)
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
