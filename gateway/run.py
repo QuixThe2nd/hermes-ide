@@ -151,6 +151,21 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# The one-shot fallback-observability notice the agent emits on successful
+# provider-fallback recovery (run_agent._emit_pending_fallback_notice). It is
+# operator plumbing, and a gateway chat bound to an active assistant mission
+# (plugins/missions) serves an end-user persona — there the contact must not
+# see model/provider routing internals, so _status_callback_sync drops exactly
+# this line via _mission_chat_suppresses_status. Prefix-anchored on purpose:
+# every other status class (retry chatter, warnings, provider errors,
+# compression notices) never matches and keeps today's behavior everywhere,
+# including mission chats. Operator chats (Discord home, ...) without an
+# active mission keep seeing the notice.
+_FALLBACK_SWITCH_STATUS_RE = re.compile(
+    r"^🔄 Switched to fallback model:",
+    re.DOTALL,
+)
+
 
 _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 # Absolute ceiling on an escalated hygiene cooldown, mirroring
@@ -872,6 +887,35 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
+
+
+def _mission_chat_suppresses_status(chat_id: Any, event_type: str, message: str) -> bool:
+    """True when a mission-bound chat must not receive this status line.
+
+    Narrow suppression for end-user persona chats: only the fallback-switch
+    notice matched by ``_FALLBACK_SWITCH_STATUS_RE`` is in scope, and only
+    when ``plugins.missions.find_active_mission_for_chat`` reports an active
+    mission for the chat the status would be delivered to (identity matching
+    stays inside the plugin). Everything else — including the same notice in
+    operator chats — passes through untouched.
+
+    The missions plugin is optional: import and lookup run inside try/except
+    and ANY failure (plugin absent, lookup error) returns False so the status
+    falls through to the existing ``_prepare_gateway_status_message`` flow.
+    ``event_type`` is accepted for call-site symmetry with the status
+    callback; the decision is message-shaped, not event-type-shaped.
+    """
+    if not _FALLBACK_SWITCH_STATUS_RE.match(str(message or "").strip()):
+        return False
+    chat_key = str(chat_id or "").strip()
+    if not chat_key:
+        return False
+    try:
+        from plugins.missions import find_active_mission_for_chat
+
+        return bool(find_active_mission_for_chat(chat_key))
+    except Exception:
+        return False
 
 
 def render_notice_line(notice) -> str:
@@ -5954,6 +5998,18 @@ class TurnRunner:
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         ctx = self._ctx
         if not ctx._status_adapter or not ctx._run_still_current():
+            return
+        # Mission-bound chats serve an end-user persona: the fallback-switch
+        # notice is operator observability and is dropped there (and only
+        # there) before any preparation/redaction, so the delivery flow below
+        # is byte-identical for every other status and every other chat.
+        if _mission_chat_suppresses_status(ctx._status_chat_id, event_type, message):
+            logger.debug(
+                "status_callback suppressed for mission chat %s/%s: %s",
+                ctx.source.platform.value if ctx.source.platform else "unknown",
+                event_type,
+                _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
             return
         prepared_message = _prepare_gateway_status_message(
             ctx.source.platform,
