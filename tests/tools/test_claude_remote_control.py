@@ -614,7 +614,7 @@ def test_auth_summary_drops_everything_sensitive():
         "apiProvider": "firstParty",
         "emailAddress": "someone@example.com",
         "organizationName": "Acme",
-        "accessToken": "sk-ant-super-secret",
+        "accessToken": "CANARY-token-not-a-real-secret",
     }
     summary = summarize_auth_status(payload)
     assert summary == {
