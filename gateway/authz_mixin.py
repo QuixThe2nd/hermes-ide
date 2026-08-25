@@ -613,9 +613,11 @@ class GatewayAuthorizationMixin:
         # first-writer process-env bridge (issue #72348). Evaluated before
         # the per-user platform allowlist so a guild grant bypasses it for
         # listed servers only; unset/empty changes nothing below. DM traffic
-        # never carries a guild_id, so it is untouched by this gate.
+        # never carries a guild_id, so it is untouched by this gate. Threads
+        # count as guild traffic too: the adapter stamps them
+        # chat_type="thread" but they carry guild_id like channels do.
         if source.platform == Platform.DISCORD and source.chat_type in {
-            "group", "forum", "channel",
+            "group", "forum", "channel", "thread",
         }:
             source_guild_id = getattr(source, "guild_id", None)
             if source_guild_id:

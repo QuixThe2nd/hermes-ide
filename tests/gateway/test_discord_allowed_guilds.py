@@ -9,9 +9,9 @@ enforced twice, and both layers are per-profile isolated under
   server is an independent grant, valid whether or not the user/role
   allowlists are also set. DMs carry no guild and are NEVER granted here.
   Layer 2 — ``GatewayRunner._is_user_authorized`` (gateway/authz_mixin.py):
-  the second pass after routing authorizes group/forum/channel Discord
-  sources whose ``guild_id`` is listed, reading the gate through ``_auth_env``
-  so a multiplexed profile consults its own secret scope.
+  the second pass after routing authorizes group/forum/channel/thread
+  Discord sources whose ``guild_id`` is listed, reading the gate through
+  ``_auth_env`` so a multiplexed profile consults its own secret scope.
 
 These tests pin the gate so it cannot silently widen to DMs, regress the
 existing user/role/channel paths when unset, or leak across profiles.
@@ -346,6 +346,26 @@ def test_gateway_guild_grant_authorizes_group_source(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("DISCORD_ALLOWED_GUILDS", "42")
     assert runner._is_user_authorized(_make_discord_source(guild_id="42")) is True
+
+
+def test_gateway_guild_grant_authorizes_thread_source(monkeypatch):
+    """The adapter stamps thread replies chat_type="thread" (adapter.py), but
+    they carry guild_id like channels: a thread in a listed guild is granted."""
+    runner = _make_bare_runner()
+    monkeypatch.setenv("DISCORD_ALLOWED_GUILDS", "42")
+    assert runner._is_user_authorized(
+        _make_discord_source(guild_id="42", chat_type="thread")
+    ) is True
+
+
+def test_gateway_non_matching_guild_thread_not_granted(monkeypatch):
+    """chat_type="thread" alone grants nothing: the thread's guild must be
+    listed, same fall-through-to-deny as group sources."""
+    runner = _make_bare_runner()
+    monkeypatch.setenv("DISCORD_ALLOWED_GUILDS", "42")
+    assert runner._is_user_authorized(
+        _make_discord_source(guild_id="777", chat_type="thread")
+    ) is False
 
 
 def test_gateway_guild_grant_bypasses_user_allowlist_for_listed_guild(monkeypatch):
