@@ -303,6 +303,14 @@ gateway:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
 
+  set_notify:
+    save_failed:           "Failed to save notification channel: {error}"
+    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here instead of the home channel."
+
+  clear_notify:
+    failed:                "Failed to clear notification channel: {error}"
+    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts return to the home channel."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

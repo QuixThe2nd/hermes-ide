@@ -235,6 +235,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("setnotify", "Set this chat as the gateway lifecycle-notification channel", "Session",
+               gateway_only=True, aliases=("set-notify",)),
+    CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel (back to home)", "Session",
+               gateway_only=True, aliases=("clear-notify",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 
@@ -1368,7 +1372,11 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform"})
+#   - setnotify / clearnotify: one-time notification-channel setup; reached
+#     via /hermes setnotify on Slack. Demoted at the 50-cap — a user routes
+#     lifecycle broadcasts once, so a native slot would clamp the recurring
+#     /insights and /usage lookups off the native list, breaking parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "setnotify", "clearnotify"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

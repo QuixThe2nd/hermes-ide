@@ -11959,11 +11959,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``RuntimeError: dictionary changed size during iteration`` —
         # observed in a user report during gateway shutdown.
         for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
+            platform_cfg = self.config.platforms.get(platform)
+            # Lifecycle broadcasts route to the platform's dedicated
+            # notification channel when one is configured (e.g. a Discord
+            # "#gateway-restarts" channel); the home channel stays free for
+            # conversation. Platforms without one keep home-channel delivery.
+            notify = platform_cfg.notification_channel if platform_cfg else None
+            home = notify or self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
 
-            platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
@@ -12004,7 +12009,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home_entry["thread_id"] = str(home.thread_id)
                 warned_targets[dedup_key] = home_entry
                 logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
+                    "Sent shutdown notification to %s channel %s:%s",
+                    "notification" if notify else "home",
                     platform.value,
                     home.chat_id,
                 )
@@ -18909,6 +18915,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
+
+        if canonical == "setnotify":
+            return await self._handle_set_notify_command(event)
+
+        if canonical == "clearnotify":
+            return await self._handle_clear_notify_command(event)
 
         if canonical == "compress":
             return await self._handle_compress_command(event)
@@ -25816,7 +25828,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message = "♻️ Gateway online — Hermes is back and ready."
 
         for platform, platform_cfg in self.config.platforms.items():
-            home = platform_cfg.home_channel
+            # Lifecycle broadcasts route to the platform's dedicated
+            # notification channel when one is configured; the home channel
+            # stays free for conversation. Platforms without one keep
+            # home-channel delivery.
+            home = platform_cfg.notification_channel or platform_cfg.home_channel
             if not home or not home.chat_id:
                 continue
 
@@ -25869,7 +25885,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 delivered.add(target)
                 logger.info(
-                    "Sent home-channel startup notification to %s:%s",
+                    "Sent %s startup notification to %s:%s",
+                    "notification-channel" if platform_cfg.notification_channel else "home-channel",
                     platform.value,
                     home.chat_id,
                 )
