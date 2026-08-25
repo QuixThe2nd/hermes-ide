@@ -20,7 +20,7 @@ from plugins.home_server.core import DISCORD_TOKEN_ENV_KEY
 GUILD = "900000000000000001"
 
 # Short, obviously-fake values — well under any real credential length.
-BOT_TOKEN = "tok" + "en-fake"
+FAKE_TOKEN_VALUE = "tok" + "en-fake"
 
 # Discord channel types used by the template.
 TYPE_TEXT = 0
@@ -127,7 +127,7 @@ def hermes(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     (home / "secrets").mkdir(parents=True)
     (home / "secrets" / "discord.env").write_text(
-        f"{DISCORD_TOKEN_ENV_KEY}={BOT_TOKEN}\n", encoding="utf-8"
+        f"{DISCORD_TOKEN_ENV_KEY}={FAKE_TOKEN_VALUE}\n", encoding="utf-8"
     )
     (home / "config.yaml").write_text(
         "model:\n"

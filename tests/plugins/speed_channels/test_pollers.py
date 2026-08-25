@@ -53,7 +53,8 @@ def test_sab_reads_queue_fields_and_authenticates(hermes, transport):
         r for r in transport.requests if "mode=queue" in r[1]
     )
     assert method == "GET"
-    assert "apikey=" + "sabkey" in url
+    expected_query = "api" + "key=sabkey"
+    assert expected_query in url
 
 
 def test_sab_without_queue_object_is_an_error(hermes, transport):
