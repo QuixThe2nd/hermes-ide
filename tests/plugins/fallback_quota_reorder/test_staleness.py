@@ -112,9 +112,9 @@ class TestRunReorderStalenessFreeze:
             tmp_path,
             fallback_providers=[
                 {"provider": "openrouter", "model": "or"},
-                {"provider": "openai-codex", "model": "codex"},
-                {"provider": "kimi-coding", "model": "kimi"},
                 {"provider": "xai-oauth", "model": "grok"},
+                {"provider": "kimi-coding", "model": "kimi"},
+                {"provider": "openai-codex", "model": "codex"},
             ],
         )
         quota_config = tmp_path / "quota-config.yaml"

@@ -52,11 +52,11 @@ class TestRunReorderWritePath:
         names = default_channel_names()
         entries = [
             {"provider": "openrouter", "model": "or"},
-            {"provider": "xai-oauth", "model": "grok"},
-            {"provider": "kimi-coding", "model": "kimi"},
-            {"provider": "openai-codex", "model": "codex"},
-            {"provider": "zai", "model": "zai"},
             {"provider": "cursor", "model": "cursor"},
+            {"provider": "openai-codex", "model": "codex"},
+            {"provider": "kimi-coding", "model": "kimi"},
+            {"provider": "zai", "model": "zai"},
+            {"provider": "xai-oauth", "model": "grok"},
         ]
         write_hermes_home(tmp_path, fallback_providers=entries)
         quota_config = tmp_path / "quota-config.yaml"

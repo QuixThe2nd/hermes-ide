@@ -31,6 +31,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent off-hours timer (`hermes auto_update status|enable|disable|reconcile`; default 04:00–08:00 local with randomized delay)
   - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
+  - fallback_quota_reorder — ranks fallback_providers by remaining quota × time-to-reset × recent API success, not soonest-reset-first
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)

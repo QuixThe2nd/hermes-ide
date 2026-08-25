@@ -251,8 +251,13 @@ def _gateway_start_hook():
     ctx = Ctx()
     register(ctx)
     assert ctx.tools == []  # no model tools, ever
-    assert len(hooks) == 1 and hooks[0][0] == "on_gateway_start"
-    return hooks[0][1]
+    hook_names = [name for name, _ in hooks]
+    assert hook_names == [
+        "on_gateway_start",
+        "post_api_request",
+        "api_request_error",
+    ]
+    return next(callback for name, callback in hooks if name == "on_gateway_start")
 
 
 def test_register_wires_gateway_start_hook_without_tools():
