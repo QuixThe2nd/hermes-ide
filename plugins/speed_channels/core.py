@@ -88,9 +88,15 @@ def _read_env_key(path: Path, key: str) -> str:
     raise SpeedChannelsError(f"{key} missing in {path}")
 
 
+# Env var holding the bot token in HERMES_HOME/secrets/discord.env, same
+# source as home_server/quota_channels. A constant so tests reference the key
+# instead of re-typing the literal.
+DISCORD_TOKEN_ENV_KEY = "DISCORD_BOT_TOKEN"
+
+
 def discord_token() -> str:
     """Bot token from HERMES_HOME/secrets/discord.env. Never logged."""
-    return _read_env_key(_secret_env("discord.env"), "DISCORD_BOT_TOKEN")
+    return _read_env_key(_secret_env("discord.env"), DISCORD_TOKEN_ENV_KEY)
 
 
 def load_state() -> dict:

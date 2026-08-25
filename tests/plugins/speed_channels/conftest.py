@@ -15,6 +15,8 @@ import urllib.parse
 
 import pytest
 
+from plugins.speed_channels.core import DISCORD_TOKEN_ENV_KEY
+
 # Short, obviously-fake values — well under any real credential length.
 BOT_TOKEN = "t0ken"
 QBIT = "http://qbit"
@@ -147,7 +149,9 @@ def hermes(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     secrets = home / "secrets"
     secrets.mkdir(parents=True)
-    (secrets / "discord.env").write_text(f"DISCORD_BOT_TOKEN={BOT_TOKEN}\n", encoding="utf-8")
+    (secrets / "discord.env").write_text(
+        f"{DISCORD_TOKEN_ENV_KEY}={BOT_TOKEN}\n", encoding="utf-8"
+    )
     (secrets / "qbittorrent.env").write_text(
         f"QBIT_BASE_URL={QBIT}\nQBIT_USER=u\nQBIT_PASS=p\n", encoding="utf-8"
     )

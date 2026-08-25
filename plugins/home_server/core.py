@@ -59,6 +59,11 @@ MAX_RETRY_AFTER_SECONDS = 10.0
 
 MODULE_KEYS = ("chat", "memory", "quotas", "speeds")
 
+# Env var holding the bot token in HERMES_HOME/secrets/discord.env. Exposed as
+# a constant so tests (and any future caller) reference the same key instead of
+# re-typing the literal.
+DISCORD_TOKEN_ENV_KEY = "DISCORD_BOT_TOKEN"
+
 # Memory channel -> exported webhook env var. Keys mirror the conclusion levels
 # of the Honcho discord_notifications patch (see its manifest.json), so the
 # channel named "patterns" really is the one Honcho's *inductive* stream posts to.
@@ -205,7 +210,7 @@ def discord_token() -> str:
     Same source as quota_channels. Never logged.
     """
     return _read_env_key(
-        _hermes_home() / "secrets" / "discord.env", "DISCORD_BOT_TOKEN"
+        _hermes_home() / "secrets" / "discord.env", DISCORD_TOKEN_ENV_KEY
     )
 
 
