@@ -290,24 +290,6 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Kon nie tuiste-kanaal stoor nie: {error}"
     success:               "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."
-    discord_pointer:       "💡 Wil jy die volledige opstelling hê? `/sethomeserver` beyder 'n hele tuisteserver — klets, geheue, kwota's en snelhede — alles aanmekaargekoppel."
-
-  set_home_server:
-    discord_only:         "⚠️ `/sethomeserver` werk net op Discord — dit beyder Discord-kategorieë, kanale en webhooks."
-    relay_blocked:        "⚠️ Dié boodskap het via 'n relê aangekom wat Discord-gildteikens nie kan bevestig nie. Voer `/sethomeserver` vanaf 'n natiewe Discord-boodskap uit."
-    no_guild:             "⚠️ Kon nie uitmaak watter server nie. Voer `/sethomeserver` binne jou Discord-tuisteserver uit."
-    progress:             "🏗️ Jou tuisteserver word beyder… (ontbrekende kanale word geskep en gekoppel — dit neem 'n paar sekondes)"
-    confirm_required:     "⚠️ Jou tuisteserver is alreeds op gild `{current}` gestel.
-Voer `/sethomeserver confirm` uit om dit na gild `{guild_id}` te skuif. Niks word ooit geskrap nie, maar die nuwe gild word van nuuts af beyder."
-    save_failed:          "Kon nie die tuisteserver-instelling stoor nie: {error}"
-    provision_failed:     "❌ Beprovisionering het gefaal: {error}"
-    success:              "🏠 Tuisteserver vir gild `{guild_id}` beyder.
-**Geskep ({created_count}):** {created_list}
-**Welkomsboodskappe geplaas:** {embeds_count}
-**Gekoppel:** {wired_list} ({wired_count})
-**Geaktiveerde modules:** {modules_count}/5
-Tuiskanaal: {home_channel_state} — bestaande tuiskanale word nooit oorskryf nie.
-Hersinchronisasie loop outomaties hoogstens een keer per uur."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

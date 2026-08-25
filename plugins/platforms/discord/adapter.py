@@ -6158,13 +6158,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_sethome(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/sethome")
 
-        # Discord-only provisioning command; the gateway handler rejects it on
-        # every other platform, and Slack reaches it via /hermes sethomeserver.
-        @tree.command(name="sethomeserver", description="Provision and wire the Discord home server")
-        @discord.app_commands.describe(confirm="Type 'confirm' to move an existing home server to this server")
-        async def slash_set_home_server(interaction: discord.Interaction, confirm: str = ""):
-            await self._run_simple_slash(interaction, f"/sethomeserver {confirm}".strip())
-
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")

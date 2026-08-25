@@ -239,8 +239,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-notify",)),
     CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel (back to home)", "Session",
                gateway_only=True, aliases=("clear-notify",)),
-    CommandDef("sethomeserver", "Provision and wire the Discord home server", "Session",
-               gateway_only=True, args_hint="[confirm]"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 
@@ -1378,12 +1376,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     via /hermes setnotify on Slack. Demoted at the 50-cap — a user routes
 #     lifecycle broadcasts once, so a native slot would clamp the recurring
 #     /insights and /usage lookups off the native list, breaking parity.
-#   - sethomeserver: Discord-only by design (it provisions Discord categories,
-#     channels, and webhooks — on Slack it can only ever answer "Discord
-#     only"); reached via /hermes sethomeserver on Slack. Without this entry
-#     its native slot tips the registry past the 50-cap and silently clamps
-#     /insights, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "setnotify", "clearnotify", "sethomeserver"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "setnotify", "clearnotify"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

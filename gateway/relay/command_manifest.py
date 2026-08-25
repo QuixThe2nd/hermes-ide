@@ -87,16 +87,6 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         {"name": "undo", "description": "Remove the last exchange"},
         {"name": "status", "description": "Show Hermes session status"},
         {"name": "sethome", "description": "Set this chat as the home channel"},
-        {
-            # Native-tree mirror of the Discord-only provisioning command
-            # (adapter slash_set_home_server); interactions come back as the
-            # same "/sethomeserver args" COMMAND event the dispatcher routes.
-            "name": "sethomeserver",
-            "description": "Provision and wire the Discord home server",
-            "options": [
-                _opt("confirm", "Type 'confirm' to move an existing home server to this server")
-            ],
-        },
         {"name": "stop", "description": "Stop the running Hermes agent"},
         {
             "name": "steer",
