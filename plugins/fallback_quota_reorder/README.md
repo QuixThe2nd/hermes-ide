@@ -7,8 +7,8 @@ Reorders the top-level `fallback_providers` list in `config.yaml` based on quota
 Each run:
 
 1. Reads the five configured Discord voice channels (`codex`, `kimi`, `zai`, `grok`, `cursor`).
-2. Parses remaining percentage and reset countdown from each channel name (strict regex; unreadable names are ignored for scoring).
-3. Reorders `fallback_providers` using the fixed policy below.
+2. Parses remaining percentage and reset countdown from each channel name (strict regex; unreadable names are ignored for scoring). Precise `quota_channels` state beats the rounded name when fresh.
+3. Scores each readable entry and reorders `fallback_providers`.
 4. Writes `config.yaml` only when the desired order differs from the current order (unless frozen by staleness).
 
 Silent success for the headless CLI; failures print `fallback-quota-reorder: <message>` and exit 1.
@@ -18,9 +18,17 @@ Silent success for the headless CLI; failures print `fallback-quota-reorder: <me
 Entries are never added, removed, or renamed. The primary model and all other config keys are untouched.
 
 1. **OpenRouter first** — any entry with provider `openrouter` stays at the front (stable order among OpenRouter entries).
-2. **Healthy scored entries** — remaining entries with a readable quota sort by parsed `reset_seconds` ascending (soonest reset first).
-3. **Low quota sink** — entries with parsed `pct` below 5 sink behind all healthy scored entries; among themselves they still sort by `reset_seconds` ascending.
+2. **Healthy scored entries** — remaining entries with a readable quota and `pct >= 5` sort by **highest score first**:
+
+   `score = hours_remaining × quota_frac × rate_24h × rate_1h`
+
+   - `hours_remaining` is `reset_seconds / 3600`, floored at one minute so a nearly-reset wallet is not scored as zero.
+   - `quota_frac` is remaining percent / 100, clamped to `[0, 1]`.
+   - `rate_24h` / `rate_1h` are API success fractions from the last 24 hours and last hour. Fewer than 3 (24h) or 2 (1h) samples stays **1.0** so a quiet provider is not punished.
+3. **Low quota sink** — entries with parsed `pct` below 5 sink behind all healthy scored entries; among themselves they still sort by the same score, highest first.
 4. **Unreadable tail** — entries with no readable quota (unmapped provider slug or unreadable channel name) keep their relative order and go after all scored entries.
+
+The live gateway records each provider API success (`post_api_request`) and failure (`api_request_error`) into `HERMES_HOME/fallback_quota_reorder_reliability.jsonl`. The reorder tick reads that ledger. Until a provider has enough samples, ranking is just remaining time × remaining quota.
 
 ### Channel key → provider slug
 

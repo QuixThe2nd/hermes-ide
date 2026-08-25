@@ -31,3 +31,16 @@ def register(ctx) -> None:
             )
 
     register_hook("on_gateway_start", _on_gateway_start)
+
+    def _on_post_api_request(**kwargs) -> None:
+        from plugins.fallback_quota_reorder.reliability import record_outcome
+
+        record_outcome(str(kwargs.get("provider") or ""), True)
+
+    def _on_api_request_error(**kwargs) -> None:
+        from plugins.fallback_quota_reorder.reliability import record_outcome
+
+        record_outcome(str(kwargs.get("provider") or ""), False)
+
+    register_hook("post_api_request", _on_post_api_request)
+    register_hook("api_request_error", _on_api_request_error)

@@ -27,22 +27,25 @@ from tests.plugins.fallback_quota_reorder._helpers import (
 )
 
 NOW = 1_800_000.0
-GROK_RESET = 535_958.0
-CODEX_RESET = 592_315.0
+# both names round to "7d left"; grok has more remaining seconds so the
+# most-leeway ranker can swap them once precise state is loaded
+GROK_RESET = 592_315.0
+CODEX_RESET = 535_958.0
 DAY = 86400
 
 
 def _tied_names() -> dict[str, str]:
-    # both round up to "7d left" (6.20d and 6.86d) — the precision-loss case
+    # both round up to "7d left" (6.86d and 6.20d) — the precision-loss case
+    # name-only ranking keeps original index (codex before grok)
     names = default_channel_names()
-    names["codex"] = f"Codex: 100% {BULLET} 7d left"
+    names["codex"] = f"Codex: 99% {BULLET} 7d left"
     names["grok"] = f"Grok: 99% {BULLET} 7d left"
     return names
 
 
 def _precise_fixture() -> dict[str, dict[str, object]]:
     return {
-        "codex": {"pct": 100, "reset_seconds": CODEX_RESET, "label": "Codex"},
+        "codex": {"pct": 99, "reset_seconds": CODEX_RESET, "label": "Codex"},
         "grok": {"pct": 99, "reset_seconds": GROK_RESET, "label": "Grok"},
     }
 
@@ -145,7 +148,7 @@ class TestLoadPreciseReadings:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         save_state(_precise_fixture(), now_fn=lambda: NOW)
         assert load_precise_readings(1800, now_fn=lambda: NOW + 2 * 1800) == {
-            "codex": (100, CODEX_RESET),
+            "codex": (99, CODEX_RESET),
             "grok": (99, GROK_RESET),
         }
 
