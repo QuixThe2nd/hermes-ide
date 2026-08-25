@@ -209,6 +209,39 @@ def test_lookup_exception_fails_closed(monkeypatch):
     )
 
 
+def test_user_id_lookup_exception_aborts_entire_mission_grant(monkeypatch):
+    """A user_id lookup error must fail closed even when chat_id has a mission.
+
+    The loop consults user_id first, then a distinct chat_id. An exception on
+    the FIRST lookup aborts the whole grant — the chat_id hit that follows
+    must never authorize, otherwise a broken store turns into fail-open.
+    """
+    runner = _make_runner()
+    mod = types.ModuleType("plugins.missions")
+    calls = []
+
+    def _boom(chat_id):
+        calls.append(str(chat_id))
+        if chat_id == "u@x":
+            raise RuntimeError("store unreadable")
+        return {
+            "mission_id": "m1",
+            "status": "active",
+            "platform": "whatsapp",
+            "chat_id": "c@x",
+        }
+
+    mod.find_active_mission_for_chat = _boom
+    mod.find_active_group_mission = lambda _cid: None
+    monkeypatch.setitem(sys.modules, "plugins.missions", mod)
+
+    assert (
+        runner._is_user_authorized(_make_source(user_id="u@x", chat_id="c@x"))
+        is False
+    )
+    assert calls == ["u@x"]  # aborted before the chat_id lookup
+
+
 @pytest.mark.parametrize("chat_type", ["group", "forum", "channel", "thread"])
 def test_non_dm_chat_types_do_not_gain_mission_grant(monkeypatch, chat_type):
     user_id = "61491234567@s.whatsapp.net"

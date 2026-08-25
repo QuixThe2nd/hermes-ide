@@ -789,12 +789,16 @@ class GatewayAuthorizationMixin:
                     try:
                         mission = find_active_mission_for_chat(identifier)
                     except Exception:
+                        # Fail closed: any store error aborts the whole grant,
+                        # so a broken user_id lookup cannot authorize via a
+                        # later chat_id hit. Falling through skips only this
+                        # grant — the normal deny paths below still run.
                         logger.debug(
                             "mission contact authz: lookup failed for %s",
                             identifier,
                             exc_info=True,
                         )
-                        continue
+                        break
                     if not mission:
                         continue
                     if str(mission.get("platform") or "") == platform_name:
