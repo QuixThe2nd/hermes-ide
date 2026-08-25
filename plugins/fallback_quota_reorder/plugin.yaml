@@ -3,6 +3,7 @@ version: 1.1.0
 description: "Reorder fallback_providers from quota remaining, time-to-reset, and recent API success."
 author: Hermes Agent
 kind: backend
+default_enabled: true
 hooks:
   - on_gateway_start
   - post_api_request
