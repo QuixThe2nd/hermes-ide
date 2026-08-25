@@ -10,10 +10,12 @@ keeps the exact current allowlist policy.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -304,3 +306,76 @@ def test_secondary_profile_flag_gates_only_that_profile(monkeypatch):
         is False
     )
     assert runner._is_user_authorized(_make_source()) is True
+
+
+# --------------------------------------------------------------------------
+# full-handler contract: the mission-only denial is SILENT — no pairing code
+# --------------------------------------------------------------------------
+
+
+def _make_handler_runner(extra):
+    """Bare runner whose unauthorized-DM path reaches the pairing branch.
+
+    ``unauthorized_dm_behavior: pair`` forces the pairing-code branch for an
+    unauthorized DM even though the platform carries an ``extra`` dict — the
+    exact configuration under which the mission-only gate must still win.
+    """
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True, extra=dict(extra))
+        }
+    )
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    runner.pairing_store._is_rate_limited.return_value = False
+    runner.pairing_store.generate_code.return_value = "PAIR1234"
+    runner.pairing_stores = {}
+    return runner, adapter
+
+
+def _dm_event(user_id="61491234567@s.whatsapp.net"):
+    return MessageEvent(
+        text="hello",
+        message_id="m1",
+        source=_make_source(user_id=user_id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_mission_only_denial_is_silent_no_pairing_code(monkeypatch):
+    """mission_only_dms on + no active mission: drop BEFORE any side effect.
+
+    The reviewer probe: with ``unauthorized_dm_behavior: pair`` the handler
+    used to deny auth and then still generate and send a pairing code —
+    messaging a sender the operator explicitly fenced off and leaving
+    pairing-store rate-limit state. The contract is a silent drop: no
+    rate-limit read, no code generation, no adapter.send.
+    """
+    _stub_missions(monkeypatch, [])
+    runner, adapter = _make_handler_runner(
+        {"mission_only_dms": True, "unauthorized_dm_behavior": "pair"}
+    )
+
+    assert await runner._handle_message(_dm_event()) is None
+    runner.pairing_store._is_rate_limited.assert_not_called()
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flag_false_still_pairs_unauthorized_dm(monkeypatch):
+    """Control: the flag off keeps the legacy pairing handshake intact."""
+    _stub_missions(monkeypatch, [])
+    runner, adapter = _make_handler_runner(
+        {"mission_only_dms": False, "unauthorized_dm_behavior": "pair"}
+    )
+
+    assert await runner._handle_message(_dm_event()) is None
+    runner.pairing_store.generate_code.assert_called_once_with(
+        "whatsapp", "61491234567@s.whatsapp.net", "Contact"
+    )
+    adapter.send.assert_awaited_once()
+    assert "PAIR1234" in adapter.send.await_args.args[1]

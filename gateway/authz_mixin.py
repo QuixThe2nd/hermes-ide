@@ -448,6 +448,29 @@ class GatewayAuthorizationMixin:
                 return True
         return False
 
+    def _whatsapp_mission_only_dm_denied(self, source: "SessionSource") -> bool:
+        """Whether the mission-only WhatsApp opt-in denies *source*'s chat.
+
+        Single source of truth for the mission-only gate, shared by the
+        authorization decision (``_is_user_authorized``) and the
+        unauthorized-DM handling in ``GatewayRunner._handle_message``: the
+        two must agree, or the handler would answer the denial with a
+        pairing code — an unsolicited reply to a sender the operator
+        explicitly fenced off. True only when the platform opted into
+        ``mission_only_dms`` AND no active mission is bound to the chat;
+        an absent or false flag keeps the legacy pairing handshake exactly
+        as-is.
+        """
+        platform = getattr(source, "platform", None)
+        if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            return False
+        if not self._whatsapp_mission_only_dms(
+            platform,
+            profile=self._adapter_profile_for_source(source),
+        ):
+            return False
+        return not self._source_has_active_mission(source)
+
     def _source_has_active_mission(self, source: "SessionSource") -> bool:
         """Whether an active assistant-mission is bound to *source*'s chat.
 
@@ -536,16 +559,14 @@ class GatewayAuthorizationMixin:
         # contact listed on WHATSAPP_ALLOWED_USERS keeps getting answered by
         # the default profile after their mission closes, which is exactly
         # what the operator opted out of. Fail-closed: no missions plugin or
-        # no matching mission means deny.
+        # no matching mission means deny. The shared gate
+        # (_whatsapp_mission_only_dm_denied) is also what the unauthorized-DM
+        # handler consults, so the denial and its (silent) handling cannot
+        # diverge.
         adapter_profile = self._adapter_profile_for_source(source)
 
-        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
-            if self._whatsapp_mission_only_dms(
-                source.platform,
-                profile=adapter_profile,
-            ):
-                if not self._source_has_active_mission(source):
-                    return False
+        if self._whatsapp_mission_only_dm_denied(source):
+            return False
 
         # Relay (and any adapter whose authorization is enforced by a trusted
         # authenticated upstream): the Team Gateway connector authenticates this

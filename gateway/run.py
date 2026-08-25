@@ -17826,6 +17826,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            # Mission-only WhatsApp DMs: _is_user_authorized just denied this
+            # chat because the platform opted into mission_only_dms and no
+            # active mission is bound to it. That opt-in replaces the pairing
+            # handshake too — answering the denial with a pairing code would
+            # message a sender the operator explicitly fenced off and leave
+            # pairing-store rate-limit state behind. Drop silently BEFORE any
+            # pairing/session/model side effect. Same shared gate as
+            # _is_user_authorized, so the denial and its handling cannot
+            # diverge; with the flag absent or false the legacy pairing-code
+            # behavior below is unchanged.
+            if self._whatsapp_mission_only_dm_denied(source):
+                logger.debug(
+                    "Mission-only WhatsApp gate: silently dropping unauthorized message from %s",
+                    source.user_id,
+                )
+                return None
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
                 source.chat_type == "dm"

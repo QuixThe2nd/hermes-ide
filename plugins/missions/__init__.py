@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -54,6 +55,16 @@ _MAX_OUTCOME = 4_000
 # Outcome journal cap: keep the last N completed/cancelled outcomes so the
 # store cannot grow unbounded.
 _OUTCOME_JOURNAL_MAX = 500
+
+# Serializes start's check-for-existing-mission + record-new-mission pair.
+# The store is process-global (one HERMES_HOME shared by every profile in
+# the gateway process) and is mutated from concurrent gateway/tool threads —
+# a dispatch_agent call racing an inbound-turn start on the same chat. A
+# plain in-process ``threading.Lock`` is the weakest sufficient
+# synchronization for that: check and record happen back-to-back under it,
+# and it is NEVER held across side effects (pairing grant, DM-history seed,
+# outcome journal, origin wakeup) — those all run after it is released.
+_MISSIONS_START_LOCK = threading.Lock()
 
 
 def _missions_dir() -> Path:
@@ -641,16 +652,6 @@ def _handle_start(args: Dict[str, Any], **kwargs: Any) -> str:
     if not goal:
         return _error("missing_goal", "goal is required.")
 
-    existing = find_active_mission_for_chat(chat_id)
-    if existing:
-        return _error(
-            "mission_exists",
-            (
-                f"An active mission {existing['mission_id']} already exists for this "
-                f"chat. Complete or cancel it first, or use action='status'."
-            ),
-        )
-
     # A WhatsApp group JID (``...@g.us``) makes this a GROUP mission: every
     # member message shares one session, admission is by the group chat id,
     # and no pairing grant or DM-history seed happens (a group is not a DM
@@ -682,7 +683,25 @@ def _handle_start(args: Dict[str, Any], **kwargs: Any) -> str:
         "completed_at": None,
         "outcome": None,
     }
-    _save_mission(mission)
+
+    # Atomic one-active-mission-per-chat: the duplicate check and the record
+    # run under ONE lock hold. Two threads racing to start the same chat
+    # (dispatch_agent tool call vs. an inbound-turn start) used to both pass
+    # the check before either wrote its file, leaving two active missions —
+    # and two shared group sessions — for one chat. The lock is released
+    # before the pairing grant / history seed below, so it is never held
+    # across a side effect. ``_save_mission`` stays an atomic replace.
+    with _MISSIONS_START_LOCK:
+        existing = find_active_mission_for_chat(chat_id)
+        if existing:
+            return _error(
+                "mission_exists",
+                (
+                    f"An active mission {existing['mission_id']} already exists for this "
+                    f"chat. Complete or cancel it first, or use action='status'."
+                ),
+            )
+        _save_mission(mission)
     if chat_type == "dm":
         _grant_mission_pairing(mission)
         try:
@@ -778,7 +797,12 @@ def _close_mission(
             "completed_at": now,
         }
     )
-    _revoke_mission_pairing(mission)
+    # Only a DM mission ever granted a DM pairing (see _handle_start), so
+    # only a DM mission revokes one on close — a group start granted nothing,
+    # and touching the DM pairing store for a group JID would be the same
+    # category error the start path avoids.
+    if _mission_chat_type(mission) == "dm":
+        _revoke_mission_pairing(mission)
     delivered = _notify_origin_session(mission)
     target = mission.get("reply_target") or mission.get("created_by_session") or "the dispatching thread"
     return json.dumps(

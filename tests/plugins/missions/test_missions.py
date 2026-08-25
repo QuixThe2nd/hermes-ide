@@ -12,6 +12,7 @@ home; the plugin keeps no module-level state, so no reload dance is needed.
 
 import json
 import sys
+import threading
 import types
 
 import pytest
@@ -460,3 +461,137 @@ class TestGroupMissions:
         )
         assert done["ok"] is True
         assert missions_home.find_active_group_mission(self.GROUP) is None
+
+    def test_group_close_skips_dm_pairing_revoke(self, missions_home, monkeypatch):
+        """A group start granted no DM pairing, so close must revoke none.
+
+        Revoking a group JID against the DM pairing store is the same
+        category error the start path avoids — and could drop an unrelated
+        entry that happens to share the id.
+        """
+        revoked = []
+        monkeypatch.setattr(
+            missions_home, "_revoke_mission_pairing", lambda m: revoked.append(m)
+        )
+        mid = _start(missions_home, chat_id=self.GROUP)["mission_id"]
+        done = json.loads(
+            missions_home.handle_dispatch_agent({"action": "cancel", "mission_id": mid})
+        )
+        assert done["ok"] is True
+        assert revoked == []
+
+    def test_dm_close_still_revokes_pairing(self, missions_home, monkeypatch):
+        """Control: DM missions DID grant a pairing, so close revokes it."""
+        revoked = []
+        monkeypatch.setattr(
+            missions_home, "_revoke_mission_pairing", lambda m: revoked.append(m)
+        )
+        mid = _start(missions_home)["mission_id"]
+        done = json.loads(
+            missions_home.handle_dispatch_agent({"action": "cancel", "mission_id": mid})
+        )
+        assert done["ok"] is True
+        assert [m["chat_type"] for m in revoked] == ["dm"]
+
+
+class TestConcurrentStartAtomicity:
+    """One active mission per chat, even under concurrent starts.
+
+    The reviewer probe: two threads starting a mission for the same exact
+    group JID both succeeded and left two active mission JSON files. The
+    duplicate check and the record must be one atomic critical section for
+    the process-global store.
+    """
+
+    THREADS = 8
+
+    def _race_starts(self, pm, chat_id):
+        """Barrier-synchronize N starts on one chat; return their results."""
+        results = []
+        results_lock = threading.Lock()
+        barrier = threading.Barrier(self.THREADS)
+
+        def _start_one():
+            barrier.wait()
+            r = json.loads(
+                pm.handle_dispatch_agent(
+                    {"action": "start", "chat_id": chat_id, "goal": "race"}
+                )
+            )
+            with results_lock:
+                results.append(r)
+
+        threads = [
+            threading.Thread(target=_start_one) for _ in range(self.THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return results
+
+    def test_concurrent_group_starts_yield_exactly_one_mission(self, missions_home):
+        results = self._race_starts(missions_home, "120363024955757999@g.us")
+
+        ok = [r for r in results if r.get("ok")]
+        dups = [r for r in results if r.get("error") == "mission_exists"]
+        assert len(ok) == 1
+        assert len(dups) == self.THREADS - 1
+        assert len(results) == self.THREADS
+
+        active = missions_home.list_active_missions()
+        assert len(active) == 1
+        assert active[0]["mission_id"] == ok[0]["mission_id"]
+        assert (
+            missions_home.find_active_group_mission("120363024955757999@g.us")[
+                "mission_id"
+            ]
+            == ok[0]["mission_id"]
+        )
+
+    def test_concurrent_dm_starts_yield_exactly_one_mission(self, missions_home):
+        results = self._race_starts(missions_home, "61400000000@s.whatsapp.net")
+
+        ok = [r for r in results if r.get("ok")]
+        dups = [r for r in results if r.get("error") == "mission_exists"]
+        assert len(ok) == 1
+        assert len(dups) == self.THREADS - 1
+
+        active = missions_home.list_active_missions()
+        assert len(active) == 1
+        assert (
+            missions_home.find_active_mission_for_chat("61400000000@s.whatsapp.net")[
+                "mission_id"
+            ]
+            == ok[0]["mission_id"]
+        )
+
+    def test_start_lock_not_held_across_pairing_side_effect(
+        self, missions_home, monkeypatch
+    ):
+        """The lock serializes check+record only — never a side effect.
+
+        A slow pairing grant or history seed under the lock would stall every
+        other chat's mission start in the process.
+        """
+        observed = []
+        monkeypatch.setattr(
+            missions_home,
+            "_grant_mission_pairing",
+            lambda m: observed.append(missions_home._MISSIONS_START_LOCK.locked()),
+        )
+        assert _start(missions_home)["ok"] is True
+        assert observed == [False]
+
+    def test_concurrent_starts_on_different_chats_both_succeed(self, missions_home):
+        """The lock must not over-serialize: distinct chats still start."""
+        results = self._race_starts(missions_home, "61400000000@s.whatsapp.net")
+        assert sum(1 for r in results if r.get("ok")) == 1
+
+        other = json.loads(
+            missions_home.handle_dispatch_agent(
+                {"action": "start", "chat_id": "61499999999@s.whatsapp.net", "goal": "x"}
+            )
+        )
+        assert other["ok"] is True
+        assert len(missions_home.list_active_missions()) == 2
