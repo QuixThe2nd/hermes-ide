@@ -521,7 +521,7 @@ gateway:
 
 ### 网关重启后的会话恢复
 
-当网关在工具调用或生成进行中时关闭，受影响的会话被标记为 `restart_interrupted`。下次启动时，网关为每个会话安排自动恢复——用户在聊天中收到简短提示（"Send any message after restart and I'll try to resume where you left off."），当他们回复时，会话从最后提交的轮次继续。
+当网关在工具调用或生成进行中时关闭，受影响的会话被标记为 `restart_interrupted`。下次启动时，网关会为每个会话安排自动恢复。协作式重启期间，活跃聊天会先收到 `⚠️ Gateway shutting down`；如果聊天接受了暂停 steer，警告中还会显示发送给 LLM 的确切消息。恢复后的会话会从最后提交的轮次继续。
 
 此行为默认开启，并在网关启动时记录日志：
 

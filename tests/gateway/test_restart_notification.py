@@ -24,7 +24,7 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     marker = tmp_path / ".restart_pending.json"
 
     assert gateway_run._planned_restart_notification_pending() is False
-    marker.write_text("{}")
+    marker.write_text("{}", encoding="utf-8")
     assert gateway_run._planned_restart_notification_pending() is True
 
     gateway_run._clear_planned_restart_notification()
@@ -56,7 +56,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
 
     notify_path = tmp_path / ".restart_notify.json"
     assert notify_path.exists()
-    data = json.loads(notify_path.read_text())
+    data = json.loads(notify_path.read_text(encoding="utf-8"))
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
@@ -387,7 +387,61 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
     adapter.send.assert_awaited_once_with(
         "parent-42",
-        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+        "⚠️ Gateway shutting down",
+        metadata={"thread_id": "topic-7"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_warning_displays_exact_llm_steer_for_accepted_session():
+    from gateway.restart_wind_down import COOPERATIVE_RESTART_STEER
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(
+        chat_id="parent-42", chat_type="group", thread_id="topic-7"
+    )
+    session_key = build_session_key(source)
+    runner._restart_requested = True
+    runner._restart_command_source = source
+    runner._running_agents[session_key] = object()
+    runner._cooperative_restart_steered_sessions = [session_key]
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="shutdown")
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "parent-42",
+        "⚠️ Gateway shutting down\n\n"
+        "Message sent to the LLM:\n"
+        f"```\n{COOPERATIVE_RESTART_STEER}\n```",
+        metadata={"thread_id": "topic-7"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_warning_does_not_claim_rejected_steer_was_sent():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(
+        chat_id="parent-42", chat_type="group", thread_id="topic-7"
+    )
+    session_key = build_session_key(source)
+    runner._restart_requested = True
+    runner._restart_command_source = source
+    runner._running_agents[session_key] = object()
+    runner._cooperative_restart_steered_sessions = []
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="shutdown")
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "parent-42",
+        "⚠️ Gateway shutting down",
         metadata={"thread_id": "topic-7"},
     )
 
@@ -424,7 +478,7 @@ def test_shutdown_notification_pending_roundtrip(tmp_path, monkeypatch):
     marker = tmp_path / ".shutdown_notify.json"
 
     assert gateway_run._shutdown_notification_pending() is False
-    marker.write_text("{}")
+    marker.write_text("{}", encoding="utf-8")
     assert gateway_run._shutdown_notification_pending() is True
 
     gateway_run._clear_shutdown_notification()
@@ -456,7 +510,7 @@ async def test_shutdown_warning_persists_notified_targets(tmp_path, monkeypatch)
 
     marker = tmp_path / ".shutdown_notify.json"
     assert marker.exists()
-    data = json.loads(marker.read_text())
+    data = json.loads(marker.read_text(encoding="utf-8"))
     assert isinstance(data["requested_at"], float)
     assert len(data["targets"]) == 1
     entry = data["targets"][0]
@@ -505,7 +559,9 @@ async def test_shutdown_marker_written_when_drain_suppresses_home_broadcast(
     # Active session got the ⚠️, home channel did not — and only the former
     # is owed a comeback.
     assert adapter.send.await_count == 1
-    data = json.loads((tmp_path / ".shutdown_notify.json").read_text())
+    data = json.loads(
+        (tmp_path / ".shutdown_notify.json").read_text(encoding="utf-8")
+    )
     assert [t["chat_id"] for t in data["targets"]] == ["active-42"]
 
 
@@ -529,7 +585,9 @@ async def test_shutdown_marker_written_for_in_chat_restart(tmp_path, monkeypatch
     # is still persisted. The requester itself is deduped at boot against
     # .restart_notify.json.
     assert adapter.send.await_count == 1
-    data = json.loads((tmp_path / ".shutdown_notify.json").read_text())
+    data = json.loads(
+        (tmp_path / ".shutdown_notify.json").read_text(encoding="utf-8")
+    )
     assert [t["chat_id"] for t in data["targets"]] == ["active-42"]
 
 

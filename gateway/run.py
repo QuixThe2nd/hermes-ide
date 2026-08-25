@@ -7565,6 +7565,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_via_service: bool = False
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
+    _cooperative_restart_steered_sessions: Optional[List[str]] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -11784,14 +11785,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
-            if self._restart_requested
-            else "Your current task will be interrupted."
+        base_msg = "⚠️ Gateway shutting down"
+        steered_sessions = set(
+            getattr(self, "_cooperative_restart_steered_sessions", None) or []
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         # Routing snapshot per target that actually received the ⚠️, so the
@@ -11874,7 +11871,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                session_msg = base_msg
+                if session_key in steered_sessions:
+                    from gateway.restart_wind_down import COOPERATIVE_RESTART_STEER
+
+                    session_msg = (
+                        f"{base_msg}\n\n"
+                        "Message sent to the LLM:\n"
+                        f"```\n{COOPERATIVE_RESTART_STEER}\n```"
+                    )
+                result = await adapter.send(chat_id, session_msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -11988,9 +11994,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(str(home.chat_id), base_msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter.send(str(home.chat_id), base_msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -12838,6 +12844,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         snapshotted = snapshot_active_sessions_for_restart(self)
         steered = steer_running_agents_for_restart(self)
+        # This is deliberately distinct from the broader steer-time snapshot:
+        # user-facing shutdown notices may claim an LLM steer was sent only
+        # for sessions whose agent actually accepted that exact text.
+        self._cooperative_restart_steered_sessions = list(steered)
         existing = list(getattr(self, "_cooperative_restart_sessions", []) or [])
         for session_key in snapshotted:
             if session_key not in existing:
