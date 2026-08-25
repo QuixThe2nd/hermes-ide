@@ -33,7 +33,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Set
+
+from hermes_constants import get_hermes_dir, get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +44,6 @@ logger = logging.getLogger(__name__)
 # ``@``, ``.`` and ``:`` separators. ``\w`` is pinned to ASCII so
 # full-width digits / Unicode word chars can't sneak through.
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
-
-from hermes_constants import get_hermes_dir
 
 
 def normalize_whatsapp_identifier(value: str) -> str:
@@ -118,12 +119,92 @@ def to_whatsapp_jid(value: str) -> str:
     return normalized
 
 
+def _bridge_session_dir() -> Path:
+    """Return the single WhatsApp bridge session store alias resolution reads.
+
+    Exactly ONE store is selected here — callers never union or chain across
+    stores, so an alias walk can never hop from one profile's transport into
+    another's.
+
+    Candidates:
+
+    - The **active-scope** dir, resolved with the same
+      ``get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")``
+      semantics :mod:`plugins.platforms.whatsapp.adapter` uses for its own
+      default session path. A separately configured secondary-profile bridge
+      writes its ``lid-mapping-*.json`` files under *its* profile home, so
+      they must be read from the store that adapter actually wrote.
+    - The **process-home** dir, resolved with those same modern/legacy rules
+      anchored on :func:`hermes_constants.get_process_hermes_home`
+      (same anchoring as ``plugins.missions._missions_dir``).
+
+    Selection:
+
+    - Same canonical path → one store, read once (the no-override case).
+    - A non-empty active-scope store — *any* adapter/session state at all,
+      creds, bridge bookkeeping, even mappings for unrelated identifiers —
+      is AUTHORITATIVE for every identifier. That profile owns its own
+      transport identity namespace; resolution must not dip into the
+      process home just because a given identifier has no edge locally.
+    - Only when the active-scope store is absent or empty (no adapter ever
+      ran there — the mission-assistant case, which reuses the default
+      profile's transport) does resolution use the process-home store.
+
+    Resolution never creates directories, and read/parse errors inside the
+    chosen store keep the resilient log-and-skip behaviour — they never
+    trigger a cross-profile fallback.
+    """
+    active_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+    process_dir = get_hermes_dir(
+        "platforms/whatsapp/session",
+        "whatsapp/session",
+        home=get_process_hermes_home(),
+    )
+    if _resolved_store(active_dir) == _resolved_store(process_dir):
+        return active_dir
+    if _session_store_has_state(active_dir):
+        return active_dir
+    return process_dir
+
+
+def _resolved_store(path: Path) -> Path:
+    """Canonicalise a candidate store dir for same-path comparison."""
+    try:
+        return path.expanduser().resolve(strict=False)
+    except OSError:
+        # Pathological symlink/permission cases — compare as-is rather than
+        # failing the lookup outright.
+        return path
+
+
+def _session_store_has_state(session_dir: Path) -> bool:
+    """True when the resolved session dir holds any adapter/session state.
+
+    Any entry — creds, bridge bookkeeping, ``lid-mapping-*.json`` for
+    unrelated identifiers — means a WhatsApp adapter owns this home's
+    transport identity namespace. An absent or empty directory means no
+    adapter ever ran there. Directories that cannot be inspected count as
+    occupied, so a permission error can never silently redirect alias
+    resolution across profiles.
+    """
+    try:
+        return any(session_dir.iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # NotADirectoryError (a file where the store dir should be) and
+        # permission/IO failures — treat as occupied, never fall back.
+        return True
+
+
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """Resolve WhatsApp phone/LID aliases via bridge session mapping files.
 
     Returns the set of all identifiers transitively reachable through the
-    bridge's ``$HERMES_HOME/whatsapp/session/lid-mapping-*.json`` files,
-    starting from ``identifier``. The result always includes the
+    ``lid-mapping-*.json`` files of the bridge session store selected by
+    :func:`_bridge_session_dir` (the active profile's store when it has
+    session state, otherwise the process-home store), starting from
+    ``identifier``. The result always includes the
     normalized input itself, so callers can safely ``in`` check against
     the return value without a separate fallback branch.
 
@@ -133,7 +214,7 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     if not normalized:
         return set()
 
-    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+    session_dir = _bridge_session_dir()
     resolved: Set[str] = set()
     queue = [normalized]
 
