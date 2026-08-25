@@ -276,8 +276,34 @@ class WhatsAppBehaviorMixin:
             return self._open_dm_opted_in()
         return False
 
+    def _mission_admitted_group(self, chat_id: str) -> bool:
+        """True while a goal-bound mission is active for this exact group chat.
+
+        The missions plugin binds a group mission to the exact group chat id
+        (``...@g.us``); while it is active the group is dynamically admitted
+        here and by gateway authorization, regardless of the configured
+        ``group_policy``. Closing the mission removes admission on the next
+        message (the store is read live — no gateway restart). The plugin is
+        optional: absent or erroring fails closed, i.e. the configured group
+        policy applies unchanged.
+        """
+        try:
+            from plugins.missions import find_active_group_mission
+        except Exception:
+            return False
+        try:
+            return find_active_group_mission(str(chat_id or "")) is not None
+        except Exception:
+            return False
+
     def _is_group_allowed(self, chat_id: str) -> bool:
         """Check whether a group chat should be processed."""
+        # Goal-bound group missions admit their exact group chat even when
+        # group_policy is "disabled" or excludes it — the mission is an
+        # explicit per-chat operator instruction. Other groups keep the
+        # configured policy.
+        if self._mission_admitted_group(chat_id):
+            return True
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
@@ -400,6 +426,11 @@ class WhatsAppBehaviorMixin:
             chat_id = chat_id_raw
             if not self._is_group_allowed(chat_id):
                 return False
+            # Mission groups: every inbound message reaches the assistant —
+            # the active mission is the invite, so no mention / reply-to-bot
+            # requirement applies while it runs.
+            if self._mission_admitted_group(chat_id):
+                return True
         else:
             sender_id = str(data.get("senderId") or data.get("from") or "")
             if not self._is_dm_intake_allowed(sender_id):

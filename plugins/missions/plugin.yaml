@@ -1,0 +1,10 @@
+name: missions
+default_enabled: true
+version: 1.0.0
+description: "Dispatch a background assistant-mission bound to a WhatsApp contact: the agent answers that chat working toward a stated goal until it is hit, then reports the outcome back."
+author: Hermes Agent
+kind: standalone
+provides_tools:
+  - dispatch_agent
+  - dispatch_assistant
+  - end_session

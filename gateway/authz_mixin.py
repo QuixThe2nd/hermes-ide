@@ -479,6 +479,26 @@ class GatewayAuthorizationMixin:
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
+        # Goal-bound group missions (missions plugin): an active mission on
+        # this EXACT WhatsApp group chat admits it — by the group chat id
+        # only, never a participant's user_id — even when the configured
+        # group policy is disabled or excludes the group. WhatsApp intake
+        # already admitted the group (whatsapp_common._is_group_allowed);
+        # this is the matching gateway-side admission so the message reaches
+        # the assistant instead of dying at the no-allowlist default-deny
+        # below. Closing the mission removes admission immediately (the
+        # mission store is read live — no gateway restart). Fail closed when
+        # the plugin is absent or errors.
+        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
+                try:
+                    from plugins.missions import find_active_group_mission
+
+                    if find_active_group_mission(str(source.chat_id)):
+                        return True
+                except Exception:
+                    pass
+
         # Mission-only WhatsApp DMs (opt-in, default off): when
         # ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`` is
         # true, WhatsApp senders are authorized ONLY while an assistant-mission
