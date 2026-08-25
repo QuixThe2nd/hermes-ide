@@ -785,6 +785,21 @@ def build_turn_context(
     except Exception:
         logger.debug("message_agent injection skipped", exc_info=True)
 
+    # Missions assistant handoff (plugins/missions): per-turn mutual
+    # exclusion between ``end_session`` (an active mission for this chat)
+    # and ``escalate_task`` (no mission — one-way handoff up to the default
+    # profile). Decided from the session's TRUSTED gateway metadata on every
+    # turn — never cached per session — so a mission started or closed
+    # between turns flips the exposed tool on the next one. No-op (and no
+    # schema leak) for sessions that did not opt into the
+    # ``assistant_handoff`` toolset, and for every other profile/platform.
+    try:
+        from plugins.missions import apply_assistant_handoff_tools
+
+        apply_assistant_handoff_tools(agent)
+    except Exception:
+        logger.debug("assistant handoff tool gating skipped", exc_info=True)
+
     # Create the DB session row now that _cached_system_prompt is populated, so
     # the persisted snapshot is written non-NULL on the first turn (Issue
     # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.

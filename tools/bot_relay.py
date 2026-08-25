@@ -44,7 +44,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -558,9 +558,14 @@ def _hermes_cli() -> str:
     return "hermes"
 
 
-def local_delivery_command(profile: str, query_file: str) -> list[str]:
-    """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [
+def local_delivery_base_command(
+    profile: str,
+    *,
+    chat_title: str = "Bot Chat",
+    toolsets: Optional[Sequence[str]] = None,
+) -> list[str]:
+    """Service-safe argv for a local profile chat before its query file."""
+    argv = [
         _hermes_cli(),
         "-p",
         profile,
@@ -568,12 +573,18 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
         "--in",
         "~",
         "-c",
-        "Bot Chat",
+        chat_title,
         "--create-if-missing",
         "-Q",
-        "--query-file",
-        query_file,
     ]
+    if toolsets:
+        argv += ["-t", ",".join(toolsets)]
+    return argv
+
+
+def local_delivery_command(profile: str, query_file: str) -> list[str]:
+    """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
+    return [*local_delivery_base_command(profile), "--query-file", query_file]
 
 
 # ── per-profile turn lock (#93091) ───────────────────────────────────────────

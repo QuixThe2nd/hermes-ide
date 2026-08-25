@@ -123,6 +123,7 @@ CONFIGURABLE_TOOLSETS = [
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
     ("dev-pipeline",    "🏗️ Dev Pipeline",              "durable automated development jobs"),
     ("quota_channels",  "📊 Quota Channels",            "quota_channels_tick (Discord voice-channel quota display)"),
+    ("assistant_handoff", "📤 Assistant Handoff",        "mission close or one-way escalation"),
 ]
 
 
@@ -161,7 +162,12 @@ def gui_toolset_label(label: str) -> str:
 # discord/discord_admin stay platform-restricted to discord via
 # _TOOLSET_PLATFORM_RESTRICTIONS, so this only affects Discord sessions.
 # Upstream keeps all three opt-in.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "end_session"}
+# "assistant_handoff" (missions plugin: end_session + escalate_task) is
+# default-off: the pair is only ever exposed per-turn, gated on the trusted
+# session being an assistant WhatsApp chat (see
+# plugins.missions.apply_assistant_handoff_tools). A profile opts in by
+# listing the toolset explicitly in platform_toolsets.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff"}
 
 
 # Config-only capabilities: they appear in `hermes tools` for provider/API-key

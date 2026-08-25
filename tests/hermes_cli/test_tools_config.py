@@ -72,12 +72,16 @@ def test_moa_default_off_not_enabled_on_fresh_discord_config():
     assert "moa" in _checklist_toolset_keys("discord")
 
 
-def test_end_session_default_off_outside_mission_profiles():
-    """end_session (missions plugin) must not resolve on by default: only the
-    locked assistant profile serving goal-bound missions should opt in."""
-    assert "end_session" in _DEFAULT_OFF_TOOLSETS
+def test_assistant_handoff_default_off_outside_mission_profiles():
+    """assistant_handoff (missions plugin: end_session + escalate_task) must
+    not resolve on by default: only the locked assistant profile serving
+    WhatsApp mission/standing chats should opt in via an explicit
+    platform_toolsets entry. The old end_session-only toolset is gone —
+    end_session is never exposed profile-wide on its own."""
+    assert "assistant_handoff" in _DEFAULT_OFF_TOOLSETS
+    assert "end_session" not in _DEFAULT_OFF_TOOLSETS
     for platform in ("discord", "whatsapp", "cli"):
-        assert "end_session" not in _get_platform_tools(
+        assert "assistant_handoff" not in _get_platform_tools(
             {}, platform, include_default_mcp_servers=False
         )
 
