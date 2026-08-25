@@ -15,7 +15,7 @@ Silent success for the headless CLI; failures print `fallback-quota-reorder: <me
 
 ## Ordering policy
 
-Entries are never added, removed, or renamed. The primary model and all other config keys are untouched.
+Chain entries are never renamed; the only membership change is the primary-rotation swap below. All other config keys are untouched.
 
 1. **OpenRouter first** — any entry with provider `openrouter` stays at the front (stable order among OpenRouter entries).
 2. **Healthy scored entries** — remaining entries with a readable quota and `pct >= 5` sort by **highest score first**:
@@ -29,6 +29,24 @@ Entries are never added, removed, or renamed. The primary model and all other co
 4. **Unreadable tail** — entries with no readable quota (unmapped provider slug or unreadable channel name) keep their relative order and go after all scored entries.
 
 The live gateway records each provider API success (`post_api_request`) and failure (`api_request_error`) into `HERMES_HOME/fallback_quota_reorder_reliability.jsonl`. The reorder tick reads that ledger. Until a provider has enough samples, ranking is just remaining time × remaining quota.
+
+## Primary rotation
+
+The tick also rotates the **primary** model slot (`model.default` + `model.provider`), not just the chain order:
+
+1. Every tracked provider with a reading is scored with the same `score_provider` math as the chain — the current primary counts too, and an untracked primary (e.g. `openrouter`) scores 0.
+2. The highest score wins. Ties keep the current primary; ties between tracked providers go to the lowest channel index (`codex` → `kimi` → `zai` → `grok` → `cursor`). With no readings at all the primary is left alone, and a winner with no `fallback_providers` entry to source its model string from is never promoted.
+3. On a swap the winner's fallback entry graduates to `model.default`/`model.provider`, and the displaced previous primary is inserted back into the chain by the same bucket rules (healthy → low-quota → unscored, score descending within group). An untracked displaced primary lands at the **end** of the chain — the openrouter-floats-to-front rule does not apply to it.
+4. The primary swap and the chain reorder are written in ONE `save_config` call, with the same backup/restore rollback and post-write verification as the chain-only path (verification re-checks both the chain signature and the primary keys).
+5. The staleness freeze blocks primary writes too; `--force-quota` bypasses it.
+
+`--dry-run` prints the pending swap:
+
+```text
+PRIMARY: openrouter/or -> openai-codex/codex
+```
+
+or `PRIMARY: unchanged <provider>/<model>` when readings exist but the current primary already wins. Nothing is printed about `PRIMARY` when there are no readings.
 
 ### Channel key → provider slug
 

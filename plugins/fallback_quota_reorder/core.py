@@ -68,6 +68,14 @@ class QuotaReading:
     reset_seconds: float
 
 
+@dataclass(frozen=True)
+class PrimarySlot:
+    """The active model pair: ``model.provider`` + ``model.default``."""
+
+    provider: str
+    model: str
+
+
 def _hermes_home() -> Path:
     from hermes_constants import get_hermes_home
 
@@ -448,6 +456,141 @@ def compute_desired_order(
     return ordered
 
 
+def current_primary(config: Mapping[str, Any]) -> Optional[PrimarySlot]:
+    """The active primary as model.default + model.provider, when both are set."""
+    model_section = config.get("model")
+    if not isinstance(model_section, Mapping):
+        return None
+    provider = str(model_section.get("provider") or "").strip()
+    model = str(model_section.get("default") or model_section.get("model") or "").strip()
+    if not provider or not model:
+        return None
+    return PrimarySlot(provider=provider, model=model)
+
+
+def compute_primary_slot(
+    config: Mapping[str, Any],
+    desired_entries: Sequence[Mapping[str, Any]],
+    readings: Mapping[str, QuotaReading],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
+) -> Optional[PrimarySlot]:
+    """Pick the primary winner among tracked providers with a chain entry.
+
+    The highest ``score_provider`` reading wins, but only providers that
+    have a desired_entries entry with a non-empty model string can be
+    promoted — the model string has to come from somewhere. A top scorer
+    without a chain entry is skipped, and the best scorer WITH one wins
+    instead. The current primary is kept on ties (an untracked primary
+    such as openrouter scores 0 and only loses to an eligible provider
+    scoring above 0). Ties between eligible providers resolve to the
+    lowest CHANNEL_KEYS index. Returns None — "leave the primary alone" —
+    when there are no readings, no usable current primary, no eligible
+    provider at all, or none beats the current primary's score.
+    """
+    if not readings:
+        return None
+    current = current_primary(config)
+    if current is None:
+        return None
+
+    entry_by_provider: Dict[str, Mapping[str, Any]] = {}
+    for entry in desired_entries:
+        provider = str(entry.get("provider") or "").strip().lower()
+        if provider and provider not in entry_by_provider:
+            entry_by_provider[provider] = entry
+
+    rates = reliability or {}
+    scores: Dict[str, float] = {}
+    best: Optional[Tuple[float, str]] = None
+    for key in CHANNEL_KEYS:  # CHANNEL_KEYS order breaks score ties
+        provider = CHANNEL_KEY_TO_PROVIDER[key]
+        reading = readings.get(provider)
+        if reading is None:
+            continue
+        score = score_provider(reading, rates.get(provider))
+        scores[provider] = score
+        entry = entry_by_provider.get(provider)
+        if entry is None or not str(entry.get("model") or "").strip():
+            continue
+        if best is None or score > best[0]:
+            best = (score, provider)
+    if best is None:
+        return None
+    if scores.get(current.provider.lower(), 0.0) >= best[0]:
+        return None
+
+    winner = entry_by_provider[best[1]]
+    return PrimarySlot(
+        provider=str(winner.get("provider") or "").strip(),
+        model=str(winner.get("model") or "").strip(),
+    )
+
+
+def _chain_rank_key(
+    entry: Mapping[str, Any],
+    readings: Mapping[str, QuotaReading],
+    rates: Mapping[str, ReliabilityRates],
+    *,
+    openrouter_first: bool = True,
+) -> Tuple[int, float]:
+    """Ordering key mirroring the compute_desired_order buckets.
+
+    (0) openrouter, (1) healthy scored, (2) low-quota scored, (3) unscored;
+    within the scored buckets higher score sorts earlier via ``-score``.
+    """
+    provider = str(entry.get("provider") or "").strip().lower()
+    if openrouter_first and provider == "openrouter":
+        return (0, 0.0)
+    reading = readings.get(provider)
+    if reading is None:
+        return (3, 0.0)
+    score = score_provider(reading, rates.get(provider))
+    return (2 if reading.pct < LOW_QUOTA_PCT else 1, -score)
+
+
+def rotate_chain_for_primary(
+    desired_entries: Sequence[Mapping[str, Any]],
+    promoted: PrimarySlot,
+    displaced: PrimarySlot,
+    readings: Mapping[str, QuotaReading],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
+) -> List[dict]:
+    """Swap chain membership for a primary rotation.
+
+    Drops the promoted provider's entry (it graduates to the primary slot)
+    and splices an entry for the displaced previous primary in by the
+    compute_desired_order buckets: healthy before low-quota before unscored,
+    score descending within the scored buckets. The displaced entry never
+    gets the openrouter-floats-to-front rule — an untracked previous primary
+    (score 0) lands at the END of the chain.
+    """
+    rates = reliability or {}
+    displaced_entry = {"provider": displaced.provider, "model": displaced.model}
+    displaced_key = _chain_rank_key(
+        displaced_entry, readings, rates, openrouter_first=False
+    )
+
+    rotated: List[dict] = []
+    dropped = False
+    inserted = False
+    for entry in desired_entries:
+        provider = str(entry.get("provider") or "").strip().lower()
+        if (
+            not dropped
+            and provider == promoted.provider.lower()
+            and str(entry.get("model") or "").strip() == promoted.model
+        ):
+            dropped = True
+            continue
+        if not inserted and _chain_rank_key(entry, readings, rates) > displaced_key:
+            rotated.append(displaced_entry)
+            inserted = True
+        rotated.append(dict(entry))
+    if not inserted:
+        rotated.append(displaced_entry)
+    return rotated
+
+
 def validate_fallback_entries(entries: Sequence[Mapping[str, Any]]) -> None:
     for entry in entries:
         if not isinstance(entry, Mapping):
@@ -571,10 +714,27 @@ def restore_config(backup_path: Path) -> None:
     save_config(restored, merge_existing=False)
 
 
+def _primary_slot_matches(config: Mapping[str, Any], slot: PrimarySlot) -> bool:
+    model_section = config.get("model")
+    if not isinstance(model_section, Mapping):
+        return False
+    provider = str(model_section.get("provider") or "").strip().lower()
+    model = str(model_section.get("default") or model_section.get("model") or "").strip()
+    return provider == slot.provider.lower() and model == slot.model
+
+
 def write_fallback_order(
     desired_entries: Sequence[Mapping[str, Any]],
     expected_signature: Tuple[Tuple[str, str, str], ...],
+    primary_slot: Optional[PrimarySlot] = None,
 ) -> None:
+    """Write the fallback chain (and optionally the primary slot) in one save.
+
+    ``primary_slot`` swaps model.default/model.provider in the SAME
+    save_config call as the chain reorder, so a failure can never leave a
+    half-rotated config; post-write verification re-checks BOTH the chain
+    signature and the primary keys, restoring the backup on any mismatch.
+    """
     from hermes_cli.config import load_config, save_config
 
     config = load_config()
@@ -583,9 +743,17 @@ def write_fallback_order(
 
     backup_path = backup_config()
     config["fallback_providers"] = [dict(entry) for entry in desired_entries]
+    if primary_slot is not None:
+        model_section = config.get("model")
+        if not isinstance(model_section, dict):
+            model_section = {}
+            config["model"] = model_section
+        model_section["default"] = primary_slot.model
+        model_section["provider"] = primary_slot.provider
     try:
         save_config(config)
-        chain = chain_signature(load_config())
+        reloaded = load_config()
+        chain = chain_signature(reloaded)
         if len(chain) <= 0:
             restore_config(backup_path)
             raise FallbackQuotaReorderError(
@@ -595,6 +763,12 @@ def write_fallback_order(
             restore_config(backup_path)
             raise FallbackQuotaReorderError(
                 "verification failed: fallback chain order does not match desired order"
+            )
+        if primary_slot is not None and not _primary_slot_matches(reloaded, primary_slot):
+            restore_config(backup_path)
+            raise FallbackQuotaReorderError(
+                "verification failed: primary model slot does not match desired "
+                "provider/model"
             )
     except FallbackQuotaReorderError:
         raise
@@ -641,6 +815,18 @@ def run_reorder(
     desired_entries = compute_desired_order(
         current_entries, readings, reliability=reliability
     )
+    primary_previous = current_primary(config)
+    primary_slot = compute_primary_slot(
+        config, desired_entries, readings, reliability=reliability
+    )
+    if primary_slot is not None and primary_previous is not None:
+        desired_entries = rotate_chain_for_primary(
+            desired_entries,
+            primary_slot,
+            primary_previous,
+            readings,
+            reliability=reliability,
+        )
     current_sig = chain_signature(config)
     desired_sig = chain_signature({**config, "fallback_providers": desired_entries})
 
@@ -651,7 +837,8 @@ def run_reorder(
         names, name_readings, state, quota_interval_seconds, now_fn=now_fn
     )
     frozen = is_frozen(new_state) and not force_quota
-    would_change = desired_sig != current_sig and not frozen
+    primary_change = primary_slot is not None
+    would_change = (desired_sig != current_sig or primary_change) and not frozen
 
     result = {
         "names": names,
@@ -662,6 +849,8 @@ def run_reorder(
         "desired_entries": desired_entries,
         "current_signature": current_sig,
         "desired_signature": desired_sig,
+        "primary_current": primary_previous,
+        "primary_desired": primary_slot,
         "would_change": would_change,
         "frozen": frozen,
         "consecutive_stale": int(new_state.get("consecutive_stale") or 0),
@@ -675,8 +864,8 @@ def run_reorder(
     if frozen:
         return result
 
-    if desired_sig == current_sig:
+    if desired_sig == current_sig and not primary_change:
         return result
 
-    write_fallback_order(desired_entries, desired_sig)
+    write_fallback_order(desired_entries, desired_sig, primary_slot=primary_slot)
     return result
