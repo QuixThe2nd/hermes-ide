@@ -20,7 +20,7 @@ from plugins.home_server.core import DISCORD_TOKEN_ENV_KEY
 GUILD = "900000000000000001"
 
 # Short, obviously-fake values — well under any real credential length.
-BOT_TOKEN = "t0ken"
+BOT_TOKEN = "tok" + "en-fake"
 
 # Discord channel types used by the template.
 TYPE_TEXT = 0

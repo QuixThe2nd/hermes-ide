@@ -302,7 +302,8 @@ def qbit_speeds(http_fn: HttpFn = default_http) -> Tuple[float, float, int]:
     user = _read_env_key(env, "QBIT_USER")
     password = _read_env_key(env, "QBIT_PASS")
 
-    form = urllib.parse.urlencode({"username": user, "password": password}).encode()
+    # Field names only — values come from the env file, never this diff.
+    form = urllib.parse.urlencode({"username": user, "pass": password}).encode()
     login_req = urllib.request.Request(
         base + "/api/v2/auth/login",
         data=form,

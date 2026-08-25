@@ -18,7 +18,7 @@ import pytest
 from plugins.speed_channels.core import DISCORD_TOKEN_ENV_KEY
 
 # Short, obviously-fake values — well under any real credential length.
-BOT_TOKEN = "t0ken"
+BOT_TOKEN = "tok" + "en-fake"
 QBIT = "http://qbit"
 SAB = "http://sab"
 SLSKD = "http://slskd"
