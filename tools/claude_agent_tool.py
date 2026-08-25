@@ -49,6 +49,19 @@ log containing known degraded-run markers (currently
 CLI silently fell back) are collected into the payload's ``warnings``
 list, so a technically-OK exit that burned the run on the wrong model is
 visible to the caller.
+
+Remote Control lane
+-------------------
+``remote_control=True`` (default ``False``) switches to a separate
+first-party lane implemented in :mod:`tools.claude_remote_control`: the
+locally installed *bare* ``claude`` CLI runs interactively on a real PTY
+with Remote Control enabled, so the user can watch the run live at
+``https://claude.ai/code`` or in the Claude mobile app, and the result
+carries an additive ``progress_url``.  The default GLM/Kimi path above is
+byte-for-byte unchanged when the flag is false.  Remote Control is
+unavailable with a custom ``ANTHROPIC_BASE_URL``, API-key auth, Bedrock,
+Vertex or Foundry, so the wrapper lanes can never serve it — see that
+module for the full contract.
 """
 
 from __future__ import annotations
@@ -347,6 +360,7 @@ def delegate_claude_agent(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     allowed_tools: str = DEFAULT_ALLOWED_TOOLS,
     permission_mode: str = DEFAULT_PERMISSION_MODE,
+    remote_control: bool = False,
     task_id: str | None = None,
 ) -> str:
     del task_id  # reserved for future correlation; not used yet
@@ -378,6 +392,22 @@ def delegate_claude_agent(
                 f"{list(_ALLOWED_PERMISSION_MODES)}, got: {permission_mode!r}"
             ),
         )
+
+    # Opt-in first-party lane: a completely separate execution path (bare
+    # Claude Code on a real PTY, correlated through its session transcript).
+    # The default path below is untouched when this is False.
+    if remote_control:
+        from tools.claude_remote_control import run_remote_control_delegation
+
+        fields = run_remote_control_delegation(
+            task=str(task).strip(),
+            workdir=str(workdir_path),
+            model=model,
+            timeout_seconds=timeout_seconds,
+            allowed_tools=str(allowed_tools or "").strip() or DEFAULT_ALLOWED_TOOLS,
+            permission_mode=mode,
+        )
+        return json.dumps(fields, ensure_ascii=False)
 
     model_name = str(model or "").strip()
     binary = resolve_claude_binary(model_name)
@@ -523,7 +553,13 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
         "commands, and multi-step dev work inside the specified repository "
         "directory. Stdout is captured as JSON in a log under the Hermes "
         "home directory. Available only when the relevant wrapper binary is "
-        "installed."
+        "installed. Set remote_control=true to instead run on the locally "
+        "authenticated first-party Claude subscription with Remote Control, "
+        "which returns a progress_url so the user can watch and steer the run "
+        "live at claude.ai/code or in the Claude mobile app; that lane needs "
+        "a POSIX PTY plus `claude auth login` and cannot be combined with the "
+        "GLM/Kimi wrappers or any custom provider (base URL, API key, "
+        "Bedrock, Vertex, Foundry)."
     ),
     "parameters": {
         "type": "object",
@@ -577,6 +613,26 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                 "default": DEFAULT_PERMISSION_MODE,
                 "enum": list(_ALLOWED_PERMISSION_MODES),
             },
+            "remote_control": {
+                "type": "boolean",
+                "description": (
+                    "Opt in to the first-party Claude Code Remote Control lane: "
+                    "run the task on the locally installed bare `claude` CLI in "
+                    "interactive mode and return a `progress_url` so the user "
+                    "can watch (and steer) the run live at claude.ai/code or in "
+                    "the Claude mobile app while it executes. Defaults to false, "
+                    "which uses the GLM/Kimi wrapper lanes unchanged. "
+                    "Requirements and limits: needs a POSIX pseudo-terminal, "
+                    "`claude auth login` with a first-party claude.ai "
+                    "subscription, and no custom provider configured — Remote "
+                    "Control is unavailable with a custom ANTHROPIC_BASE_URL, "
+                    "API-key auth, Bedrock, Vertex or Foundry, so the GLM and "
+                    "Kimi wrapper lanes cannot use it and models naming them "
+                    "are rejected. Fails closed (never reroutes to a wrapper or "
+                    "headless run)."
+                ),
+                "default": False,
+            },
         },
         "required": ["task", "workdir"],
     },
@@ -591,6 +647,7 @@ def _handle_delegate_claude_agent(args, **kw):
         timeout_seconds=args.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
         allowed_tools=args.get("allowed_tools", DEFAULT_ALLOWED_TOOLS),
         permission_mode=args.get("permission_mode", DEFAULT_PERMISSION_MODE),
+        remote_control=bool(args.get("remote_control", False)),
         task_id=kw.get("task_id"),
     )
 
