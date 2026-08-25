@@ -204,16 +204,19 @@ def test_flag_false_keeps_allowlist_authorization(monkeypatch):
 
 
 def test_flag_absent_ignores_mission_state(monkeypatch):
-    """Without the flag a mission must not change (nor be needed for) authz."""
+    """With the flag off, an allowlisted sender stays authorized.
+
+    The unrouted-DM mission grant may consult missions without changing
+    that outcome — mission state is not required for authorization.
+    """
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "61491234567@s.whatsapp.net")
     runner = _make_runner({})
-    calls = _stub_missions(
+    _stub_missions(
         monkeypatch,
         [{"mission_id": "m1", "status": "active", "chat_id": "61491234567@s.whatsapp.net"}],
     )
 
     assert runner._is_user_authorized(_make_source()) is True
-    assert calls == []  # missions never consulted when the flag is off
 
 
 # --------------------------------------------------------------------------
