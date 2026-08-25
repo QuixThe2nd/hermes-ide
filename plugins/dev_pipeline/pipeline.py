@@ -7,12 +7,15 @@ tests. Nothing here imports systemd, Cursor, or gateway code.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from typing import Any, Mapping, MutableMapping
 from urllib.parse import urlparse
 
 from hermes_cli.config import cfg_get, load_config
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Plan contract schema
@@ -94,6 +97,42 @@ _DEFAULT_DEV_EXECUTOR_TICK_SECONDS = 15
 _DEFAULT_MAX_ATTEMPTS = 2
 _DEFAULT_VERIFY_COMMAND_TIMEOUT = 600
 _DEFAULT_PROGRESS_NOTIFICATIONS = True
+# Wake the submitting agent (not just the human subscriber) when a job blocks
+# with an actionable dev-pipeline block kind. On by default: a delegated job
+# that fails is exactly the case where the delegating agent should handle it.
+_DEFAULT_AGENT_WAKE_ON_BLOCK = True
+# cgroup memory ceiling for each attempt unit. Historically hardcoded in the
+# systemd-run argv; the default keeps the spawned property byte-identical.
+_DEFAULT_ATTEMPT_MEMORY_MAX = "6G"
+# Public alias: the executor's systemd-run seam uses it as the parameter
+# default so an unset config and a direct call agree on the same ceiling.
+DEFAULT_ATTEMPT_MEMORY_MAX = _DEFAULT_ATTEMPT_MEMORY_MAX
+
+# What systemd's ``MemoryMax=`` property parser accepts: a number with an
+# optional base-1000/base-1024 suffix, or the literal ``infinity``/``max``
+# (no limit). Rejecting anything else here keeps a typo from reaching
+# ``systemd-run`` and surfacing as an ``infra_broken`` block.
+_MEMORY_MAX_RE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)?\s*[kKmMgGtTpP](?:[iI][bB])?[bB]?|infinity|max)\s*$"
+)
+
+
+def normalize_memory_max(raw: Any, default: str = _DEFAULT_ATTEMPT_MEMORY_MAX) -> str:
+    """Validate a configured ``MemoryMax`` value, falling back to *default*.
+
+    Unset, empty, or non-size input resolves to the historical hardcoded
+    ``6G``, so an unset knob keeps the spawned property list byte-for-byte
+    identical to pre-config behaviour.
+    """
+    value = str(raw or "").strip()
+    if value and _MEMORY_MAX_RE.match(value):
+        return value
+    if value:
+        logger.warning(
+            "dev_pipeline.attempt_memory_max=%r is not a systemd size; using %s",
+            raw, default,
+        )
+    return default
 
 
 def validate_plan_contract(data: Any) -> tuple[dict[str, Any] | None, list[str]]:
@@ -514,6 +553,21 @@ def get_dev_pipeline_config() -> dict[str, Any]:
                 "progress_notifications",
                 default=_DEFAULT_PROGRESS_NOTIFICATIONS,
             )
+        ),
+        # Read live by the kanban notifier on every tick, so flipping it to
+        # false halts agent wakes without a gateway restart.
+        "agent_wake_on_block": bool(
+            cfg_get(
+                cfg,
+                "dev_pipeline",
+                "agent_wake_on_block",
+                default=_DEFAULT_AGENT_WAKE_ON_BLOCK,
+            )
+        ),
+        # Validated in the executor's systemd-run seam; an unset or invalid
+        # value resolves to the historical hardcoded MemoryMax.
+        "attempt_memory_max": normalize_memory_max(
+            cfg_get(cfg, "dev_pipeline", "attempt_memory_max")
         ),
     }
 

@@ -79,6 +79,71 @@ Reconcile is idempotent: an identical installed unit means no rewrite and no
 - `gh` authenticated for draft PR creation (executor credentials only —
   attempts never see tokens).
 
+## Attempt resource limits & timeouts (`config.yaml`)
+
+Every attempt runs as its own transient unit, so the resource properties are
+what stand between a runaway job and the host. All of them live under
+`dev_pipeline:` in `~/.hermes/config.yaml`:
+
+```yaml
+dev_pipeline:
+  # cgroup memory ceiling per attempt unit (systemd MemoryMax=).
+  # Default "6G" — the value this used to be hardcoded to.
+  attempt_memory_max: "6G"
+
+  # Hard wall-clock ceiling for a Claude-lane attempt (RuntimeMaxSec).
+  claude_timeout_seconds: 7200
+
+  # Same, for a Cursor-lane attempt.
+  cursor_timeout_seconds: 1800
+```
+
+`attempt_memory_max` takes any size systemd understands (`512M`, `6G`,
+`1.5G`, `512MiB`, `infinity` for no limit). An unset, empty, or invalid value
+falls back to `6G`, so the spawned unit's property list is byte-identical to
+what this pipeline shipped before the knob existed.
+
+These three are the same failure class: on 2026-08-25 job `t_135a3014`
+OOM-killed at the then-unconfigurable `MemoryMax=6G` on run 6, then took a
+`SIGTERM` at `RuntimeMaxSec` (the `claude_timeout_seconds` default of 7200s)
+on run 8, and the block loop routed it to triage. Neither ceiling was
+adjustable without editing the source.
+
+## Agent wake on block
+
+When a dev job blocks with an actionable cause (`infra_broken`,
+`attempts_exhausted`, `planning_unavailable`, …) — including when the block
+loop routes it to triage — the kanban notifier wakes the **submitting agent's
+session** with an actionable turn, not just the human-facing chat message.
+The turn is self-contained: board, task id and title, block kind + reason,
+the last few runs with durations and failure lines, the workspace and logs
+paths, and the standing instruction to investigate first, recover
+autonomously when the cause is mechanical (resource limits, stale executor,
+known transient), and escalate to the human only for genuinely human
+decisions (auth, business trade-offs, anything destructive).
+
+```yaml
+dev_pipeline:
+  agent_wake_on_block: true   # default; false disables the agent turn
+```
+
+Behaviour worth knowing:
+
+- **No wake on deliberate human stops.** `cancelled_by_user` and
+  `secret_in_diff` never wake the agent — the human parked the job, or a
+  secret already reached the diff and the next step is a human decision.
+- **Loop safety.** At most one agent wake per (task, block signature,
+  destination). If the agent's own recovery attempt re-blocks for the *same*
+  cause, that round gets the human-facing message only — no self-sustaining
+  agent loop. A genuinely different cause produces a different signature and
+  wakes again; a task watched from two chats wakes each chat once (that is
+  delivery, not a loop). The record lives in
+  `<kanban root>/kanban/agent_wake_ledger.json` and survives gateway
+  restarts.
+- **Routing.** The wake goes to the session that submitted the job, recorded
+  at submit time as the task's kanban notify subscription
+  (`delegate_development` registers it from session context).
+
 ## Verify / debug
 
 ```bash
@@ -118,4 +183,5 @@ when the resolved scope is `user` — see above) outside the executor
 cgroup. That is why `KillMode=mixed` on the executor service is
 acceptable. Resource properties (`RuntimeMaxSec`, `MemoryMax`,
 `OOMScoreAdjust`) apply in user scope too — the user manager holds the
-delegated controllers on cgroup v2 hosts.
+delegated controllers on cgroup v2 hosts. `MemoryMax` comes from
+`dev_pipeline.attempt_memory_max`; the other two are fixed.
