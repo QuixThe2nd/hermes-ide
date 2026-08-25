@@ -380,6 +380,80 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
+    def _whatsapp_mission_only_dms(
+        self,
+        platform: Optional[Platform],
+        *,
+        profile: Optional[str] = None,
+    ) -> bool:
+        """Whether *platform* opted into mission-only WhatsApp DMs.
+
+        Reads ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms``.
+        Off unless explicitly configured true, so allowlist-only installs keep
+        their exact current policy. Prefers the live adapter's ``config.extra``
+        (profile-scoped under multiplex); falls back to the gateway config for
+        bare runners built without a live adapter — the same resolution order
+        as ``_adapter_dm_policy``.
+        """
+        if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            return False
+        candidates = []
+        adapter = self._authorization_adapter(platform, profile)
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        if isinstance(extra, dict):
+            candidates.append(extra)
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if isinstance(extra, dict):
+            candidates.append(extra)
+        for extra in candidates:
+            value = extra.get("mission_only_dms")
+            if value is True:
+                return True
+            if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+                return True
+        return False
+
+    def _source_has_active_mission(self, source: "SessionSource") -> bool:
+        """Whether an active assistant-mission is bound to *source*'s chat.
+
+        Consults ``plugins.missions.find_active_mission_for_chat`` with every
+        identifier the source carries (chat_id / user_id and their ``_alt``
+        forms); the mission store canonicalizes WhatsApp phone/JID/LID forms
+        itself, so no extra normalization happens here. Any lookup miss —
+        plugin absent, store unreadable, no mission bound — counts as "no
+        active mission" so the mission-only gate stays fail-closed.
+        """
+        try:
+            from plugins.missions import find_active_mission_for_chat
+        except Exception:
+            return False
+        # ``getattr`` guards bare test sources built via SimpleNamespace that
+        # omit the ``_alt`` fields (see AGENTS.md pitfall #17).
+        identifiers = (
+            getattr(source, "chat_id", None),
+            getattr(source, "user_id", None),
+            getattr(source, "chat_id_alt", None),
+            getattr(source, "user_id_alt", None),
+        )
+        seen: set[str] = set()
+        for identifier in identifiers:
+            identifier = str(identifier or "").strip()
+            if not identifier or identifier in seen:
+                continue
+            seen.add(identifier)
+            try:
+                if find_active_mission_for_chat(identifier):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _is_user_authorized(
         self,
         source: SessionSource,
@@ -404,6 +478,23 @@ class GatewayAuthorizationMixin:
         # the adapter itself — no user allowlist applies.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
+
+        # Mission-only WhatsApp DMs (opt-in, default off): when
+        # ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`` is
+        # true, WhatsApp senders are authorized ONLY while an assistant-mission
+        # is bound to their chat. Runs before the allowlist / pairing /
+        # allow-all checks below so none of them can override it — otherwise a
+        # contact listed on WHATSAPP_ALLOWED_USERS keeps getting answered by
+        # the default profile after their mission closes, which is exactly
+        # what the operator opted out of. Fail-closed: no missions plugin or
+        # no matching mission means deny.
+        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            if self._whatsapp_mission_only_dms(
+                source.platform,
+                profile=self._adapter_profile_for_source(source),
+            ):
+                if not self._source_has_active_mission(source):
+                    return False
 
         adapter_profile = self._adapter_profile_for_source(source)
 
