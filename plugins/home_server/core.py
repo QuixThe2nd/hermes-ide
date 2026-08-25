@@ -420,6 +420,17 @@ class DiscordClient:
         payload = self._request("GET", f"/channels/{channel_id}")
         return str(payload.get("name") or "")
 
+    def move_channel(self, channel_id: str, *, parent_id: Optional[str]) -> str:
+        """Re-parent a channel under a category (adoption)."""
+        status, text = self._raw(
+            "PATCH", f"/channels/{channel_id}", {"parent_id": parent_id}
+        )
+        if status != 200:
+            raise HomeServerError(
+                f"discord move returned {status}: {text[:200]}"
+            )
+        return "moved"
+
     def rename_channel(self, channel_id: str, name: str, *, skip_on_429: bool = False) -> str:
         """Rename only when the name actually changes (2 renames / 10 min / channel).
 
@@ -734,6 +745,42 @@ def _find_channel(
     return None
 
 
+def _normalize_name(name: Any) -> str:
+    """Lowercase and strip separators for tolerant matching.
+
+    ``Quotas • 25/8 3:30pm`` matches the "Quotas" category; ``inbox`` matches
+    ``#inbox``. Dynamic suffixes the pollers add (quota clocks, throughput)
+    are ignored for matching purposes.
+    """
+    return str(name or "").strip().lstrip("#").strip().lower()
+
+
+def _prefix_match_channel(
+    channels: List[Dict[str, Any]],
+    *,
+    name: str,
+    kind: int,
+    exclude_ids: set[str],
+) -> Optional[str]:
+    """Find a channel whose normalized name STARTS WITH the template name.
+
+    Used when no exact match exists. Only claims channels of the right type
+    that are not already claimed by another template entry. The dynamic-label
+    categories ("Quotas • ...") match this way.
+    """
+    want = _normalize_name(name)
+    for channel in channels:
+        if int(channel.get("type") or 0) != kind:
+            continue
+        cid = str(channel.get("id"))
+        if cid in exclude_ids:
+            continue
+        got = _normalize_name(channel.get("name"))
+        if got == want or got.startswith(want + " ") or got.startswith(want + ":"):
+            return cid
+    return None
+
+
 def _reconcile_module(
     client: DiscordClient,
     guild_id: str,
@@ -742,10 +789,33 @@ def _reconcile_module(
     report: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Ensure one category and its channels exist. Mutates ``channels`` so
-    later modules see what earlier ones created."""
+    later modules see what earlier ones created.
+
+    Matching is tolerant of a live server: exact normalized names first, then
+    prefix matches against dynamically-labelled channels. Channels that exist
+    elsewhere in the guild under the right name/type are ADOPTED (moved under
+    the module's category) instead of duplicated. Nothing is ever renamed or
+    deleted.
+    """
     category_id = _find_channel(
         channels, name=spec.category, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
     )
+    adopted_category = False
+    if category_id is None:
+        # Tolerant pass: an existing category whose name starts with the
+        # template name ("Quotas • 25/8 ..." vs "Quotas") is the same home.
+        candidate = _prefix_match_channel(
+            channels,
+            name=spec.category,
+            kind=CHANNEL_TYPE_CATEGORY,
+            exclude_ids=set(),
+        )
+        if candidate is not None:
+            category_id = candidate
+            prior_categories = (load_state().get("categories") or {})
+            if str(prior_categories.get(spec.key) or "") != str(candidate):
+                report["adopted"].append(f"category:{spec.category}")
+            adopted_category = True
     if category_id is None:
         created = client.create_channel(
             guild_id, name=spec.category, kind=CHANNEL_TYPE_CATEGORY
@@ -753,6 +823,13 @@ def _reconcile_module(
         category_id = str(created["id"])
         channels.append(created)
         report["created"].append(f"category:{spec.category}")
+
+    # Never prefix-claim a category: those belong to other modules or the user.
+    claimed = {
+        str(c.get("id"))
+        for c in channels
+        if int(c.get("type") or 0) == CHANNEL_TYPE_CATEGORY
+    }
 
     resolved: Dict[str, str] = {}
     for channel_spec in spec.channels:
@@ -762,6 +839,47 @@ def _reconcile_module(
             kind=channel_spec.kind,
             parent_id=category_id,
         )
+        adopted_now = False
+        if channel_id is None and channel_spec.kind != CHANNEL_TYPE_CATEGORY:
+            # Exact name elsewhere in the guild → adopt it under our category.
+            channel_id = _find_channel(
+                channels,
+                name=channel_spec.name,
+                kind=channel_spec.kind,
+                parent_id=None,
+            )
+            if channel_id is not None:
+                adopted_now = True
+        if channel_id is None and channel_spec.kind != CHANNEL_TYPE_CATEGORY:
+            # Loose/dynamic label ("Codex: 98% ...") → match by prefix. A hit
+            # under our own category is plain discovery; one elsewhere in the
+            # guild is an adoption (move).
+            channel_id = _prefix_match_channel(
+                channels,
+                name=channel_spec.name,
+                kind=channel_spec.kind,
+                exclude_ids=set(resolved.values()) | claimed,
+            )
+            if channel_id is not None:
+                parent = next(
+                    (
+                        str(c.get("parent_id"))
+                        for c in channels
+                        if str(c.get("id")) == channel_id
+                    ),
+                    None,
+                )
+                if parent == str(category_id):
+                    adopted_now = False
+                else:
+                    adopted_now = True
+        if channel_id is not None and adopted_now:
+            client.move_channel(channel_id, parent_id=category_id)
+            for channel in channels:
+                if str(channel.get("id")) == channel_id:
+                    channel["parent_id"] = category_id
+                    break
+            report["adopted"].append(f"channel:{channel_spec.name}")
         if channel_id is None:
             created = client.create_channel(
                 guild_id,
@@ -772,6 +890,8 @@ def _reconcile_module(
             channel_id = str(created["id"])
             channels.append(created)
             report["created"].append(f"channel:{channel_spec.name}")
+        else:
+            claimed.add(channel_id)
         resolved[channel_spec.name] = channel_id
 
     return {
@@ -801,6 +921,7 @@ def reconcile(
         "enabled": bool(guild_id),
         "guild_id": guild_id,
         "created": [],
+        "adopted": [],
         "embeds_posted": [],
         "wired": {},
         "home_channel": "skipped",

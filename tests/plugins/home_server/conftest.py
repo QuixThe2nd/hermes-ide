@@ -115,6 +115,8 @@ class FakeDiscord:
             chan = self.channels.get(parts[1])
             if chan is None:
                 return 404, b'{"message": "Unknown Channel"}'
+            if "parent_id" in body:
+                chan["parent_id"] = body["parent_id"]
             chan["name"] = body.get("name", chan["name"])
             return 200, json.dumps(chan).encode()
 

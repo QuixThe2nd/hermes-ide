@@ -170,6 +170,73 @@ def test_welcome_embeds_posted_once_per_text_category_and_skipped_for_voice(
     assert len(discord.messages) == len(text_keys)
 
 
+def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, state):
+    """A "Quotas • <clock>" category from the live poller matches Quotas."""
+    discord = make_discord()
+    discord.add_channel(id=7001, name="Quotas \u2022 25/8 3:30pm", type=4)
+    for i, key in enumerate(("Codex", "Kimi", "z.ai", "Cursor", "Grok")):
+        discord.add_channel(id=7100 + i, name=key, type=2, parent_id=7001)
+
+    report = reconcile(http_fn=discord)
+
+    assert "category:Quotas" not in report["created"]
+    assert report["adopted"] == ["category:Quotas"]
+    assert state()["categories"]["quotas"] == "7001"
+    # No duplicate voice channels were minted.
+    voices = [
+        c
+        for c in discord.channels.values()
+        if c["type"] == 2 and c["parent_id"] == 7001
+    ]
+    assert len(voices) == 5
+
+
+def test_orphan_channels_are_adopted_into_the_module_category(
+    hermes, guild, make_discord, state
+):
+    """An existing #inbox at guild level moves under Chat instead of a dupe."""
+    discord = make_discord()
+    discord.add_channel(id=8001, name="inbox", type=0)
+
+    report = reconcile(http_fn=discord)
+    chat_cat = state()["categories"]["chat"]
+
+    assert "channel:inbox" not in report["created"]
+    assert f"channel:inbox" in [a.split(":")[0] + ":" + a.split(":")[1] for a in report["adopted"]]
+    assert state()["channels"]["chat"]["inbox"] == "8001"
+    moved = discord.channels["8001"]
+    assert moved["parent_id"] == chat_cat
+
+
+def test_second_run_after_adoption_is_a_full_no_op(hermes, make_discord, state):
+    discord = make_discord()
+    discord.add_channel(id=8001, name="inbox", type=0)
+    reconcile(http_fn=discord)
+    before = list(discord.mutations)
+
+    report = reconcile(http_fn=discord)
+
+    assert report["created"] == []
+    assert report["adopted"] == []
+    assert discord.mutations[len(before):] == []
+
+
+def test_prefix_collision_never_steals_another_modules_channel(
+    hermes, make_discord, state
+):
+    """A channel already claimed by an earlier module is not re-adopted."""
+    discord = make_discord()
+    # "Speeds" category created by hand BEFORE reconcile; its children must stay.
+    discord.add_channel(id=9001, name="Speeds", type=4)
+    discord.add_channel(id=9002, name="qBittorrent", type=2, parent_id=9001)
+
+    reconcile(http_fn=discord)
+
+    speeds_cat = state()["categories"]["speeds"]
+    assert speeds_cat == "9001"
+    assert discord.channels["9002"]["parent_id"] == 9001
+
+
 def test_hermes_starts_is_prewired_to_the_shared_inbox(hermes, make_discord, state):
     discord = make_discord()
     report = reconcile(http_fn=discord)
