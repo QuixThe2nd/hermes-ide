@@ -419,11 +419,16 @@ All four reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-res
 ### Cooperative restart wind-down
 
 On in-band `/restart` (and SIGUSR1), the gateway still refuses new turns, but
-it also steers every *other* live chat agent once: park at a safe pause, do
-not start new long work, end the turn. Those sessions are marked
-`resume_pending` with `cooperative_restart` so the new process continues them
-instead of waiting for every long turn to die first. Cron and API-server work
-are not steered; the existing drain wait still covers them.
+it also snapshots every *other* live chat at the moment the park steer is
+sent, then steers those agents once: park at a safe pause, do not start new
+long work, end the turn. The snapshot is written even when the list is empty.
+Those steered sessions are marked `resume_pending` with `cooperative_restart`.
+Startup auto-continues only chats from that snapshot. Leftover
+`resume_pending` flags on chats that were idle at steer time stay idle. A
+missing snapshot file means the previous process never started a cooperative
+restart (crash / drain timeout), so the usual resume_pending scan still
+applies. Cron and API-server work are not steered; the existing drain wait
+still covers them.
 
 ### Auto-Resume on Next Access
 

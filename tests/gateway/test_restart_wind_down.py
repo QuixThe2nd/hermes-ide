@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
 import pytest
@@ -92,8 +92,17 @@ def test_mark_resume_pending_uses_cooperative_reason():
     )
 
 
+def _patch_resume_home(monkeypatch, tmp_path):
+    # Patch only this module. Patching hermes_constants.get_hermes_home
+    # poisons later imports of restart_loop_guard in the same process.
+    monkeypatch.setattr("gateway.restart_wind_down.get_hermes_home", lambda: tmp_path)
+
+
 @pytest.mark.asyncio
-async def test_request_restart_steers_other_sessions_and_marks_them():
+async def test_request_restart_steers_other_sessions_and_marks_them(
+    tmp_path, monkeypatch
+):
+    _patch_resume_home(monkeypatch, tmp_path)
     runner, _adapter = make_restart_runner()
     runner.stop = MagicMock()
     runner._launch_detached_restart_command = MagicMock()
@@ -168,3 +177,117 @@ def test_session_entry_roundtrip_keeps_cooperative_reason():
     restored = SessionEntry.from_dict(entry.to_dict())
     assert restored.resume_reason == COOPERATIVE_RESTART_REASON
     assert restored.resume_pending is True
+
+
+def test_empty_active_set_writes_empty_resume_allowlist(tmp_path, monkeypatch):
+    from gateway.restart_wind_down import (
+        consume_resume_allowlist,
+        load_resume_allowlist,
+        write_resume_allowlist,
+    )
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    write_resume_allowlist([])
+    assert load_resume_allowlist() == set()
+    assert consume_resume_allowlist() == set()
+    assert load_resume_allowlist() is None
+
+
+def test_missing_allowlist_means_crash_path():
+    from gateway.restart_wind_down import should_auto_resume_session
+
+    assert should_auto_resume_session("any", None) is True
+    assert should_auto_resume_session("live", {"live"}) is True
+    assert should_auto_resume_session("stale", {"live"}) is False
+    assert should_auto_resume_session("stale", set()) is False
+
+
+def test_request_restart_with_no_live_chats_still_snapshots_empty_allowlist(
+    tmp_path, monkeypatch
+):
+    from gateway.restart_wind_down import load_resume_allowlist
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    runner, _adapter = make_restart_runner()
+    requester = make_restart_source(chat_id="req")
+    runner._restart_command_source = requester
+    requester_key = runner._session_key_for_source(requester)
+    runner._running_agents[requester_key] = MagicMock()
+
+    steered = runner._request_cooperative_restart_wind_down()
+    assert steered == []
+    assert runner._cooperative_restart_sessions == []
+    assert load_resume_allowlist() == set()
+
+
+def test_snapshot_includes_active_chats_even_when_steer_is_rejected(
+    tmp_path, monkeypatch
+):
+    from gateway.restart_wind_down import load_resume_allowlist
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    runner, _adapter = make_restart_runner()
+    stubborn = MagicMock()
+    stubborn.steer.return_value = False
+    runner._running_agents["agent:main:telegram:dm:live"] = stubborn
+
+    steered = runner._request_cooperative_restart_wind_down()
+    assert steered == []
+    assert load_resume_allowlist() == {"agent:main:telegram:dm:live"}
+    assert runner._cooperative_restart_sessions == ["agent:main:telegram:dm:live"]
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_only_revives_snapshotted_active_chats(
+    tmp_path, monkeypatch
+):
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.restart_wind_down import write_resume_allowlist
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    write_resume_allowlist(["agent:main:telegram:dm:live"])
+
+    runner, adapter = make_restart_runner()
+    runner._persist_active_agents = MagicMock()
+    live_source = make_restart_source(chat_id="live")
+    stale_source = make_restart_source(chat_id="stale")
+    now = datetime.now()
+    live = SessionEntry(
+        session_key="agent:main:telegram:dm:live",
+        session_id="sid-live",
+        created_at=now,
+        updated_at=now,
+        origin=live_source,
+        platform=live_source.platform,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason=COOPERATIVE_RESTART_REASON,
+        last_resume_marked_at=now,
+    )
+    stale = SessionEntry(
+        session_key="agent:main:telegram:dm:stale",
+        session_id="sid-stale",
+        created_at=now,
+        updated_at=now,
+        origin=stale_source,
+        platform=stale_source.platform,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason=COOPERATIVE_RESTART_REASON,
+        last_resume_marked_at=now,
+    )
+    runner.session_store._entries = {
+        live.session_key: live,
+        stale.session_key: stale,
+    }
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_called_once()
+    event = adapter.handle_message.call_args.args[0]
+    assert isinstance(event, MessageEvent)
+    assert event.source == live_source
+    assert event.message_type == MessageType.TEXT
