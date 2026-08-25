@@ -1,0 +1,5 @@
+name: home_server
+version: 1.0.0
+description: "Discord Home Server provisioning — one command creates and keeps in sync the Chat, Notifications, Honcho Memory, Quotas, and Speeds categories, fully wired to hermes_starts, home and notification channels, memory webhooks, quota_channels, and speed_channels."
+author: Hermes Agent
+kind: backend

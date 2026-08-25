@@ -142,6 +142,25 @@ async def test_registers_native_thread_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+async def test_registers_native_sethomeserver_slash_command(adapter):
+    # /sethomeserver must sit on the native tree next to /sethome (Discord-only
+    # provisioning), forwarding its optional confirm arg verbatim so the
+    # dispatcher's canonical routing decides what it means.
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["sethomeserver"]
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()))
+
+    await command(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/sethomeserver")
+
+    adapter._run_simple_slash.reset_mock()
+    await command(interaction, confirm="confirm")
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/sethomeserver confirm")
+
+
+@pytest.mark.asyncio
 async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
     class UnknownInteraction(Exception):
         status = 404

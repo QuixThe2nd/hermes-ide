@@ -195,6 +195,57 @@ def _save_state(state: Dict[str, Any]) -> None:
         pass
 
 
+def _home_server_inbox() -> Dict[str, str]:
+    """The home_server plugin's shared inbox, if it provisioned one.
+
+    Returns {"guild_id": ..., "channel_id": ...} or an empty dict. Read-only:
+    a missing or corrupt home_server state must never break starting a
+    conversation, so every failure collapses to "nothing to adopt".
+    """
+    try:
+        path = get_hermes_home() / "home_server" / "state.json"
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    chat = data.get("channels", {}).get("chat", {})
+    if not isinstance(chat, dict):
+        return {}
+    channel_id = str(chat.get("inbox") or "")
+    if not channel_id:
+        return {}
+    return {"guild_id": str(data.get("guild_id") or ""), "channel_id": channel_id}
+
+
+def adopt_home_server_inbox() -> str:
+    """Target the home_server inbox instead of provisioning a duplicate one.
+
+    Called before any self-provisioning path (and by home_server's own wiring
+    hook, so /sethomeserver reports it). Adopts only when we have no channel of
+    our own yet — an existing Hermes Starts channel is never silently repointed.
+    Returns "wired" when the shared inbox was adopted, else "skipped".
+    """
+    state = _load_state()
+    if state["channel_id"]:
+        return "skipped"
+
+    shared = _home_server_inbox()
+    if not shared:
+        return "skipped"
+
+    _save_state(
+        {
+            **state,
+            "guild_id": shared["guild_id"],
+            "channel_id": shared["channel_id"],
+            "channel_name": _DEFAULT_CHANNEL_NAME,
+        }
+    )
+    return "wired"
+
+
 def _compose_message(message: str, next_move: str) -> str:
     text = f"{message}"
     if next_move:

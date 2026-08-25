@@ -33,6 +33,8 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
   - fallback_quota_reorder — ranks fallback_providers by remaining quota × time-to-reset × recent API success, not soonest-reset-first
   - fallback_watch — tails agent.log and alerts a Discord channel whenever the primary model falls back, cooldown-deduped (opt-in, off by default)
+  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Quotas / Speeds), fully wired; idempotent, never deletes, existing home and notification channels are never clobbered
+  - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
@@ -40,6 +42,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Gateway — `/restart` parks only live chats, resumes only that snapshot, and shows each accepted LLM park steer in its shutdown warning
   - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
   - Gateway — lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`)
+  - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), then re-syncs at most hourly
   - Discord — sessions keyed to your stable username, not your per-server nickname
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits

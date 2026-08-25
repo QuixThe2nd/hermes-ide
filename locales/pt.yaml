@@ -290,6 +290,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Falha ao guardar o canal principal: {error}"
     success:               "✅ Canal principal definido como **{name}** (ID: {chat_id}).\nAs tarefas cron e mensagens entre plataformas serão entregues aqui."
+    discord_pointer:       "💡 Quer a configuração completa? `/sethomeserver` provisiona um servidor doméstico inteiro — chat, memória, cotas e velocidades — tudo conectado."
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` só funciona no Discord — ele provisiona categorias, canais e webhooks do Discord."
+    relay_blocked:        "⚠️ Esta mensagem chegou por um relay que não consegue autenticar destinos de guild do Discord. Execute `/sethomeserver` numa mensagem nativa do Discord."
+    no_guild:             "⚠️ Não foi possível determinar o servidor. Execute `/sethomeserver` dentro do seu servidor doméstico do Discord."
+    progress:             "🏗️ Provisionando seu servidor doméstico… (criando os canais ausentes e conectando-os — leva alguns segundos)"
+    confirm_required:     "⚠️ Seu servidor doméstico já está definido para a guild `{current}`.
+Execute `/sethomeserver confirm` para movê-lo para a guild `{guild_id}`. Nada é nunca excluído, mas a nova guild será provisionada do zero."
+    save_failed:          "Falha ao salvar a configuração do servidor doméstico: {error}"
+    provision_failed:     "❌ Falha no provisionamento: {error}"
+    success:              "🏠 Servidor doméstico provisionado para a guild `{guild_id}`.
+**Criados ({created_count}):** {created_list}
+**Mensagens de boas-vindas publicadas:** {embeds_count}
+**Conectado:** {wired_list} ({wired_count})
+**Módulos ativados:** {modules_count}/5
+Canal doméstico: {home_channel_state} — canais domésticos existentes nunca são sobrescritos.
+A ressincronização roda automaticamente no máximo uma vez por hora."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

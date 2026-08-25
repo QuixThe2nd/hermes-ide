@@ -290,6 +290,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Salvataggio del canale home non riuscito: {error}"
     success:               "✅ Canale home impostato su **{name}** (ID: {chat_id}).\nI cron job e i messaggi cross-platform verranno consegnati qui."
+    discord_pointer:       "💡 Vuoi la configurazione completa? `/sethomeserver` provisiona un intero home server — chat, memoria, quote e velocità — tutto collegato."
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` funziona solo su Discord — crea categorie, canali e webhook Discord."
+    relay_blocked:        "⚠️ Questo messaggio è arrivato tramite un relay che non può autenticare destinazioni di guild Discord. Esegui `/sethomeserver` da un messaggio Discord nativo."
+    no_guild:             "⚠️ Impossibile determinare il server. Esegui `/sethomeserver` all'interno del tuo home server Discord."
+    progress:             "🏗️ Provisioning dell'home server in corso… (creazione dei canali mancanti e collegamento — richiede qualche secondo)"
+    confirm_required:     "⚠️ Il tuo home server è già impostato sulla guild `{current}`.
+Esegui `/sethomeserver confirm` per spostarlo sulla guild `{guild_id}`. Nulla viene mai eliminato, ma la nuova guild verrà provisionata da zero."
+    save_failed:          "Impossibile salvare l'impostazione dell'home server: {error}"
+    provision_failed:     "❌ Provisioning non riuscito: {error}"
+    success:              "🏠 Home server provisionato per la guild `{guild_id}`.
+**Creati ({created_count}):** {created_list}
+**Messaggi di benvenuto pubblicati:** {embeds_count}
+**Collegato:** {wired_list} ({wired_count})
+**Moduli attivati:** {modules_count}/5
+Canale home: {home_channel_state} — i canali home esistenti non vengono mai sovrascritti.
+Le risincronizzazioni vengono eseguite automaticamente al massimo una volta all'ora."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
