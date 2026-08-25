@@ -12,8 +12,8 @@ from plugins.home_server.core import (
     reconcile,
 )
 
-# 4 categories + 3 chat + 4 memory + 5 quotas + 3 speeds channels.
-FIRST_RUN_CREATES = 4 + 3 + 4 + 5 + 3
+# 5 categories + 2 chat + 3 notifications + 4 memory + 5 quotas + 3 speeds.
+FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 5 + 3
 
 
 def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
@@ -31,6 +31,13 @@ def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
     assert sorted(c["name"] for c in categories) == sorted(
         spec.category for spec in TEMPLATE.values()
     )
+
+    names = {c["name"] for c in discord.channels.values()}
+    # Chat is inbox/outbox only — the old Chat/home channel is gone from the
+    # template and must not be minted anymore.
+    assert "home" not in names
+    for name in ("model-fallback", "gateway-restarts", "other"):
+        assert name in names
 
     for key, spec in TEMPLATE.items():
         under = [
@@ -110,11 +117,25 @@ def test_disabled_modules_are_skipped_entirely(
 
 
 def test_home_channel_is_set_when_none_exists(hermes, make_discord, read_config, state):
-    reconcile(http_fn=make_discord())
+    report = reconcile(http_fn=make_discord())
 
+    assert report["home_channel"] == "set"
     home = read_config()["platforms"]["discord"]["home_channel"]
-    assert home["chat_id"] == state()["channels"]["chat"]["home"]
-    assert home["name"] == "home"
+    assert home["chat_id"] == state()["channels"]["notifications"]["other"]
+    assert home["name"] == "other"
+
+
+def test_notification_channel_is_set_when_none_exists(
+    hermes, make_discord, read_config, state
+):
+    report = reconcile(http_fn=make_discord())
+
+    assert report["notification_channel"] == "set"
+    notify = read_config()["platforms"]["discord"]["notification_channel"]
+    assert (
+        notify["chat_id"] == state()["channels"]["notifications"]["gateway-restarts"]
+    )
+    assert notify["name"] == "gateway-restarts"
 
 
 def test_existing_home_channel_is_never_clobbered(
@@ -136,6 +157,53 @@ def test_existing_home_channel_is_never_clobbered(
 
     assert report["home_channel"] == "kept"
     assert read_config()["platforms"]["discord"]["home_channel"]["chat_id"] == "111"
+
+
+def test_existing_notification_channel_is_never_clobbered(
+    hermes, guild, make_discord, write_config, read_config
+):
+    """A notification channel set by /setnotify survives provisioning."""
+    write_config(
+        {"guild_id": guild},
+        platforms={
+            "discord": {
+                "notification_channel": {
+                    "platform": "discord",
+                    "chat_id": "222",
+                    "name": "my restarts",
+                }
+            }
+        },
+    )
+    report = reconcile(http_fn=make_discord())
+
+    assert report["notification_channel"] == "kept"
+    assert (
+        read_config()["platforms"]["discord"]["notification_channel"]["chat_id"]
+        == "222"
+    )
+
+
+def test_disabled_notifications_module_is_skipped_entirely(
+    hermes, guild, make_discord, write_config, read_config
+):
+    write_config({"guild_id": guild, "modules": {"notifications": False}})
+    discord = make_discord()
+    report = reconcile(http_fn=discord)
+
+    names = {c["name"] for c in discord.channels.values()}
+    assert "Notifications" not in names
+    assert "model-fallback" not in names
+    assert "gateway-restarts" not in names
+    assert "other" not in names
+    assert report["modules"]["notifications"] is False
+
+    # No wiring either: both channel pointers stay untouched.
+    assert report["home_channel"] == "skipped"
+    assert report["notification_channel"] == "skipped"
+    discord_section = read_config().get("platforms", {}).get("discord", {})
+    assert "home_channel" not in discord_section
+    assert "notification_channel" not in discord_section
 
 
 def test_welcome_embeds_posted_once_per_text_category_and_skipped_for_voice(
@@ -168,6 +236,21 @@ def test_welcome_embeds_posted_once_per_text_category_and_skipped_for_voice(
 
     reconcile(http_fn=discord)
     assert len(discord.messages) == len(text_keys)
+
+
+def test_notifications_welcome_embed_is_posted_once(hermes, make_discord, state):
+    """Notifications has text channels, so it gets the one-time category embed."""
+    discord = make_discord()
+    report = reconcile(http_fn=discord)
+
+    assert "Notifications/model-fallback" in report["embeds_posted"]
+    channel_id = state()["channels"]["notifications"]["model-fallback"]
+    posted = [m for m in discord.messages.values() if m["channel_id"] == channel_id]
+    assert len(posted) == 1
+
+    second = reconcile(http_fn=discord)
+    assert second["embeds_posted"] == []
+    assert len(posted) == 1
 
 
 def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, state):
@@ -208,9 +291,58 @@ def test_orphan_channels_are_adopted_into_the_module_category(
     assert moved["parent_id"] == chat_cat
 
 
+def test_orphan_notification_channels_are_adopted_not_recreated(
+    hermes, make_discord, state, read_config
+):
+    """Guild-level #model-fallback/#gateway-restarts/#other move under
+    Notifications instead of being duplicated, and the channel pointers adopt
+    the discovered IDs."""
+    discord = make_discord()
+    discord.add_channel(id=8101, name="model-fallback", type=0)
+    discord.add_channel(id=8102, name="gateway-restarts", type=0)
+    discord.add_channel(id=8103, name="other", type=0)
+
+    report = reconcile(http_fn=discord)
+    notifications_cat = state()["categories"]["notifications"]
+
+    adopted = set(report["adopted"])
+    for name, cid in (
+        ("model-fallback", "8101"),
+        ("gateway-restarts", "8102"),
+        ("other", "8103"),
+    ):
+        assert f"channel:{name}" not in report["created"]
+        assert f"channel:{name}" in adopted
+        assert state()["channels"]["notifications"][name] == cid
+        assert discord.channels[cid]["parent_id"] == notifications_cat
+
+    platforms = read_config()["platforms"]["discord"]
+    assert platforms["home_channel"]["chat_id"] == "8103"
+    assert platforms["notification_channel"]["chat_id"] == "8102"
+
+
+def test_leftover_chat_home_channel_is_never_deleted(hermes, make_discord):
+    """A Chat/#home left by a previous provision stays exactly where it was:
+    the template no longer references it, and reconcile never deletes."""
+    from plugins.home_server.core import CHANNEL_TYPE_TEXT
+
+    discord = make_discord(
+        existing=[
+            {"id": "21", "name": "Chat", "type": CHANNEL_TYPE_CATEGORY},
+            {"id": "22", "name": "home", "type": CHANNEL_TYPE_TEXT, "parent_id": "21"},
+        ]
+    )
+    report = reconcile(http_fn=discord)
+
+    assert "channel:home" not in report["created"]
+    assert discord.channels["22"]["name"] == "home"
+    assert discord.channels["22"]["parent_id"] == "21"
+
+
 def test_second_run_after_adoption_is_a_full_no_op(hermes, make_discord, state):
     discord = make_discord()
     discord.add_channel(id=8001, name="inbox", type=0)
+    discord.add_channel(id=8002, name="other", type=0)
     reconcile(http_fn=discord)
     before = list(discord.mutations)
 

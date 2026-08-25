@@ -305,7 +305,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **생성됨({created_count}개):** {created_list}
 **게시된 환영 메시지:** {embeds_count}
 **연결됨:** {wired_list}({wired_count})
-**활성화된 모듈:** {modules_count}/4
+**활성화된 모듈:** {modules_count}/5
 홈 채널: {home_channel_state} — 기존 홈 채널은 절대 덮어쓰지 않습니다.
 재동기화는 자동으로 최대 1시간에 한 번 실행됩니다."
   context:

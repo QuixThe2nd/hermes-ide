@@ -305,7 +305,7 @@ Führe `/sethomeserver confirm` aus, um ihn zur Guild `{guild_id}` zu verschiebe
 **Erstellt ({created_count}):** {created_list}
 **Willkommensnachrichten gepostet:** {embeds_count}
 **Verkabelt:** {wired_list} ({wired_count})
-**Aktivierte Module:** {modules_count}/4
+**Aktivierte Module:** {modules_count}/5
 Home-Kanal: {home_channel_state} — bestehende Home-Kanäle werden nie überschrieben.
 Re-Syncs laufen automatisch höchstens einmal pro Stunde."
   context:

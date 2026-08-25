@@ -305,7 +305,7 @@ Lancez `/sethomeserver confirm` pour le déplacer vers le guild `{guild_id}`. Ri
 **Créés ({created_count}) :** {created_list}
 **Messages de bienvenue publiés :** {embeds_count}
 **Câblé :** {wired_list} ({wired_count})
-**Modules activés :** {modules_count}/4
+**Modules activés :** {modules_count}/5
 Canal domestique : {home_channel_state} — les canaux domestiques existants ne sont jamais écrasés.
 Les resynchronisations s'exécutent automatiquement au maximum une fois par heure."
   context:

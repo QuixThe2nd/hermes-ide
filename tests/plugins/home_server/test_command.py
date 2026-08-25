@@ -84,7 +84,14 @@ def stub_reconcile(monkeypatch):
             "embeds_posted": ["Chat/inbox"],
             "wired": {"hermes_starts": "wired", "quota_channels": True},
             "home_channel": "set",
-            "modules": {"chat": True, "memory": True, "quotas": True, "speeds": True},
+            "notification_channel": "set",
+            "modules": {
+                "chat": True,
+                "notifications": True,
+                "memory": True,
+                "quotas": True,
+                "speeds": True,
+            },
         }
 
     monkeypatch.setattr(core, "reconcile", fake_reconcile)

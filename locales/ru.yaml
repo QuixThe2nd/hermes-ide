@@ -305,7 +305,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **Создано ({created_count}):** {created_list}
 **Опубликовано приветственных сообщений:** {embeds_count}
 **Подключено:** {wired_list} ({wired_count})
-**Включено модулей:** {modules_count}/4
+**Включено модулей:** {modules_count}/5
 Домашний канал: {home_channel_state} — существующие домашние каналы никогда не перезаписываются.
 Повторная синхронизация выполняется автоматически не чаще раза в час."
   context:

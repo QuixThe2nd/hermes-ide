@@ -3,7 +3,9 @@
 A user sets a HOME SERVER once (``/sethomeserver``) and this module provisions
 and keeps in sync the whole structure:
 
-* ``Chat``            — text channels ``inbox``, ``outbox``, ``home``
+* ``Chat``            — text channels ``inbox``, ``outbox``
+* ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
+  ``other``
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
 * ``Quotas``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
@@ -11,7 +13,9 @@ and keeps in sync the whole structure:
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
-``hermes_starts`` targets the shared inbox, each memory channel gets a Discord
+``hermes_starts`` targets the shared inbox, the Discord home channel and
+lifecycle-notification channel point at Notifications/``other`` and
+Notifications/``gateway-restarts``, each memory channel gets a Discord
 webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and the
 ``quota_channels`` / ``speed_channels`` config sections are pointed at the
 created voice channels.
@@ -57,7 +61,7 @@ SYNC_DEBOUNCE_SECONDS = 3600
 # slash command — cap a single backoff and give up after one retry.
 MAX_RETRY_AFTER_SECONDS = 10.0
 
-MODULE_KEYS = ("chat", "memory", "quotas", "speeds")
+MODULE_KEYS = ("chat", "notifications", "memory", "quotas", "speeds")
 
 # Env var holding the bot token in HERMES_HOME/secrets/discord.env. Exposed as
 # a constant so tests (and any future caller) reference the same key instead of
@@ -114,14 +118,30 @@ TEMPLATE: Dict[str, ModuleSpec] = {
         channels=(
             ChannelSpec("inbox", CHANNEL_TYPE_TEXT, "inbox"),
             ChannelSpec("outbox", CHANNEL_TYPE_TEXT, "outbox"),
-            ChannelSpec("home", CHANNEL_TYPE_TEXT, "home"),
         ),
         embed_title="💬 Chat",
         embed_description=(
             "This inbox is where Hermes starts conversations when it has "
-            "something to tell you. The outbox is for messages you hand off to "
-            "Hermes, and home is the channel cron jobs and cross-platform "
-            "messages are delivered to."
+            "something to tell you. The outbox is for messages you hand off "
+            "to Hermes. Cron deliveries, cross-platform messages, and gateway "
+            "lifecycle pings land in the Notifications category instead."
+        ),
+    ),
+    "notifications": ModuleSpec(
+        key="notifications",
+        category="Notifications",
+        channels=(
+            ChannelSpec("model-fallback", CHANNEL_TYPE_TEXT, "model-fallback"),
+            ChannelSpec("gateway-restarts", CHANNEL_TYPE_TEXT, "gateway-restarts"),
+            ChannelSpec("other", CHANNEL_TYPE_TEXT, "other"),
+        ),
+        embed_title="🔔 Notifications",
+        embed_description=(
+            "One-way pings from the machinery: gateway-restarts carries "
+            "shutdown and restart broadcasts, model-fallback shows when the "
+            "primary model was abandoned for a fallback, and other catches "
+            "everything else worth flagging. Conversation belongs in Chat — "
+            "nothing here needs a reply."
         ),
     ),
     "memory": ModuleSpec(
@@ -608,7 +628,7 @@ def existing_discord_home_channel() -> Optional[Dict[str, Any]]:
 
 
 def link_home_channel(guild_id: str, channel_id: str) -> str:
-    """Point ``platforms.discord.home_channel`` at the Chat/home channel.
+    """Point ``platforms.discord.home_channel`` at Notifications/other.
 
     No-clobber: an existing Discord home channel is never silently replaced.
     Returns "set" or "kept".
@@ -623,7 +643,49 @@ def link_home_channel(guild_id: str, channel_id: str) -> str:
         HomeChannel(
             platform=Platform.DISCORD,
             chat_id=str(channel_id),
-            name="home",
+            name="other",
+        ),
+        enabled_if_new=False,
+    )
+    return "set"
+
+
+def existing_discord_notification_channel() -> Optional[Dict[str, Any]]:
+    """The raw ``platforms.discord.notification_channel`` mapping, or None.
+
+    Same source of truth ``persist_notification_channel`` writes to, so the
+    no-clobber rule and the write can never disagree.
+    """
+    from hermes_cli.config import load_config_readonly
+
+    raw = load_config_readonly()
+    platforms = raw.get("platforms") if isinstance(raw, Mapping) else None
+    discord_cfg = platforms.get("discord") if isinstance(platforms, Mapping) else None
+    if not isinstance(discord_cfg, Mapping):
+        return None
+    notify = discord_cfg.get("notification_channel")
+    if isinstance(notify, Mapping) and str(notify.get("chat_id") or "").strip():
+        return dict(notify)
+    return None
+
+
+def link_notification_channel(guild_id: str, channel_id: str) -> str:
+    """Point ``platforms.discord.notification_channel`` at Notifications/gateway-restarts.
+
+    No-clobber: an existing lifecycle-notification target (e.g. one set by
+    ``/setnotify``) is never silently replaced. Returns "set" or "kept".
+    """
+    if existing_discord_notification_channel() is not None:
+        return "kept"
+
+    from gateway.config import HomeChannel, persist_notification_channel
+    from gateway.platforms.base import Platform
+
+    persist_notification_channel(
+        HomeChannel(
+            platform=Platform.DISCORD,
+            chat_id=str(channel_id),
+            name="gateway-restarts",
         ),
         enabled_if_new=False,
     )
@@ -925,6 +987,7 @@ def reconcile(
         "embeds_posted": [],
         "wired": {},
         "home_channel": "skipped",
+        "notification_channel": "skipped",
         "modules": {key: modules[key] for key in MODULE_KEYS},
     }
     if not guild_id:
@@ -975,11 +1038,19 @@ def reconcile(
     # by reading this state file, so it must exist on the very first run too.
     save_state(state)
 
-    if modules["chat"] and state["channels"].get("chat", {}).get("home"):
-        report["home_channel"] = link_home_channel(
-            guild_id, state["channels"]["chat"]["home"]
-        )
+    if modules["chat"] and state["channels"].get("chat", {}).get("inbox"):
         report["wired"]["hermes_starts"] = wire_hermes_starts(state)
+
+    if modules["notifications"]:
+        notify_channels = state["channels"].get("notifications") or {}
+        if notify_channels.get("other"):
+            report["home_channel"] = link_home_channel(
+                guild_id, notify_channels["other"]
+            )
+        if notify_channels.get("gateway-restarts"):
+            report["notification_channel"] = link_notification_channel(
+                guild_id, notify_channels["gateway-restarts"]
+            )
 
     if modules["memory"] and state["channels"].get("memory"):
         report["wired"]["memory_webhooks"] = wire_memory_webhooks(client, state)

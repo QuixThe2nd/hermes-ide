@@ -305,7 +305,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **Oluşturulan ({created_count}):** {created_list}
 **Yayınlanan hoş geldin mesajları:** {embeds_count}
 **Bağlanan:** {wired_list} ({wired_count})
-**Etkin modüller:** {modules_count}/4
+**Etkin modüller:** {modules_count}/5
 Ana kanal: {home_channel_state} — mevcut ana kanallar asla üzerine yazılmaz.
 Yeniden eşitleme en fazla saatte bir otomatik çalışır."
   context:

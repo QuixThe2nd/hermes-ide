@@ -305,7 +305,7 @@ Voer `/sethomeserver confirm` uit om dit na gild `{guild_id}` te skuif. Niks wor
 **Geskep ({created_count}):** {created_list}
 **Welkomsboodskappe geplaas:** {embeds_count}
 **Gekoppel:** {wired_list} ({wired_count})
-**Geaktiveerde modules:** {modules_count}/4
+**Geaktiveerde modules:** {modules_count}/5
 Tuiskanaal: {home_channel_state} — bestaande tuiskanale word nooit oorskryf nie.
 Hersinchronisasie loop outomaties hoogstens een keer per uur."
   context:

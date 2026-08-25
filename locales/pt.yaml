@@ -305,7 +305,7 @@ Execute `/sethomeserver confirm` para movê-lo para a guild `{guild_id}`. Nada �
 **Criados ({created_count}):** {created_list}
 **Mensagens de boas-vindas publicadas:** {embeds_count}
 **Conectado:** {wired_list} ({wired_count})
-**Módulos ativados:** {modules_count}/4
+**Módulos ativados:** {modules_count}/5
 Canal doméstico: {home_channel_state} — canais domésticos existentes nunca são sobrescritos.
 A ressincronização roda automaticamente no máximo uma vez por hora."
   context:

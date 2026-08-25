@@ -305,7 +305,7 @@ Esegui `/sethomeserver confirm` per spostarlo sulla guild `{guild_id}`. Nulla vi
 **Creati ({created_count}):** {created_list}
 **Messaggi di benvenuto pubblicati:** {embeds_count}
 **Collegato:** {wired_list} ({wired_count})
-**Moduli attivati:** {modules_count}/4
+**Moduli attivati:** {modules_count}/5
 Canale home: {home_channel_state} — i canali home esistenti non vengono mai sovrascritti.
 Le risincronizzazioni vengono eseguite automaticamente al massimo una volta all'ora."
   context:

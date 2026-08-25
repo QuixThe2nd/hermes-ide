@@ -309,7 +309,7 @@ Rith `/sethomeserver confirm` chun é a bhogadh go gild `{guild_id}`. Ní scrios
 **Cruthaithe ({created_count}):** {created_list}
 **Teachtaireachtaí fáilte phostáilte:** {embeds_count}
 **Ceangailte:** {wired_list} ({wired_count})
-**Modúil chumasaithe:** {modules_count}/4
+**Modúil chumasaithe:** {modules_count}/5
 Cainéal baile: {home_channel_state} — ní forscríobhtar cainéil bhaile atá ann cheana riamh.
 Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a mhéad."
   context:

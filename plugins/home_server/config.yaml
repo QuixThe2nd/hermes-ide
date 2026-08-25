@@ -14,7 +14,8 @@ discord_home_server:
   # category is neither created nor wired, and its existing channels are left
   # untouched (reconcile never deletes anything).
   modules:
-    chat: true      # Category "Chat": text channels inbox, outbox, home
-    memory: true    # Category "Honcho Memory": explicit-facts, deductions, patterns, contradictions
-    quotas: true    # Category "Quotas": voice channels Codex, Kimi, z.ai, Cursor, Grok
-    speeds: true    # Category "Speeds": voice channels qBittorrent, SABnzbd, slskd
+    chat: true          # Category "Chat": text channels inbox, outbox
+    notifications: true # Category "Notifications": text channels model-fallback, gateway-restarts, other
+    memory: true        # Category "Honcho Memory": explicit-facts, deductions, patterns, contradictions
+    quotas: true        # Category "Quotas": voice channels Codex, Kimi, z.ai, Cursor, Grok
+    speeds: true        # Category "Speeds": voice channels qBittorrent, SABnzbd, slskd

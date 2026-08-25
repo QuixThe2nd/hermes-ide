@@ -305,7 +305,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **已建立（{created_count} 個）：** {created_list}
 **已傳送歡迎訊息：** {embeds_count}
 **已接線：** {wired_list}（{wired_count}）
-**已啟用模組：** {modules_count}/4
+**已啟用模組：** {modules_count}/5
 主頻道：{home_channel_state}——絕不會覆寫現有主頻道。
 重新同步最多每小時自動執行一次。"
   context:
