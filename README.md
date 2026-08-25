@@ -38,6 +38,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Gateway — `/restart` asks other live chat sessions to park, then auto-continues them after bounce instead of blocking new threads until every turn dies
   - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
   - Discord — sessions keyed to your stable username, not your per-server nickname
+  - Discord — `DISCORD_ALLOWED_GUILDS`: any member of a listed server can talk to the bot (DMs unaffected)
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone

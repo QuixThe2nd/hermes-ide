@@ -606,6 +606,27 @@ class GatewayAuthorizationMixin:
         if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
             return True
 
+        # Discord guild allowlist: DISCORD_ALLOWED_GUILDS admits every member
+        # of a listed server for guild traffic without enumerating users,
+        # roles, or channels. Read through ``_auth_env`` so a multiplexed
+        # profile consults its own scoped value, never another profile's
+        # first-writer process-env bridge (issue #72348). Evaluated before
+        # the per-user platform allowlist so a guild grant bypasses it for
+        # listed servers only; unset/empty changes nothing below. DM traffic
+        # never carries a guild_id, so it is untouched by this gate.
+        if source.platform == Platform.DISCORD and source.chat_type in {
+            "group", "forum", "channel",
+        }:
+            source_guild_id = getattr(source, "guild_id", None)
+            if source_guild_id:
+                allowed_guilds = _coerce_allow_set(
+                    _auth_env("DISCORD_ALLOWED_GUILDS")
+                )
+                if allowed_guilds and (
+                    "*" in allowed_guilds or source_guild_id in allowed_guilds
+                ):
+                    return True
+
         # Check platform-specific and global allowlists
         platform_allowlist = _auth_env(platform_env_map.get(source.platform, ""))
         group_user_allowlist = ""

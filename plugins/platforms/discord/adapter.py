@@ -430,6 +430,7 @@ def _clean_discord_id(entry: str) -> str:
 _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS",
     "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOWED_GUILDS",
     "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS",
     "DISCORD_NO_THREAD_CHANNELS",
@@ -5180,6 +5181,11 @@ class DiscordAdapter(BasePlatformAdapter):
         ``channel_ids`` matches ``DISCORD_ALLOWED_CHANNELS`` — but only when the
         caller supplies the validated channel context (on_message, slash). Calls
         without channel context (e.g. voice utterances) do not get this bypass.
+        Guild traffic from a server in ``DISCORD_ALLOWED_GUILDS`` is an
+        independent grant: it authorizes guild messages (and slash/voice) for
+        every member of a listed server without enumerating users, roles, or
+        channels, and it applies whether or not the user/role allowlists are
+        also set. DMs carry no guild, so this gate never touches DM traffic.
 
         Role checks are **scoped to the guild the message originated from**.
         For DMs (no guild context), role-based auth is disabled by default and
@@ -5211,6 +5217,18 @@ class DiscordAdapter(BasePlatformAdapter):
         # gateway layer can see them.
         if self._is_pairing_approved_user(user_id):
             return True
+
+        # Guild allowlist: membership in a DISCORD_ALLOWED_GUILDS server is an
+        # independent grant for guild traffic — valid whether or not the
+        # user/role allowlists below are also configured. DMs carry no guild,
+        # so this can never authorize (or restrict) a DM sender. A "*"
+        # wildcard mirrors the DISCORD_ALLOWED_CHANNELS convention.
+        if not is_dm and guild is not None:
+            allowed_guilds = self._discord_allowed_guild_ids()
+            if allowed_guilds:
+                guild_id = str(getattr(guild, "id", ""))
+                if "*" in allowed_guilds or (guild_id and guild_id in allowed_guilds):
+                    return True
 
         if not has_users and not has_roles:
             if self._discord_allow_all_users():
@@ -5289,6 +5307,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if allowed_users or allowed_roles:
             return
         if self._get_allowed_channels():
+            return
+        if self._discord_allowed_guild_ids():
             return
         if self._discord_allow_all_users():
             return
@@ -6942,6 +6962,10 @@ class DiscordAdapter(BasePlatformAdapter):
             int(str(entry).strip()) for entry in self._gate_csv_set(raw)
             if str(entry).strip().isdigit()
         }
+
+    def _discord_allowed_guild_ids(self) -> set:
+        """This adapter's DISCORD_ALLOWED_GUILDS guild IDs (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("allowed_guilds", "DISCORD_ALLOWED_GUILDS"))
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
@@ -10755,6 +10779,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["allow_all_users"] = str(allow_all_cfg).lower()
         if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_ALL_USERS"):
             os.environ["DISCORD_ALLOW_ALL_USERS"] = str(allow_all_cfg).lower()
+    # allowed_guilds: guild IDs whose members may all talk to the bot (guild
+    # grant in _is_allowed_user — never applies to DMs).
+    ag = (
+        discord_cfg["allowed_guilds"] if "allowed_guilds" in discord_cfg
+        else platform_extra_cfg.get("allowed_guilds")
+    )
+    if ag is not None:
+        if isinstance(ag, list):
+            ag = ",".join(str(v) for v in ag)
+        seeded_extra["allowed_guilds"] = str(ag)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_GUILDS"):
+            os.environ["DISCORD_ALLOWED_GUILDS"] = str(ag)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")
