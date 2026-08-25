@@ -8226,6 +8226,36 @@ class DiscordAdapter(BasePlatformAdapter):
             return f"{parent_name} / {thread_name}"
         return thread_name
 
+    def get_bot_display_name(
+        self,
+        *,
+        chat_id: Optional[str] = None,
+        guild_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """The bot account's display name as users see it.
+
+        Prefers the per-guild nickname (``guild.me.display_name``) so a
+        server-renamed bot introduces itself by that name; falls back to the
+        account's global display name, then the raw username. All values are
+        cached discord.py attributes, so this stays synchronous and never
+        raises — None when the client isn't connected or identity is unknown.
+        """
+        try:
+            client = self._client
+            if client is None:
+                return None
+            if guild_id:
+                guild = client.get_guild(int(guild_id))
+                me = getattr(guild, "me", None) if guild is not None else None
+                name = getattr(me, "display_name", None)
+                if name:
+                    return str(name)
+            user = getattr(client, "user", None)
+            name = getattr(user, "display_name", None) or getattr(user, "name", None)
+            return str(name) if name else None
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     # Attachment download helpers
     #

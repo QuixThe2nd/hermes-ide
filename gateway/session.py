@@ -206,6 +206,13 @@ class SessionSource:
     # session and only the first auto-thread ever gets an auto-title/rename.
     prospective_thread_id: Optional[str] = None
 
+    # The bot's OWN display name on the source platform (e.g. the Discord
+    # server nickname / global display name of the bot account), captured by
+    # the receiving adapter at source-build time. Rendered into the session
+    # context prompt so the agent knows what users see it called and can
+    # answer to that name. Untrusted metadata: operators can rename the bot.
+    bot_display_name: Optional[str] = None
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket
@@ -285,6 +292,8 @@ class SessionSource:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
         if self.prospective_thread_id:
             d["prospective_thread_id"] = self.prospective_thread_id
+        if self.bot_display_name:
+            d["bot_display_name"] = self.bot_display_name
         return d
 
     @classmethod
@@ -309,6 +318,7 @@ class SessionSource:
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),
+            bot_display_name=data.get("bot_display_name"),
         )
     
 
@@ -546,6 +556,16 @@ def build_session_context_prompt(
             desc = src.description
         lines.append(
             f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})"
+        )
+
+    # Bot's own display name on this platform (set by adapters that know
+    # their self-identity, e.g. Discord). Rendered untrusted-quoted so the
+    # agent knows what users see it called without a SOUL.md hardcode.
+    if context.source.bot_display_name:
+        lines.append(
+            f"**Your name:** {_format_untrusted_prompt_value(context.source.bot_display_name)} "
+            "— the bot's display name on this platform. Answer to it and use "
+            "it when introducing yourself."
         )
 
     # Channel topic (if available - provides context about the channel's purpose)

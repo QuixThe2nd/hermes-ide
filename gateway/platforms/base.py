@@ -7282,6 +7282,23 @@ class BasePlatformAdapter(ABC):
         """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)
     
+    def get_bot_display_name(
+        self,
+        *,
+        chat_id: Optional[str] = None,
+        guild_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """The bot's OWN display name on this platform, when known.
+
+        Rendered into the session-context system prompt as ``**Your name:**``
+        so the agent answers to whatever users actually see it called
+        (server nickname, global display name, …) instead of a hardcoded
+        SOUL.md name. Base adapters have no self-identity and return None;
+        platforms with a self-identity API (Discord, …) override this.
+        Implementations must never raise — return None on any failure.
+        """
+        return None
+
     def build_source(
         self,
         chat_id: str,
@@ -7369,6 +7386,10 @@ class BasePlatformAdapter(ABC):
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
+            bot_display_name=self.get_bot_display_name(
+                chat_id=str(chat_id),
+                guild_id=str(guild_id) if guild_id else (str(scope_id) if scope_id else None),
+            ),
         )
         # In-process transport provenance is deliberately not serialized by
         # SessionSource.to_dict(). The live receiving adapter is authoritative
