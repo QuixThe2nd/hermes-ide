@@ -767,6 +767,43 @@ class GatewayAuthorizationMixin:
         if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
             return True
 
+        # Never-routed inbound DMs have no source.profile, so the pairing
+        # check above used the global store and missed the serving-profile
+        # approval written at mission dispatch. Honor an active mission
+        # bound to this DM before allowlist default-deny. Groups unchanged.
+        chat_type = getattr(source, "chat_type", None)
+        if chat_type in (None, "", "dm"):
+            try:
+                from plugins.missions import find_active_mission_for_chat
+            except Exception:
+                logger.debug("mission contact authz: plugin unavailable", exc_info=True)
+            else:
+                identifiers = []
+                uid = str(getattr(source, "user_id", None) or "").strip()
+                if uid:
+                    identifiers.append(uid)
+                cid = str(getattr(source, "chat_id", None) or "").strip()
+                if cid and cid != uid:
+                    identifiers.append(cid)
+                for identifier in identifiers:
+                    try:
+                        mission = find_active_mission_for_chat(identifier)
+                    except Exception:
+                        # Fail closed: any store error aborts the whole grant,
+                        # so a broken user_id lookup cannot authorize via a
+                        # later chat_id hit. Falling through skips only this
+                        # grant — the normal deny paths below still run.
+                        logger.debug(
+                            "mission contact authz: lookup failed for %s",
+                            identifier,
+                            exc_info=True,
+                        )
+                        break
+                    if not mission:
+                        continue
+                    if str(mission.get("platform") or "") == platform_name:
+                        return True
+
         # Discord guild allowlist: DISCORD_ALLOWED_GUILDS admits every member
         # of a listed server for guild traffic without enumerating users,
         # roles, or channels. Read through ``_auth_env`` so a multiplexed
