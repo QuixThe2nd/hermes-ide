@@ -380,6 +380,132 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
+    def _config_describes_profile(self, profile: Optional[str]) -> bool:
+        """Whether ``self.config`` is the config of *profile*.
+
+        ``self.config`` is loaded from the launching profile's home. That is
+        the default profile in a multiplex gateway, or the named profile of a
+        ``hermes -p <name>`` launch — in both cases it describes exactly the
+        active profile. Any OTHER named secondary profile has its own config
+        this runner never loaded, so reads for it must not fall back here.
+        """
+        profile_name = (profile or "").strip()
+        if not profile_name or profile_name == "default":
+            return True
+        active_profile = None
+        active_profile_fn = getattr(self, "_active_profile_name", None)
+        if callable(active_profile_fn):
+            try:
+                active_profile = active_profile_fn()
+            except Exception:
+                active_profile = None
+        return profile_name == active_profile
+
+    def _whatsapp_mission_only_dms(
+        self,
+        platform: Optional[Platform],
+        *,
+        profile: Optional[str] = None,
+    ) -> bool:
+        """Whether *platform* opted into mission-only WhatsApp DMs.
+
+        Reads ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms``.
+        Off unless explicitly configured true, so allowlist-only installs keep
+        their exact current policy. Prefers the live adapter's ``config.extra``
+        (profile-scoped under multiplex) and treats it as AUTHORITATIVE: an
+        adapter that carries an ``extra`` dict has its own profile's config, so
+        a key absent there means off — falling through to ``self.config`` (the
+        DEFAULT profile's config) would gate profile B by profile A's flag,
+        the same cross-profile leak ``_platform_gate_env`` closes (#72348).
+        The gateway-config fallback serves bare runners built without a live
+        adapter, and only when the resolved profile is one ``self.config``
+        actually describes — the default profile, or the active profile of a
+        single-profile launch. A named secondary profile that is not the
+        active one owns a config this runner never loaded, so its flag stays
+        off rather than being inherited. Same resolution order as
+        ``_adapter_dm_policy``.
+        """
+        if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            return False
+        adapter = self._authorization_adapter(platform, profile)
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        candidates = [extra] if isinstance(extra, dict) else []
+        if self._config_describes_profile(profile):
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                candidates.append(extra)
+        for extra in candidates:
+            value = extra.get("mission_only_dms")
+            if value is True:
+                return True
+            if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+                return True
+        return False
+
+    def _whatsapp_mission_only_dm_denied(self, source: "SessionSource") -> bool:
+        """Whether the mission-only WhatsApp opt-in denies *source*'s chat.
+
+        Single source of truth for the mission-only gate, shared by the
+        authorization decision (``_is_user_authorized``) and the
+        unauthorized-DM handling in ``GatewayRunner._handle_message``: the
+        two must agree, or the handler would answer the denial with a
+        pairing code — an unsolicited reply to a sender the operator
+        explicitly fenced off. True only when the platform opted into
+        ``mission_only_dms`` AND no active mission is bound to the chat;
+        an absent or false flag keeps the legacy pairing handshake exactly
+        as-is.
+        """
+        platform = getattr(source, "platform", None)
+        if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            return False
+        if not self._whatsapp_mission_only_dms(
+            platform,
+            profile=self._adapter_profile_for_source(source),
+        ):
+            return False
+        return not self._source_has_active_mission(source)
+
+    def _source_has_active_mission(self, source: "SessionSource") -> bool:
+        """Whether an active assistant-mission is bound to *source*'s chat.
+
+        Consults ``plugins.missions.find_active_mission_for_chat`` with every
+        identifier the source carries (chat_id / user_id and their ``_alt``
+        forms); the mission store canonicalizes WhatsApp phone/JID/LID forms
+        itself, so no extra normalization happens here. Any lookup miss —
+        plugin absent, store unreadable, no mission bound — counts as "no
+        active mission" so the mission-only gate stays fail-closed.
+        """
+        try:
+            from plugins.missions import find_active_mission_for_chat
+        except Exception:
+            return False
+        # ``getattr`` guards bare test sources built via SimpleNamespace that
+        # omit the ``_alt`` fields (see AGENTS.md pitfall #17).
+        identifiers = (
+            getattr(source, "chat_id", None),
+            getattr(source, "user_id", None),
+            getattr(source, "chat_id_alt", None),
+            getattr(source, "user_id_alt", None),
+        )
+        seen: set[str] = set()
+        for identifier in identifiers:
+            identifier = str(identifier or "").strip()
+            if not identifier or identifier in seen:
+                continue
+            seen.add(identifier)
+            try:
+                if find_active_mission_for_chat(identifier):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _is_user_authorized(
         self,
         source: SessionSource,
@@ -405,7 +531,42 @@ class GatewayAuthorizationMixin:
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
+        # Goal-bound group missions (missions plugin): an active mission on
+        # this EXACT WhatsApp group chat admits it — by the group chat id
+        # only, never a participant's user_id — even when the configured
+        # group policy is disabled or excludes the group. WhatsApp intake
+        # already admitted the group (whatsapp_common._is_group_allowed);
+        # this is the matching gateway-side admission so the message reaches
+        # the assistant instead of dying at the no-allowlist default-deny
+        # below. Closing the mission removes admission immediately (the
+        # mission store is read live — no gateway restart). Fail closed when
+        # the plugin is absent or errors.
+        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
+                try:
+                    from plugins.missions import find_active_group_mission
+
+                    if find_active_group_mission(str(source.chat_id)):
+                        return True
+                except Exception:
+                    pass
+
+        # Mission-only WhatsApp DMs (opt-in, default off): when
+        # ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`` is
+        # true, WhatsApp senders are authorized ONLY while an assistant-mission
+        # is bound to their chat. Runs before the allowlist / pairing /
+        # allow-all checks below so none of them can override it — otherwise a
+        # contact listed on WHATSAPP_ALLOWED_USERS keeps getting answered by
+        # the default profile after their mission closes, which is exactly
+        # what the operator opted out of. Fail-closed: no missions plugin or
+        # no matching mission means deny. The shared gate
+        # (_whatsapp_mission_only_dm_denied) is also what the unauthorized-DM
+        # handler consults, so the denial and its (silent) handling cannot
+        # diverge.
         adapter_profile = self._adapter_profile_for_source(source)
+
+        if self._whatsapp_mission_only_dm_denied(source):
+            return False
 
         # Relay (and any adapter whose authorization is enforced by a trusted
         # authenticated upstream): the Team Gateway connector authenticates this

@@ -17899,6 +17899,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            # Mission-only WhatsApp DMs: _is_user_authorized just denied this
+            # chat because the platform opted into mission_only_dms and no
+            # active mission is bound to it. That opt-in replaces the pairing
+            # handshake too — answering the denial with a pairing code would
+            # message a sender the operator explicitly fenced off and leave
+            # pairing-store rate-limit state behind. Drop silently BEFORE any
+            # pairing/session/model side effect. Same shared gate as
+            # _is_user_authorized, so the denial and its handling cannot
+            # diverge; with the flag absent or false the legacy pairing-code
+            # behavior below is unchanged.
+            if self._whatsapp_mission_only_dm_denied(source):
+                logger.debug(
+                    "Mission-only WhatsApp gate: silently dropping unauthorized message from %s",
+                    source.user_id,
+                )
+                return None
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
                 source.chat_type == "dm"
@@ -28459,6 +28475,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             home_display = ""
 
+        # Active-mission digest (missions plugin): the rendered session
+        # context includes an "Active Mission" section for chats with a
+        # bound mission, so its state must appear in this key (parity
+        # contract with tests/gateway/test_prompt_tail_freeze.py) or a
+        # started/closed mission would leave a stale pinned prompt.
+        mission_digest = ""
+        try:
+            from plugins.missions import find_active_mission_for_chat
+
+            _m_chat = str(src.chat_id or src.user_id or "")
+            if _m_chat:
+                _mission = find_active_mission_for_chat(_m_chat)
+                if _mission:
+                    mission_digest = hashlib.sha256(
+                        json.dumps(
+                            {
+                                "id": str(_mission.get("mission_id") or ""),
+                                "status": str(_mission.get("status") or ""),
+                                "goal": str(_mission.get("goal") or ""),
+                                "persona": str(_mission.get("persona_instructions") or ""),
+                                "name": str(_mission.get("chat_name") or ""),
+                                "chat_type": str(_mission.get("chat_type") or ""),
+                            },
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest()
+        except Exception:
+            mission_digest = ""
+
         key_tuple = (
             platform,
             str(src.chat_id or ""),
@@ -28484,6 +28529,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
             bool(redact_pii),
             home_display,
+            mission_digest,
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
@@ -29486,6 +29532,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+
+        # Mission-aware routing (missions plugin): an inbound chat with an
+        # active assistant-mission is served by the mission's profile so it
+        # gets that profile's scoped tools, credentials, and persona. Takes
+        # precedence over static routes — a mission is an explicit, per-chat
+        # operator instruction. Unknown chats fall through to normal routes.
+        # Works for DM and group missions alike (the group lookup inside
+        # find_active_mission_for_chat is exact on the group chat id).
+        try:
+            from plugins.missions import find_active_mission_for_chat
+            from hermes_cli.profiles import normalize_profile_name
+
+            _m_chat = str(source.chat_id or source.user_id_alt or source.user_id or "")
+            if _m_chat:
+                _mission = find_active_mission_for_chat(_m_chat)
+                if _mission and str(_mission.get("profile") or "").strip():
+                    return normalize_profile_name(str(_mission["profile"]).strip())
+        except Exception:
+            logger.debug(
+                "Mission-aware profile lookup failed for %s/%s",
+                getattr(source, "platform", None), source.chat_id, exc_info=True,
+            )
+
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None

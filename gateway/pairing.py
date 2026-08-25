@@ -485,6 +485,22 @@ class PairingStore:
         """Profile name this store is scoped to, or None for the global store."""
         return self._profile
 
+    @property
+    def _mirrors_global_allowlist(self) -> bool:
+        """Whether approvals/revokes here may mirror into the global allowlist.
+
+        Only the unscoped store and the explicit ``default`` profile own the
+        process-global ``{PLATFORM}_ALLOWED_USERS`` env vars. A secondary
+        profile's store (e.g. an assistant profile a mission was dispatched
+        on) must NOT write them: the mirror targets the root ``.env``/process
+        env, which authorizes senders as the DEFAULT profile — so approving a
+        mission contact on ``assistant`` would silently leave them authorized
+        as default-me even after the mission closes and the pairing is
+        revoked. The pairing-store grant itself (honored per-profile via
+        ``_pairing_store_for``) still works, so no authorization is lost.
+        """
+        return not (self._profile and self._profile != "default")
+
     def _pending_path(self, platform: str) -> Path:
         return self._dir / f"{platform}-pending.json"
 
@@ -581,8 +597,11 @@ class PairingStore:
 
         # Mirror the grant into the operator's allowlist when one is configured
         # (option i), so the pairing store and the allowlist stay a single
-        # visible source of truth. No-op on open gateways.
-        _sync_allowlist_add(platform, normalized_user_id)
+        # visible source of truth. No-op on open gateways. Skipped for
+        # secondary-profile stores: the global allowlist authorizes senders as
+        # the default profile, which a profile-scoped grant must not do.
+        if self._mirrors_global_allowlist:
+            _sync_allowlist_add(platform, normalized_user_id)
 
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
@@ -600,8 +619,13 @@ class PairingStore:
                 self._save_json(path, approved)
                 # Keep the allowlist mirror in sync: revoking a paired user
                 # also removes the entry the approval added (option i). No-op if
-                # the user was added to the allowlist by other means.
-                _sync_allowlist_remove(platform, user_id)
+                # the user was added to the allowlist by other means. Skipped
+                # for secondary-profile stores for the same reason as the
+                # approval mirror above: they never wrote the global allowlist,
+                # so they must not edit it either (a profile-scoped revoke
+                # would otherwise strip a grant the default profile made).
+                if self._mirrors_global_allowlist:
+                    _sync_allowlist_remove(platform, user_id)
                 return True
         return False
 
