@@ -27,7 +27,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - dev-pipeline claude-endurance lane — Claude Code (claude-glm) builds for broad/long tasks
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs
-  - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox
+  - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox, and each opening is a single message that anchors its own thread
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent off-hours timer (`hermes auto_update status|enable|disable|reconcile`; default 04:00–08:00 local with randomized delay)
   - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
