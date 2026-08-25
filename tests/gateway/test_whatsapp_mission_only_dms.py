@@ -244,3 +244,63 @@ def test_whatsapp_flag_does_not_gate_whatsapp_cloud(monkeypatch):
         )
         is True
     )
+
+
+# --------------------------------------------------------------------------
+# profile scoping: the default profile's flag must not gate a secondary one
+# --------------------------------------------------------------------------
+
+def _make_multiplex_runner(default_extra, assistant_extra):
+    """A runner whose default profile owns ``config`` and assistant owns an adapter."""
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True, extra=dict(default_extra))
+        }
+    )
+    runner.adapters = {}
+    runner._profile_adapters = {
+        "assistant": {
+            Platform.WHATSAPP: SimpleNamespace(
+                config=SimpleNamespace(extra=dict(assistant_extra))
+            )
+        }
+    }
+    runner.pairing_store = None
+    runner.pairing_stores = {}
+    return runner
+
+
+def test_default_profile_flag_does_not_gate_secondary_profile(monkeypatch):
+    """Only the config the profile actually owns may turn the gate on.
+
+    The assistant profile's own config leaves ``mission_only_dms`` unset, so
+    its DMs must keep the allow-all policy even though the DEFAULT profile
+    configured the flag — ``self.config`` describes the default profile, not
+    this one (same cross-profile leak class as #72348).
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+    runner = _make_multiplex_runner({"mission_only_dms": True}, {})
+    _stub_missions(monkeypatch, [])
+
+    assert (
+        runner._is_user_authorized(
+            _make_source(user_id="61491234567@s.whatsapp.net", profile="assistant")
+        )
+        is True
+    )
+
+
+def test_secondary_profile_flag_gates_only_that_profile(monkeypatch):
+    """A secondary profile opting in is gated; the default profile is not."""
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+    runner = _make_multiplex_runner({}, {"mission_only_dms": True})
+    _stub_missions(monkeypatch, [])
+
+    assert (
+        runner._is_user_authorized(
+            _make_source(user_id="61491234567@s.whatsapp.net", profile="assistant")
+        )
+        is False
+    )
+    assert runner._is_user_authorized(_make_source()) is True

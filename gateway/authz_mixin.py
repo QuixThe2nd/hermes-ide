@@ -380,6 +380,27 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
+    def _config_describes_profile(self, profile: Optional[str]) -> bool:
+        """Whether ``self.config`` is the config of *profile*.
+
+        ``self.config`` is loaded from the launching profile's home. That is
+        the default profile in a multiplex gateway, or the named profile of a
+        ``hermes -p <name>`` launch — in both cases it describes exactly the
+        active profile. Any OTHER named secondary profile has its own config
+        this runner never loaded, so reads for it must not fall back here.
+        """
+        profile_name = (profile or "").strip()
+        if not profile_name or profile_name == "default":
+            return True
+        active_profile = None
+        active_profile_fn = getattr(self, "_active_profile_name", None)
+        if callable(active_profile_fn):
+            try:
+                active_profile = active_profile_fn()
+            except Exception:
+                active_profile = None
+        return profile_name == active_profile
+
     def _whatsapp_mission_only_dms(
         self,
         platform: Optional[Platform],
@@ -391,26 +412,34 @@ class GatewayAuthorizationMixin:
         Reads ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms``.
         Off unless explicitly configured true, so allowlist-only installs keep
         their exact current policy. Prefers the live adapter's ``config.extra``
-        (profile-scoped under multiplex); falls back to the gateway config for
-        bare runners built without a live adapter — the same resolution order
-        as ``_adapter_dm_policy``.
+        (profile-scoped under multiplex) and treats it as AUTHORITATIVE: an
+        adapter that carries an ``extra`` dict has its own profile's config, so
+        a key absent there means off — falling through to ``self.config`` (the
+        DEFAULT profile's config) would gate profile B by profile A's flag,
+        the same cross-profile leak ``_platform_gate_env`` closes (#72348).
+        The gateway-config fallback serves bare runners built without a live
+        adapter, and only when the resolved profile is one ``self.config``
+        actually describes — the default profile, or the active profile of a
+        single-profile launch. A named secondary profile that is not the
+        active one owns a config this runner never loaded, so its flag stays
+        off rather than being inherited. Same resolution order as
+        ``_adapter_dm_policy``.
         """
         if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
             return False
-        candidates = []
         adapter = self._authorization_adapter(platform, profile)
         extra = getattr(getattr(adapter, "config", None), "extra", None)
-        if isinstance(extra, dict):
-            candidates.append(extra)
-        config = getattr(self, "config", None)
-        platform_cfg = (
-            config.platforms.get(platform)
-            if config is not None and hasattr(config, "platforms")
-            else None
-        )
-        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-        if isinstance(extra, dict):
-            candidates.append(extra)
+        candidates = [extra] if isinstance(extra, dict) else []
+        if self._config_describes_profile(profile):
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                candidates.append(extra)
         for extra in candidates:
             value = extra.get("mission_only_dms")
             if value is True:
@@ -508,15 +537,15 @@ class GatewayAuthorizationMixin:
         # the default profile after their mission closes, which is exactly
         # what the operator opted out of. Fail-closed: no missions plugin or
         # no matching mission means deny.
+        adapter_profile = self._adapter_profile_for_source(source)
+
         if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
             if self._whatsapp_mission_only_dms(
                 source.platform,
-                profile=self._adapter_profile_for_source(source),
+                profile=adapter_profile,
             ):
                 if not self._source_has_active_mission(source):
                     return False
-
-        adapter_profile = self._adapter_profile_for_source(source)
 
         # Relay (and any adapter whose authorization is enforced by a trusted
         # authenticated upstream): the Team Gateway connector authenticates this
