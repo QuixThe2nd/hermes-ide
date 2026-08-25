@@ -3357,8 +3357,159 @@ class GatewaySlashCommandsMixin:
         )
         platform_config.home_channel = home
 
+        # Discord-only discovery pointer for the full provisioning flow. Kept
+        # out of the shared string so non-Discord platforms' copy is unchanged.
+        if source.platform is Platform.DISCORD:
+            return (
+                t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+                + "\n"
+                + t("gateway.set_home.discord_pointer")
+            )
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
+    async def _sync_home_server_if_due(self) -> None:
+        """Debounced Discord Home Server reconcile, scheduled at gateway connect.
+
+        Runs the plugin's ``sync_if_due`` entry point off the event loop (it
+        does blocking urllib I/O) and swallows every failure: a provisioning
+        hiccup must never take the gateway down. Only reconciles when the
+        feature is configured AND a state file exists, so it stays inert until
+        the operator has run /sethomeserver once.
+        """
+        try:
+            from plugins.home_server.core import HomeServerError, sync_if_due
+
+            # Brief delay so adapter connects and channel caches settle first.
+            await asyncio.sleep(5)
+            report = await asyncio.to_thread(sync_if_due)
+            if report.get("synced"):
+                logger.info(
+                    "Home server re-synced for guild %s: %d created, %d embeds",
+                    report.get("guild_id"),
+                    len(report.get("created") or []),
+                    len(report.get("embeds_posted") or []),
+                )
+            elif report.get("reason"):
+                logger.debug("Home server sync skipped: %s", report["reason"])
+        except HomeServerError as exc:
+            logger.warning("Home server sync failed: %s", exc)
+        except Exception:
+            logger.debug("Home server sync failed", exc_info=True)
+
+    async def _handle_set_home_server_command(self, event: MessageEvent) -> str:
+        """Handle /sethomeserver -- provision and wire the Discord home server.
+
+        Discord-only: the whole feature (categories, voice-channel walls,
+        memory webhooks) is Discord-shaped, so other platforms get a clear
+        refusal rather than a half-run. Authorization is the same slash gate
+        sethome goes through — the operator allowlists plus
+        ``allow_admin_from`` — and provisioning additionally fails loudly when
+        the bot lacks Manage Channels / Manage Webhooks in the target guild.
+        """
+        source = event.source
+        if source.platform is not Platform.DISCORD:
+            return t("gateway.set_home_server.discord_only")
+
+        # Relay guard, same posture as /sethome: a relay-fronted Discord
+        # message passes the platform check above, but only a relay that
+        # actually fronts Discord and authenticated the sender may drive a
+        # guild-level config write + provisioning.
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        if via_relay:
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
+            if (
+                not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(Platform.DISCORD)
+            ):
+                return t("gateway.set_home_server.relay_blocked")
+
+        raw_args = event.get_command_args().strip()
+        confirmed = raw_args.lower() in {"confirm", "yes", "--confirm"}
+
+        # A guild the user is invoking from, or an explicit one. scope_id is the
+        # canonical guild carrier on SessionSource (the guild_id alias is
+        # legacy); raw_message covers slash interactions that only set guild_id.
+        guild_id = str(getattr(source, "scope_id", None) or "").strip()
+        if not guild_id:
+            raw = getattr(event, "raw_message", None)
+            raw_guild = getattr(raw, "guild_id", None) or getattr(
+                getattr(raw, "guild", None), "id", None
+            )
+            guild_id = str(raw_guild or "").strip()
+        if not guild_id:
+            return t("gateway.set_home_server.no_guild")
+
+        try:
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            section = config.get("discord_home_server")
+            if not isinstance(section, dict):
+                section = {}
+                config["discord_home_server"] = section
+            current = str(section.get("guild_id") or "").strip()
+        except Exception as e:
+            return t("gateway.set_home_server.save_failed", error=e)
+
+        if current and current != guild_id and not confirmed:
+            return t(
+                "gateway.set_home_server.confirm_required",
+                current=current,
+                guild_id=guild_id,
+            )
+
+        if current != guild_id:
+            section["guild_id"] = guild_id
+            try:
+                save_config(config)
+            except Exception as e:
+                return t("gateway.set_home_server.save_failed", error=e)
+
+        # Progress feedback: provisioning makes several REST round-trips, so
+        # tell the user it started before the first one lands.
+        adapter = getattr(self, "_adapter_for_source", None)
+        adapter = adapter(source) if callable(adapter) else None
+        if adapter is not None:
+            try:
+                metadata = self._thread_metadata_for_source(source)
+                await adapter.send(
+                    str(source.chat_id),
+                    t("gateway.set_home_server.progress"),
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.debug("sethomeserver progress send failed", exc_info=True)
+
+        try:
+            from plugins.home_server.core import HomeServerError, reconcile
+            report = await asyncio.to_thread(reconcile)
+        except HomeServerError as e:
+            return t("gateway.set_home_server.provision_failed", error=e)
+        except Exception as e:
+            return t("gateway.set_home_server.provision_failed", error=e)
+
+        if not report.get("enabled"):
+            return t("gateway.set_home_server.save_failed", error="guild_id not set")
+
+        created = report.get("created") or []
+        embeds = report.get("embeds_posted") or []
+        wired = report.get("wired") or {}
+        modules = report.get("modules") or {}
+        home_channel = str(report.get("home_channel") or "skipped")
+
+        return t(
+            "gateway.set_home_server.success",
+            created_count=len(created),
+            created_list=", ".join(c.split(":", 1)[1] for c in created) or "—",
+            embeds_count=len(embeds),
+            wired_count=len(wired),
+            wired_list=", ".join(sorted(wired)) or "—",
+            modules_count=sum(1 for v in modules.values() if v),
+            home_channel_state=home_channel,
+            guild_id=guild_id,
+        )
     async def _handle_set_notify_command(self, event: MessageEvent) -> str:
         """Handle /setnotify -- route gateway lifecycle broadcasts to this chat.
 

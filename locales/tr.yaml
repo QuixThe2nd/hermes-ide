@@ -290,6 +290,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Ana kanal kaydedilemedi: {error}"
     success:               "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
+    discord_pointer:       "💡 Tam kurulumu mu istiyorsunuz? `/sethomeserver` tüm ana sunucuyu — sohbet, bellek, kotalar ve hızlar — tamamen bağlanmış şekilde hazırlar."
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` yalnızca Discord'da çalışır — Discord kategorileri, kanalları ve webhook'ları oluşturur."
+    relay_blocked:        "⚠️ Bu mesaj, Discord sunucu hedeflerini doğrulayamayan bir aktarıcı üzerinden geldi. `/sethomeserver` komutunu yerel bir Discord mesajından çalıştırın."
+    no_guild:             "⚠️ Hangi sunucunun kullanılacağı anlaşılamadı. `/sethomeserver` komutunu Discord ana sunucunuz içinde çalıştırın."
+    progress:             "🏗️ Ana sunucunuz hazırlanıyor… (eksik kanallar oluşturuluyor ve bağlanıyor — bu birkaç saniye sürer)"
+    confirm_required:     "⚠️ Ana sunucunuz zaten `{current}` sunucusuna ayarlı.
+`{guild_id}` sunucusuna taşımak için `/sethomeserver confirm` çalıştırın. Hiçbir şey asla silinmez, ancak yeni sunucu sıfırdan hazırlanır."
+    save_failed:          "Ana sunucu ayarı kaydedilemedi: {error}"
+    provision_failed:     "❌ Hazırlama başarısız oldu: {error}"
+    success:              "🏠 `{guild_id}` sunucusu için ana sunucu hazırlandı.
+**Oluşturulan ({created_count}):** {created_list}
+**Yayınlanan hoş geldin mesajları:** {embeds_count}
+**Bağlanan:** {wired_list} ({wired_count})
+**Etkin modüller:** {modules_count}/5
+Ana kanal: {home_channel_state} — mevcut ana kanallar asla üzerine yazılmaz.
+Yeniden eşitleme en fazla saatte bir otomatik çalışır."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

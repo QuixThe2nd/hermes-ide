@@ -294,6 +294,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Theip ar shábháil chainéil bhaile: {error}"
     success:               "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."
+    discord_pointer:       "💡 An bhfuil an socrú iomlán uait? Cuireann `/sethomeserver` freastalaí baile iomlán ar fáil — comhrá, cuimhne, cuótaí agus luasanna — ceangailte ar fad."
+
+  set_home_server:
+    discord_only:         "⚠️ Ní oibríonn `/sethomeserver` ach ar Discord — cruthaíonn sé catagóirí, cainéil agus webhookanna Discord."
+    relay_blocked:        "⚠️ Tháinig an teachtaireacht seo trí athchraolachán nach féidir leis spriocanna guild Discord a fhíordheimhniú. Rith `/sethomeserver` ó theachtaireacht Discord dhúchais."
+    no_guild:             "⚠️ Ní fhéadfaí an freastalaí a dhéanamh amach. Rith `/sethomeserver` laistigh de d'fhreastalaí baile Discord."
+    progress:             "🏗️ Do fhreastalaí baile á sholáthar… (cainéil ar iarraidh á gcruthú agus á gceangal — glacfaidh sé cúpla soicind)"
+    confirm_required:     "⚠️ Tá do fhreastalaí baile socraithe cheana féin ar gild `{current}`.
+Rith `/sethomeserver confirm` chun é a bhogadh go gild `{guild_id}`. Ní scriostar aon rud riamh ach soláthrófar an gild nua ón tús."
+    save_failed:          "Theip ar shábháil shocraithe an fhreastalaí bhaile: {error}"
+    provision_failed:     "❌ Theip ar sholáthar: {error}"
+    success:              "🏠 Soláthraíodh freastalaí baile do gild `{guild_id}`.
+**Cruthaithe ({created_count}):** {created_list}
+**Teachtaireachtaí fáilte phostáilte:** {embeds_count}
+**Ceangailte:** {wired_list} ({wired_count})
+**Modúil chumasaithe:** {modules_count}/5
+Cainéal baile: {home_channel_state} — ní forscríobhtar cainéil bhaile atá ann cheana riamh.
+Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a mhéad."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
