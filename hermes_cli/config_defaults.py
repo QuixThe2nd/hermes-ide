@@ -2879,6 +2879,10 @@ DEFAULT_CONFIG = {
             #     model knows which domains are reachable; individual tools
             #     discoverable through tool_search only.
             # "auto"/"on" — activate when at least one deferrable tool exists.
+            #   Today "auto" is an alias of "on"; it stays the default so a
+            #   future budget-gated mode (inline schemas when they fit, defer
+            #   only when they don't) can land on "auto" without changing
+            #   behavior for anyone who pinned "on" or "off" explicitly.
             # "off" — disable entirely. Tools-array assembly is a pass-through.
             "enabled": "auto",
             # Listing budget as a percentage of the active model's context
@@ -2886,10 +2890,11 @@ DEFAULT_CONFIG = {
             # listing_max_tokens). Range 0..100.
             "threshold_pct": 5,
             # When the model calls tool_search without a ``limit`` argument,
-            # how many hits to return. Range 1..max_search_limit.
+            # how many hits to return PER QUERY. Range 1..max_search_limit.
             "search_default_limit": 5,
-            # Hard upper bound the model can request via ``limit``. Range 1..50.
-            "max_search_limit": 20,
+            # Hard upper bound the model can request via ``limit`` (per
+            # query). Range 1..50.
+            "max_search_limit": 25,
             # Skills-style catalog listing embedded in the tool_search bridge
             # description: every deferred tool's name + first sentence of its
             # description (≤60 chars), grouped by MCP server / toolset. Keeps
