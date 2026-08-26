@@ -579,15 +579,15 @@ display:
 
 #### `display.reasoning_style`
 
-**Type:** string — **Default (Discord):** `"subtext"` — **Values:** `code`, `blockquote`, `subtext`
+**Type:** string — **Default (Discord):** `"subtext"` — **Values:** `code`, `blockquote`, `subtext`, `compact`
 
-Controls how the model's reasoning block is rendered when reasoning display is enabled. Discord defaults to `subtext`, which uses Discord's native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. `blockquote` renders it as a `>` quote, and `code` (the default on other platforms) uses a fenced code block. Long reasoning is collapsed to the first 15 lines.
+Controls how the model's reasoning block is rendered when reasoning display is enabled. Discord defaults to `subtext`, which uses Discord's native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. `blockquote` renders it as a `>` quote, and `code` (the default on other platforms) uses a fenced code block. Long reasoning is collapsed to the first 15 lines. `compact` shows only a single `thought for Xs` duration line (no reasoning text at all).
 
 ```yaml
 display:
   platforms:
     discord:
-      reasoning_style: subtext   # code | blockquote | subtext
+      reasoning_style: subtext   # code | blockquote | subtext | compact
 ```
 
 ## Slash Command Access Control

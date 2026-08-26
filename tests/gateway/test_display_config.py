@@ -277,7 +277,7 @@ class TestToolProgressGrouping:
 
 
 class TestReasoningStyle:
-    """Per-platform reasoning render style (code | blockquote | subtext)."""
+    """Per-platform reasoning render style (code | blockquote | subtext | compact)."""
 
     def test_discord_defaults_to_subtext(self):
         from gateway.display_config import resolve_display_setting
@@ -291,6 +291,18 @@ class TestReasoningStyle:
             assert (
                 resolve_display_setting({}, plat, "reasoning_style") == "code"
             ), plat
+
+    def test_compact_is_a_valid_style(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "compact"}}
+        assert resolve_display_setting(config, "discord", "reasoning_style") == "compact"
+
+    def test_unknown_style_still_coerces_to_code(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "summary"}}
+        assert resolve_display_setting(config, "discord", "reasoning_style") == "code"
 
 
 class TestLiveStatusSetting:

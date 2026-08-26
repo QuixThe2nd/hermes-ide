@@ -21977,86 +21977,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Prepend reasoning/thinking if display is enabled (per-platform).
             # Mattermost requires explicit per-platform opt-in because this is
             # scratch text, not ordinary final-answer content.
-            try:
-                _show_reasoning_effective = _resolve_gateway_display_bool(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    default=bool(getattr(self, "_show_reasoning", False)),
-                    platform=source.platform,
-                    require_platform_override_for={Platform.MATTERMOST},
-                )
-            except Exception:
-                _show_reasoning_effective = (
-                    False
-                    if source.platform == Platform.MATTERMOST
-                    else getattr(self, "_show_reasoning", False)
-                )
-            if _show_reasoning_effective and response and not _intentional_silence:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    from gateway.stream_consumer import escape_code_fences_for_display
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    # Render style is per-platform: Discord defaults to "-# "
-                    # subtext (native small grey metadata text); other
-                    # platforms keep the fenced code block.
-                    try:
-                        from gateway.display_config import resolve_display_setting
-                        _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
+            #
+            # Scoped to the serving profile (see _display_config_scope) so the
+            # reasoning prepend AND the runtime footer below resolve display.*
+            # from the profile that actually served this turn.
+            with self._display_config_scope(source):
+                try:
+                    _show_reasoning_effective = _resolve_gateway_display_bool(
+                        _load_gateway_config(),
+                        _platform_config_key(source.platform),
+                        "show_reasoning",
+                        default=bool(getattr(self, "_show_reasoning", False)),
+                        platform=source.platform,
+                        require_platform_override_for={Platform.MATTERMOST},
+                    )
+                except Exception:
+                    _show_reasoning_effective = (
+                        False
+                        if source.platform == Platform.MATTERMOST
+                        else getattr(self, "_show_reasoning", False)
+                    )
+                if _show_reasoning_effective and response and not _intentional_silence:
+                    last_reasoning = agent_result.get("last_reasoning")
+                    if last_reasoning:
+                        # Render style is per-platform: Discord defaults to "-# "
+                        # subtext (native small grey metadata text); "compact"
+                        # shows only a one-line "thought for Xs" duration note;
+                        # other platforms keep the fenced code block.
+                        try:
+                            from gateway.display_config import resolve_display_setting
+                            _reasoning_style = resolve_display_setting(
+                                _load_gateway_config(),
+                                _platform_config_key(source.platform),
+                                "reasoning_style",
+                                "code",
+                            )
+                        except Exception:
+                            _reasoning_style = "code"
+                        from gateway.display_config import format_reasoning_prefix
+                        _reasoning_prefix = format_reasoning_prefix(
+                            _reasoning_style,
+                            last_reasoning,
+                            _turn_seconds,
                             _platform_config_key(source.platform),
-                            "reasoning_style",
-                            "code",
                         )
-                    except Exception:
-                        _reasoning_style = "code"
-                    if _reasoning_style == "subtext":
-                        _quoted = "\n".join(
-                            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
-                    elif _reasoning_style == "blockquote":
-                        _quoted = "\n".join(
-                            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
-                    else:
-                        # Escape ``` inside reasoning so inner fences don't
-                        # break the outer code block used to render it.
-                        display_reasoning = escape_code_fences_for_display(display_reasoning)
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        if _reasoning_prefix:
+                            response = f"{_reasoning_prefix}\n\n{response}"
 
-            # Runtime-metadata footer — only on the FINAL message of the turn.
-            # Off by default (display.runtime_footer.enabled=false).  When
-            # streaming already delivered the body, we can't mutate the sent
-            # text, so we fire a separate trailing send below.
-            _footer_line = ""
-            try:
-                from gateway.runtime_footer import build_footer_line as _bfl
-                _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
-                    model=agent_result.get("model"),
-                    context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
-                    context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
-                    turn_seconds=_turn_seconds,
-                    turn_time=_response_time,
-                    api_time=agent_result.get("api_time"),
-                    tool_time=agent_result.get("tool_time"),
-                    api_calls=_api_calls,
-                )
-            except Exception as _footer_err:
-                logger.debug("runtime_footer build failed: %s", _footer_err)
+                # Runtime-metadata footer — only on the FINAL message of the turn.
+                # Off by default (display.runtime_footer.enabled=false).  When
+                # streaming already delivered the body, we can't mutate the sent
+                # text, so we fire a separate trailing send below.
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
-                response = f"{response}\n\n{_footer_line}"
+                try:
+                    from gateway.runtime_footer import build_footer_line as _bfl
+                    _footer_line = _bfl(
+                        user_config=_load_gateway_config(),
+                        platform_key=_platform_config_key(source.platform),
+                        model=agent_result.get("model"),
+                        context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                        context_length=agent_result.get("context_length") or None,
+                        cwd=os.environ.get("TERMINAL_CWD", ""),
+                        turn_seconds=_turn_seconds,
+                        turn_time=_response_time,
+                        api_time=agent_result.get("api_time"),
+                        tool_time=agent_result.get("tool_time"),
+                        api_calls=_api_calls,
+                    )
+                except Exception as _footer_err:
+                    logger.debug("runtime_footer build failed: %s", _footer_err)
+                    _footer_line = ""
+                if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                    response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -29963,6 +29955,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
             return get_hermes_home()
+
+    def _display_config_scope(self, source: SessionSource):
+        """Scope post-turn display resolution to the serving profile's home.
+
+        ``_run_agent`` runs the agent turn inside ``_profile_runtime_scope``,
+        but that scope exits when it returns — BEFORE the reasoning prepend
+        and runtime footer are rendered in ``_handle_message_with_agent``.
+        Both resolve ``display.*`` via ``_load_gateway_config()``, which reads
+        ``_gateway_config_home()``; unscoped, that is the DEFAULT profile's
+        config.yaml, so a multiplexed profile's display.show_reasoning /
+        reasoning_style / runtime_footer settings were silently ignored.
+
+        Multiplexing only: single-profile gateways get a pass-through and
+        keep resolving from the default home exactly as before.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            from contextlib import nullcontext
+
+            return nullcontext()
+        return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
 
     async def _run_agent_inner(
         self,
