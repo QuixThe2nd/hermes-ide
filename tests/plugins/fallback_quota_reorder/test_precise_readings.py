@@ -27,15 +27,16 @@ from tests.plugins.fallback_quota_reorder._helpers import (
 )
 
 NOW = 1_800_000.0
-# both names round to "7d left"; grok has more remaining seconds so the
-# most-leeway ranker can swap them once precise state is loaded
-GROK_RESET = 592_315.0
-CODEX_RESET = 535_958.0
+# both names round to "7d left"; grok has fewer remaining seconds so the
+# inverse-time ranker (sooner reset = higher score) can swap it ahead of
+# codex once precise state is loaded
+GROK_RESET = 535_958.0
+CODEX_RESET = 592_315.0
 DAY = 86400
 
 
 def _tied_names() -> dict[str, str]:
-    # both round up to "7d left" (6.86d and 6.20d) — the precision-loss case
+    # both round up to "7d left" (6.20d and 6.86d) — the precision-loss case
     # name-only ranking keeps original index (codex before grok)
     names = default_channel_names()
     names["codex"] = f"Codex: 99% {BULLET} 7d left"
@@ -86,9 +87,9 @@ class TestPreciseStateTieBreak:
         )
 
         assert _desired_providers(result) == [
-            "openrouter",
             "xai-oauth",
             "openai-codex",
+            "openrouter",
         ]
         assert result["readings"]["xai-oauth"].reset_seconds == GROK_RESET
         assert result["readings"]["openai-codex"].reset_seconds == CODEX_RESET
@@ -110,13 +111,14 @@ class TestMissingStateFallsBackToNames:
         )
 
         assert _desired_providers(result) == [
-            "openrouter",
             "openai-codex",
             "xai-oauth",
+            "openrouter",
         ]
         assert result["readings"]["openai-codex"].reset_seconds == 7 * DAY
         assert result["readings"]["xai-oauth"].reset_seconds == 7 * DAY
-        assert result["would_change"] is False
+        # openrouter no longer floats first, so even the tie order reorders
+        assert result["would_change"] is True
 
 
 class TestStaleStateFallsBackToNames:
@@ -134,13 +136,13 @@ class TestStaleStateFallsBackToNames:
         )
 
         assert _desired_providers(result) == [
-            "openrouter",
             "openai-codex",
             "xai-oauth",
+            "openrouter",
         ]
         assert result["readings"]["xai-oauth"].reset_seconds == 7 * DAY
         assert result["readings"]["openai-codex"].reset_seconds == 7 * DAY
-        assert result["would_change"] is False
+        assert result["would_change"] is True
 
 
 class TestLoadPreciseReadings:

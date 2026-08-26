@@ -20,6 +20,7 @@ from plugins.fallback_quota_reorder.core import (
     save_state,
     write_fallback_order,
 )
+from plugins.fallback_quota_reorder.reliability import ReliabilityRates
 from plugins.fallback_quota_reorder.run import main
 from tests.plugins.fallback_quota_reorder._helpers import (
     BULLET,
@@ -65,8 +66,8 @@ class TestPrimaryPromotion:
         self, monkeypatch, tmp_path: Path
     ):
         names = _names(
-            codex=f"Codex: 90% {BULLET} 7d left",  # 168h * 0.9 = 151.2
-            kimi=f"Kimi: 80% {BULLET} 7d left",  # 168h * 0.8 = 134.4
+            codex=f"Codex: 90% {BULLET} 7d left",  # 0.9 (quota at reference horizon)
+            kimi=f"Kimi: 80% {BULLET} 7d left",  # 0.8
         )
         quota_config = _setup(
             monkeypatch,
@@ -91,20 +92,21 @@ class TestPrimaryPromotion:
         assert loaded["model"]["provider"] == "openai-codex"
         assert loaded["model"]["default"] == "codex"
         # displaced kimi joins the healthy bucket ahead of the unscored tail
+        # (plain openrouter has no reading anymore, so it no longer floats)
         providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
-        assert providers == ["openrouter", "kimi-coding", "xai-oauth", "zai"]
+        assert providers == ["kimi-coding", "openrouter", "xai-oauth", "zai"]
 
     def test_top_scorer_without_chain_entry_promotes_best_with_entry(
         self, monkeypatch, tmp_path: Path
     ):
-        # zai (154.56) and cursor (151.2) outscore every chain member but
+        # zai (0.92) and cursor (0.90) outscore every chain member but
         # have no desired_entries entry, so neither can source a model string
         names = _names(
             zai=f"z.ai: 92% {BULLET} 7d left",
             cursor=f"Cursor: 95%/90% {BULLET} 7d left",
-            codex=f"Codex: 85% {BULLET} 7d left",  # 142.8, best WITH an entry
-            kimi=f"Kimi: 40% {BULLET} 7d left",  # 67.2, current primary
-            grok=f"Grok: 60% {BULLET} 1h left",  # 0.6
+            codex=f"Codex: 85% {BULLET} 7d left",  # 0.85, best WITH an entry
+            kimi=f"Kimi: 40% {BULLET} 7d left",  # 0.40, current primary
+            grok=f"Grok: 60% {BULLET} 7d left",  # 0.6
         )
         quota_config = _setup(
             monkeypatch,
@@ -127,20 +129,23 @@ class TestPrimaryPromotion:
         assert loaded["model"]["provider"] == "openai-codex"
         assert loaded["model"]["default"] == "codex"
         providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
-        assert providers == ["kimi-coding", "xai-oauth"]
+        # displaced kimi (0.40) reinserts behind the healthier grok (0.6)
+        assert providers == ["xai-oauth", "kimi-coding"]
 
     def test_tie_keeps_current_primary(self, monkeypatch, tmp_path: Path):
         names = _names(
             codex=f"Codex: 90% {BULLET} 7d left",
             kimi=f"Kimi: 90% {BULLET} 7d left",
         )
+        # openrouter/or sits last because unscored entries tail now, so the
+        # tie (not the openrouter demotion) is the only thing under test
         quota_config = _setup(
             monkeypatch,
             tmp_path,
             fallback_providers=[
-                {"provider": "openrouter", "model": "or"},
                 {"provider": "openai-codex", "model": "codex"},
                 {"provider": "kimi-coding", "model": "kimi"},
+                {"provider": "openrouter", "model": "or"},
             ],
             model={"provider": "openai-codex", "default": "codex"},
         )
@@ -181,6 +186,80 @@ class TestPrimaryPromotion:
         # means score 0, so it lands in the unscored tail
         providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
         assert providers == ["xai-oauth", "zai", "openrouter"]
+
+
+class TestUnlimitedPrimaryRotation:
+    """The unlimited openrouter/stealth/ox-alpha route competes for primary."""
+
+    def test_unlimited_route_promotes_and_displaced_reinserts(
+        self, monkeypatch, tmp_path: Path
+    ):
+        names = _names(
+            codex=f"Codex: 90% {BULLET} 7d left",  # 0.9
+            kimi=f"Kimi: 80% {BULLET} 7d left",  # 0.8, current primary
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "openrouter", "model": "stealth/ox-alpha"},
+                {"provider": "openai-codex", "model": "codex"},
+                {"provider": "xai-oauth", "model": "grok"},
+            ],
+            model={"provider": "kimi-coding", "default": "kimi"},
+        )
+        _patch_channel_names(monkeypatch, names)
+
+        result = run_reorder(config_path=quota_config)
+
+        # synthetic full wallet at the reference horizon: exactly 1.0, so
+        # ox-alpha beats codex (0.9) and the current primary kimi (0.8)
+        assert result["primary_desired"] == PrimarySlot(
+            provider="openrouter", model="stealth/ox-alpha"
+        )
+        assert result["would_change"] is True
+        loaded = load_config()
+        assert loaded["model"]["provider"] == "openrouter"
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
+        # the promoted entry graduates out of the chain; displaced kimi (0.8)
+        # reinserts ahead of the unscored tail but behind codex (0.9)
+        assert providers == ["openai-codex", "kimi-coding", "xai-oauth"]
+
+    def test_reliability_derates_an_already_primary_unlimited_route(
+        self, monkeypatch, tmp_path: Path
+    ):
+        names = _names(codex=f"Codex: 90% {BULLET} 7d left")  # 0.9
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "openai-codex", "model": "codex"},
+                {"provider": "xai-oauth", "model": "grok"},
+            ],
+            model={"provider": "openrouter", "default": "stealth/ox-alpha"},
+        )
+        _patch_channel_names(monkeypatch, names)
+        monkeypatch.setattr(
+            core,
+            "rates_for_providers",
+            lambda providers, **kwargs: {
+                "openrouter": ReliabilityRates(rate_24h=0.5, rate_1h=1.0)
+            },
+        )
+
+        result = run_reorder(config_path=quota_config)
+
+        # derated ox-alpha (1.0 * 0.5 = 0.5) loses the slot to codex (0.9)
+        assert result["primary_desired"] == PrimarySlot(
+            provider="openai-codex", model="codex"
+        )
+        loaded = load_config()
+        assert loaded["model"]["provider"] == "openai-codex"
+        providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
+        # displaced ox-alpha reenters by its derated synthetic 0.5, ahead
+        # of the unscored tail
+        assert providers == ["openrouter", "xai-oauth"]
 
 
 class TestPrimaryFreezeAndNoReadings:

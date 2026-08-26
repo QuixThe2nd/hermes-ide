@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from plugins.fallback_quota_reorder.core import (
     QuotaReading,
+    REFERENCE_HOURS,
     compute_desired_order,
+    reading_for_entry,
     score_provider,
+    unlimited_reading,
 )
 from plugins.fallback_quota_reorder.reliability import ReliabilityRates
 
@@ -21,26 +26,73 @@ def _reading(provider: str, pct: int, reset_seconds: int, channel_key: str) -> Q
 
 
 class TestScoreProvider:
-    def test_hours_times_quota_frac(self):
+    def test_quota_divided_by_hours_remaining(self):
         reading = _reading("xai-oauth", 50, 7200, "grok")
-        assert score_provider(reading) == 1.0  # 2h * 0.5
+        assert score_provider(reading) == 42.0  # 0.5 * 168/2
 
     def test_reliability_multiplies(self):
         reading = _reading("xai-oauth", 100, 3600, "grok")
         rates = ReliabilityRates(rate_24h=0.5, rate_1h=0.5)
-        assert score_provider(reading, rates) == 0.25
+        assert score_provider(reading, rates) == 42.0  # 1.0 * 168 * 0.25
 
     def test_unknown_reliability_is_neutral(self):
         reading = _reading("xai-oauth", 100, 3600, "grok")
-        assert score_provider(reading) == 1.0
+        assert score_provider(reading) == REFERENCE_HOURS
 
     def test_zero_hours_floors_to_one_minute(self):
         reading = _reading("xai-oauth", 100, 0, "grok")
-        assert score_provider(reading) == 1.0 / 60.0
+        assert score_provider(reading) == REFERENCE_HOURS * 60.0
+
+    def test_reference_horizon_scores_quota_one_to_one(self):
+        reading = _reading("xai-oauth", 70, int(REFERENCE_HOURS * 3600), "grok")
+        assert score_provider(reading) == 0.7
+
+    def test_reset_later_than_reference_scores_below_quota_frac(self):
+        # 25d out: 0.85 * 168/600 — time still dilutes, never amplifies
+        reading = _reading("cursor", 85, 25 * 86400, "cursor")
+        assert score_provider(reading) == pytest.approx(0.85 * REFERENCE_HOURS / 600.0)
+
+
+class TestScoreMonotonicity:
+    """The three direction invariants of the score."""
+
+    def test_shorter_time_until_reset_increases_score(self):
+        pct, rates = 80, ReliabilityRates(rate_24h=0.9, rate_1h=0.8)
+        scores = [
+            score_provider(_reading("zai", pct, reset, "zai"), rates)
+            for reset in (25 * 86400, 7 * 86400, 86400, 7200, 3600, 60, 0)
+        ]
+        # inverse time: the 25d -> 0 sequence is strictly increasing
+        assert scores == sorted(scores)
+        assert scores[0] < scores[-1]
+
+    def test_less_remaining_quota_decreases_score(self):
+        reset, rates = 4 * 3600, ReliabilityRates(rate_24h=0.7, rate_1h=1.0)
+        scores = [
+            score_provider(_reading("zai", pct, reset, "zai"), rates)
+            for pct in (100, 80, 55, 30, 5, 0)
+        ]
+        assert scores == sorted(scores, reverse=True)
+        assert scores[0] > scores[-1]
+
+    def test_worse_uptime_decreases_score(self):
+        reading = _reading("zai", 90, 2 * 3600, "zai")
+        assert score_provider(
+            reading, ReliabilityRates(rate_24h=1.0, rate_1h=1.0)
+        ) > score_provider(reading, ReliabilityRates(rate_24h=0.9, rate_1h=1.0))
+        assert score_provider(
+            reading, ReliabilityRates(rate_24h=0.9, rate_1h=1.0)
+        ) > score_provider(reading, ReliabilityRates(rate_24h=0.9, rate_1h=0.4))
+        assert score_provider(
+            reading, ReliabilityRates(rate_24h=0.1, rate_1h=0.1)
+        ) < score_provider(reading, ReliabilityRates(rate_24h=1.0, rate_1h=1.0))
 
 
 class TestComputeDesiredOrder:
-    def test_openrouter_always_first(self):
+    def test_plain_openrouter_is_not_first_anymore(self):
+        # no provider-wide openrouter precedence: without a reading (and it
+        # is not the unlimited ox-alpha route) it is an ordinary unscored
+        # tail entry
         entries = [
             {"provider": "xai-oauth", "model": "grok"},
             {"provider": "openrouter", "model": "or"},
@@ -51,9 +103,11 @@ class TestComputeDesiredOrder:
             "kimi-coding": _reading("kimi-coding", 90, 1800, "kimi"),
         }
         ordered = compute_desired_order(entries, readings)
-        assert ordered[0]["provider"] == "openrouter"
+        assert ordered[-1]["provider"] == "openrouter"
+        # sooner reset wins: kimi 0.9*(168/0.5)=302.4 beats grok 0.9*168=151.2
+        assert ordered[0]["provider"] == "kimi-coding"
 
-    def test_healthy_entries_sort_by_most_leeway(self):
+    def test_healthy_entries_sort_by_soonest_reset(self):
         entries = [
             {"provider": "openrouter", "model": "or"},
             {"provider": "openai-codex", "model": "codex"},
@@ -67,12 +121,12 @@ class TestComputeDesiredOrder:
         }
         ordered = compute_desired_order(entries, readings)
         providers = [entry["provider"] for entry in ordered]
-        # 24h*0.8=19.2, 2h*0.6=1.2, 1h*0.7=0.7
+        # 0.7*168=117.6, 0.6*84=50.4, 0.8*7=5.6; unscored openrouter tails
         assert providers == [
-            "openrouter",
-            "openai-codex",
-            "kimi-coding",
             "xai-oauth",
+            "kimi-coding",
+            "openai-codex",
+            "openrouter",
         ]
 
     def test_low_pct_sinks_behind_all_healthy_entries(self):
@@ -101,7 +155,7 @@ class TestComputeDesiredOrder:
         }
         ordered = compute_desired_order(entries, readings)
         providers = [entry["provider"] for entry in ordered]
-        assert providers == ["openrouter", "xai-oauth", "custom-a", "custom-b"]
+        assert providers == ["xai-oauth", "openrouter", "custom-a", "custom-b"]
 
     def test_stability_preserves_original_index_on_ties(self):
         entries = [
@@ -142,5 +196,58 @@ class TestComputeDesiredOrder:
         }
         ordered = compute_desired_order(entries, readings, reliability=reliability)
         providers = [entry["provider"] for entry in ordered]
-        # Codex 24h*1.0*0.1*0.1=0.24; Grok 24h*0.5=12.0
-        assert providers == ["openrouter", "xai-oauth", "openai-codex"]
+        # Codex 7*1.0*0.1*0.1=0.07; Grok 7*0.5=3.5
+        assert providers == ["xai-oauth", "openai-codex", "openrouter"]
+
+
+class TestUnlimitedRouteScoring:
+    """Ox Alpha (openrouter/stealth/ox-alpha) synthetic-wallet contracts."""
+
+    def test_neutral_unlimited_route_scores_exactly_one(self):
+        # 100% synthetic quota against exactly REFERENCE_HOURS: 1.0 * 1.0,
+        # exactly — the neutral point every other score is measured against
+        assert score_provider(unlimited_reading()) == 1.0
+
+    def test_poor_uptime_loses_to_a_healthier_scored_provider(self):
+        entries = [
+            {"provider": "openrouter", "model": "stealth/ox-alpha"},
+            {"provider": "openai-codex", "model": "codex"},
+        ]
+        readings = {
+            "openai-codex": _reading(
+                "openai-codex", 100, int(REFERENCE_HOURS * 3600), "codex"
+            )
+        }
+        reliability = {
+            "openrouter": ReliabilityRates(rate_24h=0.4, rate_1h=1.0),
+        }
+        ordered = compute_desired_order(entries, readings, reliability=reliability)
+        # derated ox-alpha 1.0*0.4=0.4 loses to codex's neutral 1.0
+        assert [entry["provider"] for entry in ordered] == [
+            "openai-codex",
+            "openrouter",
+        ]
+
+    def test_real_reading_beats_the_synthetic_wallet(self):
+        real = _reading("openrouter", 50, 3600, "grok")
+        assert reading_for_entry(
+            {"provider": "openrouter", "model": "stealth/ox-alpha"}, {"openrouter": real}
+        ) is real
+
+    def test_other_openrouter_models_stay_unscored(self):
+        # the synthetic wallet is for the exact ox-alpha route only: any
+        # other openrouter model has no real reading and tails unscored
+        assert (
+            reading_for_entry({"provider": "openrouter", "model": "stealth/other"}, {})
+            is None
+        )
+        entries = [
+            {"provider": "openrouter", "model": "stealth/other"},
+            {"provider": "openai-codex", "model": "codex"},
+        ]
+        readings = {"openai-codex": _reading("openai-codex", 90, 3600, "codex")}
+        ordered = compute_desired_order(entries, readings)
+        assert [entry["provider"] for entry in ordered] == [
+            "openai-codex",
+            "openrouter",
+        ]

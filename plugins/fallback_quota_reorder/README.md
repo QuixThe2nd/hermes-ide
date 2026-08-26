@@ -17,26 +17,30 @@ Silent success for the headless CLI; failures print `fallback-quota-reorder: <me
 
 Chain entries are never renamed; the only membership change is the primary-rotation swap below. All other config keys are untouched.
 
-1. **OpenRouter first** — any entry with provider `openrouter` stays at the front (stable order among OpenRouter entries).
-2. **Healthy scored entries** — remaining entries with a readable quota and `pct >= 5` sort by **highest score first**:
+1. **Healthy scored entries** — entries with a readable quota and `pct >= 5` sort by **highest score first**:
 
-   `score = hours_remaining × quota_frac × rate_24h × rate_1h`
+   `score = quota_frac × (168 / hours_remaining) × rate_24h × rate_1h`
 
-   - `hours_remaining` is `reset_seconds / 3600`, floored at one minute so a nearly-reset wallet is not scored as zero.
+   - `hours_remaining` is `reset_seconds / 3600`, floored at one minute so a nearly-reset wallet is not divided by zero.
    - `quota_frac` is remaining percent / 100, clamped to `[0, 1]`.
+   - Time enters **inversely**: a wallet resetting sooner is more urgent to spend now and scores higher; a wallet resetting in exactly 168 hours (one week, the reference horizon) scores its quota fraction 1:1, and anything later is diluted below it.
    - `rate_24h` / `rate_1h` are API success fractions from the last 24 hours and last hour. Fewer than 3 (24h) or 2 (1h) samples stays **1.0** so a quiet provider is not punished.
-3. **Low quota sink** — entries with parsed `pct` below 5 sink behind all healthy scored entries; among themselves they still sort by the same score, highest first.
-4. **Unreadable tail** — entries with no readable quota (unmapped provider slug or unreadable channel name) keep their relative order and go after all scored entries.
+2. **Low quota sink** — entries with parsed `pct` below 5 sink behind all healthy scored entries; among themselves they still sort by the same score, highest first.
+3. **Unreadable tail** — entries with no readable quota (unmapped provider slug, unreadable channel name, or an `openrouter` model other than Ox Alpha) keep their relative order and go after all scored entries.
 
-The live gateway records each provider API success (`post_api_request`) and failure (`api_request_error`) into `HERMES_HOME/fallback_quota_reorder_reliability.jsonl`. The reorder tick reads that ledger. Until a provider has enough samples, ranking is just remaining time × remaining quota.
+### Unlimited Ox Alpha route
+
+The free/unlimited route `openrouter/stealth/ox-alpha` has no quota channel of its own, so it is scored from a **synthetic full-wallet reading**: exactly 100% quota against exactly 168 hours. With no reliability samples that scores exactly **1.0** — the neutral point of the formula — and observed uptime derates it through the same `rate_24h`/`rate_1h` factors as every other provider. Only the exact `openrouter` + `stealth/ox-alpha` pair (case-insensitive) gets the treatment; any other `openrouter` model without a real reading is an ordinary unscored tail entry.
+
+The live gateway records each provider API success (`post_api_request`) and failure (`api_request_error`) into `HERMES_HOME/fallback_quota_reorder_reliability.jsonl`. The reorder tick reads that ledger. Until a provider has enough samples, ranking is just quota over time-to-reset.
 
 ## Primary rotation
 
 The tick also rotates the **primary** model slot (`model.default` + `model.provider`), not just the chain order:
 
-1. Every tracked provider with a reading is scored with the same `score_provider` math as the chain — the current primary counts too, and an untracked primary (e.g. `openrouter`) scores 0.
-2. The highest score wins. Ties keep the current primary; ties between tracked providers go to the lowest channel index (`codex` → `kimi` → `zai` → `grok` → `cursor`). With no readings at all the primary is left alone, and a winner with no `fallback_providers` entry to source its model string from is never promoted.
-3. On a swap the winner's fallback entry graduates to `model.default`/`model.provider`, and the displaced previous primary is inserted back into the chain by the same bucket rules (healthy → low-quota → unscored, score descending within group). An untracked displaced primary lands at the **end** of the chain — the openrouter-floats-to-front rule does not apply to it.
+1. Candidates are the tracked providers with a reading plus the unlimited `openrouter/stealth/ox-alpha` route (through its synthetic reading), all scored with the same `score_provider` math as the chain. The current primary counts too — an untracked primary (e.g. a plain `openrouter` route) scores 0.
+2. The highest score wins. Ties keep the current primary; ties between tracked providers go to the lowest channel index (`codex` → `kimi` → `zai` → `grok` → `cursor`), with the unlimited route competing after them so it only wins by beating the best tracked score outright. With no readings and no unlimited route the primary is left alone, and a winner with no `fallback_providers` entry to source its model string from is never promoted.
+3. On a swap the winner's fallback entry graduates to `model.default`/`model.provider`, and the displaced previous primary is inserted back into the chain by the same bucket rules (healthy → low-quota → unscored, score descending within group). A displaced Ox Alpha primary re-enters by its synthetic score; any other untracked displaced primary (score 0) lands at the **end** of the chain.
 4. The primary swap and the chain reorder are written in ONE `save_config` call, with the same backup/restore rollback and post-write verification as the chain-only path (verification re-checks both the chain signature and the primary keys).
 5. The staleness freeze blocks primary writes too; `--force-quota` bypasses it.
 
