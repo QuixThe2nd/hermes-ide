@@ -126,26 +126,17 @@ export function sessionBelongsToProfile(
  * often the only sync source.
  */
 export function knownSessionProfile(sessions: readonly SessionInfo[], sessionId: null | string): string | undefined {
-  if (!sessionId) {
-    return undefined
-  }
+  const owner = knownSessionOwner(sessions, sessionId)
 
-  const owner = sessions.find(session => sessionMatchesStoredId(session, sessionId))?.profile?.trim()
-
-  if (owner) {
-    return owner
-  }
-
-  const hint = getSessionOwnerHint(sessionId)
-
-  return (hint?.targetProfile ?? hint?.profile)?.trim() || undefined
+  return typeof owner === 'string' ? owner : (owner?.targetProfile ?? owner?.profile)?.trim() || undefined
 }
 
 /**
- * The exact owner a session-scoped RPC should use, preserving registry
- * connection identity when the session was discovered through a named remote
- * connection. Falling back to only the profile is safe solely when no exact
- * route hint exists.
+ * The complete known owner of a session, including its registry connection
+ * when the row or an open-time hint carries one. Session-scoped RPC callers
+ * must use this instead of `knownSessionProfile`: two sources can expose the
+ * same profile name, so returning only that name silently collapses the route
+ * back to the local/profile-only path.
  */
 export function knownSessionOwner(
   sessions: readonly SessionInfo[],
@@ -156,18 +147,25 @@ export function knownSessionOwner(
   }
 
   const session = sessions.find(candidate => sessionMatchesStoredId(candidate, sessionId))
+  const profile = session?.profile?.trim()
   const connectionId = session?.connection_id?.trim()
-
-  if (connectionId) {
-    return {
-      connectionId,
-      profile: session?.profile?.trim() || 'default'
-    }
-  }
-
   const hint = getSessionOwnerHint(sessionId)
 
-  return hint ?? (session?.profile?.trim() || undefined)
+  if (connectionId) {
+    return { connectionId, profile: profile || 'default' }
+  }
+
+  const hintProfiles = new Set([hint?.profile.trim() || 'default', hint?.targetProfile?.trim() || 'default'])
+
+  if (hint && (!profile || hintProfiles.has(profile || 'default'))) {
+    return hint
+  }
+
+  if (profile) {
+    return profile
+  }
+
+  return hint
 }
 
 /**
@@ -177,7 +175,7 @@ export function knownSessionOwner(
  *
  * Do NOT use this to ROUTE a session-scoped RPC: the active-profile fallback is
  * exactly what sends a hidden/unlisted session's RPC to a backend that never
- * owned it. Routing must use `knownSessionProfile` + a cross-profile probe and
+ * owned it. Routing must use `knownSessionOwner` + a cross-profile probe and
  * surface an error instead of falling back. This remains for the navigation
  * keying it was written for.
  */

@@ -18,6 +18,8 @@ import {
 } from '@/store/boot'
 import {
   $gateway,
+  activeGatewayConnectionId,
+  closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
   disposeSecondariesForConnection,
@@ -30,6 +32,7 @@ import {
   reportPrimaryGatewayState,
   setPrimaryGateway,
   setPrimaryGatewayConnection,
+  setPrimaryGatewayConnectionId,
   touchSecondaryGateways
 } from '@/store/gateway'
 import { registerGatewayReconnect } from '@/store/gateway-reconnect'
@@ -60,8 +63,11 @@ import {
 } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionTiles,
   $workingSessionIds,
+  foregroundSessionScopes,
   liveSessionScopes,
+  openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   resetTileRuntimeBindings
@@ -181,6 +187,7 @@ export function useGatewayBoot({
             }
           : null
       )
+      setPrimaryGatewayConnectionId(next?.connectionId)
     }
 
     if (!desktop) {
@@ -522,7 +529,11 @@ export function useGatewayBoot({
         reauthNotified = false
 
         gateway.close()
-        closeSecondaryGateways()
+        // The primary mode is changing, but registered v2 sources remain
+        // independent gateways. Retire only legacy profile sockets whose
+        // routing follows connection.json; closing every secondary here
+        // detached valid registered sessions and armed ws_orphan_reap.
+        closeLegacySecondaryGateways()
 
         // Same override rule as boot(): a profile-pinned helper window stays
         // on its pinned profile's backend across a soft switch.
@@ -560,14 +571,17 @@ export function useGatewayBoot({
         // re-pulls /api/profiles deterministically post-switch — leaving the
         // rail stale or (if a stale in-flight response landed) collapsed
         // (#85731). Best-effort like the rest: a failure keeps the cached
-        // list rather than blanking the rail.
+        // list rather than blanking the rail. NOT awaited: refreshProfiles
+        // now carries a bounded retry chain (#70679), and switch completion
+        // must not wait out backoff timers against an unhealthy backend.
         if (!(await adoptPrimaryProfile(ownsSwitch)) || !ownsSwitch()) {
           return
         }
 
+        void refreshActiveProfile().catch(() => undefined)
+
         await Promise.all([
           seedDefaultCwd(ownsSwitch),
-          refreshActiveProfile().catch(() => undefined),
           callbacksRef.current.refreshHermesConfig(false, ownsSwitch).catch(() => undefined),
           callbacksRef.current.refreshSessions(ownsSwitch).catch(() => undefined)
         ])
@@ -726,9 +740,18 @@ export function useGatewayBoot({
 
     const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
 
-    const offEvent = gateway.onEvent(event =>
-      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
-    )
+    const offEvent = gateway.onEvent(event => {
+      const connectionId = activeGatewayConnectionId()
+
+      const scopedEvent = {
+        ...event,
+        profile: sourceProfile,
+        ...(connectionId ? { connectionId } : {})
+      }
+
+      recordSessionEventScope(scopedEvent)
+      callbacksRef.current.handleGatewayEvent(scopedEvent)
+    })
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -773,17 +796,20 @@ export function useGatewayBoot({
       touchSecondaryGateways()
     }, 60_000)
 
-    // Bound concurrency cost to live work: keep a background socket only while
-    // its profile has a running (working) or blocked (needs-input) session.
-    // Once that profile goes idle its socket is dropped and its backend is free
-    // to idle-reap. The active profile is always spared.
+    // Bound concurrency cost to consumers: keep a background socket while its
+    // profile has a running (working) or blocked (needs-input) session, OR an
+    // open owner-routed tile (Bot chats stay on a secondary while chrome stays
+    // on the launch profile). Once the last consumer leaves, the socket drops
+    // and its backend is free to idle-reap. The active profile is always spared.
+    // Do not key this off `entry.retained` — that flag only skips dispose-after-
+    // RPC; idle prune is what reclaims hover-warmed sockets after you leave.
     const recomputeKeptGateways = () => {
       const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
       // Registry-scoped (connectionId, profile) scopes with live work. Two
       // sources can expose the same profile name (every source has a
       // 'default'), so bare profile names can't represent a non-local
       // source's liveness without keeping the wrong gateway alive.
-      const keep = liveSessionScopes()
+      const keep = new Set([...liveSessionScopes(), ...foregroundSessionScopes()])
 
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {
@@ -791,12 +817,19 @@ export function useGatewayBoot({
         }
       }
 
+      for (const scope of openTileGatewayScopes()) {
+        keep.add(scope)
+      }
+
       pruneSecondaryGateways(keep)
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offActiveSession = $activeSessionId.subscribe(() => recomputeKeptGateways())
+    const offSessionTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
+    const offTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -990,7 +1023,10 @@ export function useGatewayBoot({
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()
+      offActiveSession()
+      offSessionTiles()
       offActiveProfile()
+      offTiles()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onFocus)

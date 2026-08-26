@@ -208,17 +208,41 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+  const next = normKey(profile)
+
   if (g.primaryGateway !== gateway) {
     g.primaryConnectionId = null
   }
 
+  // Route identity is exact-scope, never bare-name (#93892 follow-up): when
+  // the active route IS the primary and the primary re-homes to another
+  // profile, the active key must follow it. Leaving the old bare profile name
+  // behind lets a later same-named LOCAL secondary inherit the active-route
+  // spare in pruneSecondaryGateways — a remote tile keep-set of composite
+  // scopes then appears to "pin" that unrelated local socket forever.
+  if (g.activeKey === g.primaryProfile) {
+    g.activeKey = next
+  }
+
   g.primaryGateway = gateway
-  g.primaryProfile = normKey(profile)
+  g.primaryProfile = next
+
+  if (g.activeKey === g.primaryProfile) {
+    setApiRequestConnection(g.primaryConnectionId)
+  }
+}
+
+export function setPrimaryGatewayConnectionId(connectionId: null | string | undefined): void {
+  g.primaryConnectionId = (connectionId ?? '').trim() || null
+
+  if (g.activeKey === g.primaryProfile) {
+    setApiRequestConnection(g.primaryConnectionId)
+  }
 }
 
 /** Publish the registry source owned by the window primary socket. */
 export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId'> | null): void {
-  g.primaryConnectionId = connection?.connectionId?.trim() || null
+  setPrimaryGatewayConnectionId(connection?.connectionId)
 }
 
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {
@@ -264,7 +288,7 @@ export function activeGateway(): HermesGateway | null {
  */
 export function activeGatewayConnectionId(): null | string {
   if (g.activeKey === g.primaryProfile) {
-    return null
+    return g.primaryConnectionId
   }
 
   return g.secondaries.get(g.activeKey)?.connectionId ?? null
@@ -1178,11 +1202,17 @@ export async function ensureGatewayForAgent(
   }
 
   // A source edit/remove may dispose this entry while its dial is still in
-  // flight. Only the still-registered, still-owned activation may publish.
+  // flight. Only the still-registered, still-owned activation may publish --
+  // and only when the WebSocket actually reached open: entry.connection is
+  // set BEFORE the dial completes in openSecondary, so a transient first-dial
+  // failure (caught above, left for scheduleReconnect) must not count as a
+  // successful activation just because a connection descriptor exists
+  // (issue #92265).
   const activated =
     entry.wantOpen &&
     g.secondaries.get(scope) === entry &&
     Boolean(entry.connection) &&
+    isOpen(entry.gateway) &&
     applyActive(scope, activationEpoch)
 
   if (activated && entry.connection) {
@@ -1251,7 +1281,16 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     entry.activationLeaseUntil = 0
   }
 
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
+  // Only publish when the WebSocket actually reached open -- entry.connection
+  // is set before the dial completes, so a transient first-dial failure must
+  // not count as a successful activation (issue #92265).
+  if (
+    entry.wantOpen &&
+    g.secondaries.get(key) === entry &&
+    isOpen(entry.gateway) &&
+    applyActive(key, activationEpoch) &&
+    entry.connection
+  ) {
     publishActiveConnection(entry.connection)
   }
 }
@@ -1403,7 +1442,45 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
   restoreActiveToPrimaryIfEvicted()
 }
 
+function closeSecondariesWhere(shouldClose: (entry: Secondary) => boolean): void {
+  for (const [scope, entry] of [...g.secondaries]) {
+    if (!shouldClose(entry)) {
+      continue
+    }
+
+    disposeSecondary(entry)
+    g.secondaries.delete(scope)
+  }
+
+  restoreActiveToPrimaryIfEvicted()
+}
+
+function isLegacySecondary(entry: Secondary): boolean {
+  // Every v2 registry route is created with an explicit connection id,
+  // including the registry's `local` source. A missing id is reserved for the
+  // old profile-only pool; the loose null check also retires HMR entries from
+  // builds that predate the field instead of leaving an old legacy socket
+  // behind during a mode apply.
+  return entry.connectionId == null
+}
+
+/**
+ * Close only profile sockets that follow the legacy v1 connection config.
+ *
+ * A global mode apply re-homes the primary backend, but registered connection
+ * sockets are independent sources in the v2 registry. Closing every secondary
+ * here would detach their sessions and arm `ws_orphan_reap` even though those
+ * sources remain valid and reusable. Legacy profile sockets still need to be
+ * retired because their endpoint is derived from the v1 config being changed.
+ */
+export function closeLegacySecondaryGateways(): void {
+  closeSecondariesWhere(isLegacySecondary)
+}
+
 export function closeSecondaryGateways(): void {
+  // Full teardown releases every routed-turn lease (class-2 #94284) and the
+  // renderer-generation ledger; the predicate close leaves live sources'
+  // leases alone (their sockets stay open).
   for (const timer of g.turnLeaseReleaseTimers.values()) {
     clearTimeout(timer)
   }
@@ -1416,13 +1493,8 @@ export function closeSecondaryGateways(): void {
 
   g.turnLeases.clear()
 
-  for (const entry of g.secondaries.values()) {
-    disposeSecondary(entry)
-  }
-
-  g.secondaries.clear()
+  closeSecondariesWhere(() => true)
   openedSecondaryScopes().clear()
-  restoreActiveToPrimaryIfEvicted()
 }
 
 // A local profile can have two renderer-owned sockets: the legacy bare

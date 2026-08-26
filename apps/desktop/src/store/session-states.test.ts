@@ -4,14 +4,16 @@ import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   $sessionStates,
   $sessionTiles,
   blankDraftTile,
+  clearAllSessionStates,
   focusedSessionNeedsRoute,
   focusOpenSession,
+  foregroundSessionScopes,
   isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
@@ -19,6 +21,7 @@ import {
   openSessionTile,
   orderTilesByTree,
   patchSessionTile,
+  recordSessionEventScope,
   releaseSessionTranscript,
   requestForOwnedSession,
   resetTileRuntimeBindings,
@@ -31,6 +34,62 @@ import {
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
+
+describe('foregroundSessionScopes', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('keeps the exact registry owner of an idle foreground runtime', () => {
+    recordSessionEventScope({ connectionId: 'cloud', profile: 'default', session_id: 'runtime-1' })
+    $activeSessionId.set('runtime-1')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+  })
+
+  it('fails closed when the foreground runtime has no registered source', () => {
+    $activeSessionId.set('legacy-runtime')
+
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+
+  it('keeps every open pane owner, not only the focused runtime', () => {
+    recordSessionEventScope({ connectionId: 'cloud-a', profile: 'default', session_id: 'runtime-a' })
+    recordSessionEventScope({ connectionId: 'cloud-b', profile: 'default', session_id: 'runtime-b' })
+    $sessionTiles.set([
+      { runtimeId: 'runtime-a', storedSessionId: 'stored-a' },
+      {
+        ownerRoute: { connectionId: 'cloud-b', profile: 'default' },
+        storedSessionId: 'stored-b'
+      }
+    ])
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud-a::default', 'conn:cloud-b::default']))
+  })
+
+  it('releases an idle pane owner when the pane closes', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'cloud', profile: 'default' },
+        storedSessionId: 'stored-cloud'
+      }
+    ])
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+
+    $sessionTiles.set([])
+
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+})
 
 describe('resetTileRuntimeBindings', () => {
   afterEach(() => {
@@ -608,6 +667,12 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(knownOwnerForSession('stored-2')).toBe('loki')
+  })
+
+  it('keeps a session row connection owner when profiles share the same name', () => {
+    setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
+
+    expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
   })
 
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {

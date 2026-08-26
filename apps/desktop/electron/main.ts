@@ -85,7 +85,7 @@ import {
   buildBrowserWindowUrl
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
-import { applyConnectionChange } from './connection-apply'
+import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -137,6 +137,7 @@ import {
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -145,6 +146,7 @@ import {
   updateEligibility,
   upsertConnection
 } from './connection-registry'
+import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
@@ -225,6 +227,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
+  oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
@@ -244,8 +247,8 @@ import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-pro
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
+  isLocalEnumerationFailure,
   localRouteFallbackProfiles,
-  registryGatewayWsUrl,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
@@ -284,11 +287,17 @@ import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySet
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
+  ensureHealthyPooledRemoteBackendForDispatch,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import {
+  applyRemoteRequestHeaders,
+  createRegistryGatewayWsUrlHandler,
+  createRemoteWsHeaderStore
+} from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
@@ -1331,6 +1340,7 @@ let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
+const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -1401,7 +1411,7 @@ let connectionConfigCacheMtime = null
 let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
-const remoteWsHeadersByUrl = new Map<string, Record<string, string>>()
+const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -8682,25 +8692,11 @@ function encryptIncomingRemoteHeaders(raw, existing, options: { allowPlainText?:
 }
 
 function rememberRemoteWsHeaders(wsUrl, headers = {}) {
-  if (!wsUrl || Object.keys(headers).length === 0) {
-    return
-  }
-
-  remoteWsHeadersByUrl.set(String(wsUrl), headers as Record<string, string>)
-
-  while (remoteWsHeadersByUrl.size > 100) {
-    const oldest = remoteWsHeadersByUrl.keys().next().value
-
-    if (!oldest) {
-      break
-    }
-
-    remoteWsHeadersByUrl.delete(oldest)
-  }
+  remoteWsHeaderStore.remember(wsUrl, headers)
 }
 
 function headersForRemoteRequest(requestUrl) {
-  const exactWsHeaders = remoteWsHeadersByUrl.get(String(requestUrl))
+  const exactWsHeaders = remoteWsHeaderStore.headersFor(requestUrl)
 
   if (exactWsHeaders && Object.keys(exactWsHeaders).length > 0) {
     return exactWsHeaders
@@ -8726,15 +8722,7 @@ function installRemoteHeaderRules() {
 
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = headersForRemoteRequest(details.url)
-
-    if (Object.keys(headers).length === 0) {
-      callback({})
-
-      return
-    }
-
-    callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
   })
 }
 
@@ -9440,7 +9428,7 @@ async function buildRemoteConnection(
 
       throw gatewayTicketFailure(
         error,
-        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
+        oauthTicketFailureAuthMessage(hasNativeSession(baseUrl)),
         'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     }
@@ -9537,19 +9525,28 @@ async function teardownSshConnection(profile) {
 
   terminalIpc.disposeTerminalSessionsForSshScope(scope)
 
-  try {
-    if (state.localPort && state.remotePort) {
-      await state.ssh.cancelForward(state.localPort, state.remotePort)
+  // Kill the owned remote serve --isolated *before* closing the SSH
+  // transport. Spawn detaches with setsid/nohup, so closing the tunnel
+  // alone leaves the backend at pid 1 holding state.db (#91668).
+  // Windows remotes use a different lifecycle (connectWindowsRemote) and
+  // are left to a follow-up; POSIX is the leak that OOM'd gateways.
+  await teardownSshState(
+    {
+      ...state,
+      ownershipId: state.ownershipId || sshOwnershipKey(profile)
+    },
+    {
+      cleanupRemote:
+        state.remotePlatform === 'Windows'
+          ? async () => {
+              // connectWindowsRemote does not share POSIX lock/kill. Stay
+              // silent on the kill path, but leave a log so quit is not a
+              // mysterious no-op on Windows remotes.
+              sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
+            }
+          : remoteLifecycle.disconnect
     }
-  } catch {
-    // best effort
-  }
-
-  try {
-    await state.ssh.close()
-  } catch {
-    // best effort
-  }
+  )
 }
 
 // CRITICAL: this must mirror resolveRemoteBackend's precedence, not just return
@@ -9681,7 +9678,7 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 }
 
-function effectiveSshConfigFingerprint(sshConfig) {
+async function effectiveSshConfigFingerprint(sshConfig) {
   const ssh =
     process.platform === 'win32'
       ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
@@ -9698,14 +9695,14 @@ function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  const output = execFileSync(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  const output = await execText(ssh, args, { timeout: 10_000 })
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
-async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
+async function bootstrapSshConnection(profile, sshConfig, reuseToken, source, resolvedEffectiveFingerprint?) {
   const scope = sshScopeKey(profile)
-  const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
+  const effectiveConfigFingerprint = resolvedEffectiveFingerprint || (await effectiveSshConfigFingerprint(sshConfig))
   const resolvedConfig = { ...sshConfig, effectiveConfigFingerprint }
   const fingerprint = sshConfigFingerprint(scope, resolvedConfig)
 
@@ -9822,6 +9819,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   sshConnections.set(scope, {
     ssh,
     fingerprint,
+    ownershipId: result.ownershipId || sshOwnershipKey(profile),
     localPort: result.localPort,
     remotePort: result.remotePort,
     pid: result.pid,
@@ -9847,7 +9845,19 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     result.ownershipId
   )
 
-  return { ...connection, remoteHermesVersion: result.hermesVersion || '' }
+  return {
+    ...connection,
+    remoteHermesVersion: result.hermesVersion || '',
+    ssh: {
+      effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint,
+      host: sshConfig.host,
+      keyPath: sshConfig.keyPath,
+      port: sshConfig.port,
+      remoteHermesPath: sshConfig.remoteHermesPath,
+      remoteProfile: sshConfig.remoteProfile,
+      user: sshConfig.user
+    }
+  }
 }
 
 function persistSshConnectionToken(profile, source, token) {
@@ -10504,6 +10514,64 @@ async function ensureRegistryBackend(connectionId, profile) {
     throw new Error(`No connection with id "${id}".`)
   }
 
+  const profileKey = String(profile ?? '').trim() || 'default'
+  let resolvedRegistrySshConfig
+  let registryEffectiveFingerprintPromise: null | Promise<string> = null
+
+  const resolveRegistrySshConfig = () => {
+    if (source.kind !== 'ssh') {
+      return null
+    }
+
+    if (!resolvedRegistrySshConfig) {
+      resolvedRegistrySshConfig = normalizeSshConfig({
+        mode: 'ssh',
+        host: source.host,
+        user: source.user,
+        port: source.port,
+        keyPath: source.keyPath,
+        remoteHermesPath: source.remoteHermesPath,
+        remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
+      })
+    }
+
+    return resolvedRegistrySshConfig
+  }
+
+  const resolveRegistryEffectiveFingerprint = () => {
+    if (!registryEffectiveFingerprintPromise) {
+      const sshConfig = resolveRegistrySshConfig()
+
+      registryEffectiveFingerprintPromise = sshConfig
+        ? effectiveSshConfigFingerprint(sshConfig)
+        : Promise.reject(new Error(`SSH connection "${source.label}" has no host configured.`))
+    }
+
+    return registryEffectiveFingerprintPromise
+  }
+
+  // The v2 registry is migrated from (but intentionally coexists with) the
+  // v1 primary connection config. Reuse the already-booted primary descriptor
+  // when both identities match; otherwise a default-profile registry request
+  // opens a second SSH dashboard under a different scope and the competing
+  // lifecycle probes repeatedly tear down each other's tunnel.
+  const primary = await reuseMatchingPrimarySshBackend({
+    connectionId: id,
+    effectiveFingerprint: resolveRegistryEffectiveFingerprint,
+    ensurePrimary: () => ensureBackend(profile),
+    profile,
+    registry,
+    source
+  })
+
+  if (primary) {
+    return {
+      ...primary,
+      profile: profileKey,
+      connectionId: id
+    }
+  }
+
   if (source.kind === 'local') {
     // The registry's 'local' entry means THIS machine's runtime — always.
     // ensureBackend() follows the v1 routing table, which resolves to a
@@ -10514,8 +10582,6 @@ async function ensureRegistryBackend(connectionId, profile) {
     // the v1 route is genuinely local; otherwise spawn/reuse a forced-local
     // child pooled under the composite 'conn:local::<profile>' key so it
     // can't collide with the v1 remote descriptor cached at the bare key.
-    const profileKey = String(profile ?? '').trim() || 'default'
-
     profileDeletionGate.assertCanStart(profileKey)
 
     const localRoute = resolveRegistryLocalRoute(profileKey, {
@@ -10581,8 +10647,37 @@ async function ensureRegistryBackend(connectionId, profile) {
 
   if (existing) {
     existing.lastActiveAt = Date.now()
+    const connectionPromise = existing.connectionPromise
 
-    return existing.connectionPromise
+    // A remote process can die while its local SSH forward stays LISTENing.
+    // Validate the exact cached descriptor at dispatch time; background
+    // revalidation is renderer-driven and may never run while the Bots pane is
+    // closed. Concurrent clicks share one retire/reconnect sequence.
+    return registryDispatchRevalidation.run(connectionPromise, () =>
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
+        probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
+        reconnect: () => ensureRegistryBackend(id, profile),
+        retire: async (error: any) => {
+          // A late failure from an old descriptor must never tear down a newer
+          // entry that another caller has already installed.
+          if (backendPool.get(key) !== existing) {
+            return
+          }
+
+          rememberLog(
+            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
+          )
+          await stopPoolBackend(key)
+
+          if (source.kind === 'ssh') {
+            await sshBootstrapCoordinator.cancelAndWait(key)
+            await teardownSshConnection(key)
+          }
+        }
+      })
+    )
   }
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
@@ -10596,7 +10691,14 @@ async function ensureRegistryBackend(connectionId, profile) {
     remoteBaseUrl: null
   }
 
-  entry.connectionPromise = connectRegistryBackend(source, profile, key, entry).catch(error => {
+  entry.connectionPromise = connectRegistryBackend(
+    source,
+    profile,
+    key,
+    entry,
+    resolveRegistrySshConfig(),
+    source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null
+  ).catch(error => {
     if (backendPool.get(key) === entry) {
       backendPool.delete(key)
     }
@@ -10612,7 +10714,14 @@ async function ensureRegistryBackend(connectionId, profile) {
 // Dial a non-local registry connection for one profile. Never spawns a local
 // child (entry.process stays null — stopPoolBackend/evict already tolerate
 // that shape from remote per-profile overrides).
-async function connectRegistryBackend(source, profile, key, poolEntry) {
+async function connectRegistryBackend(
+  source,
+  profile,
+  key,
+  poolEntry,
+  resolvedSshConfig?,
+  resolvedEffectiveFingerprint?: null | Promise<string>
+) {
   const profileKey = String(profile ?? '').trim() || 'default'
 
   if (source.kind === 'ssh') {
@@ -10620,15 +10729,7 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
     // pair owns its own tunnel + remote dashboard; the profile that re-homes
     // the REMOTE process is the entry's remoteProfile or the requested one —
     // never the composite string.
-    const sshConfig = normalizeSshConfig({
-      mode: 'ssh',
-      host: source.host,
-      user: source.user,
-      port: source.port,
-      keyPath: source.keyPath,
-      remoteHermesPath: source.remoteHermesPath,
-      remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-    })
+    const sshConfig = resolvedSshConfig
 
     if (!sshConfig) {
       throw new Error(`SSH connection "${source.label}" has no host configured.`)
@@ -10638,7 +10739,8 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
       key,
       sshConfig,
       decryptDesktopSecret(source.token),
-      `registry:${source.id}`
+      `registry:${source.id}`,
+      resolvedEffectiveFingerprint ? await resolvedEffectiveFingerprint : undefined
     )
 
     poolEntry.remoteBaseUrl = connection.baseUrl
@@ -13336,7 +13438,12 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     : undefined
 
   const localFallbackProfiles = localSource
-    ? localRouteFallbackProfiles(agents, localSource.id, fallbackProfileNames, Boolean(localEnumeration?.error))
+    ? localRouteFallbackProfiles(
+        agents,
+        localSource.id,
+        fallbackProfileNames,
+        isLocalEnumerationFailure(localEnumeration?.error)
+      )
     : []
 
   if (localSource && localFallbackProfiles.length > 0) {
@@ -13669,7 +13776,13 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 
   return Promise.all(
     registry.connections.map(async connection => {
-      let raw: { connection: typeof connection; error?: string; installId?: string; profiles: null | string[] }
+      let raw: {
+        connection: typeof connection
+        error?: string
+        installId?: string
+        profiles: null | string[]
+        profileMetadata?: Record<string, RosterProfileMetadata>
+      }
 
       try {
         // SSH roster listing must never spawn a dashboard. A stale
@@ -13714,13 +13827,52 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
             : []
 
+          const profileMetadata = Array.isArray(body?.profiles)
+            ? Object.fromEntries(
+                body.profiles
+                  .map(profile => {
+                    const name = String(profile?.name || '').trim()
+
+                    if (!name) {
+                      return null
+                    }
+
+                    const metadata: RosterProfileMetadata = {}
+
+                    if (typeof profile?.display_name === 'string' && profile.display_name.trim()) {
+                      metadata.display_name = profile.display_name.trim()
+                    }
+
+                    if (typeof profile?.title === 'string' && profile.title.trim()) {
+                      metadata.title = profile.title.trim()
+                    }
+
+                    if (profile?.ui_meta && typeof profile.ui_meta === 'object') {
+                      metadata.ui_meta = profile.ui_meta
+                    }
+
+                    if (typeof profile?.has_avatar === 'boolean') {
+                      metadata.has_avatar = profile.has_avatar
+                    }
+
+                    return [name, metadata] as const
+                  })
+                  .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
+              )
+            : undefined
+
           // The root HERMES_HOME is an agent too; enumerations that omit it
           // (older backends list only named profiles) still get a default row.
           if (!profiles.includes('default')) {
             profiles.unshift('default')
           }
 
-          raw = { connection, profiles, ...(installId ? { installId } : {}) }
+          raw = {
+            connection,
+            profiles,
+            ...(installId ? { installId } : {}),
+            ...(profileMetadata ? { profileMetadata } : {})
+          }
         }
       } catch (error: any) {
         raw = { connection, profiles: null, error: String(error?.message || error) }
@@ -13732,7 +13884,12 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 
       const remembered = rememberSshEnumeration(raw, sshRosterCache.get(connection.id), connection.kind)
 
-      return { connection, ...remembered, ...(raw.installId ? { installId: raw.installId } : {}) }
+      return {
+        connection,
+        ...remembered,
+        ...(raw.installId ? { installId: raw.installId } : {}),
+        ...(raw.profileMetadata ? { profileMetadata: raw.profileMetadata } : {})
+      }
     })
   )
 }
@@ -13762,25 +13919,15 @@ ipcMain.handle('hermes:agents:roster', async () => {
 
 // Registry-scoped fresh WS URL: the (connectionId, profile) analogue of
 // hermes:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.
+const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
+  ensureBackend: ensureRegistryBackend,
+  mintTicket: mintGatewayWsTicket,
+  buildTicketUrl: buildGatewayWsUrlWithTicket,
+  rememberHeaders: rememberRemoteWsHeaders
+})
+
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
-  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
-
-  return gatewayWsUrlIpcResult(async () => {
-    const connection: any = await ensureRegistryBackend(connectionId, profile)
-
-    if (connection.authMode === 'oauth') {
-      const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
-      const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
-
-      rememberRemoteWsHeaders(wsUrl, connection.headers)
-
-      return registryGatewayWsUrl(connection, wsUrl)
-    }
-
-    rememberRemoteWsHeaders(connection.wsUrl, connection.headers)
-
-    return registryGatewayWsUrl(connection, connection.wsUrl)
-  })
+  return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
 })
 
 // Fan out `hermes update` to every eligible registered connection at once.
@@ -13908,14 +14055,17 @@ async function fetchJsonForBackend(
 
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
-  // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:
-  //   - advertises "native_pkce" in auth_flows → run the system-browser +
-  //     loopback + PKCE flow. No embedded webview, tokens held by the app
-  //     (encrypted keychain), REST/WS authenticated by bearer — no cookies.
-  //   - older gateway without native_pkce → fall back to the legacy embedded
-  //     BrowserWindow cookie flow, preserving compatibility.
-  // This is the "observable ladder + compatibility fallback tied to an
-  // identified older runtime" the desktop guide requires.
+  // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
+  // for supported auth_flows and /api/auth/providers for provider capabilities:
+  //   - all providers support password → always use the embedded login window
+  //     (password providers require the dashboard login form; native PKCE
+  //     can never complete for that provider shape)
+  //   - advertises "native_pkce" AND at least one non-password provider →
+  //     run the system-browser + loopback + PKCE flow
+  //   - older gateway with no provider metadata → fall back to the auth_flows
+  //     check (existing compatibility)
+  //   - a failed native login reports the error rather than auto-falling back
+  //     to the embedded flow — one sign-in action opens at most one window.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
   let statusBody: any = null
@@ -13927,7 +14077,10 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
     // own error handling and works against any gated gateway.
   }
 
-  const strategy = resolveLoginStrategy(statusBody)
+  const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
+  const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
+
+  const strategy = resolveLoginStrategy(statusBody, { providers })
 
   if (strategy === 'native') {
     try {
@@ -13944,13 +14097,9 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
-      rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
-      )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
+      rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
+
+      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
     }
   }
 
@@ -13969,19 +14118,17 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   return { ok: true, baseUrl, connected }
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
-  const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
-  await clearOauthSession(baseUrl || undefined)
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  await clearOauthSession(baseUrl)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
-  if (baseUrl) {
-    _clearNativeTokens(baseUrl)
-  }
+  _clearNativeTokens(baseUrl)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
   // behind is reflected as still-connected rather than silently signed-out.
-  const connected = baseUrl ? (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) : false
+  const connected = (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl)
 
   return { ok: true, connected }
 })
@@ -14068,6 +14215,13 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+// Persistence-only sibling of hermes:profile:set: records the profile the
+// Desktop should boot into next launch WITHOUT tearing down the backend or
+// reloading the window — the rail's live workspace switch already re-homed
+// the gateway (#79886).
+ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
+  profile: writeActiveDesktopProfile(name)
+}))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 
@@ -16072,6 +16226,12 @@ app.on('before-quit', event => {
     return
   }
 
+  // A prevented first quit leaves the renderer alive while teardown runs.
+  // Seal the SSH coordinator before touching connections so reconnect
+  // callbacks cannot recreate a backend for a registration whose app is
+  // already quitting (#91668).
+  sshBootstrapCoordinator.shutdown()
+
   if (!backendQuitTeardownDone) {
     event.preventDefault()
     void backendShutdown.run().finally(() => {
@@ -16082,7 +16242,6 @@ app.on('before-quit', event => {
 
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()
-    sshBootstrapCoordinator.cancelAll()
     const scopes = [...sshConnections.keys()]
 
     const pending = Promise.allSettled([
@@ -16090,7 +16249,10 @@ app.on('before-quit', event => {
       ...sshBootstrapCoordinator.promises()
     ])
 
-    void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 4_000))]).then(async () => {
+    // cleanupStale waits up to 5s for the owned pid to exit (50 * 100ms).
+    // The previous 4s race could close SSH first and leave serve --isolated
+    // reparented to pid 1.
+    void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 6_000))]).then(async () => {
       await sshBootstrapCoordinator.forceCleanupAll()
       sshQuitTeardownDone = true
       app.quit()
