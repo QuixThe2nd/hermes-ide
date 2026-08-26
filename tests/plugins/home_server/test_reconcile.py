@@ -138,6 +138,20 @@ def test_notification_channel_is_set_when_none_exists(
     assert notify["name"] == "gateway-restarts"
 
 
+def test_restart_channel_rename_is_set_when_none_exists(
+    hermes, make_discord, read_config, state
+):
+    report = reconcile(http_fn=make_discord())
+
+    assert report["restart_channel_rename"] == "set"
+    rcr = read_config()["gateway"]["restart_channel_rename"]
+    channel_id = state()["channels"]["notifications"]["gateway-restarts"]
+    assert rcr["channel_id"] == channel_id
+    assert rcr["platform"] == "discord"
+    assert rcr["base_name"] == "gateway-restarts"
+    assert rcr["renamed_template"] == "restarting-{agents}-agents"
+
+
 def test_existing_home_channel_is_never_clobbered(
     hermes, guild, make_discord, write_config, read_config
 ):
@@ -184,6 +198,75 @@ def test_existing_notification_channel_is_never_clobbered(
     )
 
 
+def test_restart_channel_rename_is_set_even_when_notification_channel_already_exists(
+    hermes, guild, make_discord, write_config, read_config, state
+):
+    """Existing /setnotify must not leave drain-progress renaming dark."""
+    write_config(
+        {"guild_id": guild},
+        platforms={
+            "discord": {
+                "notification_channel": {
+                    "platform": "discord",
+                    "chat_id": "222",
+                    "name": "my restarts",
+                }
+            }
+        },
+    )
+    report = reconcile(http_fn=make_discord())
+
+    assert report["notification_channel"] == "kept"
+    assert report["restart_channel_rename"] == "set"
+    rcr = read_config()["gateway"]["restart_channel_rename"]
+    assert rcr["channel_id"] == state()["channels"]["notifications"]["gateway-restarts"]
+
+
+def test_existing_restart_channel_rename_is_never_clobbered(
+    hermes, guild, make_discord, write_config, read_config
+):
+    import yaml
+
+    write_config({"guild_id": guild})
+    path = hermes / "config.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw["gateway"] = {
+        "restart_channel_rename": {
+            "platform": "discord",
+            "channel_id": "333",
+            "base_name": "custom-restarts",
+        }
+    }
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = reconcile(http_fn=make_discord())
+
+    assert report["restart_channel_rename"] == "kept"
+    rcr = read_config()["gateway"]["restart_channel_rename"]
+    assert rcr["channel_id"] == "333"
+    assert rcr["base_name"] == "custom-restarts"
+
+
+def test_malformed_restart_channel_rename_is_replaced(
+    hermes, guild, make_discord, write_config, read_config, state
+):
+    import yaml
+
+    write_config({"guild_id": guild})
+    path = hermes / "config.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw["gateway"] = {"restart_channel_rename": {"channel_id": "abc"}}
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = reconcile(http_fn=make_discord())
+
+    assert report["restart_channel_rename"] == "set"
+    assert (
+        read_config()["gateway"]["restart_channel_rename"]["channel_id"]
+        == state()["channels"]["notifications"]["gateway-restarts"]
+    )
+
+
 def test_disabled_notifications_module_is_skipped_entirely(
     hermes, guild, make_discord, write_config, read_config
 ):
@@ -201,9 +284,11 @@ def test_disabled_notifications_module_is_skipped_entirely(
     # No wiring either: both channel pointers stay untouched.
     assert report["home_channel"] == "skipped"
     assert report["notification_channel"] == "skipped"
+    assert report["restart_channel_rename"] == "skipped"
     discord_section = read_config().get("platforms", {}).get("discord", {})
     assert "home_channel" not in discord_section
     assert "notification_channel" not in discord_section
+    assert "restart_channel_rename" not in (read_config().get("gateway") or {})
 
 
 def test_welcome_embeds_posted_once_per_text_category_and_skipped_for_voice(

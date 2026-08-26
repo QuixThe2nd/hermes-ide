@@ -1,5 +1,5 @@
 name: home_server
 version: 1.0.0
-description: "Discord Home Server provisioning — one command creates and keeps in sync the Chat, Notifications, Honcho Memory, Models, and Speeds categories, fully wired to hermes_starts, home and notification channels, memory webhooks, quota_channels, and speed_channels. A legacy Quotas category is renamed in place to Models."
+description: "Discord Home Server provisioning — one command creates and keeps in sync the Chat, Notifications, Honcho Memory, Models, and Speeds categories, fully wired to hermes_starts, home and notification channels, drain-progress renaming of #gateway-restarts, memory webhooks, quota_channels, and speed_channels. A legacy Quotas category is renamed in place to Models."
 author: Hermes Agent
 kind: backend

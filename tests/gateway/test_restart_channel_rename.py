@@ -183,3 +183,31 @@ def test_startup_adapter_without_rename_support_is_noop():
 
     runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=_Bare())
     asyncio.run(restore_on_startup(runner))  # must not raise
+
+
+# ── persist helper ──────────────────────────────────────────────────────────
+
+
+def test_persist_restart_channel_rename_writes_nested_gateway_key():
+    from gateway.config import persist_restart_channel_rename
+    from hermes_cli.config import load_config
+
+    persist_restart_channel_rename("1541012892462223391")
+
+    raw = load_config()
+    assert raw["gateway"]["restart_channel_rename"] == {
+        "platform": "discord",
+        "channel_id": "1541012892462223391",
+        "base_name": "gateway-restarts",
+        "renamed_template": DEFAULT_TEMPLATE,
+    }
+
+
+def test_persist_restart_channel_rename_rejects_non_numeric_id():
+    from gateway.config import persist_restart_channel_rename
+    from hermes_cli.config import load_config
+
+    persist_restart_channel_rename("not-an-id")
+
+    raw = load_config()
+    assert "restart_channel_rename" not in (raw.get("gateway") or {})

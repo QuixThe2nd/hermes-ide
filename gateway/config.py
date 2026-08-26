@@ -560,6 +560,51 @@ def persist_notification_channel(home: HomeChannel, *, enabled_if_new: bool = Fa
     save_config(config)
 
 
+def persist_restart_channel_rename(
+    channel_id: str,
+    *,
+    platform: str = "discord",
+    base_name: Optional[str] = None,
+    renamed_template: Optional[str] = None,
+) -> None:
+    """Persist ``gateway.restart_channel_rename`` for drain-progress renaming.
+
+    Written as a nested dict under the yaml ``gateway:`` section, the only
+    spelling ``load_gateway_config`` forwards. Invalid ``channel_id`` is a
+    no-op so a bad provisioner call cannot poison config.
+    """
+    from hermes_cli.config import load_config, save_config
+    from gateway.restart_channel_rename import (
+        DEFAULT_BASE_NAME,
+        DEFAULT_PLATFORM,
+        DEFAULT_TEMPLATE,
+        parse_restart_channel_rename_config,
+    )
+
+    parsed = parse_restart_channel_rename_config(
+        {
+            "platform": platform or DEFAULT_PLATFORM,
+            "channel_id": channel_id,
+            "base_name": base_name or DEFAULT_BASE_NAME,
+            "renamed_template": renamed_template or DEFAULT_TEMPLATE,
+        }
+    )
+    if not parsed:
+        return
+    config = load_config()
+    gw = config.setdefault("gateway", {})
+    if not isinstance(gw, dict):
+        gw = {}
+        config["gateway"] = gw
+    gw["restart_channel_rename"] = {
+        "platform": parsed["platform"],
+        "channel_id": parsed["channel_id"],
+        "base_name": parsed["base_name"],
+        "renamed_template": parsed["template"],
+    }
+    save_config(config)
+
+
 def clear_notification_channel(platform: Platform) -> None:
     """Remove a platform's persisted lifecycle-notification target.
 
