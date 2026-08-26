@@ -9881,6 +9881,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             write_runtime_status(active_agents=self._active_work_count())
         except Exception:
             pass
+        try:
+            from gateway.restart_channel_rename import schedule_idle_refresh
+
+            schedule_idle_refresh(self)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).

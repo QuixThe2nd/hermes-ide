@@ -16,8 +16,8 @@ Creation alone is worthless, so reconcile also *wires* what it provisions:
 ``hermes_starts`` targets the shared inbox, the Discord home channel and
 lifecycle-notification channel point at Notifications/``other`` and
 Notifications/``gateway-restarts``, ``gateway.restart_channel_rename``
-points at that same ``gateway-restarts`` channel so it can show
-``restarting-N-agents`` while the gateway drains, each memory channel gets
+points at that same channel so it shows ``agents-N`` while the gateway
+is up and ``restarting-N-agents`` while it drains, each memory channel gets
 a Discord webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and
 the ``quota_channels`` / ``speed_channels`` config sections are pointed at
 the created voice channels.
@@ -102,6 +102,8 @@ class ChannelSpec:
     name: str
     kind: int
     key: str = ""
+    # Extra name prefixes treated as the same channel (dynamic labels).
+    alias_prefixes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,13 +141,19 @@ TEMPLATE: Dict[str, ModuleSpec] = {
         category="Notifications",
         channels=(
             ChannelSpec("model-fallback", CHANNEL_TYPE_TEXT, "model-fallback"),
-            ChannelSpec("gateway-restarts", CHANNEL_TYPE_TEXT, "gateway-restarts"),
+            ChannelSpec(
+                "gateway-restarts",
+                CHANNEL_TYPE_TEXT,
+                "gateway-restarts",
+                alias_prefixes=("agents-", "restarting-"),
+            ),
             ChannelSpec("other", CHANNEL_TYPE_TEXT, "other"),
         ),
         embed_title="🔔 Notifications",
         embed_description=(
-            "One-way pings from the machinery: gateway-restarts carries "
-            "shutdown and restart broadcasts, model-fallback shows when the "
+            "One-way pings from the machinery: that channel is named "
+            "agents-N while the gateway is up and restarting-N-agents "
+            "while it drains; model-fallback shows when the "
             "primary model was abandoned for a fallback, and other catches "
             "everything else worth flagging. Conversation belongs in Chat — "
             "nothing here needs a reply."
@@ -889,12 +897,37 @@ def _prefix_match_channel(
     return None
 
 
+def _alias_match_channel(
+    channels: List[Dict[str, Any]],
+    *,
+    prefixes: Sequence[str],
+    kind: int,
+    exclude_ids: set[str],
+) -> Optional[str]:
+    """Find a channel whose name starts with one of ``prefixes``."""
+    cleaned = tuple(_normalize_name(p) for p in prefixes if str(p or "").strip())
+    if not cleaned:
+        return None
+    for channel in channels:
+        if int(channel.get("type") or 0) != kind:
+            continue
+        cid = str(channel.get("id"))
+        if cid in exclude_ids:
+            continue
+        got = _normalize_name(channel.get("name"))
+        for prefix in cleaned:
+            if got == prefix or got.startswith(prefix):
+                return cid
+    return None
+
+
 def _reconcile_module(
     client: DiscordClient,
     guild_id: str,
     spec: ModuleSpec,
     channels: List[Dict[str, Any]],
     report: Dict[str, Any],
+    prior_channels: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Ensure one category and its channels exist. Mutates ``channels`` so
     later modules see what earlier ones created.
@@ -968,13 +1001,20 @@ def _reconcile_module(
     }
 
     resolved: Dict[str, str] = {}
+    prior = dict(prior_channels or {})
+    known_ids = {str(c.get("id")) for c in channels}
     for channel_spec in spec.channels:
-        channel_id = _find_channel(
-            channels,
-            name=channel_spec.name,
-            kind=channel_spec.kind,
-            parent_id=category_id,
-        )
+        channel_id = None
+        stored = str(prior.get(channel_spec.name) or "").strip()
+        if stored and stored in known_ids:
+            channel_id = stored
+        if channel_id is None:
+            channel_id = _find_channel(
+                channels,
+                name=channel_spec.name,
+                kind=channel_spec.kind,
+                parent_id=category_id,
+            )
         adopted_now = False
         if channel_id is None and channel_spec.kind != CHANNEL_TYPE_CATEGORY:
             # Exact name elsewhere in the guild → adopt it under our category.
@@ -993,6 +1033,26 @@ def _reconcile_module(
             channel_id = _prefix_match_channel(
                 channels,
                 name=channel_spec.name,
+                kind=channel_spec.kind,
+                exclude_ids=set(resolved.values()) | claimed,
+            )
+            if channel_id is not None:
+                parent = next(
+                    (
+                        str(c.get("parent_id"))
+                        for c in channels
+                        if str(c.get("id")) == channel_id
+                    ),
+                    None,
+                )
+                if parent == str(category_id):
+                    adopted_now = False
+                else:
+                    adopted_now = True
+        if channel_id is None and channel_spec.alias_prefixes:
+            channel_id = _alias_match_channel(
+                channels,
+                prefixes=channel_spec.alias_prefixes,
                 kind=channel_spec.kind,
                 exclude_ids=set(resolved.values()) | claimed,
             )
@@ -1085,7 +1145,14 @@ def reconcile(
         if not modules[key]:
             continue
         spec = TEMPLATE[key]
-        outcome = _reconcile_module(client, guild_id, spec, channels, report)
+        outcome = _reconcile_module(
+            client,
+            guild_id,
+            spec,
+            channels,
+            report,
+            prior_channels=(prior.get("channels") or {}).get(key) or {},
+        )
         state["categories"][key] = outcome["category_id"]
         state["channels"][key] = outcome["channels"]
 

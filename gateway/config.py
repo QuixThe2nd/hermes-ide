@@ -566,6 +566,7 @@ def persist_restart_channel_rename(
     platform: str = "discord",
     base_name: Optional[str] = None,
     renamed_template: Optional[str] = None,
+    idle_template: Optional[str] = None,
 ) -> None:
     """Persist ``gateway.restart_channel_rename`` for drain-progress renaming.
 
@@ -576,6 +577,7 @@ def persist_restart_channel_rename(
     from hermes_cli.config import load_config, save_config
     from gateway.restart_channel_rename import (
         DEFAULT_BASE_NAME,
+        DEFAULT_IDLE_TEMPLATE,
         DEFAULT_PLATFORM,
         DEFAULT_TEMPLATE,
         parse_restart_channel_rename_config,
@@ -587,6 +589,7 @@ def persist_restart_channel_rename(
             "channel_id": channel_id,
             "base_name": base_name or DEFAULT_BASE_NAME,
             "renamed_template": renamed_template or DEFAULT_TEMPLATE,
+            "idle_template": idle_template or DEFAULT_IDLE_TEMPLATE,
         }
     )
     if not parsed:
@@ -601,6 +604,7 @@ def persist_restart_channel_rename(
         "channel_id": parsed["channel_id"],
         "base_name": parsed["base_name"],
         "renamed_template": parsed["template"],
+        "idle_template": parsed["idle_template"],
     }
     save_config(config)
 
