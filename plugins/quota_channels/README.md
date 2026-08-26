@@ -1,16 +1,28 @@
 # quota_channels
 
-Discord voice-channel quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, and **Grok**. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), and — for Codex, z.ai, and Cursor — rolling 7-day consumed tokens in the same channel name. Channels are sorted by time until reset (ascending), and the category label stays fresh between cron ticks.
+Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, **Grok**, and **OpenRouter** under a **Models** category. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), and — for Codex, z.ai, and Cursor — rolling 7-day consumed tokens in the same channel name. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
 
 ## What it does
 
 Each tick (typically every minute via cron):
 
 1. **Quota gate** — provider API fetches run at most every `quota_interval_seconds` (default 30 minutes) unless forced. State lives in `HERMES_HOME/quota_channels_state.json`.
-2. **On a quota run** — fetch all enabled providers, rename their voice channels (quota + token segment where supported), sort by time until reset, and save state.
-3. **Every tick** — update the Quotas category name once with the absolute local timestamp of the last successful quota run and either the next scheduled run time or `Due` when the interval has elapsed. Format: `Quotas • <day/month hour:minam/pm> • Next: <hour:minam/pm|Due>`.
+2. **On a quota run** — fetch all enabled providers, rename their voice channels (quota + token segment where supported), sort by score (descending, see below), and save state.
+3. **Every tick** — update the Models category name once with the absolute local timestamp of the last successful quota run and either the next scheduled run time or `Due` when the interval has elapsed. Format: `Models • <day/month hour:minam/pm> • Next: <hour:minam/pm|Due>`.
 
 Silent success for the headless CLI; failures print `quota-channels: <message>` and exit 1.
+
+## Channel ordering
+
+Voice channels are ordered by the **same policy as `fallback_quota_reorder`** (the implementation is shared, not duplicated): healthy entries sort by descending
+
+`score = quota_frac × (168 / hours_remaining) × rate_24h × rate_1h`
+
+where the uptime factors come from the fallback reliability ledger (`HERMES_HOME/fallback_quota_reorder_reliability.jsonl`) with its usual sample thresholds — a provider with too few samples stays neutral at 1.0. Entries below 5% sink behind all healthy entries (still by score among themselves), and ties keep the spec order (Codex, Kimi, z.ai, Cursor, Grok, OpenRouter). Quota keys map to routing providers `codex→openai-codex`, `kimi→kimi-coding`, `zai→zai`, `cursor→cursor`, `grok→xai-oauth`, `openrouter→openrouter`. The current primary model stays in the display and simply sorts by its own score.
+
+### The virtual OpenRouter row
+
+`OpenRouter` is a virtual row for the unlimited Ox Alpha model (`openrouter/stealth/ox-alpha`). There is no quota API to call: the channel carries the managed name `OpenRouter: 100% • Unlimited`, and its state reading is a synthetic full wallet — 100% against exactly 168 hours — so with neutral uptime it scores exactly 1.0 and observed uptime derates it through the same factors as everyone else.
 
 ## Configuration
 
@@ -28,21 +40,25 @@ quota_channels:
     zai: "VOICE_CHANNEL_ID"
     cursor: "VOICE_CHANNEL_ID"
     grok: "VOICE_CHANNEL_ID"
-  enabled_providers:             # optional; default all five enabled
+    openrouter: "VOICE_CHANNEL_ID"
+  enabled_providers:             # optional; default = the wired rows
     codex: true
     kimi: true
     zai: true
     cursor: true
     grok: true
+    openrouter: true
 ```
 
 `enabled_providers` may also be a list, e.g. `["codex", "kimi"]`.
+
+**Upgrade note:** a config written before OpenRouter existed (the original five channel IDs, no `enabled_providers`) keeps validating and running unchanged; the OpenRouter row auto-enables as soon as its channel ID is wired. An explicit `enabled_providers` list or map still controls every row, OpenRouter included.
 
 **Upgrade note:** Updating the plugin automatically enriches existing quota channels for Codex, z.ai, and Cursor with a `<compact> tok/7d` segment — no config changes required.
 
 ## Rolling 7-day token enrichment
 
-Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request.
+Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request. OpenRouter is virtual — no quota or token HTTP request at all.
 
 | Provider | Source | Notes |
 |----------|--------|-------|
@@ -50,6 +66,7 @@ Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel
 | z.ai | `GET …/model-usage` with UTC `startTime`/`endTime` as `yyyy-MM-dd HH:mm:ss` | HTTP 200 with empty body is an error, not zero |
 | Cursor | `POST …/GetAggregatedUsageEvents` (epoch-ms strings, now−7d..now) | Total = input + output only; cache tokens excluded |
 | Kimi, Grok | — | Quota-only channel names; no token HTTP call |
+| OpenRouter | — | Virtual unlimited row; managed name, no HTTP call |
 
 If a token fetch fails, the channel is still renamed with fresh quota data. When the current name already contains a parseable `tok/7d` segment, that segment is preserved; otherwise the name is quota-only. Token failures never block other providers, sorting, or the category update. Quota fetch failures leave that channel completely unchanged.
 
