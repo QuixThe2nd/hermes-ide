@@ -33,7 +33,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - quota_channels — Discord model voice channels for six AI providers (one channel each) under a Models category, ordered by the same score as fallback routing (`quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h`; OpenRouter is a virtual unlimited Ox Alpha row), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
   - fallback_quota_reorder — score-based primary/fallback quota rotation: `quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h` ranks soonest-reset wallets first (unlimited Ox Alpha scored as a synthetic 100%/168h wallet, derated by uptime) and rotates the primary slot to the top scorer
   - fallback_watch — tails agent.log and alerts a Discord channel whenever the primary model falls back, cooldown-deduped (opt-in, off by default)
-  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Models / Speeds), fully wired; `/sethomeserver` also wires `#gateway-restarts` drain renaming; idempotent, never deletes, a legacy Quotas category is renamed in place to Models, existing home, notification, and restart-rename targets are never clobbered
+  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Models / Speeds), fully wired; `#gateway-restarts` shows `agents-N` live and `restarting-N-agents` while draining; idempotent, never deletes, a legacy Quotas category is renamed in place to Models, existing home, notification, and rename targets are never clobbered
   - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
@@ -42,7 +42,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Gateway — `/restart` parks only live chats, resumes only that snapshot, and shows each accepted LLM park steer in its shutdown warning
   - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
   - Gateway — lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`)
-  - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), wires `#gateway-restarts` so it renames to `restarting-N-agents` while draining, then re-syncs at most hourly
+  - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), wires `#gateway-restarts` as `agents-N` while up and `restarting-N-agents` while draining, then re-syncs at most hourly
   - Discord — sessions keyed to your stable username, not your per-server nickname
   - Discord — `DISCORD_ALLOWED_GUILDS`: any member of a listed server can talk to the bot (DMs unaffected)
   - Discord — threads renamed once, after the first reply lands, never mid-turn

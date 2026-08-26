@@ -4,9 +4,11 @@ import asyncio
 import pytest
 
 from gateway.restart_channel_rename import (
+    DEFAULT_IDLE_TEMPLATE,
     DEFAULT_TEMPLATE,
     _render_label,
     parse_restart_channel_rename_config,
+    refresh_idle_name,
     rename_on_shutdown,
     restore_on_startup,
 )
@@ -60,6 +62,7 @@ def test_parse_config_full():
         "channel_id": "123456789",
         "base_name": "gateway-restarts",
         "template": "restarting-{agents}-agents",
+        "idle_template": DEFAULT_IDLE_TEMPLATE,
     }
 
 
@@ -68,6 +71,7 @@ def test_parse_config_defaults():
     assert parsed["platform"] == "discord"
     assert parsed["base_name"] == "gateway-restarts"
     assert parsed["template"] == DEFAULT_TEMPLATE
+    assert parsed["idle_template"] == DEFAULT_IDLE_TEMPLATE
 
 
 @pytest.mark.parametrize(
@@ -164,11 +168,27 @@ def test_shutdown_adapter_failure_does_not_raise():
 # ── startup restore ─────────────────────────────────────────────────────────
 
 
-def test_startup_restores_base_name():
+def test_startup_restores_idle_name():
     adapter = _FakeAdapter()
     runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter)
     asyncio.run(restore_on_startup(runner))
-    assert adapter.calls == [("555", "gateway-restarts")]
+    assert adapter.calls == [("555", "agents-3")]
+
+
+def test_idle_refresh_skips_when_draining():
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter)
+    runner._draining = True
+    asyncio.run(refresh_idle_name(runner))
+    assert adapter.calls == []
+
+
+def test_idle_refresh_skips_unchanged_label():
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter)
+    asyncio.run(refresh_idle_name(runner))
+    asyncio.run(refresh_idle_name(runner))
+    assert adapter.calls == [("555", "agents-3")]
 
 
 def test_startup_missing_adapter_is_noop():
@@ -200,6 +220,7 @@ def test_persist_restart_channel_rename_writes_nested_gateway_key():
         "channel_id": "1541012892462223391",
         "base_name": "gateway-restarts",
         "renamed_template": DEFAULT_TEMPLATE,
+        "idle_template": DEFAULT_IDLE_TEMPLATE,
     }
 
 

@@ -150,6 +150,7 @@ def test_restart_channel_rename_is_set_when_none_exists(
     assert rcr["platform"] == "discord"
     assert rcr["base_name"] == "gateway-restarts"
     assert rcr["renamed_template"] == "restarting-{agents}-agents"
+    assert rcr["idle_template"] == "agents-{agents}"
 
 
 def test_existing_home_channel_is_never_clobbered(
@@ -405,6 +406,42 @@ def test_orphan_notification_channels_are_adopted_not_recreated(
     platforms = read_config()["platforms"]["discord"]
     assert platforms["home_channel"]["chat_id"] == "8103"
     assert platforms["notification_channel"]["chat_id"] == "8102"
+
+
+def test_agents_count_name_is_adopted_as_gateway_restarts(
+    hermes, make_discord, state
+):
+    """A live agents-N rename is the same channel, not a new gateway-restarts."""
+    discord = make_discord()
+    discord.add_channel(id=9101, name="model-fallback", type=0)
+    discord.add_channel(id=9102, name="agents-5", type=0)
+    discord.add_channel(id=9103, name="other", type=0)
+
+    report = reconcile(http_fn=discord)
+
+    assert "channel:gateway-restarts" not in report["created"]
+    assert state()["channels"]["notifications"]["gateway-restarts"] == "9102"
+    names = {c["name"] for c in discord.channels.values()}
+    assert "gateway-restarts" not in names
+    assert "agents-5" in names
+
+
+def test_stored_gateway_restarts_id_survives_idle_rename(
+    hermes, make_discord, state
+):
+    """Second reconcile must not mint a new channel after agents-N rename."""
+    discord = make_discord()
+    reconcile(http_fn=discord)
+    cid = state()["channels"]["notifications"]["gateway-restarts"]
+    discord.channels[cid]["name"] = "agents-2"
+    mutations = len(discord.mutations)
+
+    report = reconcile(http_fn=discord)
+
+    assert "channel:gateway-restarts" not in report["created"]
+    assert state()["channels"]["notifications"]["gateway-restarts"] == cid
+    assert discord.channels[cid]["name"] == "agents-2"
+    assert len(discord.mutations) == mutations
 
 
 def test_leftover_chat_home_channel_is_never_deleted(hermes, make_discord):
