@@ -179,6 +179,12 @@ class TestParseCodexUsage:
 
 
 class TestParseKimiUsage:
+    @staticmethod
+    def _payload(**usage):
+        reset = datetime(2026, 8, 25, 0, 0, 0, tzinfo=timezone.utc)
+        usage.setdefault("resetTime", reset.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        return json.dumps({"usage": usage}), reset.timestamp() - 25 * 3600
+
     def test_string_numbers_and_z_suffix(self):
         reset = datetime(2026, 8, 25, 0, 0, 0, tzinfo=timezone.utc)
         payload = json.dumps(
@@ -194,6 +200,83 @@ class TestParseKimiUsage:
         assert remaining == 42
         assert reset_secs == 25 * 3600
         assert format_kimi_name(remaining, reset_secs) == "Kimi: 42% \u2022 25h left"
+
+    def test_legacy_int_remaining(self):
+        payload, now = self._payload(remaining=42)
+        remaining, reset_secs = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 42
+        assert reset_secs == 25 * 3600
+
+    def test_remaining_wins_when_both_shapes_present(self):
+        payload, now = self._payload(remaining="42", limit="100", used="100")
+        remaining, _ = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 42
+
+    def test_current_shape_strings_fully_used(self):
+        payload, now = self._payload(limit="100", used="100")
+        remaining, reset_secs = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 0
+        assert reset_secs == 25 * 3600
+        assert format_kimi_name(remaining, reset_secs) == "Kimi: 0% \u2022 25h left"
+
+    def test_current_shape_strings_one_left(self):
+        payload, now = self._payload(limit="100", used="99")
+        remaining, reset_secs = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 1
+        assert reset_secs == 25 * 3600
+        assert format_kimi_name(remaining, reset_secs) == "Kimi: 1% \u2022 25h left"
+
+    def test_current_shape_numeric_and_mixed_values_round(self):
+        payload, now = self._payload(limit=200, used=50)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 75
+        payload, now = self._payload(limit="200", used=50)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 75
+        payload, now = self._payload(limit=3, used=1)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 67
+
+    def test_current_shape_clamps_over_and_under(self):
+        payload, now = self._payload(limit="100", used="150")
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 0
+        payload, now = self._payload(limit=100, used=-20)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 100
+        payload, now = self._payload(limit=100, used=0)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 100
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            {"used": "10"},
+            {"limit": "100"},
+            {"limit": "abc", "used": "1"},
+            {"limit": "100", "used": "abc"},
+            {"limit": "NaN", "used": "1"},
+            {"limit": "100", "used": "Infinity"},
+            {"limit": float("nan"), "used": 1},
+            {"limit": float("inf"), "used": 1},
+            {"limit": "0", "used": "1"},
+            {"limit": 0, "used": 1},
+            {"limit": -100, "used": 1},
+            {"limit": "-100", "used": "1"},
+        ],
+        ids=[
+            "missing_limit",
+            "missing_used",
+            "nonnumeric_limit",
+            "nonnumeric_used",
+            "nan_limit_string",
+            "infinite_used_string",
+            "nan_limit_number",
+            "infinite_limit_number",
+            "zero_limit_string",
+            "zero_limit_number",
+            "negative_limit_number",
+            "negative_limit_string",
+        ],
+    )
+    def test_current_shape_invalid_values_raise(self, usage):
+        payload, now = self._payload(**usage)
+        with pytest.raises(QuotaChannelsError, match="invalid limit/used"):
+            parse_kimi_usage(payload, now_fn=lambda: now)
 
 
 class TestParseZaiUsage:

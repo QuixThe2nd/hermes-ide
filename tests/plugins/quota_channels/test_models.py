@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -341,6 +341,75 @@ class TestRunTickModelsIntegration:
         )
         assert result["sorted"] is False
         assert discord.position_patch is None
+
+    def test_current_shape_kimi_response_scores_into_position(
+        self, monkeypatch, tmp_path
+    ):
+        # Live dogfood shape: usage carries numeric-string limit/used and no
+        # legacy `remaining`. Kimi must parse, rename, and land a scored
+        # position instead of surfacing a provider error.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text('KIMI_API_KEY="kimi-key"\n')
+        monkeypatch.setattr(core, "discord_headers", lambda: {"Authorization": "Bot x"})
+        reset = datetime(2026, 8, 26, 15, 0, 0, tzinfo=timezone.utc)
+        now = reset.timestamp() - 25 * 3600
+        discord = _FakeDiscord(
+            [
+                {"id": "c6", "position": 10},
+                {"id": "c2", "position": 11},
+            ]
+        )
+
+        def fake_http(req, timeout=25.0):
+            if "kimi.com" in req.full_url:
+                body = json.dumps(
+                    {
+                        "usage": {
+                            "limit": "100",
+                            "used": "40",
+                            "resetTime": reset.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        }
+                    }
+                ).encode()
+                return 200, body
+            return discord(req, timeout)
+
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"kimi": "c2", "openrouter": "c6"},
+                "enabled_providers": ["kimi", "openrouter"],
+            }
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: now,
+            http_fn=fake_http,
+            sleep_fn=lambda _: None,
+        )
+
+        assert result["providers"]["Kimi"] == {
+            "remaining": 60,
+            "reset_seconds": 25 * 3600.0,
+            "rename": "renamed",
+        }
+        renames = dict(discord.renames)
+        assert renames["c2"] == {"name": "Kimi: 60% • 25h left"}
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        assert state["readings"]["kimi"] == {
+            "pct": 60,
+            "reset_seconds": 25 * 3600.0,
+            "label": "Kimi",
+        }
+        # 60% resetting in 25h scores 0.6 × 168/25 = 4.03, beating the
+        # synthetic OpenRouter wallet's 1.0, so Kimi takes the best slot.
+        assert result["sorted"] is True
+        assert discord.position_patch == [
+            {"id": "c2", "position": 10},
+            {"id": "c6", "position": 11},
+        ]
 
 
 class TestPlanPositionMovesByRank:

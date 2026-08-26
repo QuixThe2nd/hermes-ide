@@ -321,10 +321,23 @@ def parse_kimi_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
         raise QuotaChannelsError(f"no usage object in kimi payload: {text[:200]}")
     if not isinstance(usage, dict):
         raise QuotaChannelsError("kimi: invalid usage object in payload")
-    try:
-        remaining = int(usage["remaining"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise QuotaChannelsError("kimi: invalid remaining in usage payload") from exc
+    if "remaining" in usage:
+        # legacy shape: a ready-made remaining percentage
+        try:
+            remaining = int(usage["remaining"])
+        except (TypeError, ValueError) as exc:
+            raise QuotaChannelsError("kimi: invalid remaining in usage payload") from exc
+    else:
+        # current shape: no `remaining`, derive it from limit/used (numbers or
+        # numeric strings). used beyond the limit clamps to 0% left.
+        try:
+            limit = float(usage["limit"])
+            used = float(usage["used"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise QuotaChannelsError("kimi: invalid limit/used in usage payload") from exc
+        if not (math.isfinite(limit) and math.isfinite(used)) or limit <= 0:
+            raise QuotaChannelsError("kimi: invalid limit/used in usage payload")
+        remaining = min(100, max(0, round((limit - used) / limit * 100)))
     reset_raw = usage.get("resetTime")
     if not isinstance(reset_raw, str):
         raise QuotaChannelsError("kimi: invalid resetTime in usage payload")
