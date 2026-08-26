@@ -60,6 +60,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Config — API retry backoff timing
   - Agent — tool-call narration guidance: model briefly explains each tool call before making it (`agent.tool_call_narration_guidance`, default on)
   - Config — web search and extract fallback chains
+  - Models — Z.AI silent default is GLM-5.3, with GLM-5.3-Flash as fallback
   - Config — `security.allow_agent_config_writes` opts out of the write_file/patch guard on the Hermes config file (operator request; default off)
   - Display — optional native OS notification when a turn finishes (`display.notify_on_complete`, off by default; SSH target supported)
 
