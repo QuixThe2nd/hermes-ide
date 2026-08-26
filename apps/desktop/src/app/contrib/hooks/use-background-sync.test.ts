@@ -22,9 +22,12 @@ import {
 
 import {
   type ActiveTranscriptRefreshDeps,
+  isTypingBurstActive,
+  noteRendererKeyboardActivity,
   reconcileActiveTranscript,
   reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
+  resetTypingActivityTracking,
   resolveActiveTranscriptSession,
   useBackgroundSync,
   windowIsActivelyViewed
@@ -155,6 +158,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
   clearAllSessionStates()
+  resetTypingActivityTracking()
 })
 
 describe('active transcript refresh', () => {
@@ -632,5 +636,185 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+})
+
+describe('typing-aware sessions.changed deferral', () => {
+  // Dedicated harness: the sessions-list spy must be the exact fn handed to
+  // the hook (the shared harness above wires inner vi.fn()s and its outer spy
+  // observes the transcript path instead), and EVERY param must keep a stable
+  // identity across the tick-driven re-renders — an unstable prop would
+  // re-run the connect-reseed effect and re-subscribe the throttle each
+  // render, polluting the counts under observation.
+  function renderTypingSync(refreshSessions: () => Promise<void>) {
+    const stable = {
+      refreshActiveTranscript: async () => undefined,
+      refreshCronJobs: vi.fn(),
+      refreshCurrentModel: vi.fn(),
+      refreshHermesConfig: vi.fn(),
+      refreshMessagingSessions: vi.fn(),
+      requestGateway: vi.fn(async () => ({ sessions: [] })) as never,
+      // Required by the hook's params. This harness never drives the
+      // transcript path, so the updater just runs against a throwaway state —
+      // but it must live in `stable` like every other prop, since a fresh
+      // identity per render would re-run the connect-reseed effect.
+      updateSessionState: vi.fn(
+        (
+          _sessionId: string,
+          updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
+        ) => updater(createClientSessionState(ACTIVE_STORED_ID))
+      )
+    }
+
+    return renderHook(() => {
+      useBackgroundSync({
+        activeConnectionId: 'local',
+        activeGatewayProfile: 'default',
+        activeIsMessaging: false,
+        activeSessionId: null,
+        activeStoredSessionId: null,
+        freshDraftReady: false,
+        gatewayState: 'open',
+        ...stable,
+        refreshSessions
+      })
+    })
+  }
+
+  const typeKey = (): void => {
+    window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'a' }))
+  }
+
+  /** Mount, land one full throttle cycle so lastRunAt sits at a known clock
+   *  position, then clear the spy. */
+  async function primeThrottle(refreshSessions: ReturnType<typeof vi.fn>): Promise<void> {
+    act(() => notifySessionsChanged())
+    await act(async () => {
+      // One SESSIONS_LIST_TICK_GAP_MS covers both the immediate first tick
+      // and any trailing timer the burst armed.
+      vi.advanceTimersByTime(10_000)
+      await Promise.resolve()
+    })
+    refreshSessions.mockClear()
+  }
+
+  it('holds the trailing sessions.changed refresh while a typing burst is live, then lands it once after the keyboard quiets', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    // A ~6s continuous burst: keys every 200ms, broadcasts every ~1s. The
+    // first broadcast finds the throttle gap already elapsed (primed), so the
+    // deferral engages immediately and must hold for the whole burst.
+    for (let index = 0; index < 30; index += 1) {
+      typeKey()
+
+      if (index % 5 === 0) {
+        act(() => notifySessionsChanged())
+      }
+
+      await act(async () => {
+        vi.advanceTimersByTime(200)
+        await Promise.resolve()
+      })
+    }
+
+    // The heavy list pass must not have landed under the keystrokes.
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    // Last key at ~5.8s; quiet threshold elapses ~7.3s → the held pass lands
+    // exactly once shortly after.
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    // ...and nothing extra afterwards without further broadcasts — mid-burst
+    // ticks must not have stacked trailing timers behind the promised pass.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds through a burst longer than the throttle gap and lands once after the keyboard quiets', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    // Keys every 200ms for ~22s — longer than SESSIONS_LIST_TICK_GAP_MS.
+    // Broadcasts keep flowing; the heavy pass must not land under them.
+    for (let index = 0; index < 110; index += 1) {
+      typeKey()
+
+      if (index % 10 === 0) {
+        act(() => notifySessionsChanged())
+      }
+
+      await act(async () => {
+        vi.advanceTimersByTime(200)
+        await Promise.resolve()
+      })
+    }
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not defer anything when the keyboard has been idle', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      vi.advanceTimersByTime(11_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('isTypingBurstActive', () => {
+  it('marks a burst warm for the quiet threshold and cold at it', () => {
+    resetTypingActivityTracking()
+
+    // No keyboard history → nothing to defer for.
+    expect(isTypingBurstActive(1_000_000)).toBe(false)
+
+    noteRendererKeyboardActivity(1_000_000)
+    expect(isTypingBurstActive(1_000_000)).toBe(true)
+    expect(isTypingBurstActive(1_000_000 + 1_499)).toBe(true)
+
+    // Exactly one quiet threshold after the last key the keyboard is cold.
+    expect(isTypingBurstActive(1_000_000 + 1_500)).toBe(false)
   })
 })
