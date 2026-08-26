@@ -57,11 +57,14 @@ first-party lane implemented in :mod:`tools.claude_remote_control`: the
 locally installed *bare* ``claude`` CLI runs interactively on a real PTY
 with Remote Control enabled, so the user can watch the run live at
 ``https://claude.ai/code`` or in the Claude mobile app, and the result
-carries an additive ``progress_url``.  The default GLM/Kimi path above is
-byte-for-byte unchanged when the flag is false.  Remote Control is
-unavailable with a custom ``ANTHROPIC_BASE_URL``, API-key auth, Bedrock,
-Vertex or Foundry, so the wrapper lanes can never serve it — see that
-module for the full contract.
+carries an additive ``progress_url``.  The lane needs a POSIX PTY,
+``claude auth login``, and one interactive bare ``claude`` run in each
+new target workdir to clear workspace-trust/first-run prompts (the lane
+fails fast with instructions if it sees those dialogs).  The default
+GLM/Kimi path above is byte-for-byte unchanged when the flag is false.
+Remote Control is unavailable with a custom ``ANTHROPIC_BASE_URL``,
+API-key auth, Bedrock, Vertex or Foundry, so the wrapper lanes can never
+serve it — see that module for the full contract.
 """
 
 from __future__ import annotations
@@ -557,9 +560,12 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
         "authenticated first-party Claude subscription with Remote Control, "
         "which returns a progress_url so the user can watch and steer the run "
         "live at claude.ai/code or in the Claude mobile app; that lane needs "
-        "a POSIX PTY plus `claude auth login` and cannot be combined with the "
-        "GLM/Kimi wrappers or any custom provider (base URL, API key, "
-        "Bedrock, Vertex, Foundry)."
+        "a POSIX PTY, `claude auth login`, and one interactive bare `claude` "
+        "run in each new target workdir to clear workspace-trust/first-run "
+        "prompts (the lane fails fast with instructions if it sees those "
+        "dialogs). GLM/Kimi remain the default wrapper lanes and cannot be "
+        "combined with any custom provider (base URL, API key, Bedrock, "
+        "Vertex, Foundry)."
     ),
     "parameters": {
         "type": "object",
@@ -624,7 +630,10 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                     "which uses the GLM/Kimi wrapper lanes unchanged. "
                     "Requirements and limits: needs a POSIX pseudo-terminal (PTY), "
                     "`claude auth login` with a first-party claude.ai "
-                    "subscription, and no custom provider configured — Remote "
+                    "subscription, one interactive bare `claude` run in each new "
+                    "target workdir to clear workspace-trust/first-run prompts "
+                    "(the lane fails fast with instructions if it sees those "
+                    "dialogs), and no custom provider configured — Remote "
                     "Control is unavailable with a custom ANTHROPIC_BASE_URL, "
                     "API-key auth, Bedrock, Vertex or Foundry, so the GLM and "
                     "Kimi wrapper lanes cannot use it and models naming them "

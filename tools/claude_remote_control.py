@@ -26,8 +26,14 @@ Execution model
 --permission-mode <mode> --allowedTools <tools> <prompt>``
 
 * The CLI publishes an account-bound ``https://claude.ai/code/session_…`` URL
-  into the PTY at startup.  That URL is the only thing PTY text is used for —
-  the PTY is *startup transport and liveness*, never the final report.
+  into the PTY at startup.  After the URL appears, the lane submits the task
+  prompt through the PTY (bracketed paste) when Claude Code does not
+  auto-submit the argv positional — Claude Code 2.1.246+ does not.  PTY text
+  is startup transport, prompt submission, and liveness — never the final
+  report.
+* Each new target workdir needs one interactive bare ``claude`` run first to
+  clear workspace-trust and first-run setup prompts; the lane detects those
+  and fails fast with instructions rather than auto-approving them.
 * The CLI writes the authoritative event stream to
   ``~/.claude/projects/<encoded-cwd>/<uuid>.jsonl``.  Completion is correlated
   solely through the UUID we generated and that exact file; TUI screen text is
@@ -156,6 +162,18 @@ class RemoteControlRunError(RemoteControlError):
     code = "run_incomplete"
 
 
+class RemoteControlSetupBlocked(RemoteControlError):
+    """Interactive workspace-trust or first-run setup blocked the lane."""
+
+    code = "interactive_setup_blocked"
+
+
+class RemoteControlUnsafePrompt(RemoteControlError):
+    """The task prompt contains C0 control characters unsafe for PTY injection."""
+
+    code = "unsafe_prompt"
+
+
 # ── Tunables ──────────────────────────────────────────────────────────────
 
 #: Bounded wall-clock window for the CLI to publish the Remote Control URL.
@@ -184,8 +202,40 @@ _PTY_COLS = 160
 
 _AUTH_PREFLIGHT_TIMEOUT_SECONDS = 60.0
 
+#: How long after URL publication to wait for an argv auto-submitted user turn.
+PROMPT_SUBMIT_GRACE_SECONDS = 15.0
+#: PTY quiet interval that signals the interactive prompt is ready.
+PROMPT_READY_QUIET_SECONDS = 1.0
+#: Upper bound on the post-URL readiness/settling phase.
+PROMPT_READY_TIMEOUT_SECONDS = 15.0
+
 #: Session name shown in the Claude Code web/mobile session list.
 SESSION_NAME_PREFIX = "Hermes:"
+
+#: C0 control characters that would break terminal framing (tab/newline allowed).
+_UNSAFE_PROMPT_C0_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+#: Table-driven patterns for interactive setup blockers (ANSI-stripped PTY tail).
+_SETUP_BLOCKER_PATTERNS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    (
+        "workspace trust",
+        (
+            "do you trust the files in this folder",
+            "trust the files",
+            "safety check",
+        ),
+    ),
+    (
+        "first-run setup",
+        (
+            "fullscreen",
+            "first run",
+            "first-run",
+            "terminal setup",
+            "theme picker",
+        ),
+    ),
+)
 
 
 # ── Remote Control progress URL ───────────────────────────────────────────
@@ -223,6 +273,42 @@ def build_session_name(workdir: str) -> str:
     """Concise deterministic Remote Control session name for ``workdir``."""
     base = str(workdir or "").rstrip("/") or "/"
     return f"{SESSION_NAME_PREFIX} {os.path.basename(base) or base}"
+
+
+def sanitize_prompt_for_pty(prompt: str) -> str:
+    """Normalize line endings and reject unsafe C0 control characters.
+
+    Raises :class:`RemoteControlUnsafePrompt` naming the offending codepoint
+    (hex) but never the prompt content.
+    """
+    normalized = str(prompt).replace("\r\n", "\n").replace("\r", "\n")
+    match = _UNSAFE_PROMPT_C0_RE.search(normalized)
+    if match:
+        codepoint = ord(match.group(0))
+        raise RemoteControlUnsafePrompt(
+            f"task prompt contains unsafe control character U+{codepoint:04X}; "
+            "remove it and retry"
+        )
+    return normalized
+
+
+def detect_setup_blocker(stripped_pty_text: str) -> Optional[str]:
+    """Return a short blocker label when a setup dialog is visible, else None."""
+    lowered = (stripped_pty_text or "").lower()
+    if not lowered:
+        return None
+    for label, needles in _SETUP_BLOCKER_PATTERNS:
+        if any(needle in lowered for needle in needles):
+            return label
+    return None
+
+
+def _setup_blocked_message(workdir: str, blocker: str) -> str:
+    return (
+        f"Remote Control is blocked by a Claude Code {blocker} prompt in "
+        f"{workdir}. Run bare `claude` once in that directory, complete the "
+        "workspace-trust/first-run setup, exit, and retry remote_control."
+    )
 
 
 # ── Native (bare) Claude binary resolution ────────────────────────────────
@@ -767,6 +853,7 @@ class RemoteControlRun:
         run = RemoteControlRun(argv, ...)   # validation already done
         run.start()                         # pty.fork + execvpe
         url = run.await_progress_url()      # bounded startup window
+        run.submit_prompt(prompt)           # argv dedupe or PTY bracketed paste
         report = run.await_report()         # monitors PTY + transcript
         run.stop()                          # always, in a finally block
     """
@@ -784,6 +871,9 @@ class RemoteControlRun:
         stall_watchdog_seconds: float = STALL_WATCHDOG_SECONDS,
         startup_timeout_seconds: float = STARTUP_URL_TIMEOUT_SECONDS,
         transcript_appear_grace_seconds: float = _TRANSCRIPT_APPEAR_GRACE_SECONDS,
+        prompt_submit_grace_seconds: float = PROMPT_SUBMIT_GRACE_SECONDS,
+        prompt_ready_quiet_seconds: float = PROMPT_READY_QUIET_SECONDS,
+        prompt_ready_timeout_seconds: float = PROMPT_READY_TIMEOUT_SECONDS,
         log_path: Optional[Path] = None,
     ) -> None:
         self.argv = list(argv)
@@ -796,6 +886,9 @@ class RemoteControlRun:
         self.stall_watchdog_seconds = float(stall_watchdog_seconds)
         self.startup_timeout_seconds = float(startup_timeout_seconds)
         self.transcript_appear_grace_seconds = float(transcript_appear_grace_seconds)
+        self.prompt_submit_grace_seconds = float(prompt_submit_grace_seconds)
+        self.prompt_ready_quiet_seconds = float(prompt_ready_quiet_seconds)
+        self.prompt_ready_timeout_seconds = float(prompt_ready_timeout_seconds)
         self.log_path = Path(log_path) if log_path else None
 
         self.pid: Optional[int] = None
@@ -906,6 +999,46 @@ class RemoteControlRun:
         """Bounded, ANSI-stripped view of the PTY tail (startup transport)."""
         return strip_ansi(self._raw_pty_tail)
 
+    def _check_setup_blocker(self) -> None:
+        blocker = detect_setup_blocker(self.ansi_stripped_pty_text())
+        if blocker:
+            raise RemoteControlSetupBlocked(_setup_blocked_message(self.workdir, blocker))
+
+    def _check_run_limits(self, hard_deadline: Optional[float]) -> None:
+        if _check_interrupted():
+            raise RemoteControlRunError("interrupted")
+        now = time.monotonic()
+        if hard_deadline is not None and now >= hard_deadline:
+            raise RemoteControlRunError("timeout")
+
+    def _has_injected_user_turn(self, watcher: TranscriptWatcher) -> bool:
+        for event in watcher.events:
+            if event.get("type") != "user":
+                continue
+            if not _is_injected_user_turn(event):
+                continue
+            identity = _session_identity_problem(event, self.session_id)
+            if identity:
+                raise RemoteControlRunError(
+                    f"transcript identity mismatch on the injected turn: {identity}"
+                )
+            return True
+        return False
+
+    def _write_pty_all(self, data: bytes) -> None:
+        fd = self._master_fd
+        if fd is None:
+            raise RemoteControlRunError("PTY master fd is closed")
+        offset = 0
+        while offset < len(data):
+            try:
+                written = os.write(fd, data[offset:])
+            except OSError as exc:
+                raise RemoteControlRunError(f"PTY write failed: {exc}") from exc
+            if written <= 0:
+                raise RemoteControlRunError("PTY master fd is closed")
+            offset += written
+
     # -- phase 1: the published URL --------------------------------------
 
     def await_progress_url(self) -> str:
@@ -921,6 +1054,7 @@ class RemoteControlRun:
             self._started_mono + self.timeout_seconds if self.timeout_seconds > 0 else None
         )
         while True:
+            self._check_setup_blocker()
             url = extract_progress_url(self.ansi_stripped_pty_text())
             if url:
                 self.progress_url = url
@@ -960,6 +1094,96 @@ class RemoteControlRun:
                 if hasattr(os, "waitstatus_to_exitcode")
                 else status
             )
+
+    def await_prompt_ready(self) -> None:
+        """Wait until the PTY is quiet and no setup blocker is visible."""
+        deadline = time.monotonic() + self.prompt_ready_timeout_seconds
+        hard_deadline = (
+            self._started_mono + self.timeout_seconds if self.timeout_seconds > 0 else None
+        )
+        quiet_since: Optional[float] = None
+        while True:
+            self._check_setup_blocker()
+            self._reap_if_dead()
+            if self.exited:
+                raise RemoteControlRunError(
+                    "Claude Code exited before the interactive prompt was ready"
+                )
+            self._check_run_limits(hard_deadline)
+            now = time.monotonic()
+            if now >= deadline:
+                raise RemoteControlRunError(
+                    "Claude Code interactive prompt was not ready within "
+                    f"{int(self.prompt_ready_timeout_seconds)}s"
+                )
+            if now - self._last_pty_mono >= self.prompt_ready_quiet_seconds:
+                if quiet_since is None:
+                    quiet_since = now
+                if now - quiet_since >= self.prompt_ready_quiet_seconds:
+                    return
+            else:
+                quiet_since = None
+            time.sleep(MONITOR_POLL_SECONDS)
+
+    def submit_prompt(self, prompt: str) -> str:
+        """Submit the task via argv dedupe or a single PTY bracketed-paste injection.
+
+        Returns ``"argv"`` when Claude auto-submitted the positional prompt, or
+        ``"pty"`` when this lane injected it through the PTY master fd.
+        """
+        safe_prompt = sanitize_prompt_for_pty(prompt)
+        watcher = TranscriptWatcher(
+            self.transcript_path,
+            self.session_id,
+            projects_root=self.projects_root,
+            appear_deadline=time.monotonic() + self.transcript_appear_grace_seconds,
+        )
+        hard_deadline = (
+            self._started_mono + self.timeout_seconds if self.timeout_seconds > 0 else None
+        )
+        grace_deadline = time.monotonic() + self.prompt_submit_grace_seconds
+        while True:
+            watcher.poll()
+            if self._has_injected_user_turn(watcher):
+                self._log_prompt_submitted(safe_prompt, source="argv")
+                return "argv"
+            self._check_setup_blocker()
+            self._reap_if_dead()
+            if self.exited:
+                raise RemoteControlRunError(
+                    "Claude Code exited before the task prompt was submitted"
+                )
+            self._check_run_limits(hard_deadline)
+            if time.monotonic() >= grace_deadline:
+                break
+            time.sleep(MONITOR_POLL_SECONDS)
+
+        self.await_prompt_ready()
+        self._check_setup_blocker()
+        watcher.poll()
+        if self._has_injected_user_turn(watcher):
+            self._log_prompt_submitted(safe_prompt, source="argv")
+            return "argv"
+        payload = (
+            b"\x1b[200~"
+            + safe_prompt.encode("utf-8")
+            + b"\x1b[201~\r"
+        )
+        self._write_pty_all(payload)
+        self._log_prompt_submitted(safe_prompt, source="pty")
+        return "pty"
+
+    def _log_prompt_submitted(self, prompt: str, *, source: str) -> None:
+        encoded = prompt.encode("utf-8")
+        self._log_line(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "event": "prompt_submitted",
+                "source": source,
+                "chars": len(prompt),
+                "bytes": len(encoded),
+            }
+        )
 
     # -- phase 2: the run itself -----------------------------------------
 
@@ -1279,6 +1503,9 @@ def run_remote_control_delegation(
     stall_watchdog_seconds: float = STALL_WATCHDOG_SECONDS,
     startup_timeout_seconds: float = STARTUP_URL_TIMEOUT_SECONDS,
     transcript_appear_grace_seconds: float = _TRANSCRIPT_APPEAR_GRACE_SECONDS,
+    prompt_submit_grace_seconds: float = PROMPT_SUBMIT_GRACE_SECONDS,
+    prompt_ready_quiet_seconds: float = PROMPT_READY_QUIET_SECONDS,
+    prompt_ready_timeout_seconds: float = PROMPT_READY_TIMEOUT_SECONDS,
     log_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Execute one Remote Control delegation; return the delegate result fields.
@@ -1340,6 +1567,7 @@ def run_remote_control_delegation(
         session_id = str(uuid_module.uuid4())
         session_name = build_session_name(resolved_workdir)
         prompt = str(task).strip()
+        sanitize_prompt_for_pty(prompt)
         transcript_path = expected_transcript_path(session_id, resolved_workdir)
         argv = build_remote_control_argv(
             binary,
@@ -1379,6 +1607,9 @@ def run_remote_control_delegation(
             stall_watchdog_seconds=stall_watchdog_seconds,
             startup_timeout_seconds=startup_timeout_seconds,
             transcript_appear_grace_seconds=transcript_appear_grace_seconds,
+            prompt_submit_grace_seconds=prompt_submit_grace_seconds,
+            prompt_ready_quiet_seconds=prompt_ready_quiet_seconds,
+            prompt_ready_timeout_seconds=prompt_ready_timeout_seconds,
             log_path=log_path,
         )
         started = time.monotonic()
@@ -1399,6 +1630,8 @@ def run_remote_control_delegation(
             url = run.await_progress_url()
             fields["progress_url"] = url
             metadata["progress_url"] = url
+            prompt_source = run.submit_prompt(prompt)
+            metadata["prompt_source"] = prompt_source
             report = run.await_report()
         finally:
             # The interactive CLI is still alive here by design; stop it on

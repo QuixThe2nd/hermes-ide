@@ -97,9 +97,31 @@ def _write_native_claude(home: Path) -> Path:
     interactive process that stays alive after the turn ends.
     """
     script = f"""#!{sys.executable}
-import json, os, signal, subprocess, sys, time
+import json, os, select, signal, subprocess, sys, termios, time, tty
 
 MODE = os.environ.get("FAKE_CLAUDE_MODE", "ok")
+STDIN_OUT = os.environ.get("FAKE_CLAUDE_STDIN_OUT")
+
+def _record_stdin(data: bytes) -> None:
+    if STDIN_OUT and data:
+        with open(STDIN_OUT, "ab") as fh:
+            fh.write(data)
+
+def _drain_stdin(timeout: float = 0.05) -> bytes:
+    recorded = b""
+    while True:
+        ready, _, _ = select.select([0], [], [], timeout)
+        if not ready:
+            break
+        try:
+            chunk = os.read(0, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        recorded += chunk
+        _record_stdin(chunk)
+    return recorded
 
 if "auth" in sys.argv[1:3]:
     payloads = {{
@@ -147,9 +169,14 @@ if MODE in ("ok", "orphan", "exit_after") and session_id:
 
 url = os.environ.get("FAKE_CLAUDE_URL", {_GOOD_URL!r})
 time.sleep(float(os.environ.get("FAKE_CLAUDE_URL_DELAY", "0")))
-if MODE == "bad_url":
+
+if MODE == "trust_blocker":
+    sys.stdout.write("Do you trust the files in this folder?\\r\\n")
+    sys.stdout.flush()
+elif MODE == "bad_url":
     url = "https://evil.example.com/code/session_1a2b3c4d5e6f7a8b"
-if MODE != "no_url":
+
+if MODE not in ("no_url", "trust_blocker"):
     # Paint it the way a TUI does: OSC title, cursor moves, and the URL split
     # across two writes with an escape sequence landing in the middle.
     sys.stdout.write("\\x1b]0;claude\\x07\\x1b[?25l\\r\\n")
@@ -161,13 +188,16 @@ if MODE != "no_url":
     sys.stdout.write(url[half:] + "\\r\\n\\x1b[2K")
     sys.stdout.flush()
 
+if MODE == "firstrun_blocker":
+    sys.stdout.write("Fullscreen renderer — first-run terminal setup / theme picker\\r\\n")
+    sys.stdout.flush()
+
 if MODE in ("exit_early",):
     time.sleep(float(os.environ.get("FAKE_CLAUDE_LINGER", "60")))
 
-if MODE not in ("no_url", "no_transcript", "exit_early"):
-    time.sleep(float(os.environ.get("FAKE_CLAUDE_TRANSCRIPT_DELAY", "0")))
+def _emit_transcript(task_text: str) -> None:
     if not session_id:
-        session_id = sys.argv[sys.argv.index("--session-id") + 1]
+        return
     encoded = os.getcwd().replace("/", "-").replace(".", "-")
     path = os.path.join(os.environ["HOME"], ".claude", "projects", encoded, session_id + ".jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -178,7 +208,7 @@ if MODE not in ("no_url", "no_transcript", "exit_early"):
 
     base = {{"sessionId": session_id, "cwd": os.getcwd(), "version": "2.1.245"}}
     emit({{**base, "type": "user", "isSidechain": False, "isMeta": False,
-           "message": {{"role": "user", "content": "do the task"}}}})
+           "message": {{"role": "user", "content": task_text}}}})
 
     if MODE == "identity_mismatch":
         emit({{**base, "sessionId": "00000000-0000-0000-0000-000000000000",
@@ -212,12 +242,53 @@ if MODE not in ("no_url", "no_transcript", "exit_early"):
         with open(path, "a", encoding="utf-8") as fh:
             fh.write('{{ this is not json }}\\n')
 
+def _read_stdin_bracketed_paste() -> str:
+    old = termios.tcgetattr(0)
+    try:
+        tty.setraw(0)
+        buf = b""
+        target = b"\\x1b[201~\\r"
+        deadline = time.time() + float(os.environ.get("FAKE_CLAUDE_STDIN_TIMEOUT", "30"))
+        while target not in buf:
+            if time.time() > deadline:
+                sys.exit(1)
+            ready, _, _ = select.select([0], [], [], 0.1)
+            if not ready:
+                continue
+            chunk = os.read(0, 4096)
+            if not chunk:
+                break
+            buf += chunk
+            _record_stdin(chunk)
+    finally:
+        termios.tcsetattr(0, termios.TCSADRAIN, old)
+    start = buf.find(b"\\x1b[200~")
+    end = buf.find(b"\\x1b[201~")
+    if start >= 0 and end > start:
+        return buf[start + 6 : end].decode("utf-8")
+    return "do the task"
+
+if MODE == "stdin_submit" and MODE not in ("no_url", "no_transcript", "exit_early", "trust_blocker", "firstrun_blocker"):
+    task_text = _read_stdin_bracketed_paste()
+    time.sleep(float(os.environ.get("FAKE_CLAUDE_TRANSCRIPT_DELAY", "0")))
+    _emit_transcript(task_text)
+elif MODE not in ("no_url", "no_transcript", "exit_early", "trust_blocker", "firstrun_blocker", "stdin_submit"):
+    time.sleep(float(os.environ.get("FAKE_CLAUDE_TRANSCRIPT_DELAY", "0")))
+    argv_task = sys.argv[-1] if len(sys.argv) > 1 else "do the task"
+    _emit_transcript(argv_task)
+
 # The interactive CLI is still alive once the turn is done — that is the
 # behavior the runner has to clean up after.
 linger = float(os.environ.get("FAKE_CLAUDE_LINGER", "60"))
 if MODE == "exit_after":
     sys.exit(0)
-time.sleep(linger)
+if MODE in ("argv_autosubmit", "stdin_submit", "trust_blocker", "firstrun_blocker"):
+    end = time.time() + linger
+    while time.time() < end:
+        _drain_stdin(0.05)
+        time.sleep(0.05)
+else:
+    time.sleep(linger)
 """
     binary = home / ".local" / "bin" / "claude"
     binary.write_text(script, encoding="utf-8")
@@ -1466,6 +1537,233 @@ def test_live_descendant_outliving_leader_is_reaped(
     payload = _delegate(monkeypatch, repo)
     assert payload["success"] is True, payload["error"]
     assert _no_survivors(payload["remote_control"]["session_uuid"])
+
+
+# ── Prompt submission, setup blockers, unsafe prompts ─────────────────────
+
+
+def test_sanitize_prompt_for_pty_normalizes_line_endings():
+    from tools.claude_remote_control import RemoteControlUnsafePrompt, sanitize_prompt_for_pty
+
+    assert sanitize_prompt_for_pty("a\r\nb\rc") == "a\nb\nc"
+    assert sanitize_prompt_for_pty("tab\there\nand\nnewline") == "tab\there\nand\nnewline"
+
+
+@pytest.mark.parametrize(
+    "bad_char",
+    ["\x00", "\x07", "\x1b", "\x7f"],
+)
+def test_sanitize_prompt_for_pty_rejects_unsafe_c0(bad_char):
+    from tools.claude_remote_control import RemoteControlUnsafePrompt, sanitize_prompt_for_pty
+
+    canary = f"secret-task-{bad_char}-text"
+    with pytest.raises(RemoteControlUnsafePrompt) as excinfo:
+        sanitize_prompt_for_pty(canary)
+    msg = str(excinfo.value)
+    assert excinfo.value.code == "unsafe_prompt"
+    assert "U+" in msg
+    assert canary not in msg
+
+
+def test_detect_setup_blocker_labels():
+    from tools.claude_remote_control import detect_setup_blocker
+
+    assert detect_setup_blocker("Do you trust the files in this folder?") == "workspace trust"
+    assert (
+        detect_setup_blocker("Fullscreen renderer — first-run terminal setup")
+        == "first-run setup"
+    )
+    assert detect_setup_blocker("Remote Control ready") is None
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_pty_prompt_submission(monkeypatch, repo, native_claude, fast_poll):
+    """Bracketed-paste injection when Claude does not auto-submit argv."""
+    stdin_out = repo / "stdin.bin"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stdin_submit")
+    monkeypatch.setenv("FAKE_CLAUDE_STDIN_OUT", str(stdin_out))
+    payload = _delegate(
+        monkeypatch,
+        repo,
+        prompt_submit_grace_seconds=0.2,
+        prompt_ready_quiet_seconds=0.05,
+        prompt_ready_timeout_seconds=2.0,
+    )
+    assert payload["success"] is True, payload["error"]
+    assert stdin_out.read_bytes() == b"\x1b[200~do the thing\x1b[201~\r"
+    transcript = Path(payload["remote_control"]["transcript_path"]).read_text(encoding="utf-8")
+    user_turns = [
+        json.loads(line)
+        for line in transcript.splitlines()
+        if line.strip() and json.loads(line).get("type") == "user"
+    ]
+    assert len(user_turns) == 1
+    assert payload["final_report"] == "First block.\n\nBlock 2."
+    assert payload["remote_control"]["prompt_source"] == "pty"
+    assert _no_survivors(payload["remote_control"]["session_uuid"])
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_argv_autosubmit_dedupes_pty_injection(
+    monkeypatch, repo, native_claude, fast_poll
+):
+    stdin_out = repo / "stdin.bin"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "argv_autosubmit")
+    monkeypatch.setenv("FAKE_CLAUDE_STDIN_OUT", str(stdin_out))
+    payload = _delegate(
+        monkeypatch,
+        repo,
+        prompt_submit_grace_seconds=2.0,
+        prompt_ready_quiet_seconds=0.05,
+        prompt_ready_timeout_seconds=2.0,
+    )
+    assert payload["success"] is True, payload["error"]
+    assert not stdin_out.exists() or stdin_out.read_bytes() == b""
+    transcript = Path(payload["remote_control"]["transcript_path"]).read_text(encoding="utf-8")
+    user_turns = [
+        json.loads(line)
+        for line in transcript.splitlines()
+        if line.strip() and json.loads(line).get("type") == "user"
+    ]
+    assert len(user_turns) == 1
+    assert payload["remote_control"]["prompt_source"] == "argv"
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_argv_autosubmit_dedupes_after_grace_during_readiness(
+    monkeypatch, repo, native_claude, fast_poll
+):
+    """Argv auto-submit that lands during readiness must not trigger PTY injection."""
+    stdin_out = repo / "stdin.bin"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "argv_autosubmit")
+    monkeypatch.setenv("FAKE_CLAUDE_STDIN_OUT", str(stdin_out))
+    monkeypatch.setenv("FAKE_CLAUDE_TRANSCRIPT_DELAY", "1.5")
+    payload = _delegate(
+        monkeypatch,
+        repo,
+        prompt_submit_grace_seconds=0.5,
+        prompt_ready_quiet_seconds=2.0,
+        prompt_ready_timeout_seconds=10.0,
+    )
+    assert payload["success"] is True, payload["error"]
+    assert payload["remote_control"]["prompt_source"] == "argv"
+    assert not stdin_out.exists() or stdin_out.read_bytes() == b""
+    transcript = Path(payload["remote_control"]["transcript_path"]).read_text(encoding="utf-8")
+    user_turns = [
+        json.loads(line)
+        for line in transcript.splitlines()
+        if line.strip() and json.loads(line).get("type") == "user"
+    ]
+    assert len(user_turns) == 1
+    assert _no_survivors(payload["remote_control"]["session_uuid"])
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_trust_blocker_fails_fast_before_url(
+    monkeypatch, repo, native_claude, fast_poll
+):
+    stdin_out = repo / "stdin.bin"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "trust_blocker")
+    monkeypatch.setenv("FAKE_CLAUDE_STDIN_OUT", str(stdin_out))
+    started = time.monotonic()
+    payload = _delegate(
+        monkeypatch,
+        repo,
+        startup_timeout_seconds=30.0,
+        prompt_submit_grace_seconds=0.2,
+        prompt_ready_quiet_seconds=0.05,
+        prompt_ready_timeout_seconds=2.0,
+    )
+    elapsed = time.monotonic() - started
+    assert payload["success"] is False
+    assert payload["remote_control"]["code"] == "interactive_setup_blocked"
+    assert str(repo.resolve()) in payload["error"]
+    assert "claude" in payload["error"].lower()
+    assert not stdin_out.exists() or stdin_out.read_bytes() == b""
+    assert elapsed < 10.0
+    assert _no_survivors(payload["remote_control"]["session_uuid"])
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_firstrun_blocker_after_url(monkeypatch, repo, native_claude, fast_poll):
+    stdin_out = repo / "stdin.bin"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "firstrun_blocker")
+    monkeypatch.setenv("FAKE_CLAUDE_STDIN_OUT", str(stdin_out))
+    payload = _delegate(
+        monkeypatch,
+        repo,
+        prompt_submit_grace_seconds=0.2,
+        prompt_ready_quiet_seconds=0.05,
+        prompt_ready_timeout_seconds=2.0,
+    )
+    assert payload["success"] is False
+    assert payload["remote_control"]["code"] == "interactive_setup_blocked"
+    assert str(repo.resolve()) in payload["error"]
+    assert "claude" in payload["error"].lower()
+    assert not stdin_out.exists() or stdin_out.read_bytes() == b""
+    assert _no_survivors(payload["remote_control"]["session_uuid"])
+
+
+def test_unsafe_task_fails_closed_before_spawn(monkeypatch, repo, native_claude):
+    from tools import claude_remote_control as rc
+
+    canary = "CANARY-UNSAFE-TASK-7c4a"
+    spawned = []
+    real_start = rc.RemoteControlRun.start
+
+    def _spy_start(self):
+        spawned.append(self.argv)
+        return real_start(self)
+
+    monkeypatch.setattr(rc.RemoteControlRun, "start", _spy_start)
+    for bad in (f"{canary}\x07", f"{canary}\x1b"):
+        payload = _delegate(monkeypatch, repo, task=bad)
+        assert payload["success"] is False
+        assert payload["remote_control"]["code"] == "unsafe_prompt"
+        assert canary not in (payload["error"] or "")
+        log_path = payload.get("log_path")
+        if log_path and Path(log_path).exists():
+            logged = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            assert canary not in logged
+    assert spawned == []
+
+
+@_REAL_PTY
+@_POSIX_ONLY
+def test_live_log_privacy_includes_prompt_submitted_metadata_only(
+    monkeypatch, repo, native_claude, fast_poll
+):
+    canary = "PROMPT-CANARY-9f3e7d2a1b"
+    task = f"inspect the repo and report {canary}"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stdin_submit")
+    payload = _delegate(
+        monkeypatch,
+        repo,
+        task=task,
+        prompt_submit_grace_seconds=0.2,
+        prompt_ready_quiet_seconds=0.05,
+        prompt_ready_timeout_seconds=2.0,
+    )
+    assert payload["success"] is True, payload["error"]
+    log = Path(payload["log_path"])
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert stat.S_IMODE(log.parent.stat().st_mode) == 0o700
+    logged = log.read_text(encoding="utf-8", errors="replace")
+    assert canary not in logged
+    assert task not in logged
+    log_lines = [json.loads(line) for line in logged.strip().split("\n") if line.strip()]
+    submitted = [rec for rec in log_lines if rec.get("event") == "prompt_submitted"]
+    assert len(submitted) == 1
+    rec = submitted[0]
+    assert set(rec.keys()) <= {"ts", "event", "source", "chars", "bytes"}
+    assert rec["source"] == "pty"
+    assert rec["chars"] == len(task)
+    assert rec["bytes"] == len(task.encode("utf-8"))
 
 
 def _no_survivors(session_uuid: str) -> bool:
