@@ -15,10 +15,12 @@ and keeps in sync the whole structure:
 Creation alone is worthless, so reconcile also *wires* what it provisions:
 ``hermes_starts`` targets the shared inbox, the Discord home channel and
 lifecycle-notification channel point at Notifications/``other`` and
-Notifications/``gateway-restarts``, each memory channel gets a Discord
-webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and the
-``quota_channels`` / ``speed_channels`` config sections are pointed at the
-created voice channels.
+Notifications/``gateway-restarts``, ``gateway.restart_channel_rename``
+points at that same ``gateway-restarts`` channel so it can show
+``restarting-N-agents`` while the gateway drains, each memory channel gets
+a Discord webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and
+the ``quota_channels`` / ``speed_channels`` config sections are pointed at
+the created voice channels.
 
 Reconcile is idempotent and conservative: channel IDs are always *discovered*
 from the guild (matched on name + parent + type) or created, unknown or extra
@@ -700,6 +702,40 @@ def link_notification_channel(guild_id: str, channel_id: str) -> str:
     return "set"
 
 
+def existing_restart_channel_rename() -> Optional[Dict[str, Any]]:
+    """The parsed ``gateway.restart_channel_rename`` mapping, or None.
+
+    Validity matches the runtime hook (numeric ``channel_id`` required), so a
+    leftover malformed block is treated as unset and can be repaired.
+    """
+    from hermes_cli.config import load_config_readonly
+    from gateway.restart_channel_rename import parse_restart_channel_rename_config
+
+    raw = load_config_readonly()
+    gw = raw.get("gateway") if isinstance(raw, Mapping) else None
+    parsed = parse_restart_channel_rename_config(
+        gw.get("restart_channel_rename") if isinstance(gw, Mapping) else None
+    )
+    return parsed or None
+
+
+def link_restart_channel_rename(channel_id: str) -> str:
+    """Point ``gateway.restart_channel_rename`` at Notifications/gateway-restarts.
+
+    Independent of ``notification_channel``: an existing /setnotify target
+    must not leave drain-progress renaming dark. No-clobber: a valid
+    existing block (e.g. a custom channel) is never silently replaced.
+    Returns "set" or "kept".
+    """
+    if existing_restart_channel_rename() is not None:
+        return "kept"
+
+    from gateway.config import persist_restart_channel_rename
+
+    persist_restart_channel_rename(str(channel_id))
+    return "set"
+
+
 # ---------------------------------------------------------------------------
 # Wiring hooks
 # ---------------------------------------------------------------------------
@@ -1027,6 +1063,7 @@ def reconcile(
         "wired": {},
         "home_channel": "skipped",
         "notification_channel": "skipped",
+        "restart_channel_rename": "skipped",
         "modules": {key: modules[key] for key in MODULE_KEYS},
     }
     if not guild_id:
@@ -1089,6 +1126,9 @@ def reconcile(
         if notify_channels.get("gateway-restarts"):
             report["notification_channel"] = link_notification_channel(
                 guild_id, notify_channels["gateway-restarts"]
+            )
+            report["restart_channel_rename"] = link_restart_channel_rename(
+                notify_channels["gateway-restarts"]
             )
 
     if modules["memory"] and state["channels"].get("memory"):
