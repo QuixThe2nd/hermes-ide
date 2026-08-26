@@ -12,10 +12,9 @@ Two layers:
   interactive child survives its own final report) is exercised against the
   OS rather than a mock.
 
-The fake binary reimplements Claude Code's on-disk contract from scratch —
-``$HOME/.claude/projects/<encoded-cwd>/<session-id>.jsonl`` — rather than
-copying the production encoder, so the tests pin the *relationship* between
-the two implementations instead of snapshotting one of them.
+The fake binary writes Claude Code's on-disk contract —
+``$HOME/.claude/projects/<encoded-cwd>/<session-id>.jsonl`` — using the
+canonical ``encode_claude_cwd`` helper so transcript paths match production.
 """
 
 from __future__ import annotations
@@ -96,8 +95,11 @@ def _write_native_claude(home: Path) -> Path:
     the PTY, the session transcript under ~/.claude/projects, and an
     interactive process that stays alive after the turn ends.
     """
+    repo_root = Path(__file__).resolve().parents[2]
     script = f"""#!{sys.executable}
 import json, os, select, signal, subprocess, sys, termios, time, tty
+sys.path.insert(0, {str(repo_root)!r})
+from tools.claude_remote_control import encode_claude_cwd
 
 MODE = os.environ.get("FAKE_CLAUDE_MODE", "ok")
 STDIN_OUT = os.environ.get("FAKE_CLAUDE_STDIN_OUT")
@@ -198,7 +200,7 @@ if MODE in ("exit_early",):
 def _emit_transcript(task_text: str) -> None:
     if not session_id:
         return
-    encoded = os.getcwd().replace("/", "-").replace(".", "-")
+    encoded = encode_claude_cwd(os.getcwd())
     path = os.path.join(os.environ["HOME"], ".claude", "projects", encoded, session_id + ".jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
@@ -736,6 +738,10 @@ def test_encode_claude_cwd_matches_the_real_directory_layout():
 
     assert encode_claude_cwd("/root/.hermes/kanban/x") == "-root--hermes-kanban-x"
     assert encode_claude_cwd("/srv/app") == "-srv-app"
+    assert (
+        encode_claude_cwd("/root/.hermes/kanban/boards/dev/workspaces/t_597a7a1d/repo")
+        == "-root--hermes-kanban-boards-dev-workspaces-t-597a7a1d-repo"
+    )
 
 
 def test_expected_transcript_path_is_exact():

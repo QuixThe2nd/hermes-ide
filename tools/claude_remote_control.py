@@ -516,11 +516,11 @@ def claude_projects_root(home: Optional[Path] = None) -> Path:
 def encode_claude_cwd(cwd: str) -> str:
     """Encode a cwd the way Claude Code names its project directories.
 
-    ``/root/.hermes/x`` → ``-root--hermes-x``: every ``/`` and ``.`` becomes
-    ``-``.  This is the encoding observed in real ``~/.claude/projects`` trees
-    and assumed by ``hermes_cli.foreign_sessions``.
+    ``/root/.hermes/x`` → ``-root--hermes-x``: every ``/``, ``.``, and ``_``
+    becomes ``-``.  This is the encoding observed in real ``~/.claude/projects``
+    trees and assumed by ``hermes_cli.foreign_sessions``.
     """
-    return str(cwd).replace("/", "-").replace(".", "-")
+    return str(cwd).replace("/", "-").replace(".", "-").replace("_", "-")
 
 
 def expected_transcript_path(
