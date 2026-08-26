@@ -2724,6 +2724,32 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         )
         assert "_reasoning_config" not in openai_wire_kwargs
 
+    def test_openai_compat_fallback_clamps_ultra_effort(self, monkeypatch):
+        """Generic extra_body.reasoning fallback must not leak ultra
+        (pc_2c133166195d / HTTP 400 reasoning.effort Invalid option)."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        monkeypatch.setattr(
+            "providers.get_provider_profile", lambda _name: None
+        )
+        kwargs = _build_call_kwargs(
+            "unknown-provider",
+            "gpt-compatible",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            base_url="https://example.test/v1",
+        )
+        assert kwargs["extra_body"]["reasoning"]["effort"] == "max"
+        assert kwargs["extra_body"]["reasoning"]["enabled"] is True
+        native = _build_call_kwargs(
+            "unknown-provider",
+            "gpt-compatible",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://example.test/v1",
+        )
+        assert native["extra_body"]["reasoning"]["effort"] == "high"
+
 
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""

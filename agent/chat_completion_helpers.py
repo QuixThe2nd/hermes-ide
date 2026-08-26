@@ -3039,8 +3039,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if _is_lmstudio_summary else None
         )
         if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
+            # The summary path calls chat.completions.create() directly and
+            # therefore skips ChatCompletionsTransport._reasoning_config_for_model.
+            # Clamp Hermes-internal levels (ultra) onto the OpenAI-compat wire
+            # here so iteration-limit summaries do not 400 on
+            # reasoning.effort: Invalid option (#89503 / pc_2c133166195d).
+            from agent.transports.chat_completions import (
+                _reasoning_config_for_model as _clamp_summary_reasoning,
+            )
+
             if agent.reasoning_config is not None:
-                summary_extra_body["reasoning"] = agent.reasoning_config
+                summary_extra_body["reasoning"] = _clamp_summary_reasoning(
+                    agent.model, agent.reasoning_config
+                )
             else:
                 summary_extra_body["reasoning"] = {
                     "enabled": True,

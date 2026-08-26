@@ -264,5 +264,13 @@ class TestOpenRouterProfileClamp:
             supports_reasoning=True,
             model="unlisted/model",
         )
-        # Unknown capability → passthrough unchanged (no silent downgrade).
-        assert extra_body["reasoning"]["effort"] == "ultra"
+        # Unknown catalog still cannot leak Hermes-internal ``ultra`` onto
+        # OpenRouter's OpenAI-compat wire (HTTP 400). Wire-native levels
+        # stay untouched so a catalog miss does not silently downgrade.
+        assert extra_body["reasoning"]["effort"] == "max"
+        extra_high, _ = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            supports_reasoning=True,
+            model="unlisted/model",
+        )
+        assert extra_high["reasoning"]["effort"] == "high"
