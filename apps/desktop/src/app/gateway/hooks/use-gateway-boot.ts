@@ -172,6 +172,15 @@ export function useGatewayBoot({
     const publish = (next: HermesConnection | null) => {
       callbacksRef.current.onConnectionReady(next)
       setConnection(next)
+      desktop?.setActiveConnectionRoute?.(
+        next
+          ? {
+              connectionId: next.connectionId ?? null,
+              profile: next.profile,
+              registryScoped: next.registryScoped === true
+            }
+          : null
+      )
     }
 
     if (!desktop) {
@@ -571,8 +580,7 @@ export function useGatewayBoot({
         bootCompleted = true
       } catch (err) {
         const mayPublishFailure =
-          !cancelled &&
-          (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
+          !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
 
         if (mayPublishFailure) {
           const message = err instanceof Error ? err.message : String(err)
