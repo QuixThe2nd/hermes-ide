@@ -736,11 +736,14 @@ def test_auth_payload_garbage_is_none():
 def test_encode_claude_cwd_matches_the_real_directory_layout():
     from tools.claude_remote_control import encode_claude_cwd
 
-    assert encode_claude_cwd("/root/.hermes/kanban/x") == "-root--hermes-kanban-x"
+    assert encode_claude_cwd("/top/mid") == "-top-mid"
+    assert encode_claude_cwd("/x.y") == "-x-y"
+    assert encode_claude_cwd("/a_b") == "-a-b"
+    assert encode_claude_cwd("/home/operator/.hermes/x") == "-home-operator--hermes-x"
     assert encode_claude_cwd("/srv/app") == "-srv-app"
     assert (
-        encode_claude_cwd("/root/.hermes/kanban/boards/dev/workspaces/t_597a7a1d/repo")
-        == "-root--hermes-kanban-boards-dev-workspaces-t-597a7a1d-repo"
+        encode_claude_cwd("/home/operator/.hermes/workspaces/task_demo_id/repo")
+        == "-home-operator--hermes-workspaces-task-demo-id-repo"
     )
 
 
