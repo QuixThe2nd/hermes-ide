@@ -246,6 +246,7 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -1316,7 +1317,7 @@ function registerMediaProtocol() {
         method
       }),
     fetchRemoteWithCookies: (url, headers, method) => {
-      const oauthSession = getOauthSession()
+      const oauthSession = getOauthSessionForUrl(url)
 
       if (!oauthSession) {
         throw new Error('OAuth session partition is unavailable.')
@@ -6913,7 +6914,7 @@ function installMediaPermissions() {
 //     "is the user signed in at all?" gate / display signal.
 // ---------------------------------------------------------------------------
 
-const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
+const OAUTH_SESSION_PARTITION = LEGACY_OAUTH_PARTITION
 
 function getOauthSession() {
   if (oauthSession || !app.isReady()) {
@@ -6923,6 +6924,47 @@ function getOauthSession() {
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
   return oauthSession
+}
+
+// Per-connection cookie jars (#92183). A NON-primary v2 registry remote with
+// cookie auth rides its own partition so two registered gateways can never
+// evict — or be handed — each other's session cookies (Chromium jars ignore
+// the port, so two dashboards on one VPN host used to collide in the shared
+// jar above). The primary / v1 remote / cloud / portal flows keep the legacy
+// shared partition; see oauth-partition.ts for the full rules.
+const oauthSessionsByPartition = new Map()
+
+function resolveOauthPartitionForUrl(url) {
+  try {
+    return resolveOauthPartition(url, {
+      registry: readDesktopConnectionsRegistry(),
+      v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
+    })
+  } catch {
+    // A broken registry read must never take cookie auth down with it.
+    return OAUTH_SESSION_PARTITION
+  }
+}
+
+function getOauthSessionForUrl(url) {
+  const partition = resolveOauthPartitionForUrl(url)
+
+  if (partition === OAUTH_SESSION_PARTITION) {
+    return getOauthSession()
+  }
+
+  if (!app.isReady()) {
+    return null
+  }
+
+  let sess = oauthSessionsByPartition.get(partition)
+
+  if (!sess) {
+    sess = session.fromPartition(partition)
+    oauthSessionsByPartition.set(partition, sess)
+  }
+
+  return sess
 }
 
 // Cold-start cookie-jar warm-up. A `persist:` partition materialized via
@@ -6938,19 +6980,23 @@ function getOauthSession() {
 // throwaway cookies.get(). The promise is memoized so every caller awaits the
 // same single warm-up. Best-effort — any error resolves so we fall back to the
 // live read (which then does its own bounded re-check).
-let oauthCookieWarmup: Promise<void> | null = null
+// Memoized per PARTITION: per-connection jars (#92183) hydrate independently.
+const oauthCookieWarmups = new Map()
 
-function warmOauthCookieStore() {
-  if (oauthCookieWarmup) {
-    return oauthCookieWarmup
+function warmOauthCookieStore(url?) {
+  const partition = resolveOauthPartitionForUrl(url)
+  const pending = oauthCookieWarmups.get(partition)
+
+  if (pending) {
+    return pending
   }
 
-  oauthCookieWarmup = (async () => {
-    const sess = getOauthSession()
+  const warmup = (async () => {
+    const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
       // App not ready yet — don't memoize a no-op; let a later call retry.
-      oauthCookieWarmup = null
+      oauthCookieWarmups.delete(partition)
 
       return
     }
@@ -6966,7 +7012,9 @@ function warmOauthCookieStore() {
     }
   })()
 
-  return oauthCookieWarmup
+  oauthCookieWarmups.set(partition, warmup)
+
+  return warmup
 }
 
 // Bare + prefixed variants of the session cookies live in
@@ -6974,7 +7022,7 @@ function warmOauthCookieStore() {
 // that module for details.
 
 async function hasOauthSessionCookie(baseUrl) {
-  const sess = getOauthSession()
+  const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
     return false
@@ -7007,7 +7055,7 @@ async function hasOauthSessionCookie(baseUrl) {
 // re-login every ~15 min. Used for the Settings "connected" indicator and as a
 // cheap early-out before attempting a network round-trip in resolveRemoteBackend.
 async function hasLiveOauthSession(baseUrl) {
-  const sess = getOauthSession()
+  const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
     return false
@@ -7043,7 +7091,7 @@ async function hasLiveOauthSession(baseUrl) {
   // trusting a negative, force the store to hydrate and re-read a couple of
   // times with a short backoff. A genuinely signed-out user still resolves
   // false quickly (≤ ~180ms); a signed-in user racing the load now wins.
-  await warmOauthCookieStore()
+  await warmOauthCookieStore(baseUrl)
 
   for (const delayMs of [30, 60, 90]) {
     if (await readLive()) {
@@ -7057,7 +7105,7 @@ async function hasLiveOauthSession(baseUrl) {
 }
 
 async function clearOauthSession(baseUrl) {
-  const sess = getOauthSession()
+  const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
     return
@@ -7104,7 +7152,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       return
     }
 
-    const sess = getOauthSession()
+    const sess = getOauthSessionForUrl(baseUrl)
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -7237,7 +7285,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 // authed REST against a gated gateway, including minting WS tickets.
 function fetchJsonViaOauthSession(url, options: any = {}) {
   return new Promise((resolve, reject) => {
-    const sess = getOauthSession()
+    const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -7488,7 +7536,7 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
 // is cleared once the response headers arrive.
 function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
   return new Promise((resolve, reject) => {
-    const sess = getOauthSession()
+    const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -8973,7 +9021,19 @@ function readDesktopConnectionsRegistry() {
     tightenSecretFileMode(DESKTOP_CONNECTIONS_REGISTRY_PATH)
     registry = normalizeRegistry(JSON.parse(fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')))
   } catch {
+    // Whole-file corruption (truncated write, mangled hand-edit). The
+    // degraded local-only registry keeps boot working, but the file BYTES are
+    // the user's connection data — preserve them in a sidecar BEFORE any
+    // later write (drift reconcile, connection save) overwrites the file
+    // (#94246: recovery must never be data loss).
+    preserveCorruptRegistrySidecar()
     registry = normalizeRegistry(null)
+  }
+
+  if (registry?.quarantined?.length) {
+    rememberLog(
+      `[connections] ${registry.quarantined.length} malformed registry entr${registry.quarantined.length === 1 ? 'y was' : 'ies were'} quarantined (kept under "quarantined" in connections.json); healthy connections loaded normally.`
+    )
   }
 
   // Heal v1 -> v2 drift: the v1 global route names a remote this registry has
@@ -9002,6 +9062,31 @@ function readDesktopConnectionsRegistry() {
   connectionRegistryCacheMtime = mtime
 
   return registry
+}
+
+// Copy an unparseable connections.json aside (once per corruption event) so a
+// later registry write can never destroy the only copy of the user's saved
+// connections (#94246). Best effort: failure to preserve must not block boot.
+function preserveCorruptRegistrySidecar() {
+  try {
+    const rawText = fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')
+
+    if (!rawText.trim()) {
+      return
+    }
+
+    const sidecar = `${DESKTOP_CONNECTIONS_REGISTRY_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+
+    if (!fs.existsSync(sidecar)) {
+      fs.writeFileSync(sidecar, rawText, { mode: 0o600 })
+    }
+
+    rememberLog(
+      `[connections] connections.json could not be parsed; preserved the original file at ${sidecar} and continuing with a local-only registry. No connection data was deleted.`
+    )
+  } catch {
+    // The read itself failed (missing file, permissions) — nothing to save.
+  }
 }
 
 function writeDesktopConnectionsRegistry(registry) {
@@ -9050,7 +9135,16 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
     launchMode: registry.launchMode,
     lastUsed: registry.lastUsed,
     secureTokenStorage,
-    connections: registry.connections.map(sanitizeRegistryConnection)
+    connections: registry.connections.map(sanitizeRegistryConnection),
+    // Surface quarantined-entry NOTICES only (reason + best-effort label) —
+    // the raw entries can carry token envelopes and stay in the file (#94246).
+    quarantined: (registry.quarantined || []).map(q => ({
+      reason: String(q?.reason || 'unknown'),
+      label:
+        q && q.entry && typeof q.entry === 'object' && typeof (q.entry as any).label === 'string'
+          ? (q.entry as any).label
+          : ''
+    }))
   }
 }
 
@@ -9998,7 +10092,31 @@ function globalRemoteActive() {
 
   const mode = readDesktopConnectionConfig().mode
 
-  return modeIsRemoteLike(mode) || mode === 'ssh'
+  if (modeIsRemoteLike(mode) || mode === 'ssh') {
+    return true
+  }
+
+  // Registry-primary transport (#91564/#90316): a registered remote/cloud/ssh
+  // gateway promoted to primary via connections.json makes the primary
+  // backend remote even while the v1 config.mode still says 'local'. Every
+  // consumer of this flag ("one remote host serves every profile") must see
+  // that, or the local-entry routes delegate into a primary that now dials
+  // remote — respawning the exact loopback children the resolver rung in
+  // desktop-remote-route.ts eliminates.
+  return registryPrimaryIsRemote()
+}
+
+// True when the v2 registry PRIMARY names a non-local connection. Mirrors the
+// registry fallback rung in resolveDesktopRemoteRoute.
+function registryPrimaryIsRemote() {
+  try {
+    const registry = readDesktopConnectionsRegistry()
+    const entry = registry.connections.find(c => c.id === registry.primary)
+
+    return Boolean(entry && (entry.kind === 'remote' || entry.kind === 'cloud' || entry.kind === 'ssh'))
+  } catch {
+    return false
+  }
 }
 
 // True when the PRIMARY profile's backend resolves to a remote/cloud host —
