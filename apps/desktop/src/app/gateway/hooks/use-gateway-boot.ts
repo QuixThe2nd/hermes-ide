@@ -7,7 +7,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { withTimeout } from '@/lib/with-timeout'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -16,6 +16,7 @@ import {
   resumeDesktopBootForRetry,
   setDesktopBootStep
 } from '@/store/boot'
+import { resetBackgroundPollingGuard } from '@/store/composer-status'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -344,6 +345,11 @@ export function useGatewayBoot({
         resetTileRuntimeBindings(
           primaryRuntimeConnectionId(conn) ?? { liveConnectionIds: liveSecondaryConnectionIds() }
         )
+        // The status-stack poll guard latches session ids the OLD runtime
+        // reported gone (4001). A respawned backend re-mints runtimes, so
+        // those ids may be live again after re-resume — clear the latch with
+        // the same lifetime as the runtime bindings it shadows.
+        resetBackgroundPollingGuard()
         // Same staleness, other half: pre-reconnect busy flags are keyed by
         // those dead runtime ids and would never receive their terminal
         // busy:false — clear them or the sidebar running arc lies forever
@@ -540,7 +546,16 @@ export function useGatewayBoot({
 
         // Same override rule as boot(): a profile-pinned helper window stays
         // on its pinned profile's backend across a soft switch.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // Bounded for the same reason as attemptReconnect() (#93454): a wedged
+        // main-process round-trip must not latch $gatewaySwitching stuck —
+        // the `finally` below only runs once this promise settles. Uses the
+        // shared backend-boot budget rather than the reconnect budget because
+        // ensureBackend may cold-spawn a pooled helper backend here.
+        const conn = await withTimeout(
+          desktop.getConnection(windowProfileOverride() ?? undefined),
+          BACKEND_BOOT_WAIT_TIMEOUT_MS,
+          'Timed out reconnecting to Hermes backend'
+        )
 
         if (!ownsSwitch()) {
           return
@@ -781,6 +796,14 @@ export function useGatewayBoot({
         return
       }
 
+      // 'saved' is a pure registry-refresh push (new connection or label
+      // rename — #95393): no endpoint moved, so there is nothing to dispose,
+      // redial, or forget. The switcher's own onChanged listener re-pulls the
+      // registry snapshot for it.
+      if (payload.reason === 'saved') {
+        return
+      }
+
       disposeSecondariesForConnection(payload.connectionId, { redial: payload.reason === 'updated' })
 
       if (payload.reason !== 'updated') {
@@ -887,7 +910,15 @@ export function useGatewayBoot({
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
         // Everything else keeps dialing the primary.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // Bounded like the reconnect path (#93454): a wedged main-process
+        // round-trip must not hang "Starting Hermes…" forever. Initial boot
+        // rides out a full backend cold spawn, so it gets the shared 45s
+        // backend-boot budget, not the 20s reconnect budget.
+        const conn = await withTimeout(
+          desktop.getConnection(windowProfileOverride() ?? undefined),
+          BACKEND_BOOT_WAIT_TIMEOUT_MS,
+          'Timed out connecting to Hermes backend'
+        )
 
         if (cancelled) {
           return

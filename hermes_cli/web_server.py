@@ -38,6 +38,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -543,6 +544,8 @@ def _resolve_session_token() -> str:
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
+_SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
+_SSH_RUNTIME_MARKER: Optional[str] = None
 
 
 def _apply_ssh_session_token(token: str) -> None:
@@ -552,8 +555,52 @@ def _apply_ssh_session_token(token: str) -> None:
 
 
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
-    global _SSH_OWNER_NONCE
+    global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB, _SSH_RUNTIME_MARKER
     _SSH_OWNER_NONCE = nonce
+    _SSH_RUNTIME_PURELIB = None
+    _SSH_RUNTIME_MARKER = None
+    if nonce:
+        try:
+            purelib = sysconfig.get_paths()["purelib"]
+        except (KeyError, OSError):
+            return
+        # Primary identity: a marker FILE written into site-packages now.
+        # A replaced venv (rm -rf && recreate — same OR different Python
+        # version) loses the marker deterministically, while pip installs
+        # into the live venv leave it untouched (no false stales). A bare
+        # (dev, ino) snapshot of the directory is NOT sufficient on its
+        # own: ext4 reuses directory inodes immediately, so the exact
+        # reported repro (`rm -rf venv && uv venv`) can land on the same
+        # inode and pass undetected (proven live during salvage).
+        try:
+            marker = os.path.join(purelib, f".hermes-ssh-runtime-{nonce}")
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write(f"pid={os.getpid()}\n")
+            _SSH_RUNTIME_MARKER = marker
+        except OSError:
+            pass  # read-only site-packages — fall back to the stat snapshot
+        try:
+            st = os.stat(purelib)
+            _SSH_RUNTIME_PURELIB = (purelib, st.st_dev, st.st_ino)
+        except OSError:
+            pass
+
+
+def _ssh_runtime_intact() -> bool:
+    # Marker file is the deterministic signal when we managed to write one.
+    if _SSH_RUNTIME_MARKER is not None:
+        return os.path.isfile(_SSH_RUNTIME_MARKER)
+    # Fallback (read-only site-packages): directory identity snapshot.
+    # Weaker — inode reuse can mask a same-filesystem recreate — but still
+    # catches cross-device moves and version-bump path changes.
+    if _SSH_RUNTIME_PURELIB is None:
+        return True
+    purelib, device, inode = _SSH_RUNTIME_PURELIB
+    try:
+        st = os.stat(purelib)
+    except OSError:
+        return False
+    return (st.st_dev, st.st_ino) == (device, inode)
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -3578,7 +3625,12 @@ async def get_ssh_ownership(request: Request):
     _require_token(request)
     if not _SSH_OWNER_NONCE:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
-    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
+    return {
+        "ok": True,
+        "sshOwnerNonce": _SSH_OWNER_NONCE,
+        "protocolVersion": 1,
+        "runtimeIntact": _ssh_runtime_intact(),
+    }
 
 
 @app.get("/api/health")
@@ -17846,18 +17898,28 @@ def mount_spa(application: FastAPI):
     # SPA, even if a dist is lying around from a prior `dashboard`/build. Take
     # the no-frontend path so only the JSON-RPC/WS/API surface is reachable.
     _headless = os.environ.get("HERMES_SERVE_HEADLESS") == "1"
-    if _headless or not WEB_DIST.exists():
+    if _headless:
         _msg = (
             "Headless backend (hermes serve): web UI disabled — use "
             "`hermes dashboard` for the browser UI."
-            if _headless
-            else "Frontend not built. Run: cd web && npm run build"
         )
 
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
             return JSONResponse({"error": _msg}, status_code=404)
         return
+
+    # A missing WEB_DIST is deliberately NOT a mount-time terminal state
+    # (#82614): a long-lived `hermes dashboard --skip-build` process that
+    # survives a `git pull` (or starts before the first build) used to
+    # install a permanent no_frontend catch-all here and could never
+    # recover — every route answered 404 "Frontend not built" until the
+    # process was restarted, even after `npm run build` completed. The SPA
+    # routes below all cope with a missing dist per-request (`_serve_index`
+    # returns the same 404 JSON when index.html is unreadable; the asset
+    # mounts use check_dir=False and 404 on missing files), so mounting
+    # them unconditionally makes the dashboard recover the moment a build
+    # appears on disk — no restart needed.
 
     _index_path = WEB_DIST / "index.html"
 
@@ -17974,7 +18036,12 @@ def mount_spa(application: FastAPI):
             return response
 
     application.mount(
-        "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets"), name="assets"
+        "/assets",
+        # check_dir=False: the dist (and its assets/ dir) may not exist yet —
+        # the whole point of the dynamic recheck (#82614). StaticFiles then
+        # 404s per-request until a build appears instead of raising at mount.
+        _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False),
+        name="assets",
     )
 
     @application.get("/{full_path:path}")
