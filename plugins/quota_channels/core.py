@@ -16,6 +16,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+# The voice-channel ordering policy is owned by fallback_quota_reorder; this
+# module reuses its score math, thresholds, and reliability ledger instead of
+# copying divergent formulas. The import is acyclic — fallback_quota_reorder
+# only touches quota_channels lazily inside load_precise_readings.
+from plugins.fallback_quota_reorder.core import (
+    CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+    LOW_QUOTA_PCT,
+    QuotaReading,
+    score_provider,
+)
+from plugins.fallback_quota_reorder.reliability import (
+    ReliabilityRates,
+    rates_for_providers,
+)
+
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
 SleepFn = Callable[[float], None]
 NowFn = Callable[[], float]
@@ -26,6 +41,7 @@ PROVIDER_SPECS: Tuple[Tuple[str, str], ...] = (
     ("zai", "z.ai"),
     ("cursor", "Cursor"),
     ("grok", "Grok"),
+    ("openrouter", "OpenRouter"),
 )
 
 DEFAULT_QUOTA_INTERVAL_SECONDS = 1800
@@ -53,6 +69,31 @@ CURSOR_AGG_USAGE_URL = (
 TOKEN_WINDOW_DAYS = 7
 
 STATE_FILENAME = "quota_channels_state.json"
+
+# Dynamic category label prefix: "Models • <ts> • Next: <time>".
+CATEGORY_PREFIX = "Models"
+
+# Quota key -> routing provider slug, used to load per-provider reliability
+# from the fallback ledger. Mirrors fallback_quota_reorder's channel map plus
+# the virtual OpenRouter row.
+QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
+    **_FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+    "openrouter": "openrouter",
+}
+
+# The OpenRouter voice channel is a virtual row for the unlimited Ox Alpha
+# model (openrouter/stealth/ox-alpha): there is no quota API to call, so the
+# channel carries a managed label with a synthetic full wallet — 100% against
+# exactly 168h, the score's reference horizon (same numbers as
+# fallback_quota_reorder.unlimited_reading()).
+OPENROUTER_PCT = 100
+OPENROUTER_RESET_SECONDS = 7 * 86400  # 604800s = 168h
+OPENROUTER_LABEL = "OpenRouter"
+
+# Display ranks are `bucket * stride - score`; the stride must exceed any
+# possible score so the low-quota bucket always sorts after every healthy
+# entry. Max score is 10080 (100% at the one-minute hours floor).
+_RANK_BUCKET_STRIDE = 1e9
 
 
 class QuotaChannelsError(Exception):
@@ -280,10 +321,23 @@ def parse_kimi_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
         raise QuotaChannelsError(f"no usage object in kimi payload: {text[:200]}")
     if not isinstance(usage, dict):
         raise QuotaChannelsError("kimi: invalid usage object in payload")
-    try:
-        remaining = int(usage["remaining"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise QuotaChannelsError("kimi: invalid remaining in usage payload") from exc
+    if "remaining" in usage:
+        # legacy shape: a ready-made remaining percentage
+        try:
+            remaining = int(usage["remaining"])
+        except (TypeError, ValueError) as exc:
+            raise QuotaChannelsError("kimi: invalid remaining in usage payload") from exc
+    else:
+        # current shape: no `remaining`, derive it from limit/used (numbers or
+        # numeric strings). used beyond the limit clamps to 0% left.
+        try:
+            limit = float(usage["limit"])
+            used = float(usage["used"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise QuotaChannelsError("kimi: invalid limit/used in usage payload") from exc
+        if not (math.isfinite(limit) and math.isfinite(used)) or limit <= 0:
+            raise QuotaChannelsError("kimi: invalid limit/used in usage payload")
+        remaining = min(100, max(0, round((limit - used) / limit * 100)))
     reset_raw = usage.get("resetTime")
     if not isinstance(reset_raw, str):
         raise QuotaChannelsError("kimi: invalid resetTime in usage payload")
@@ -512,6 +566,16 @@ def format_grok_name(remaining: int, reset_secs: float) -> str:
     return f"Grok: {remaining}% \u2022 {format_reset_left(reset_secs)}"
 
 
+def format_openrouter_name() -> str:
+    """Managed label for the virtual unlimited Ox Alpha row.
+
+    Static by design: the wallet is synthetic (100% / Unlimited), so the name
+    never changes between ticks and Discord renames are naturally idempotent.
+    """
+
+    return f"{OPENROUTER_LABEL}: {OPENROUTER_PCT}% \u2022 Unlimited"
+
+
 def _fmt_clock(dt: datetime) -> str:
     hour = dt.hour % 12 or 12
     suffix = "am" if dt.hour < 12 else "pm"
@@ -533,13 +597,13 @@ def category_name(
     now_fn: NowFn = time.time,
 ) -> str:
     if last_success <= 0:
-        return "Quotas \u2022 never \u2022 Next: Due"
+        return f"{CATEGORY_PREFIX} \u2022 never \u2022 Next: Due"
     now = now_fn()
     next_due = last_success + interval
     ts_part = fmt_ts(last_success)
     if now >= next_due:
-        return f"Quotas \u2022 {ts_part} \u2022 Next: Due"
-    return f"Quotas \u2022 {ts_part} \u2022 Next: {fmt_time(next_due)}"
+        return f"{CATEGORY_PREFIX} \u2022 {ts_part} \u2022 Next: Due"
+    return f"{CATEGORY_PREFIX} \u2022 {ts_part} \u2022 Next: {fmt_time(next_due)}"
 
 
 def normalize_enabled_providers(raw: Any) -> Dict[str, bool]:
@@ -577,7 +641,16 @@ def validate_quota_config(section: Mapping[str, Any]) -> dict:
     if not isinstance(channel_ids, Mapping):
         raise QuotaChannelsError("quota_channels.channel_ids must be a mapping")
 
-    enabled = normalize_enabled_providers(section.get("enabled_providers"))
+    raw_enabled = section.get("enabled_providers")
+    if raw_enabled is None:
+        # An absent enabled_providers means "the wired rows": the original
+        # five providers always, and the newer OpenRouter row only once its
+        # channel ID exists — so a legacy five-ID config keeps validating
+        # unchanged and picks the virtual row up as soon as it is wired.
+        enabled = {key: True for key, _ in PROVIDER_SPECS}
+        enabled["openrouter"] = bool(channel_ids.get("openrouter"))
+    else:
+        enabled = normalize_enabled_providers(raw_enabled)
     active: List[Tuple[str, str, str]] = []
     for key, label in PROVIDER_SPECS:
         if not enabled.get(key, False):
@@ -1263,8 +1336,39 @@ TOKEN_FETCHERS = {
 }
 
 
+def quota_display_ranks(
+    readings: Mapping[str, Mapping[str, Any]],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
+) -> Dict[str, float]:
+    """Display rank per quota key: ascending rank = display order (best first).
+
+    Exactly the fallback_quota_reorder ordering policy, expressed as a single
+    ascending sort key for plan_position_moves: healthy entries by descending
+    score_provider() (quota_frac * 168/hours_remaining * uptime factors from
+    the shared reliability ledger), entries below LOW_QUOTA_PCT sink behind
+    every healthy entry, and equal ranks keep the caller's insertion order —
+    which is PROVIDER_SPECS order — so ties stay stable.
+    """
+
+    rates = reliability or {}
+    ranks: Dict[str, float] = {}
+    for key, entry in readings.items():
+        provider = QUOTA_KEY_TO_PROVIDER.get(key, key)
+        reading = QuotaReading(
+            channel_key=key,
+            provider=provider,
+            channel_name="",
+            pct=int(entry["pct"]),
+            reset_seconds=float(entry["reset_seconds"]),
+        )
+        score = score_provider(reading, rates.get(provider))
+        bucket = 1 if reading.pct < LOW_QUOTA_PCT else 0
+        ranks[key] = bucket * _RANK_BUCKET_STRIDE - score
+    return ranks
+
+
 def plan_position_moves(
-    entries: Sequence[Tuple[str, str, int]],
+    entries: Sequence[Tuple[str, str, float]],
     guild_channels: Sequence[Mapping[str, Any]],
 ) -> List[dict]:
     ordered = sorted(entries, key=lambda item: item[2])
@@ -1315,7 +1419,7 @@ def apply_position_moves(
 
 def sort_voice_channels(
     config: dict,
-    entries: Sequence[Tuple[str, str, int]],
+    entries: Sequence[Tuple[str, str, float]],
     headers: dict,
     http_fn: HttpFn = default_http,
 ) -> bool:
@@ -1362,6 +1466,14 @@ def run_provider_quota(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str, str, Dict[str, Any]]:
+    if key == "openrouter":
+        # Virtual Ox Alpha row: no quota API is called — the wallet is
+        # synthetic (100% against 168h). Only the managed Discord label and
+        # the state reading are written.
+        name = format_openrouter_name()
+        rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
+        return OPENROUTER_LABEL, float(OPENROUTER_RESET_SECONDS), name, rename, {}
+
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
     if key == "cursor":
         auto_remaining, api_remaining, reset_secs = raw
@@ -1440,8 +1552,15 @@ def run_tick(
     headers = discord_headers()
 
     if did_quota:
-        entries: List[Tuple[str, str, float]] = []
+        successes: List[Tuple[str, str, str]] = []
         readings: Dict[str, Dict[str, Any]] = {}
+        # Same reliability ledger and thresholds the fallback reorder uses;
+        # with no samples a provider stays neutral (1.0) and only its quota
+        # and reset horizon move the score.
+        reliability = rates_for_providers(
+            (QUOTA_KEY_TO_PROVIDER.get(key, key) for key, _, _ in config["providers"]),
+            now_fn=now_fn,
+        )
         for key, label, channel_id in config["providers"]:
             try:
                 prov_label, reset_secs, channel_name, rename, token_info = (
@@ -1468,8 +1587,10 @@ def run_tick(
                 "reset_seconds": reset_secs,
                 "label": prov_label,
             }
-            entries.append((label, channel_id, reset_secs))
-        if entries:
+            successes.append((label, channel_id, key))
+        if successes:
+            ranks = quota_display_ranks(readings, reliability)
+            entries = [(label, channel_id, ranks[key]) for label, channel_id, key in successes]
             sorted_channels = sort_voice_channels(
                 config, entries, headers, http_fn=http_fn
             )

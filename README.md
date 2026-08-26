@@ -30,10 +30,10 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox, and each opening is a single message that anchors its own thread
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent off-hours timer (`hermes auto_update status|enable|disable|reconcile`; default 04:00–08:00 local with randomized delay)
-  - quota_channels — Discord quota channels for five AI providers (one channel each), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
-  - fallback_quota_reorder — ranks fallback_providers by remaining quota × time-to-reset × recent API success (not soonest-reset-first) and rotates the primary model slot to the top-scoring tracked provider
+  - quota_channels — Discord model voice channels for six AI providers (one channel each) under a Models category, ordered by the same score as fallback routing (`quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h`; OpenRouter is a virtual unlimited Ox Alpha row), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
+  - fallback_quota_reorder — score-based primary/fallback quota rotation: `quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h` ranks soonest-reset wallets first (unlimited Ox Alpha scored as a synthetic 100%/168h wallet, derated by uptime) and rotates the primary slot to the top scorer
   - fallback_watch — tails agent.log and alerts a Discord channel whenever the primary model falls back, cooldown-deduped (opt-in, off by default)
-  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Quotas / Speeds), fully wired; idempotent, never deletes, existing home and notification channels are never clobbered
+  - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Models / Speeds), fully wired; idempotent, never deletes, a legacy Quotas category is renamed in place to Models, existing home and notification channels are never clobbered
   - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)

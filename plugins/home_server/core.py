@@ -8,8 +8,8 @@ and keeps in sync the whole structure:
   ``other``
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
-* ``Quotas``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
-  ``Cursor``, ``Grok``
+* ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
+  ``Cursor``, ``Grok``, ``OpenRouter``
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
@@ -109,6 +109,11 @@ class ModuleSpec:
     channels: Tuple[ChannelSpec, ...]
     embed_title: str
     embed_description: str
+    # Former names of this module's category. A guild still carrying one is
+    # migrated by renaming the category in place (see _reconcile_module);
+    # empty for every module that never changed name, so matching for
+    # unrelated categories is not weakened.
+    legacy_categories: Tuple[str, ...] = ()
 
 
 TEMPLATE: Dict[str, ModuleSpec] = {
@@ -164,20 +169,23 @@ TEMPLATE: Dict[str, ModuleSpec] = {
     ),
     "quotas": ModuleSpec(
         key="quotas",
-        category="Quotas",
+        category="Models",
         channels=(
             ChannelSpec("Codex", CHANNEL_TYPE_VOICE, "codex"),
             ChannelSpec("Kimi", CHANNEL_TYPE_VOICE, "kimi"),
             ChannelSpec("z.ai", CHANNEL_TYPE_VOICE, "zai"),
             ChannelSpec("Cursor", CHANNEL_TYPE_VOICE, "cursor"),
             ChannelSpec("Grok", CHANNEL_TYPE_VOICE, "grok"),
+            ChannelSpec("OpenRouter", CHANNEL_TYPE_VOICE, "openrouter"),
         ),
-        embed_title="📊 Quotas",
+        legacy_categories=("Quotas",),
+        embed_title="📊 Models",
         embed_description=(
             "Each voice channel is named after how much of that subscription's "
-            "quota is left and when it resets, so you can see your remaining "
-            "allowance at a glance. Hermes keeps the names up to date "
-            "automatically."
+            "quota is left and when it resets, and the category orders them by "
+            "spendability — the same score the fallback router uses. OpenRouter "
+            "is the unlimited Ox Alpha row, pinned at 100%. Hermes keeps the "
+            "names up to date automatically."
         ),
     ),
     "speeds": ModuleSpec(
@@ -454,7 +462,7 @@ class DiscordClient:
     def rename_channel(self, channel_id: str, name: str, *, skip_on_429: bool = False) -> str:
         """Rename only when the name actually changes (2 renames / 10 min / channel).
 
-        ``skip_on_429`` mirrors quota_channels: the Speeds/Quotas category label
+        ``skip_on_429`` mirrors quota_channels: the Speeds/Models category label
         is touched every tick, so a 429 there is expected and must not raise.
         """
         if self.channel_name(channel_id) == name:
@@ -810,9 +818,10 @@ def _find_channel(
 def _normalize_name(name: Any) -> str:
     """Lowercase and strip separators for tolerant matching.
 
-    ``Quotas • 25/8 3:30pm`` matches the "Quotas" category; ``inbox`` matches
-    ``#inbox``. Dynamic suffixes the pollers add (quota clocks, throughput)
-    are ignored for matching purposes.
+    ``Models • 25/8 3:30pm`` matches the "Models" category (and the legacy
+    ``Quotas • ...`` form during migration); ``inbox`` matches ``#inbox``.
+    Dynamic suffixes the pollers add (quota clocks, throughput) are ignored
+    for matching purposes.
     """
     return str(name or "").strip().lstrip("#").strip().lower()
 
@@ -828,7 +837,8 @@ def _prefix_match_channel(
 
     Used when no exact match exists. Only claims channels of the right type
     that are not already claimed by another template entry. The dynamic-label
-    categories ("Quotas • ...") match this way.
+    categories ("Models • ...") match this way, as do their legacy spellings
+    during a migration.
     """
     want = _normalize_name(name)
     for channel in channels:
@@ -856,8 +866,9 @@ def _reconcile_module(
     Matching is tolerant of a live server: exact normalized names first, then
     prefix matches against dynamically-labelled channels. Channels that exist
     elsewhere in the guild under the right name/type are ADOPTED (moved under
-    the module's category) instead of duplicated. Nothing is ever renamed or
-    deleted.
+    the module's category) instead of duplicated. The one rename reconcile
+    performs is the declared legacy-category migration (Quotas -> Models),
+    which patches the category name in place. Nothing is ever deleted.
     """
     category_id = _find_channel(
         channels, name=spec.category, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
@@ -865,7 +876,7 @@ def _reconcile_module(
     adopted_category = False
     if category_id is None:
         # Tolerant pass: an existing category whose name starts with the
-        # template name ("Quotas • 25/8 ..." vs "Quotas") is the same home.
+        # template name ("Models • 25/8 ..." vs "Models") is the same home.
         candidate = _prefix_match_channel(
             channels,
             name=spec.category,
@@ -878,6 +889,33 @@ def _reconcile_module(
             if str(prior_categories.get(spec.key) or "") != str(candidate):
                 report["adopted"].append(f"category:{spec.category}")
             adopted_category = True
+    if category_id is None:
+        # Migration: a guild provisioned before a category rename still
+        # carries the legacy name (exact, or dynamically labelled by the
+        # poller). Rename it IN PLACE so the children keep their IDs and
+        # only genuinely missing channels get created — never a second
+        # category. Checked only for modules that declared a legacy name.
+        for legacy in spec.legacy_categories:
+            candidate = _find_channel(
+                channels, name=legacy, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
+            )
+            if candidate is None:
+                candidate = _prefix_match_channel(
+                    channels,
+                    name=legacy,
+                    kind=CHANNEL_TYPE_CATEGORY,
+                    exclude_ids=set(),
+                )
+            if candidate is None:
+                continue
+            client.rename_channel(candidate, spec.category)
+            for channel in channels:
+                if str(channel.get("id")) == candidate:
+                    channel["name"] = spec.category
+                    break
+            report["renamed"].append(f"category:{legacy}->{spec.category}")
+            category_id = candidate
+            break
     if category_id is None:
         created = client.create_channel(
             guild_id, name=spec.category, kind=CHANNEL_TYPE_CATEGORY
@@ -984,6 +1022,7 @@ def reconcile(
         "guild_id": guild_id,
         "created": [],
         "adopted": [],
+        "renamed": [],
         "embeds_posted": [],
         "wired": {},
         "home_channel": "skipped",
@@ -1015,7 +1054,7 @@ def reconcile(
 
         if key not in state["welcome_embeds"]:
             # Voice channels are display-only (the name IS the UI). Posting
-            # a welcome embed there contradicts the Speeds/Quotas copy.
+            # a welcome embed there contradicts the Speeds/Models copy.
             text_spec = next(
                 (c for c in spec.channels if c.kind == CHANNEL_TYPE_TEXT),
                 None,

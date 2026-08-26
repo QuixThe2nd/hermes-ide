@@ -40,7 +40,19 @@ STATE_FILENAME = "fallback_quota_reorder_state.json"
 BACKUP_SUBDIR = Path("config-backups") / "fallback_quota_reorder"
 MAX_BACKUPS = 20
 LOW_QUOTA_PCT = 5
-MIN_HOURS_REMAINING = 1.0 / 60.0  # 1 minute; zero hours would zero the score
+MIN_HOURS_REMAINING = 1.0 / 60.0  # 1 minute; zero hours would divide by zero
+REFERENCE_HOURS = 168.0  # one week — the score's neutral time horizon
+
+# Ox Alpha (openrouter/stealth/ox-alpha) is free/unlimited: treat it like a
+# fresh account with zero usage — 100% synthetic quota against the full
+# REFERENCE_HOURS window, so neutral uptime scores exactly 1.0 and observed
+# uptime derates it through the same factors as everyone else. Only this
+# exact route gets the treatment; every other openrouter model is an
+# ordinary unscored entry without a real reading.
+UNLIMITED_PROVIDER = "openrouter"
+UNLIMITED_MODEL = "stealth/ox-alpha"
+UNLIMITED_PCT = 100
+UNLIMITED_RESET_SECONDS = 7 * 86400  # 604800s = 168h = REFERENCE_HOURS
 
 DISCORD_USER_AGENT = "Hermes Agent (https://hermes-agent.nousresearch.com)"
 
@@ -176,6 +188,54 @@ def parse_channel_name(channel_key: str, channel_name: str) -> Optional[QuotaRea
         pct=pct,
         reset_seconds=reset_seconds,
     )
+
+
+def is_unlimited_route(provider: object, model: object) -> bool:
+    """True only for the exact ``openrouter/stealth/ox-alpha`` route.
+
+    Provider and model are case-normalized the same way entry identities
+    are (strip + lower), so ``OpenRouter/Stealth/OX-Alpha`` also matches —
+    but no other openrouter model ever does.
+    """
+    return (
+        str(provider or "").strip().lower() == UNLIMITED_PROVIDER
+        and str(model or "").strip().lower() == UNLIMITED_MODEL
+    )
+
+
+def unlimited_reading() -> QuotaReading:
+    """Synthetic full-wallet reading for the unlimited Ox Alpha route.
+
+    100% quota against exactly REFERENCE_HOURS, so with no reliability
+    samples the route scores exactly 1.0 and observed uptime is the only
+    thing that moves it.
+    """
+
+    return QuotaReading(
+        channel_key="",
+        provider=UNLIMITED_PROVIDER,
+        channel_name="",
+        pct=UNLIMITED_PCT,
+        reset_seconds=UNLIMITED_RESET_SECONDS,
+    )
+
+
+def reading_for_entry(
+    entry: Mapping[str, Any],
+    readings_by_provider: Mapping[str, QuotaReading],
+) -> Optional[QuotaReading]:
+    """The reading that scores ``entry``: real channel data, else synthetic.
+
+    Real per-provider readings win; the synthetic unlimited reading only
+    fills the exact Ox Alpha route, which has no quota channel of its own.
+    """
+    provider = str(entry.get("provider") or "").strip().lower()
+    reading = readings_by_provider.get(provider)
+    if reading is not None:
+        return reading
+    if is_unlimited_route(provider, entry.get("model")):
+        return unlimited_reading()
+    return None
 
 
 def load_state() -> dict:
@@ -399,18 +459,20 @@ def score_provider(
     reading: QuotaReading,
     rates: Optional[ReliabilityRates] = None,
 ) -> float:
-    """Higher is better: burn the fat wallets first, then derate flaky ones.
+    """Higher is better: spend the soonest-reset wallets first, derate flaky ones.
 
-    score = hours_remaining * quota_frac * rate_24h * rate_1h
+    score = quota_frac * (REFERENCE_HOURS / hours_remaining) * rate_24h * rate_1h
 
-    Unknown reliability stays 1.0 so a quiet provider is not punished.
-    Hours remaining floor at one minute so a nearly-reset provider with
-    leftover quota still ranks above a true empty wallet.
+    Time enters inversely: the sooner a wallet refills, the more urgent it
+    is to burn it now, while a wallet resetting in exactly REFERENCE_HOURS
+    (or later) scores its quota fraction 1:1 or less. Unknown reliability
+    stays 1.0 so a quiet provider is not punished. Hours remaining floor at
+    one minute so a nearly-reset wallet is not divided by zero.
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
     quota_frac = max(0.0, min(float(reading.pct) / 100.0, 1.0))
     resolved = rates or ReliabilityRates()
-    return hours * quota_frac * resolved.rate_24h * resolved.rate_1h
+    return quota_frac * (REFERENCE_HOURS / hours) * resolved.rate_24h * resolved.rate_1h
 
 
 def compute_desired_order(
@@ -423,22 +485,17 @@ def compute_desired_order(
 
     rates = reliability or {}
     indexed = list(enumerate(entries))
-    openrouter: List[Tuple[int, dict]] = []
     scored_healthy: List[Tuple[int, dict, float]] = []
     scored_low: List[Tuple[int, dict, float]] = []
     unscored: List[Tuple[int, dict]] = []
 
     for index, entry in indexed:
-        provider = str(entry.get("provider") or "").strip().lower()
-        if provider == "openrouter":
-            openrouter.append((index, dict(entry)))
-            continue
-
-        reading = readings_by_provider.get(provider)
+        reading = reading_for_entry(entry, readings_by_provider)
         if reading is None:
             unscored.append((index, dict(entry)))
             continue
 
+        provider = str(entry.get("provider") or "").strip().lower()
         item = (index, dict(entry), score_provider(reading, rates.get(provider)))
         if reading.pct < LOW_QUOTA_PCT:
             scored_low.append(item)
@@ -449,8 +506,7 @@ def compute_desired_order(
     scored_healthy.sort(key=lambda item: (-item[2], item[0]))
     scored_low.sort(key=lambda item: (-item[2], item[0]))
 
-    ordered: List[dict] = [entry for _, entry in openrouter]
-    ordered.extend(entry for _, entry, _ in scored_healthy)
+    ordered: List[dict] = [entry for _, entry, _ in scored_healthy]
     ordered.extend(entry for _, entry, _ in scored_low)
     ordered.extend(entry for _, entry in unscored)
     return ordered
@@ -468,27 +524,38 @@ def current_primary(config: Mapping[str, Any]) -> Optional[PrimarySlot]:
     return PrimarySlot(provider=provider, model=model)
 
 
+def _unlimited_chain_entry(
+    entries: Sequence[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    for entry in entries:
+        if is_unlimited_route(entry.get("provider"), entry.get("model")):
+            return entry
+    return None
+
+
 def compute_primary_slot(
     config: Mapping[str, Any],
     desired_entries: Sequence[Mapping[str, Any]],
     readings: Mapping[str, QuotaReading],
     reliability: Optional[Mapping[str, ReliabilityRates]] = None,
 ) -> Optional[PrimarySlot]:
-    """Pick the primary winner among tracked providers with a chain entry.
+    """Pick the primary winner among scored candidates with a chain entry.
 
-    The highest ``score_provider`` reading wins, but only providers that
-    have a desired_entries entry with a non-empty model string can be
-    promoted — the model string has to come from somewhere. A top scorer
-    without a chain entry is skipped, and the best scorer WITH one wins
-    instead. The current primary is kept on ties (an untracked primary
-    such as openrouter scores 0 and only loses to an eligible provider
-    scoring above 0). Ties between eligible providers resolve to the
-    lowest CHANNEL_KEYS index. Returns None — "leave the primary alone" —
-    when there are no readings, no usable current primary, no eligible
-    provider at all, or none beats the current primary's score.
+    Candidates are the tracked providers with a reading plus the unlimited
+    ``openrouter/stealth/ox-alpha`` route, all scored with the same
+    ``score_provider`` math — Ox Alpha through its synthetic full-quota
+    reading. Only candidates that have a desired_entries entry with a
+    non-empty model string can be promoted — the model string has to come
+    from somewhere. A top scorer without a chain entry is skipped, and the
+    best scorer WITH one wins instead. The current primary is scored too
+    (an untracked primary such as a plain openrouter route scores 0) and
+    wins ties. Ties between eligible tracked providers resolve to the
+    lowest CHANNEL_KEYS index; the unlimited route competes after them, so
+    it only wins by beating the best tracked score outright. Returns None
+    — "leave the primary alone" — when there is no usable current primary,
+    no eligible candidate at all, or none beats the current primary's
+    score.
     """
-    if not readings:
-        return None
     current = current_primary(config)
     if current is None:
         return None
@@ -500,26 +567,44 @@ def compute_primary_slot(
             entry_by_provider[provider] = entry
 
     rates = reliability or {}
-    scores: Dict[str, float] = {}
-    best: Optional[Tuple[float, str]] = None
+    current_slug = current.provider.lower()
+    current_reading = readings.get(current_slug)
+    if current_reading is not None:
+        current_score: Optional[float] = score_provider(
+            current_reading, rates.get(current_slug)
+        )
+    elif is_unlimited_route(current.provider, current.model):
+        current_score = score_provider(
+            unlimited_reading(), rates.get(current_slug)
+        )
+    else:
+        current_score = None
+
+    best: Optional[Tuple[float, Mapping[str, Any]]] = None
     for key in CHANNEL_KEYS:  # CHANNEL_KEYS order breaks score ties
         provider = CHANNEL_KEY_TO_PROVIDER[key]
         reading = readings.get(provider)
         if reading is None:
             continue
-        score = score_provider(reading, rates.get(provider))
-        scores[provider] = score
         entry = entry_by_provider.get(provider)
         if entry is None or not str(entry.get("model") or "").strip():
             continue
+        score = score_provider(reading, rates.get(provider))
         if best is None or score > best[0]:
-            best = (score, provider)
+            best = (score, entry)
+
+    unlimited = _unlimited_chain_entry(desired_entries)
+    if unlimited is not None:
+        score = score_provider(unlimited_reading(), rates.get(UNLIMITED_PROVIDER))
+        if best is None or score > best[0]:
+            best = (score, unlimited)
+
     if best is None:
         return None
-    if scores.get(current.provider.lower(), 0.0) >= best[0]:
+    if (current_score or 0.0) >= best[0]:
         return None
 
-    winner = entry_by_provider[best[1]]
+    winner = best[1]
     return PrimarySlot(
         provider=str(winner.get("provider") or "").strip(),
         model=str(winner.get("model") or "").strip(),
@@ -530,22 +615,20 @@ def _chain_rank_key(
     entry: Mapping[str, Any],
     readings: Mapping[str, QuotaReading],
     rates: Mapping[str, ReliabilityRates],
-    *,
-    openrouter_first: bool = True,
 ) -> Tuple[int, float]:
     """Ordering key mirroring the compute_desired_order buckets.
 
-    (0) openrouter, (1) healthy scored, (2) low-quota scored, (3) unscored;
-    within the scored buckets higher score sorts earlier via ``-score``.
+    (0) healthy scored, (1) low-quota scored, (2) unscored; within the
+    scored buckets higher score sorts earlier via ``-score``. The unlimited
+    Ox Alpha route lands in the healthy bucket via its synthetic reading;
+    any other openrouter model without a real reading is unscored.
     """
-    provider = str(entry.get("provider") or "").strip().lower()
-    if openrouter_first and provider == "openrouter":
-        return (0, 0.0)
-    reading = readings.get(provider)
+    reading = reading_for_entry(entry, readings)
     if reading is None:
-        return (3, 0.0)
+        return (2, 0.0)
+    provider = str(entry.get("provider") or "").strip().lower()
     score = score_provider(reading, rates.get(provider))
-    return (2 if reading.pct < LOW_QUOTA_PCT else 1, -score)
+    return (1 if reading.pct < LOW_QUOTA_PCT else 0, -score)
 
 
 def rotate_chain_for_primary(
@@ -560,15 +643,13 @@ def rotate_chain_for_primary(
     Drops the promoted provider's entry (it graduates to the primary slot)
     and splices an entry for the displaced previous primary in by the
     compute_desired_order buckets: healthy before low-quota before unscored,
-    score descending within the scored buckets. The displaced entry never
-    gets the openrouter-floats-to-front rule — an untracked previous primary
+    score descending within the scored buckets. A displaced Ox Alpha primary
+    re-enters by its synthetic score; any other untracked previous primary
     (score 0) lands at the END of the chain.
     """
     rates = reliability or {}
     displaced_entry = {"provider": displaced.provider, "model": displaced.model}
-    displaced_key = _chain_rank_key(
-        displaced_entry, readings, rates, openrouter_first=False
-    )
+    displaced_key = _chain_rank_key(displaced_entry, readings, rates)
 
     rotated: List[dict] = []
     dropped = False
@@ -804,10 +885,18 @@ def run_reorder(
     ]
     validate_fallback_entries(current_entries)
 
-    reliability = rates_for_providers(
-        (str(entry.get("provider") or "") for entry in current_entries),
-        now_fn=now_fn,
-    )
+    primary_previous = current_primary(config)
+    # Reliability is needed for every scored or current candidate of the
+    # primary selection, not just the fallback entries: a promoted primary
+    # (Ox Alpha included) is absent from fallback_providers, yet its rates
+    # decide whether it keeps the slot.
+    reliability_providers = {
+        str(entry.get("provider") or "") for entry in current_entries
+    }
+    if primary_previous is not None:
+        reliability_providers.add(primary_previous.provider)
+    reliability_providers.update(readings.keys())
+    reliability = rates_for_providers(reliability_providers, now_fn=now_fn)
     scores = {
         provider: score_provider(reading, reliability.get(provider))
         for provider, reading in readings.items()
@@ -815,7 +904,6 @@ def run_reorder(
     desired_entries = compute_desired_order(
         current_entries, readings, reliability=reliability
     )
-    primary_previous = current_primary(config)
     primary_slot = compute_primary_slot(
         config, desired_entries, readings, reliability=reliability
     )

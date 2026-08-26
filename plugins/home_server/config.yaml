@@ -17,5 +17,5 @@ discord_home_server:
     chat: true          # Category "Chat": text channels inbox, outbox
     notifications: true # Category "Notifications": text channels model-fallback, gateway-restarts, other
     memory: true        # Category "Honcho Memory": explicit-facts, deductions, patterns, contradictions
-    quotas: true        # Category "Quotas": voice channels Codex, Kimi, z.ai, Cursor, Grok
+    quotas: true        # Category "Models": voice channels Codex, Kimi, z.ai, Cursor, Grok, OpenRouter
     speeds: true        # Category "Speeds": voice channels qBittorrent, SABnzbd, slskd
