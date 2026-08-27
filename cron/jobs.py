@@ -2010,9 +2010,19 @@ def create_job(
     if repeat is not None and repeat <= 0:
         repeat = None
 
-    # Auto-set repeat=1 for one-shot schedules if not specified
-    if parsed_schedule["kind"] == "once" and repeat is None:
-        repeat = 1
+    # Auto-set repeat=1 for one-shot schedules if not specified.
+    # A duration like "2m" is one-shot ("once in 2m"), not recurring.
+    # Reject an explicit repeat>1 so "2m" + --repeat 720 cannot silently
+    # create a one-shot that dies after the first fire (pc_af477277318ef9da0).
+    if parsed_schedule["kind"] == "once":
+        if repeat is None:
+            repeat = 1
+        elif repeat > 1:
+            raise ValueError(
+                f"Schedule '{schedule}' is a one-shot ({parsed_schedule.get('display', 'once')}), "
+                f"so --repeat {repeat} cannot run more than once. "
+                "Use 'every 2m' (or another interval/cron) for a recurring job."
+            )
 
     # Default delivery to origin if available, otherwise local
     if deliver is None:
