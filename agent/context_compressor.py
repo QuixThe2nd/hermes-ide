@@ -16,6 +16,8 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import contextlib
+import contextvars
 import copy
 import hashlib
 import json
@@ -54,6 +56,88 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# ── Pinned summary route ─────────────────────────────────────────────────
+# The summary call normally resolves its provider/model from
+# ``auxiliary.compression``. One caller needs to override that for a single
+# attempt: after the host's progress-aware timeout aborts a stalled summary
+# (#78981), ``agent.conversation_compression`` re-runs compression with the
+# route pinned to a configured ``fallback_chain`` entry. Nothing raised out
+# of the stalled call, so the auxiliary client's own fallback handling — which
+# only runs from its exception path — never saw that failure.
+#
+# A ContextVar, not an attribute on the compressor: the aborted worker is
+# detached and still alive on the pool, and the compressor object is shared
+# with it. Context is copied per worker (``propagate_context_to_thread``), so
+# the pin reaches the retry's whole synchronous call chain and cannot leak
+# into the stalled attempt or any unrelated auxiliary call.
+#
+# Coverage is the single ``_generate_summary`` LLM call only. That is one call
+# per compression run (its only non-recursive call site is the compress path;
+# the two recursive calls are the deliberate main-model retry that must NOT
+# re-issue the pin). Lean ``tail_mode`` additionally runs
+# ``_build_chunk_digests``, which issues its own ``call_llm`` calls directly
+# and never consults the pin — during a stall-fallback retry those digests
+# still target the stalled primary and degrade to per-segment placeholders.
+# Deliberate: the digest path is a best-effort augmentation, not the summary,
+# and pinning it would require weakening the single-use contract below.
+_SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("hermes_summary_route_pin", default=None)
+)
+
+# call_llm kwargs a pinned route may set. ``timeout`` lets a fallback entry
+# keep its own deadline instead of inheriting one the primary already burned
+# (same per-entry semantics the aux client applies to chain candidates).
+_PINNED_ROUTE_FIELDS: tuple[str, ...] = (
+    "provider",
+    "model",
+    "base_url",
+    "api_key",
+    "api_mode",
+    "timeout",
+)
+
+
+@contextlib.contextmanager
+def pin_summary_route(route: Optional[Dict[str, Any]]):
+    """Pin the next summary LLM call in this context to an explicit route.
+
+    ``route`` is a mapping of :data:`_PINNED_ROUTE_FIELDS`; ``None`` is a
+    no-op passthrough so callers can wire it unconditionally. Re-entrant-safe:
+    restores the previous pin on exit.
+    """
+    token = _SUMMARY_ROUTE_PIN.set(route if isinstance(route, dict) else None)
+    try:
+        yield
+    finally:
+        _SUMMARY_ROUTE_PIN.reset(token)
+
+
+def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
+    """Read and consume the pinned summary route, if one is installed.
+
+    Single use by design. ``_generate_summary`` retries itself on the main
+    model when the summary route fails; re-issuing the pinned route there
+    would spend a second full deadline on the backend that just failed.
+    """
+    route = _SUMMARY_ROUTE_PIN.get()
+    if route is None:
+        return None
+    _SUMMARY_ROUTE_PIN.set(None)
+    return route
+
+
+def _pinned_summary_call_kwargs() -> Dict[str, Any]:
+    """Consume the pinned route as explicit ``call_llm`` keyword arguments."""
+    route = take_pinned_summary_route()
+    if not route:
+        return {}
+    return {
+        field: route[field]
+        for field in _PINNED_ROUTE_FIELDS
+        if route.get(field) not in (None, "")
+    }
 
 
 _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
@@ -5010,6 +5094,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                     _aux_context = self.context_length
             except Exception:
                 pass
+            # A pinned route (stall fallback, #78981) is an explicit override:
+            # it replaces the task-config route for this one call so the retry
+            # actually leaves the backend that just stalled, and it re-points
+            # the aux telemetry at where the request really went.
+            _pinned_route = _pinned_summary_call_kwargs()
+            if _pinned_route:
+                call_kwargs.update(_pinned_route)
+                _aux_provider = str(_pinned_route.get("provider") or _aux_provider)
+                _aux_model = str(_pinned_route.get("model") or _aux_model)
+                _aux_context = None
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
             # aborts the summary and compression falls back to a degraded static

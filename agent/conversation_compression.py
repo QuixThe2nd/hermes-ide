@@ -64,7 +64,7 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
@@ -843,6 +843,174 @@ def resolve_context_compression_timeouts(
     return idle, ceiling
 
 
+def resolve_compression_fallback_route() -> Optional[dict]:
+    """Return the first usable ``auxiliary.compression.fallback_chain`` entry.
+
+    The chain is the user's declared answer to "the configured compression
+    route is unhealthy". The auxiliary client applies it from its exception
+    handler, so a route that *stalls* — connection open, no tokens, aborted by
+    the host's progress-aware timeout — never reaches it (#78981). This
+    resolves the same config into explicit ``call_llm`` route arguments the
+    stall path can pin onto one retry.
+
+    Only the first structurally complete entry is returned: one extra bounded
+    attempt is the budget for a stall, and if that entry cannot build a client
+    (or errors) the auxiliary client's own exception path still walks the rest
+    of the chain from there. Returns ``None`` when no entry is usable, which
+    keeps the historical continue-without-compression behaviour.
+    """
+    try:
+        from agent.auxiliary_client import (
+            _fallback_entry_api_key,
+            _get_auxiliary_task_config,
+        )
+
+        chain = _get_auxiliary_task_config("compression").get("fallback_chain")
+    except Exception:
+        logger.debug("compression fallback_chain lookup failed", exc_info=True)
+        return None
+    if not isinstance(chain, list):
+        return None
+
+    for index, entry in enumerate(chain):
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        # Both are required to name a route. _resolve_fallback_entry applies
+        # the same rule when the aux client walks this chain itself.
+        if not provider or not model:
+            continue
+        try:
+            api_key = _fallback_entry_api_key(entry)
+        except Exception:
+            logger.debug(
+                "compression fallback_chain[%d] api key resolution failed",
+                index,
+                exc_info=True,
+            )
+            api_key = None
+        from agent.auxiliary_client import _coerce_positive_timeout
+
+        timeout = _coerce_positive_timeout(entry.get("timeout"))
+        return {
+            "label": f"fallback_chain[{index}]({provider})",
+            "provider": provider,
+            "model": model,
+            "base_url": str(entry.get("base_url") or "").strip() or None,
+            "api_key": api_key or None,
+            "api_mode": str(
+                entry.get("api_mode") or entry.get("transport") or ""
+            ).strip() or None,
+            "timeout": timeout,
+        }
+    return None
+
+
+def _retry_compression_on_fallback_chain(
+    *,
+    worker: Callable[[CompressionCommitFence], Tuple[list, str]],
+    messages: list,
+    system_prompt_fallback: Any,
+    idle_timeout_seconds: float,
+    total_ceiling_seconds: float,
+    on_commit_overrun: Optional[Callable[[float, float], None]] = None,
+    telemetry_agent: Any = None,
+    new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+) -> Optional[Tuple[list, str]]:
+    """Re-run an aborted compression once with the summary route pinned.
+
+    Returns the fallback attempt's ``(messages, system_prompt)`` when it
+    actually compressed, or ``None`` when there was nothing to fall back to,
+    the attempt raised, or it produced no compression either — the caller then
+    degrades exactly as it did before.
+
+    The retry is bounded the same way the primary was: silence for one idle
+    window ends it, while a fallback that is streaming keeps its ceiling. The
+    entry's own ``timeout`` (when declared) sets that idle window, so a
+    fallback tuned for a slower-but-healthy backend is not held to a deadline
+    the stalled primary defined (#62452 semantics, applied to the stall path).
+    """
+    # An explicit stop is not a stalled route. The retry worker would abort on
+    # the same event anyway, but starting one at all makes /stop look ignored.
+    hard_cancel = getattr(telemetry_agent, "_hard_interrupt_requested", None)
+    if callable(getattr(hard_cancel, "is_set", None)) and hard_cancel.is_set():
+        return None
+
+    route = resolve_compression_fallback_route()
+    if route is None:
+        return None
+
+    # The aborted fence refuses every future commit, so the retry needs a
+    # fresh one. Mint it through the host's factory when it has one: hosts
+    # publish the active fence for hard-interrupt admission, and a /stop
+    # during the retry must serialize against THIS attempt's commit boundary.
+    retry_fence = None
+    if new_fence is not None:
+        try:
+            retry_fence = new_fence()
+        except Exception:
+            logger.warning(
+                "compression stall-fallback fence factory failed; the retry "
+                "will run on an unpublished fence (a /stop mid-retry cannot "
+                "serialize against its commit boundary)",
+                exc_info=True,
+            )
+    if not isinstance(retry_fence, CompressionCommitFence):
+        logger.warning(
+            "compression stall-fallback retry running on an unpublished fence; "
+            "hard-interrupt admission will read the aborted attempt's fence "
+            "rather than the retry's commit boundary",
+        )
+        retry_fence = CompressionCommitFence()
+    idle = float(route.get("timeout") or idle_timeout_seconds)
+    ceiling = max(float(total_ceiling_seconds), idle)
+    logger.warning(
+        "Context compression stalled on the configured summary route — "
+        "retrying once on %s (%s) before continuing without compression",
+        route["label"],
+        route["model"],
+    )
+    try:
+        from agent.context_compressor import pin_summary_route
+
+        with pin_summary_route(route):
+            result_msgs, result_prompt = run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=messages,
+                system_prompt_fallback=system_prompt_fallback,
+                idle_timeout_seconds=idle,
+                total_ceiling_seconds=ceiling,
+                on_commit_overrun=on_commit_overrun,
+                fence=retry_fence,
+                telemetry_agent=telemetry_agent,
+                stall_fallback=False,
+            )
+    except Exception:
+        # The primary already failed; a failing fallback must degrade, never
+        # turn "continue without compression" into a raised turn.
+        logger.warning(
+            "Context compression fallback attempt on %s failed",
+            route["label"],
+            exc_info=True,
+        )
+        return None
+    if result_msgs is messages:
+        # Aborted or no-op: the worker hands back the caller's own list.
+        logger.warning(
+            "Context compression fallback attempt on %s produced no "
+            "compression; continuing without compression",
+            route["label"],
+        )
+        return None
+    logger.info(
+        "Context compression recovered on %s after the primary summary route "
+        "stalled",
+        route["label"],
+    )
+    return result_msgs, result_prompt
+
+
 def run_compress_context_with_progress_timeout(
     *,
     worker: Callable[[CompressionCommitFence], Tuple[list, str]],
@@ -854,6 +1022,8 @@ def run_compress_context_with_progress_timeout(
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     fence: Optional[CompressionCommitFence] = None,
     telemetry_agent: Any = None,
+    stall_fallback: bool = True,
+    new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware timeout.
 
@@ -884,6 +1054,19 @@ def run_compress_context_with_progress_timeout(
     ``system_prompt_fallback`` may be a string or a zero-arg callable resolved
     only on the timeout path, so successful compression never pays for (or
     fails on) an eager prompt rebuild.
+
+    ``stall_fallback`` (default on) makes an aborted stall attempt the
+    configured ``auxiliary.compression.fallback_chain`` once — pinned onto a
+    fresh fence — before degrading to "continue without compression". Nothing
+    raises out of a silent stall, so the auxiliary client's own fallback
+    handling (exception-path only) never sees it (#78981). ``on_timeout``
+    therefore fires only after that attempt has also failed, which keeps its
+    cooldown bookkeeping from suppressing the retry it precedes.
+
+    ``new_fence`` mints that retry's fence. Hosts that publish the active
+    fence for hard-interrupt admission pass a factory that publishes the new
+    one too, so a ``/stop`` during the retry serializes against the retry's
+    commit boundary rather than the aborted attempt's.
     """
     if idle_timeout_seconds <= 0:
         raise ValueError(
@@ -1086,6 +1269,23 @@ def run_compress_context_with_progress_timeout(
         fence.release_cancelled_compression_lock()
         waited = time.monotonic() - wait_started
         since_progress = fence.seconds_since_progress()
+        # The durable lease is free again (above), so a fallback attempt can
+        # acquire it immediately. Run it BEFORE on_timeout: that callback
+        # records the summary-failure cooldown, which would make the retry's
+        # own summary call a no-op.
+        if stall_fallback:
+            recovered = _retry_compression_on_fallback_chain(
+                worker=worker,
+                messages=messages,
+                system_prompt_fallback=system_prompt_fallback,
+                idle_timeout_seconds=idle,
+                total_ceiling_seconds=ceiling,
+                on_commit_overrun=on_commit_overrun,
+                telemetry_agent=telemetry_agent,
+                new_fence=new_fence,
+            )
+            if recovered is not None:
+                return recovered
         if on_timeout is not None:
             try:
                 on_timeout(idle, waited, since_progress)
@@ -2152,8 +2352,17 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
         target.pop(flag, None)
 
 
-def _insert_real_user_anchor(messages: list, anchor: dict) -> None:
+CompressedUserTurnOutcome = Literal[
+    "inserted",
+    "merged",
+    "already_present",
+    "placeholder_appended",
+]
+
+
+def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurnOutcome:
     """Insert the latest human turn without breaking role alternation."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
 
     def _role(msg: Any) -> Optional[str]:
         return msg.get("role") if isinstance(msg, dict) else None
@@ -2166,13 +2375,15 @@ def _insert_real_user_anchor(messages: list, anchor: dict) -> None:
             continue
         previous_role = _role(messages[index - 1]) if index > 0 else None
         if previous_role != "user":
+            anchor[_DB_PERSISTED_MARKER] = True
             messages.insert(index, anchor)
-            return
+            return "inserted"
     # Every assistant is user-preceded (or there are none). Appending is
     # safe whenever the transcript does not already end with a user turn.
     if not messages or _role(messages[-1]) != "user":
+        anchor[_DB_PERSISTED_MARKER] = True
         messages.append(anchor)
-        return
+        return "inserted"
     # The transcript ends with a user-role message and no slot avoids
     # user/user adjacency.
     from agent.context_compressor import ContextCompressor
@@ -2186,17 +2397,22 @@ def _insert_real_user_anchor(messages: list, anchor: dict) -> None:
         # the summary" — exactly what the handoff prefix instructs — and the
         # adjacent user turns are merged summary-first by
         # repair_message_sequence before the next API call.
+        anchor[_DB_PERSISTED_MARKER] = True
         messages.append(anchor)
-        return
+        return "inserted"
     # Trailing user-role scaffolding (e.g. the todo snapshot): merge instead
     # of inserting a consecutive same-role message (#55677 strict templates).
     _merge_anchor_into_user_message(messages[-1], anchor)
+    messages[-1][_DB_PERSISTED_MARKER] = True
+    return "merged"
 
 
-def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:
+def _ensure_compressed_has_user_turn(
+    original_messages: list, compressed: list
+) -> CompressedUserTurnOutcome:
     """Preserve human intent, not merely a synthetic user-role placeholder."""
     if any(_is_real_user_message(message) for message in compressed):
-        return
+        return "already_present"
     from agent.context_compressor import (
         COMPRESSION_CONTINUATION_USER_CONTENT,
         _fresh_compaction_message_copy,
@@ -2204,11 +2420,10 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
 
     for message in reversed(original_messages):
         if _is_real_user_message(message):
-            _insert_real_user_anchor(
+            return _insert_real_user_anchor(
                 compressed,
                 _fresh_compaction_message_copy(message),
             )
-            return
     from agent.message_metadata import append_message
 
     append_message(
@@ -2218,6 +2433,22 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
             "content": COMPRESSION_CONTINUATION_USER_CONTENT,
         },
     )
+    return "placeholder_appended"
+
+
+def _messages_match_scoped_identity(left: Any, right: Any) -> bool:
+    """Compare the live turn identity we care about for rotation stamping."""
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    if left.get("role") != right.get("role"):
+        return False
+    if left.get("content") != right.get("content"):
+        return False
+    left_timestamp = left.get("timestamp")
+    right_timestamp = right.get("timestamp")
+    if left_timestamp is not None and right_timestamp is not None:
+        return left_timestamp == right_timestamp
+    return True
 
 
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = (
@@ -3020,6 +3251,11 @@ def compress_context(
                         # after compression skips the adopted rows by identity
                         # (conversation_history=messages[:idx]) instead of
                         # re-appending the concurrent rows and the live tail.
+                        # This rebind is the concrete divergence path that can
+                        # leave `agent._session_messages` pointing at the old
+                        # live list while `messages` now points at the adopted
+                        # durable snapshot; the post-publish marker sync in
+                        # run_agent.py keeps both views aligned.
                         agent._persist_user_message_idx = len(messages)
 
         # Notify external memory provider before compression discards context.
@@ -3465,7 +3701,9 @@ def compress_context(
                     "content": todo_snapshot,
                     "_todo_snapshot_synthetic": True,
                 })
-        _ensure_compressed_has_user_turn(messages, compressed)
+        compressed_user_turn_outcome = _ensure_compressed_has_user_turn(
+            messages, compressed
+        )
 
         cached_system_prompt = agent._cached_system_prompt
         agent._invalidate_system_prompt()
@@ -3779,6 +4017,7 @@ def compress_context(
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                         f"{uuid.uuid4().hex[:6]}"
                     )
+                    from agent.context_compressor import _DB_PERSISTED_MARKER
                     agent._session_db.publish_compression_child(
                         parent_session_id=old_session_id,
                         child_session_id=new_session_id,
@@ -3799,7 +4038,127 @@ def compress_context(
                         ),
                         watermark_ceiling=_foreign_tail_ceiling,
                     )
+                    # For the `already_present` outcome the live-dict stamping is
+                    # handled by the run_agent _compress_context wrapper's
+                    # _sync_persisted_markers (it mirrors the handoff stamps back
+                    # to the live lists by scoped identity). This branch only
+                    # covers inserted/merged; compress_context is intentionally
+                    # NOT self-contained for already_present — a future direct
+                    # caller of compress_context must go through that wrapper.
+                    if compressed_user_turn_outcome in {"inserted", "merged"}:
+                        # The published child represents exactly one live row:
+                        # the anchor source _ensure_compressed_has_user_turn
+                        # inserted (verbatim) or merged (as the leading
+                        # content) into the handoff. Stamp THAT row, not an
+                        # index that may have drifted (adoption rebind at
+                        # :3028/:3045 rebinds _persist_user_message_idx to
+                        # len(messages) — deliberately OUT OF RANGE — or
+                        # reanchor_current_turn_user_idx falling back to a
+                        # user-role neighbor). The persist index is
+                        # deliberately NOT read here: trusting it is the
+                        # drift vector. _messages_match_scoped_identity is
+                        # intentionally NOT used against the HANDOFF row: for
+                        # `merged` the handoff is a superset (anchor +
+                        # scaffolding), so a verbatim match would break the
+                        # legitimate merged stamp. Live views are compared
+                        # against the ANCHOR SOURCE only.
+                        _compressed_anchor_source = None
+                        for _reversed_message in reversed(messages):
+                            if _is_real_user_message(_reversed_message):
+                                _compressed_anchor_source = _reversed_message
+                                break
+                        if isinstance(_compressed_anchor_source, dict):
+                            _compressed_anchor_source[_DB_PERSISTED_MARKER] = True
+                            _session_messages = getattr(
+                                agent, "_session_messages", None
+                            )
+                            if (
+                                isinstance(_session_messages, list)
+                                and _session_messages is not messages
+                            ):
+                                # Adoption divergence: `messages` now points
+                                # at the adopted durable snapshot while
+                                # agent._session_messages may still point at
+                                # the pre-adoption live list (comment
+                                # :3040-3044), and the persist index is OUT
+                                # OF RANGE for the twin by design. The
+                                # post-publish _sync_persisted_markers cannot
+                                # mirror a MERGED handoff either (anchor +
+                                # scaffolding superset has no scoped match
+                                # with the standalone live row). Locate the
+                                # twin's corresponding live row(s) by scoped
+                                # identity AGAINST THE ANCHOR SOURCE and
+                                # stamp them — mirroring the wrapper's "stamp
+                                # every scoped match" pattern for
+                                # timestamp-less ambiguity
+                                # (run_agent.py:8237-8281).
+                                _anchor_timestamp = _compressed_anchor_source.get(
+                                    "timestamp"
+                                )
+                                _found_exact_timestamp_candidate = False
+                                if _anchor_timestamp is not None:
+                                    for _twin_message in _session_messages:
+                                        if (
+                                            isinstance(_twin_message, dict)
+                                            and _twin_message.get("timestamp")
+                                            == _anchor_timestamp
+                                            and _messages_match_scoped_identity(
+                                                _twin_message,
+                                                _compressed_anchor_source,
+                                            )
+                                        ):
+                                            # An exact scoped twin EXISTS —
+                                            # count the hit REGARDLESS of the
+                                            # marker. An already-stamped exact
+                                            # twin (stamped by a prior
+                                            # flush/rotation) must still
+                                            # suppress the broad fallback:
+                                            # otherwise a timestamp-less
+                                            # historical duplicate with the
+                                            # same content would be stamped as
+                                            # a "twin" of the anchor — the
+                                            # exact wrong-row path the
+                                            # reviewer flagged. The stamp
+                                            # itself stays idempotent (skip
+                                            # rows already carrying the
+                                            # marker); only the HIT is
+                                            # marker-independent.
+                                            _found_exact_timestamp_candidate = True
+                                            if not _twin_message.get(
+                                                _DB_PERSISTED_MARKER
+                                            ):
+                                                _twin_message[
+                                                    _DB_PERSISTED_MARKER
+                                                ] = True
+                                if not _found_exact_timestamp_candidate:
+                                    # No exact scoped twin exists anywhere (or
+                                    # the anchor itself is timestamp-less):
+                                    # stamp every scoped match — the wrapper's
+                                    # documented ambiguity policy for
+                                    # timestamp-less anchors. This branch is
+                                    # reached ONLY when an exact hit is
+                                    # provably absent; an exact hit that is
+                                    # already stamped does NOT open this
+                                    # branch.
+                                    for _twin_message in _session_messages:
+                                        if (
+                                            isinstance(_twin_message, dict)
+                                            and not _twin_message.get(
+                                                _DB_PERSISTED_MARKER
+                                            )
+                                            and _messages_match_scoped_identity(
+                                                _twin_message,
+                                                _compressed_anchor_source,
+                                            )
+                                        ):
+                                            _twin_message[
+                                                _DB_PERSISTED_MARKER
+                                            ] = True
+                    for _handoff_message in compressed:
+                        if isinstance(_handoff_message, dict):
+                            _handoff_message[_DB_PERSISTED_MARKER] = True
                     agent.session_id = new_session_id
+                    agent._db_flush_scan_prefix = None
                     try:
                         from gateway.session_context import set_current_session_id
 
@@ -3894,11 +4253,6 @@ def compress_context(
                 else:
                     agent._last_flushed_db_idx = len(compressed)
                     agent._flushed_db_message_session_id = agent.session_id
-                    agent._flushed_db_message_ids = {
-                        id(message)
-                        for message in compressed
-                        if isinstance(message, dict)
-                    }
                 _session_commit_succeeded = True
             except Exception as e:
                 if (
@@ -3909,6 +4263,14 @@ def compress_context(
                     # Atomic publication failed (including lease loss): keep the
                     # parent live and discard the stale compacted snapshot.
                     old_session_id = None
+                    # NOTE: _db_flush_scan_prefix is intentionally NOT cleared
+                    # here. The flush's bounded scan is identity-based
+                    # (messages[i] is prefix[i]); the deepcopy rollback below
+                    # replaces every row, so a stale prefix can never
+                    # identity-match again. A failed parent flush clears its own
+                    # prefix, and on the snapshot path the live list is
+                    # untouched — do not "restore" a clear here without
+                    # re-checking those invariants.
                     messages[:] = copy.deepcopy(messages_before_compression)
                     compressed = messages
                     _compression_made_progress = False
