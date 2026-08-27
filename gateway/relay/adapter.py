@@ -325,10 +325,23 @@ class RelayAdapter(BasePlatformAdapter):
             if chat_id is not None
             else self.descriptor
         )
-        return (
+        if not (
             desc.supports_draft_streaming
             and "draft" in (desc.supported_ops or ())
-        )
+        ):
+            return False
+        # Slack chat.*Stream has no unfurl_links / unfurl_media. Native
+        # SlackAdapter already refuses streaming when those knobs are set
+        # so chat.postMessage can carry them. Mirror that here or a
+        # configured true never reaches Slack (bot default = no preview).
+        platform = None
+        if chat_id is not None:
+            platform = self._platform_by_chat.get(str(chat_id))
+        if platform is None:
+            platform = getattr(desc, "platform", None)
+        if self._slack_unfurl_hints(platform):
+            return False
+        return True
 
     def stream_is_message_for_chat(self, chat_id: str) -> bool:
         """Per-chat stream-is-the-message semantic (review r2, finding 2).
@@ -1088,6 +1101,47 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return True
 
+    def _slack_unfurl_hints(self, platform: Optional[str]) -> Optional[Dict[str, bool]]:
+        """Slack-only outbound link-preview suppression, relay-namespaced.
+
+        Mirrors the native SlackAdapter's unfurl controls
+        (``platforms.slack.extra.unfurl_links`` / ``unfurl_media``) but reads
+        the relay namespace (``platforms.relay.extra.slack.*``) per the
+        ``reply_in_thread`` seam: relay-fronted Slack reads its subset here;
+        the native ``platforms.slack`` block keeps meaning native-adapter
+        settings. Only explicitly-configured booleans are returned — omitted
+        keys preserve Slack's default unfurling. Non-Slack platforms return
+        None so the metadata is never polluted for other fronted platforms.
+        """
+        if str(platform or "").lower() != Platform.SLACK.value:
+            return None
+        extra = self._relay_slack_extra()
+        hints: Dict[str, bool] = {}
+        for knob in ("unfurl_links", "unfurl_media"):
+            val = extra.get(knob)
+            if val is None:
+                continue
+            # Railway / `hermes config set` write YAML strings ("true"/"false").
+            # A Slack bot that omits the fields does NOT get human-default
+            # previews — so a string "true" that we drop looks like
+            # suppression. Coerce the same way as reply_in_thread; still drop
+            # junk (empty, 0, "maybe") so omitted stays omitted.
+            if isinstance(val, bool):
+                hints[knob] = val
+                continue
+            if isinstance(val, str) and val.strip().lower() in {
+                "1",
+                "0",
+                "true",
+                "false",
+                "yes",
+                "no",
+                "on",
+                "off",
+            }:
+                hints[knob] = val.strip().lower() in {"1", "true", "yes", "on"}
+        return hints or None
+
     def _stamp_slack_session_thread(self, event) -> None:
         """Native session-keying parity for fronted Slack DMs.
 
@@ -1742,6 +1796,9 @@ class RelayAdapter(BasePlatformAdapter):
             )
         if self._transport is None:
             return SendResult(success=False, error="no transport")
+        _sfp_unfurl = self._slack_unfurl_hints(str(platform_value))
+        if _sfp_unfurl:
+            _sfp_metadata.update(_sfp_unfurl)
         result = await self._transport.send_outbound(
             {
                 "op": "send",
@@ -1925,6 +1982,12 @@ class RelayAdapter(BasePlatformAdapter):
         effective_reply_to = self._apply_slack_thread_anchor(
             chat_id, reply_to, send_metadata
         )
+        _unfurl = self._slack_unfurl_hints(
+            self._platform_by_chat.get(str(chat_id))
+            or getattr(self.descriptor, "platform", None)
+        )
+        if _unfurl:
+            send_metadata.update(_unfurl)
         result = await self._transport.send_outbound(
             {
                 "op": "send",
@@ -2495,6 +2558,12 @@ class RelayAdapter(BasePlatformAdapter):
         effective_reply_to = self._apply_slack_thread_anchor(
             chat_id, reply_to, media_metadata
         )
+        _media_unfurl = self._slack_unfurl_hints(
+            self._platform_by_chat.get(str(chat_id))
+            or getattr(self.descriptor, "platform", None)
+        )
+        if _media_unfurl:
+            media_metadata.update(_media_unfurl)
         action: Dict[str, Any] = {
             "op": "send_media",
             "chat_id": chat_id,
