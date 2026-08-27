@@ -105,6 +105,7 @@ DEV_BLOCK_KINDS = frozenset({
     "executor_restarted",
     "attempts_exhausted",
     "verification_regression",
+    "acceptance_timeout",
 })
 
 _ASSETS_AGENTS_DIR = (
@@ -2520,6 +2521,7 @@ class DevExecutor:
         lane = str(st.get("lane") or "cursor-bounded")
         env = build_attempt_env(os.environ, lane=lane)
         cand_evidence = logs_root / "verify-candidate"
+        timeout_stage: str | None = None
         with self._heartbeat_scope(conn, task_id):
             try:
                 cand_results = run_verification(
@@ -2541,65 +2543,107 @@ class DevExecutor:
                         "command": cand_results[0].command,
                     },
                 )
-            outcome = classify_verification(cand_results)
-            verification: dict[str, Any] = {
-                "outcome": outcome,
-                "candidate": [
-                    {
-                        "command": r.command,
-                        "exit_code": r.exit_code,
-                        "log": str(r.output_path),
-                    }
-                    for r in cand_results
-                ],
-            }
-            if outcome == "regression":
-                if verify_base_dir.exists():
-                    import shutil
-
-                    shutil.rmtree(verify_base_dir, ignore_errors=True)
-                git_command(
-                    ["clone", str(repo_dir), str(verify_base_dir)],
-                    cwd=verify_base_dir.parent,
-                )
-                git_command(["checkout", str(base)], cwd=verify_base_dir)
-                base_evidence = logs_root / "verify-base"
-                base_timed_out = False
-                try:
-                    base_results = run_verification(
-                        verify_base_dir,
-                        commands,
-                        base_evidence,
-                        timeout=timeout,
-                        env=env,
-                    )
-                except subprocess.TimeoutExpired as exc:
-                    base_results = [command_result_from_timeout(exc, base_evidence)]
-                    base_timed_out = True
-                    record_dev_phase(
-                        conn,
-                        task_id,
-                        run_id,
-                        PHASE_VERIFYING,
+                timeout_stage = "candidate"
+                verification = {
+                    "outcome": "acceptance_timeout",
+                    "candidate": [
                         {
-                            "acceptance_timeout": True,
-                            "command": base_results[0].command,
-                            "base_verify": True,
-                        },
+                            "command": cand_results[0].command,
+                            "exit_code": cand_results[0].exit_code,
+                            "log": str(cand_results[0].output_path),
+                        }
+                    ],
+                }
+            else:
+                outcome = classify_verification(cand_results)
+                verification: dict[str, Any] = {
+                    "outcome": outcome,
+                    "candidate": [
+                        {
+                            "command": r.command,
+                            "exit_code": r.exit_code,
+                            "log": str(r.output_path),
+                        }
+                        for r in cand_results
+                    ],
+                }
+                if outcome == "regression":
+                    if verify_base_dir.exists():
+                        import shutil
+
+                        shutil.rmtree(verify_base_dir, ignore_errors=True)
+                    git_command(
+                        ["clone", str(repo_dir), str(verify_base_dir)],
+                        cwd=verify_base_dir.parent,
                     )
-                verification["base"] = [
-                    {
-                        "command": r.command,
-                        "exit_code": r.exit_code,
-                        "log": str(r.output_path),
-                    }
-                    for r in base_results
-                ]
-                if base_timed_out:
-                    outcome = "regression"
-                else:
-                    outcome = classify_verification(cand_results, base_results)
-                verification["outcome"] = outcome
+                    git_command(["checkout", str(base)], cwd=verify_base_dir)
+                    base_evidence = logs_root / "verify-base"
+                    try:
+                        base_results = run_verification(
+                            verify_base_dir,
+                            commands,
+                            base_evidence,
+                            timeout=timeout,
+                            env=env,
+                        )
+                    except subprocess.TimeoutExpired as exc:
+                        base_results = [command_result_from_timeout(exc, base_evidence)]
+                        record_dev_phase(
+                            conn,
+                            task_id,
+                            run_id,
+                            PHASE_VERIFYING,
+                            {
+                                "acceptance_timeout": True,
+                                "command": base_results[0].command,
+                                "base_verify": True,
+                            },
+                        )
+                        timeout_stage = "base"
+                        verification["base"] = [
+                            {
+                                "command": r.command,
+                                "exit_code": r.exit_code,
+                                "log": str(r.output_path),
+                            }
+                            for r in base_results
+                        ]
+                        verification["outcome"] = "acceptance_timeout"
+                    else:
+                        verification["base"] = [
+                            {
+                                "command": r.command,
+                                "exit_code": r.exit_code,
+                                "log": str(r.output_path),
+                            }
+                            for r in base_results
+                        ]
+                        outcome = classify_verification(cand_results, base_results)
+                        verification["outcome"] = outcome
+
+        if timeout_stage:
+            meta = merge_pipeline_state(
+                meta,
+                {
+                    "verification": verification,
+                    "mechanical_pass": False,
+                },
+            )
+            save_run_metadata(conn, run_id, meta)
+            reason = (
+                "acceptance command timed out on base checkout"
+                if timeout_stage == "base"
+                else "acceptance command timed out"
+            )
+            block_dev_task(
+                conn,
+                task_id,
+                "acceptance_timeout",
+                reason,
+                run_id=run_id,
+            )
+            self._active.pop(task_id, None)
+            return
 
         meta = merge_pipeline_state(
             meta, {"verification": verification, "mechanical_pass": outcome == "pass"}

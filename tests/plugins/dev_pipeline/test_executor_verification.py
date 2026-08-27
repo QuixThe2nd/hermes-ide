@@ -181,7 +181,8 @@ def test_verifying_acceptance_timeout_classified(kanban_home, tmp_path):
     task = kb.get_task(conn, task_id)
     assert task is not None
     assert task.status == "blocked"
-    assert "verification_regression" in _dev_block_kinds(conn, task_id)
+    assert "acceptance_timeout" in _dev_block_kinds(conn, task_id)
+    assert "verification_regression" not in _dev_block_kinds(conn, task_id)
     assert task_id not in executor._active
     assert len(heartbeat_calls) >= 1
     conn.close()
@@ -270,7 +271,7 @@ def test_verifying_exhausted_regression_emits_typed_dev_blocked_event(
     conn.close()
 
 
-def test_verifying_base_timeout_forces_regression_not_baseline_failure(
+def test_verifying_base_timeout_blocks_as_acceptance_timeout_not_baseline(
     kanban_home, tmp_path
 ):
     kb.create_board("dev")
@@ -351,13 +352,14 @@ def test_verifying_base_timeout_forces_regression_not_baseline_failure(
                             meta,
                             ex.pipeline_state(meta),
                         )
-                        mock_spawn.assert_called_once()
+                        mock_spawn.assert_not_called()
 
-    saved = ex.load_run_metadata(conn, pipeline_run)
-    verification = ex.pipeline_state(saved).get("verification") or {}
-    assert verification.get("outcome") == "regression"
-    assert verification.get("outcome") != "baseline_failure"
-    assert ex.pipeline_state(saved).get("mechanical_pass") is False
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "blocked"
+    assert "acceptance_timeout" in _dev_block_kinds(conn, task_id)
+    assert "verification_regression" not in _dev_block_kinds(conn, task_id)
+    assert task_id not in executor._active
     conn.close()
 
 
