@@ -650,6 +650,42 @@ class GatewayAuthorizationMixin:
             except Exception:
                 pass
 
+        # WhatsApp observe-unmentioned group sessions key on the group chat
+        # with a shared source (user_id=None), exactly like Telegram's
+        # observe mode. WhatsApp has no group_allowed_chats env var — its
+        # group allowlist is ``group_allow_from`` (``@g.us`` JIDs), honored
+        # by adapter intake (_is_group_allowed) and bridged from
+        # ``platforms.whatsapp.extra.group_allow_from``. Admit an allowlisted
+        # group chat by chat id so those user-less shared sources pass
+        # authorization; DMs never carry chat_type="group" and stay on the
+        # per-user allowlist/pairing path below.
+        if (
+            source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}
+            and source.chat_type in {"group", "forum", "channel"}
+            and source.chat_id
+        ):
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter is not None:
+                    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                    group_allow_from = extra.get("group_allow_from") or extra.get("groupAllowFrom")
+                    if not group_allow_from:
+                        # Parsed set[str] when the adapter seeded it in __init__.
+                        group_allow_from = getattr(adapter, "_group_allow_from", None)
+                    if group_allow_from:
+                        # ``_coerce_allow_set`` only understands list/str, not
+                        # the adapter's live set — normalize both shapes here.
+                        if isinstance(group_allow_from, (set, frozenset, tuple)):
+                            allowed_groups = {
+                                str(part).strip() for part in group_allow_from if str(part).strip()
+                            }
+                        else:
+                            allowed_groups = _coerce_allow_set(group_allow_from)
+                        if "*" in allowed_groups or source.chat_id in allowed_groups:
+                            return True
+            except Exception:
+                pass
+
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver
         # bot/automation traffic with no user_id at all -- e.g. Slack Workflow
