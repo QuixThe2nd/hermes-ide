@@ -3585,7 +3585,10 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from gateway.platforms.whatsapp_common import (
+        resolve_whatsapp_bridge_dir,
+        whatsapp_session_is_paired,
+    )
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
 
@@ -3629,7 +3632,7 @@ def cmd_whatsapp(args):
     session_dir = get_hermes_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    if (session_dir / "creds.json").exists():
+    if whatsapp_session_is_paired(session_dir):
         print("✓ Existing WhatsApp session found")
         try:
             response = input(
@@ -3682,7 +3685,7 @@ def cmd_whatsapp(args):
 
     # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
-    if (session_dir / "creds.json").exists():
+    if whatsapp_session_is_paired(session_dir):
         # Only enable WhatsApp now that pairing actually succeeded.  If the
         # user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
         # and `hermes gateway` skips it cleanly instead of paying a 30s

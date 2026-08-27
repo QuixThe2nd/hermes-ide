@@ -284,7 +284,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, whatsapp_session_is_paired
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -532,18 +532,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
 
         # Pre-flight: skip the 30s bridge bootstrap entirely if the user
-        # never finished pairing.  Without creds.json the bridge prints
-        # QR codes to its log file and never reaches status:connected,
-        # so every gateway restart paid the 30s timeout + queued WhatsApp
-        # for indefinite retries.  Mark non-retryable so the user gets a
-        # clear pairing message instead of the watcher
-        # silently hammering an unconfigured platform.
+        # never finished pairing.  Without a registered creds.json the
+        # bridge prints QR codes to its log file and never reaches
+        # status:connected, so every gateway restart paid the 30s timeout
+        # + queued WhatsApp for indefinite retries.  A leftover file with
+        # registered=false / pairingCode is still unpaired.  Mark
+        # non-retryable so the user gets a clear pairing message instead
+        # of the watcher silently hammering an unconfigured platform.
         creds_path = self._session_path / "creds.json"
-        if not creds_path.exists():
+        if not whatsapp_session_is_paired(self._session_path):
             logger.warning(
-                "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Pair from the dashboard or run `hermes whatsapp`; remove "
-                "WHATSAPP_ENABLED from your .env to disable.",
+                "[%s] WhatsApp is enabled but not paired (no registered "
+                "session at %s). Pair from the dashboard or run `hermes "
+                "whatsapp`; remove WHATSAPP_ENABLED from your .env to disable.",
                 self.name, creds_path,
             )
             self._set_fatal_error(

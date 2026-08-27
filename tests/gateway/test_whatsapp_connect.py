@@ -491,3 +491,38 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_registered_false(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter.config = MagicMock()
+        adapter._bridge_port = 19878
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// stub")
+        adapter._bridge_script = str(bridge)
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        (session_dir / "creds.json").write_text(
+            '{"registered": false, "pairingCode": "ABCD-1234"}',
+            encoding="utf-8",
+        )
+        adapter._session_path = session_dir
+        adapter._bridge_log_fh = None
+        adapter._fatal_error_code = None
+        adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter._fatal_error_handler = None
+        adapter._acquire_platform_lock = MagicMock(return_value=False)
+
+        with patch(
+            "plugins.platforms.whatsapp.adapter.check_whatsapp_requirements",
+            return_value=True,
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "whatsapp_not_paired"
+        adapter._acquire_platform_lock.assert_not_called()

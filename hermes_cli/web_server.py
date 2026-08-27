@@ -10043,7 +10043,9 @@ async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
         session_path = _whatsapp_session_path()
         expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
         expires_at = _utc_iso_from_ts(expires_at_ts)
-        if (session_path / "creds.json").exists():
+        from gateway.platforms.whatsapp_common import whatsapp_session_is_paired
+
+        if whatsapp_session_is_paired(session_path):
             pairing_id = secrets.token_urlsafe(16)
             account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
             record = _WhatsAppOnboardingSession(
