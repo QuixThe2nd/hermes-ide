@@ -130,6 +130,17 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+Group tip — with `require_mention: true`, setting `observe_unmentioned_group_messages: true` stores
+unmentioned chatter from allowlisted groups as shared-session context (marked *observed*, never
+dispatched); the next time someone mentions or replies to the bot, that context is replayed as
+background so the bot can follow the room. Off by default.
+
+```yaml
+whatsapp:
+  require_mention: true
+  observe_unmentioned_group_messages: true
+```
+
 Then start the gateway:
 
 ```bash
