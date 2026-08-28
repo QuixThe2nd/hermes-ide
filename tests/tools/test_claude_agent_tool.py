@@ -135,6 +135,55 @@ def test_schema_registration():
 
 
 # ---------------------------------------------------------------------------
+# Lane-rule schema contract (claude / cursor / file tools)
+# ---------------------------------------------------------------------------
+
+def test_claude_schema_description_states_lane_rule():
+    import tools.claude_agent_tool  # noqa: F401
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_claude_agent")
+    assert entry is not None
+    description = entry.schema["description"]
+    assert "MEDIUM TO LARGE" in description
+    assert "delegate_cursor_agent" in description
+    assert "/goal" in description
+
+
+def test_claude_task_description_requires_verifiable_done_condition():
+    import tools.claude_agent_tool  # noqa: F401
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_claude_agent")
+    assert entry is not None
+    task = entry.schema["parameters"]["properties"]["task"]["description"]
+    assert "/goal" in task
+    assert "done condition" in task
+
+
+def test_cursor_schema_description_states_lane_rule():
+    import tools.cursor_agent_tool  # noqa: F401
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_cursor_agent")
+    assert entry is not None
+    description = entry.schema["description"]
+    assert "SMALL TO MEDIUM" in description
+    assert "delegate_claude_agent" in description
+
+
+def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
+    import tools.file_tools  # noqa: F401
+
+    from tools.file_tools import PATCH_SCHEMA, WRITE_FILE_SCHEMA
+
+    for schema in (WRITE_FILE_SCHEMA, PATCH_SCHEMA):
+        description = schema["description"]
+        assert "delegate_cursor_agent" in description, schema["name"]
+        assert "delegate_claude_agent" in description, schema["name"]
+
+
+# ---------------------------------------------------------------------------
 # Binary resolution + gating
 # ---------------------------------------------------------------------------
 

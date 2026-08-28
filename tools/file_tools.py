@@ -2710,7 +2710,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed. Source-code edits do not belong here — route code changes through delegate_cursor_agent (small/medium) or delegate_claude_agent with /goal (medium/large); this tool is for configs, docs, memory, and scratch.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2735,7 +2735,10 @@ PATCH_SCHEMA = {
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-        "REQUIRED PARAMETERS: mode, patch."
+        "REQUIRED PARAMETERS: mode, patch. "
+        "Source-code edits do not belong here — route code changes through "
+        "delegate_cursor_agent (small/medium) or delegate_claude_agent with "
+        "/goal (medium/large); this tool is for configs, docs, memory, and scratch."
     ),
     "parameters": {
         "type": "object",
