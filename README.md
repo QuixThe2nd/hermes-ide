@@ -27,6 +27,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - dev-pipeline claude-endurance lane — Claude Code (claude-glm) builds for broad/long tasks
   - dev-pipeline — delegate_development is parked (not registered); dev_pipeline_status stays live
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
+  - discord_guests — Guest role for invited bots/friends on a private Discord; @everyone stays view-denied, Guest gets view/send on chosen categories
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs
   - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox, and each opening is a single message that anchors its own thread
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)

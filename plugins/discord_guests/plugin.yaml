@@ -1,0 +1,8 @@
+name: discord_guests
+default_enabled: true
+version: 1.0.0
+description: "Treat invited Discord bots and friends as Guests on a private server: a zero-permission Guest role, @everyone stays view-denied, and chosen categories/channels are granted view/send only."
+author: Hermes Agent
+kind: standalone
+provides_tools:
+  - discord_guests
