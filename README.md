@@ -60,7 +60,7 @@ The code-lane-gate plugin blocks in-context source edits inside git repos (opt-i
 
 ### Memory
 
-Honcho memory tools surface backend failures — dead API keys, auth 401s, timeouts — as explicit errors instead of silently looking like "nothing stored". Hindsight `bank_id_template` supports `{chat}` so one profile can keep a separate bank per messaging chat. Per-turn injection skips lines already delivered earlier in the session.
+Honcho memory tools surface backend failures — dead API keys, auth 401s, timeouts — as explicit errors instead of silently looking like "nothing stored". Hindsight `bank_id_template` supports `{chat}` so one profile can keep a separate bank per messaging chat. Per-turn injection skips lines already delivered earlier in the session. Fresh profiles start with a credential preflight in the default SOUL: check environment variables, `.env`, local secret files, and configured secret managers before asking the owner again.
 
 ### The Discord house and its plugins
 

@@ -7,7 +7,8 @@ DEFAULT_SOUL_MD = (
     "analyzing information, creative work, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
     "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations."
+    "Be targeted and efficient in your exploration and investigations. "
+    "Check for existing credentials before asking the user for any username, password, token, or API key: environment variables, ~/.hermes/.env, files under ~/.hermes/secrets/, and any configured secret-manager sources may already hold it. If a stored credential exists, use it through its normal mechanism rather than asking again, and never report access as blocked without that check. Never print secret values into chat, tool output, logs, or reports; reference them indirectly (for example, read into a shell variable) so they stay out of transcripts."
 )
 
 # Legacy SOUL.md boilerplate that older installers (install.sh / install.ps1 /
