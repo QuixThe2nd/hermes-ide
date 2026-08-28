@@ -63,6 +63,20 @@ class OpenRouterProfile(ProviderProfile):
         effort = cfg.get("effort")
         if not effort or cfg.get("enabled") is False:
             return cfg
+        # Always clamp Hermes-internal levels (ultra) onto OpenRouter's
+        # OpenAI-compat wire first. Catalog lookup is best-effort and a
+        # miss used to leak ``ultra`` as HTTP 400
+        # ``reasoning.effort: Invalid option`` (#89503 / pc_2c133166195d).
+        from agent.reasoning_effort import (
+            OPENAI_COMPAT_WIRE_EFFORTS,
+            clamp_effort,
+        )
+
+        wire_effort = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS) or effort
+        if wire_effort != effort:
+            cfg = dict(cfg)
+            cfg["effort"] = wire_effort
+            effort = wire_effort
         try:
             from hermes_cli.models import (
                 clamp_reasoning_effort_to_supported,

@@ -2889,6 +2889,26 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_clamps_ultra_effort_on_openai_compat_wire(self, agent):
+        """Iteration-limit summaries call chat.completions.create() directly
+        and used to copy Hermes-internal ``ultra`` onto extra_body.reasoning,
+        which OpenRouter rejects with HTTP 400 (pc_2c133166195d)."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        agent.reasoning_config = {"enabled": True, "effort": "ultra"}
+        agent._supports_reasoning_extra_body = lambda: True
+        agent.provider = "openrouter"
+        agent.model = "deepseek/deepseek-v4"
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}], 60
+        )
+
+        assert result == "Summary"
+        extra = agent.client.chat.completions.create.call_args.kwargs.get("extra_body") or {}
+        assert extra["reasoning"]["effort"] == "max"
+        assert extra["reasoning"]["enabled"] is True
+
 
 
 

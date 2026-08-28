@@ -8821,7 +8821,12 @@ def _build_call_kwargs(
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
-            effort = reasoning_config.get("effort") or "medium"
+            from agent.transports.chat_completions import (
+                _reasoning_config_for_model as _clamp_aux_reasoning,
+            )
+
+            clamped = _clamp_aux_reasoning(model, reasoning_config) or {}
+            effort = clamped.get("effort") or reasoning_config.get("effort") or "medium"
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
     # Portal product tags + sticky session_id. The provider profile usually
     # supplies both; this fallback covers profile-load failures and alias
