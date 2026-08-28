@@ -50,6 +50,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord — progress updates respect each platform's real message limits
 - Discord — multiplexed profiles honor their own display.reasoning_style; compact renders "💭 thought for Xs" with an optional "(N tokens)" per-turn count
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
+  - Discord — auto-threaded root-turn finals ping via inline mention when the reply reference can't attach
   - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
   - Gateway — system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context

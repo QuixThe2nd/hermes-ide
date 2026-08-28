@@ -3509,6 +3509,46 @@ class DiscordAdapter(BasePlatformAdapter):
             fail_if_not_exists=False,
         )
 
+    def _final_send_wants_ping(
+        self,
+        reply_to,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Shared notify gate for the reply reference and mention fallback.
+
+        Streaming previews, tool progress, status, and interim commentary
+        must never ping; ``reply_to_mode='off'`` means no pings at all, so
+        it suppresses the inline mention exactly like the reference.
+        """
+        if metadata and metadata.get("_interim_send"):
+            return False
+        if not metadata or not metadata.get("notify"):
+            return False
+        return bool(reply_to) and self._reply_to_mode != "off"
+
+    @staticmethod
+    def _root_turn_reference_is_unattachable(reply_to, channel) -> bool:
+        """True when ``reply_to`` is the auto-thread root-turn signature.
+
+        A parent-channel @mention that spawns a thread produces a thread
+        whose id equals the root message id, while the root message itself
+        lives in the PARENT channel — so a reference built against the send
+        channel can never attach, and with ``fail_if_not_exists=False``
+        Discord silently drops the reply ping (no error, no log).  The
+        ``parent_id`` guard keeps a plain channel whose id coincidentally
+        matches from triggering the fallback.
+        """
+        if not reply_to:
+            return False
+        parent_id = getattr(channel, "parent_id", None)
+        channel_id = getattr(channel, "id", None)
+        if parent_id is None or channel_id is None:
+            return False
+        try:
+            return int(reply_to) == int(channel_id) and int(parent_id) != int(channel_id)
+        except (ValueError, TypeError):
+            return False
+
     def _reply_reference_for_send(
         self,
         reply_to,
@@ -3522,18 +3562,72 @@ class DiscordAdapter(BasePlatformAdapter):
         must stay standalone; only notify-worthy turn-final deliveries get a
         reply anchor (``metadata["notify"]`` is set by the gateway final path
         and the stream consumer's fresh-final send).
+
+        Auto-threaded root turns return ``None`` even for finals: the
+        spawned thread's id equals the root message id and the root message
+        lives in the parent channel, so the reference can never attach —
+        ``send`` pings via an inline mention instead
+        (``_final_mention_prefix``).
         """
-        if metadata and metadata.get("_interim_send"):
+        if not self._final_send_wants_ping(reply_to, metadata):
             return None
-        if not metadata or not metadata.get("notify"):
-            return None
-        if not reply_to or self._reply_to_mode == "off":
+        if self._root_turn_reference_is_unattachable(reply_to, channel):
             return None
         try:
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:
             logger.debug("Could not build reply-to reference: %s", e)
             return None
+
+    def _root_turn_author_from_recovery(self, reply_to: str) -> Optional[str]:
+        """Author of the root message, read from the recovery ledger."""
+        def _op(conn):
+            row = conn.execute(
+                "SELECT author_id FROM discord_messages WHERE message_id=?",
+                (str(reply_to),),
+            ).fetchone()
+            return str(row[0]) if row and row[0] else None
+
+        return self._with_discord_recovery_db(_op)
+
+    async def _root_turn_author_from_parent(self, reply_to: str, channel) -> Optional[str]:
+        """Author of the root message, fetched from its parent channel."""
+        if not self._client:
+            return None
+        try:
+            parent = self._client.get_channel(int(channel.parent_id))
+            if parent is None:
+                return None
+            message = await parent.fetch_message(int(reply_to))
+        except Exception as e:
+            logger.debug("[%s] Root-message author lookup failed: %s", self.name, e)
+            return None
+        author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
+        return author_id or None
+
+    async def _final_mention_prefix(
+        self,
+        reply_to,
+        channel,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Inline ``<@id> `` ping for finals whose reply reference can't attach.
+
+        Only the same notify-worthy finals that would otherwise get a
+        ``MessageReference`` are considered.  The root author comes from the
+        local recovery ledger first (no API round trip), falling back to a
+        ``fetch_message`` in the parent channel; when both fail the send
+        proceeds with no mention and no reference — the pre-fallback
+        behavior.
+        """
+        if not self._final_send_wants_ping(reply_to, metadata):
+            return ""
+        if not self._root_turn_reference_is_unattachable(reply_to, channel):
+            return ""
+        author_id = self._root_turn_author_from_recovery(reply_to)
+        if not author_id:
+            author_id = await self._root_turn_author_from_parent(reply_to, channel)
+        return f"<@{author_id}> " if author_id else ""
 
     def prefers_fresh_final_streaming(
         self,
@@ -3656,6 +3750,22 @@ class DiscordAdapter(BasePlatformAdapter):
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
             reference = self._reply_reference_for_send(reply_to, channel, metadata)
+            if reference is None:
+                # Auto-threaded root turns can never attach a reference —
+                # ping the root author inline instead of losing the reply
+                # notification to fail_if_not_exists=False.
+                mention_prefix = await self._final_mention_prefix(
+                    reply_to, channel, metadata
+                )
+                if mention_prefix and chunks:
+                    # The prefixed first chunk may now exceed the cap —
+                    # re-truncate (dropping a few trailing chars on an
+                    # already-maximal chunk is fine; the full response is
+                    # in the session logs).
+                    chunks[0] = self.truncate_message(
+                        mention_prefix + chunks[0],
+                        self.MAX_MESSAGE_LENGTH,
+                    )[0]
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
