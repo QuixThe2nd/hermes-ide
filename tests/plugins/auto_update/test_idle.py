@@ -43,7 +43,8 @@ def test_unanswered_user_work_blocks(db_path):
     db = SessionDB(db_path=db_path)
     sid = db.create_session("sess-unanswered", "cli")
     db.append_message(sid, role="user", content="still waiting")
-    snap = evaluate_idle(idle_minutes=0, db_path=db_path, now=time.time() + 1000)
+    now = time.time()
+    snap = evaluate_idle(idle_minutes=8, db_path=db_path, now=now)
     assert snap.idle is False
     assert any(b.code == "unanswered" for b in snap.blockers)
 
@@ -53,7 +54,75 @@ def test_streaming_blocks(db_path):
     sid = db.create_session("sess-stream", "cli")
     db.append_message(sid, role="user", content="go")
     db.append_message(sid, role="assistant", content="partial", finish_reason=None)
-    snap = evaluate_idle(idle_minutes=0, db_path=db_path, now=time.time() + 1000)
+    now = time.time()
+    snap = evaluate_idle(idle_minutes=8, db_path=db_path, now=now)
+    assert snap.idle is False
+    assert any(b.code == "streaming" for b in snap.blockers)
+
+
+def test_stale_streaming_does_not_block(db_path):
+    db = SessionDB(db_path=db_path)
+    sid = db.create_session("sess-stale-stream", "cli")
+    db.append_message(sid, role="user", content="go")
+    db.append_message(sid, role="assistant", content="orphaned", finish_reason=None)
+    now = time.time()
+    stale_ts = now - (8 * 60) - 60
+    db._conn.execute(
+        "UPDATE messages SET timestamp = ? WHERE session_id = ?", (stale_ts, sid)
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
+        (stale_ts, stale_ts, sid),
+    )
+    db._conn.commit()
+    snap = evaluate_idle(idle_minutes=8, db_path=db_path, now=now)
+    assert snap.idle is True
+    assert not any(b.code == "streaming" for b in snap.blockers)
+
+
+def test_stale_unanswered_does_not_block(db_path):
+    db = SessionDB(db_path=db_path)
+    sid = db.create_session("sess-stale-unanswered", "cli")
+    db.append_message(sid, role="user", content="old question")
+    now = time.time()
+    stale_ts = now - (8 * 60) - 60
+    db._conn.execute(
+        "UPDATE messages SET timestamp = ? WHERE session_id = ?", (stale_ts, sid)
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
+        (stale_ts, stale_ts, sid),
+    )
+    db._conn.commit()
+    snap = evaluate_idle(idle_minutes=8, db_path=db_path, now=now)
+    assert snap.idle is True
+    assert not any(b.code == "unanswered" for b in snap.blockers)
+
+
+def test_fresh_streaming_still_blocks_alongside_stale(db_path):
+    db = SessionDB(db_path=db_path)
+    stale_sid = db.create_session("sess-stale-stream-2", "cli")
+    db.append_message(stale_sid, role="user", content="go")
+    db.append_message(
+        stale_sid, role="assistant", content="orphaned", finish_reason=None
+    )
+    fresh_sid = db.create_session("sess-fresh-stream", "cli")
+    db.append_message(fresh_sid, role="user", content="go")
+    db.append_message(
+        fresh_sid, role="assistant", content="partial", finish_reason=None
+    )
+    now = time.time()
+    stale_ts = now - (8 * 60) - 60
+    db._conn.execute(
+        "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+        (stale_ts, stale_sid),
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
+        (stale_ts, stale_ts, stale_sid),
+    )
+    db._conn.commit()
+    snap = evaluate_idle(idle_minutes=8, db_path=db_path, now=now)
     assert snap.idle is False
     assert any(b.code == "streaming" for b in snap.blockers)
 
