@@ -86,6 +86,10 @@ def test_cursor_cloud_agent_status_url_accepts_valid(content):
         "Cursor Cloud Agent: https://cursor.com/not-agents/x",
         "Cursor Cloud Agent: https://user:pass@cursor.com/agents/x",
         "Cursor Cloud Agent: https://cursor.com@evil.com/agents/x",
+        "Cursor Cloud Agent: https://cursor.com/agents/",
+        "Cursor Cloud Agent: https://cursor.com/agents/../evil",
+        "Cursor Cloud Agent: https://cursor.com/agents/%2e%2e/evil",
+        "Cursor Cloud Agent: https://cursor.com/agents/foo/bar",
     ],
 )
 def test_cursor_cloud_agent_status_url_rejects_invalid(content):

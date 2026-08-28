@@ -27,7 +27,7 @@ import traceback
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -81,7 +81,10 @@ def _cursor_cloud_agent_status_url(content: str) -> Optional[str]:
     hostname = parsed.hostname
     if hostname not in _CURSOR_CLOUD_AGENT_ALLOWED_HOSTS:
         return None
-    if not parsed.path.startswith("/agents/"):
+    decoded_path = unquote(parsed.path)
+    if ".." in decoded_path:
+        return None
+    if not re.fullmatch(r"/agents/[^/]+", decoded_path):
         return None
     return url
 
