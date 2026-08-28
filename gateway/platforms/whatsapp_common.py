@@ -767,3 +767,34 @@ def resolve_whatsapp_bridge_dir() -> Path:
         return hermes_home_bridge
     except Exception:
         return install_bridge
+
+
+def whatsapp_session_is_paired(session_path) -> bool:
+    """Return True when Baileys creds.json is a finished pairing.
+
+    A leftover creds.json from an aborted or logged-out session can still
+    exist with ``registered: false`` and a ``pairingCode``. Treating file
+    presence as connected made the dashboard report the account as logged
+    in while the live gateway was logged out.
+    """
+    from pathlib import Path as _Path
+
+    creds_path = _Path(session_path) / "creds.json"
+    if not creds_path.exists():
+        return False
+    try:
+        payload = json.loads(creds_path.read_text(encoding="utf-8"))
+    except OSError:
+        # Presence was the old signal. Callers (and tests) that stub
+        # Path.exists without a readable file should still proceed.
+        return True
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("registered") is False:
+        return False
+    pairing_code = payload.get("pairingCode")
+    if pairing_code and payload.get("registered") is not True:
+        return False
+    return True

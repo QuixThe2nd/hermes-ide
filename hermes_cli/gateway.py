@@ -6815,8 +6815,10 @@ def _platform_status(platform: dict) -> str:
     val = get_env_value(token_var)
     if token_var == "WHATSAPP_ENABLED":
         if val and val.lower() == "true":
-            session_file = get_hermes_home() / "whatsapp" / "session" / "creds.json"
-            if session_file.exists():
+            from gateway.platforms.whatsapp_common import whatsapp_session_is_paired
+
+            session_dir = get_hermes_home() / "whatsapp" / "session"
+            if whatsapp_session_is_paired(session_dir):
                 return "configured + paired"
             return "enabled, not paired"
         return "not configured"
