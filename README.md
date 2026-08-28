@@ -63,6 +63,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Memory — Hindsight `bank_id_template` supports `{chat}` so one profile can keep a separate bank per messaging chat
   - Discord — typing indicator stays lit while a background delegated task is still running
   - Discord — MoA consult/debate progress renders as one self-editing embed per call
+  - Discord — `delegate_cursor_agent` live progress posts a Cursor-branded embed with a Watch live session hyperlink instead of dumping the URL
   - Cron — lifecycle guard blocks cron-spawned commands that would restart the gateway or rewrite the live checkout (quote-aware)
   - Memory — per-turn injection skips lines already delivered earlier in the session
   - Config — API retry backoff timing

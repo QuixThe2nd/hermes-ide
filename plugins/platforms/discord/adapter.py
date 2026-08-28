@@ -27,7 +27,7 @@ import traceback
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -55,6 +55,83 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
+
+
+_CURSOR_CLOUD_AGENT_STATUS_PREFIX = "Cursor Cloud Agent: "
+_CURSOR_CLOUD_AGENT_ICON_URL = "https://cursor.com/apple-touch-icon.png"
+_CURSOR_CLOUD_AGENT_BRAND_URL = "https://cursor.com"
+_CURSOR_CLOUD_AGENT_ALLOWED_HOSTS = frozenset({"cursor.com", "www.cursor.com"})
+
+
+def _cursor_cloud_agent_status_url(content: str) -> Optional[str]:
+    """Return the watch URL when *content* is exactly a Cursor Cloud Agent status line."""
+    if content is None:
+        return None
+    text = content.strip()
+    if not text.startswith(_CURSOR_CLOUD_AGENT_STATUS_PREFIX):
+        return None
+    url = text[len(_CURSOR_CLOUD_AGENT_STATUS_PREFIX) :].strip()
+    if not url or any(ch.isspace() for ch in url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        return None
+    hostname = parsed.hostname
+    if hostname not in _CURSOR_CLOUD_AGENT_ALLOWED_HOSTS:
+        return None
+    decoded_path = unquote(parsed.path)
+    if ".." in decoded_path:
+        return None
+    if not re.fullmatch(r"/agents/[^/]+", decoded_path):
+        return None
+    return url
+
+
+def _cursor_cloud_agent_embed_spec(url: str) -> Dict[str, Any]:
+    """Pure-data embed fields for a Cursor Cloud Agent live-progress card."""
+    return {
+        "title": "Cursor Cloud Agent",
+        "url": url,
+        "description": _format_discord_markdown_link("Watch live session", url),
+        "author": {
+            "name": "Cursor",
+            "icon_url": _CURSOR_CLOUD_AGENT_ICON_URL,
+            "url": _CURSOR_CLOUD_AGENT_BRAND_URL,
+        },
+        "thumbnail": _CURSOR_CLOUD_AGENT_ICON_URL,
+        "color": 0x000000,
+        "footer": "Cursor · Cloud Agent",
+    }
+
+
+def _build_cursor_cloud_agent_embed(url: str) -> Any:
+    """Build a discord.Embed for a Cursor Cloud Agent live-progress URL."""
+    spec = _cursor_cloud_agent_embed_spec(url)
+    embed = discord.Embed(
+        title=spec["title"],
+        url=spec["url"],
+        description=spec["description"],
+        color=spec["color"],
+    )
+    author = spec["author"]
+    embed.set_author(
+        name=author["name"],
+        icon_url=author["icon_url"],
+        url=author["url"],
+    )
+    embed.set_thumbnail(url=spec["thumbnail"])
+    embed.set_footer(text=spec["footer"])
+    return embed
+
+
+def _cursor_cloud_agent_markdown_progress(url: str) -> str:
+    """Forum/fail-soft markdown form — no raw dumped URL."""
+    return (
+        f"{_CURSOR_CLOUD_AGENT_STATUS_PREFIX}"
+        f"{_format_discord_markdown_link('Watch live session', url)}"
+    )
 
 
 class _Snowflake:
@@ -3729,6 +3806,45 @@ class DiscordAdapter(BasePlatformAdapter):
                     channel = await self._client.fetch_channel(int(chat_id))
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            cursor_url = _cursor_cloud_agent_status_url(content)
+            if cursor_url:
+                markdown_progress = _cursor_cloud_agent_markdown_progress(cursor_url)
+                if self._is_forum_parent(channel):
+                    content = markdown_progress
+                else:
+                    reference = self._reply_reference_for_send(reply_to, channel, metadata)
+                    try:
+                        msg = await channel.send(
+                            embed=_build_cursor_cloud_agent_embed(cursor_url),
+                            reference=reference,
+                        )
+                        message_id = str(msg.id)
+                        _target_id = thread_id or chat_id
+                        if nonconversational:
+                            self._nonconversational_messages.mark_many([message_id])
+                        elif not _looks_like_nonconversational_history_message(content):
+                            self._last_self_message_id[_target_id] = message_id
+                        result = SendResult(
+                            success=True,
+                            message_id=message_id,
+                            raw_response={"message_ids": [message_id]},
+                        )
+                        await asyncio.to_thread(
+                            self._record_discord_response,
+                            reply_to=reply_to,
+                            result=result,
+                            content=content,
+                            final=final_delivery,
+                        )
+                        return result
+                    except Exception as e:
+                        logger.debug(
+                            "[%s] Cursor Cloud Agent embed send failed; falling back to markdown link: %s",
+                            self.name,
+                            e,
+                        )
+                        content = markdown_progress
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
