@@ -17,7 +17,8 @@ SPEED_CHANNELS_TICK_SCHEMA = {
     "description": (
         "Run one Discord speed-channel tick: optionally poll qBittorrent, "
         "SABnzbd and slskd and rename their voice channels (self-gated), "
-        "always refresh the Speeds category label."
+        "always refresh the Speeds category label (live 1.1.1.1 ICMP latency "
+        "plus the next-poll countdown)."
     ),
     "parameters": {
         "type": "object",

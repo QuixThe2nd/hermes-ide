@@ -1,6 +1,6 @@
 name: speed_channels
 version: 1.0.0
-description: "Discord voice-channel download walls for qBittorrent, SABnzbd, and slskd — channel names carry live throughput and queue depth, and the Speeds category label stays fresh between ticks."
+description: "Discord voice-channel download walls for qBittorrent, SABnzbd, and slskd — channel names carry live throughput and queue depth, and the Speeds category label carries live ICMP latency to 1.1.1.1 plus the next-poll countdown."
 author: Hermes Agent
 kind: backend
 provides_tools:

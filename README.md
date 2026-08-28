@@ -37,7 +37,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - fallback_quota_reorder — score-based primary/fallback quota rotation: `quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h` ranks soonest-reset wallets first (unlimited Ox Alpha scored as a synthetic 100%/168h wallet, derated by uptime) and rotates the primary slot to the top scorer
   - fallback_watch — tails agent.log and alerts a Discord channel whenever the primary model falls back, cooldown-deduped (opt-in, off by default)
   - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Models / Speeds), fully wired; `#gateway-restarts` shows `agents-N` live and `restarting-N-agents` while draining; idempotent, never deletes, a legacy Quotas category is renamed in place to Models, existing home, notification, and rename targets are never clobbered
-  - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
+  - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label shows live 1.1.1.1 ICMP latency and the next-poll countdown
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
