@@ -16,12 +16,27 @@ What counts as a gated source edit:
 
 * ``write_file`` — the ``path`` being written.
 * ``patch`` mode ``replace`` — the ``path`` being edited.
-* ``patch`` mode ``patch`` — every ``*** Update File:`` / ``*** Add File:``
-  / ``*** Delete File:`` header path in the V4A patch text.
-* ``execute_code`` — best-effort regex heuristic over ``code`` for
-  file-writing constructs (``open(``, ``write_text``, ``shutil``,
-  ``subprocess``, ``eval(``, ...). No path is available for this tool,
-  so a heuristic match blocks without the repo/suffix scoping below.
+* ``patch`` mode ``patch`` — every file path named by a V4A patch header:
+  ``*** Update/Add/Delete File:`` (with or without a space after ``***``)
+  and BOTH endpoints of ``*** Move File: src -> dst`` — the same header
+  grammar ``tools/patch_parser.py`` accepts, so a form the real parser
+  would honour can't slip past the gate.
+* ``execute_code`` — best-effort regex heuristic over ``code`` for WRITE
+  evidence: write-mode ``open(..., "w")`` calls, ``write_text`` /
+  ``write_bytes`` / ``.write_*`` methods, ``shutil.copy*`` /
+  ``os.replace`` / ``os.rename``, or a shell redirect to a
+  deny-suffixed file. Read-only snippets (``open(..., "r")``,
+  ``Path(...).read_text()``, ``eval("1+1")``) pass. No path is available
+  for this tool, so a heuristic match blocks without the repo/suffix
+  scoping below.
+
+Each collected path is resolved BEFORE the checks, the same way the
+tool layer resolves it: relative paths anchor to the TASK workspace
+(live terminal cwd, registered cwd override, ``$TERMINAL_CWD``, else
+process cwd — see ``tools.file_tools._resolve_path_for_task``), and
+symlinks are resolved (``realpath``) so a link into a repo can't dodge
+the walk. The hook receives ``task_id`` from the dispatch layer and
+uses it for that resolution.
 
 A collected path is blocked only when BOTH hold:
 
@@ -68,16 +83,40 @@ _DENY_SUFFIXES = frozenset(
 )
 
 # execute_code exposes no path, so the repo/suffix scoping can't apply —
-# a regex hit on file-writing constructs is the whole signal. Best-effort.
+# evidence of a WRITE in the snippet is the whole signal. Best-effort:
+# match write-mode opens and write-shaped calls only, so read-only code
+# (open(..., "r"), read_text(), eval("1+1")) passes while real writes
+# (open(f, "w"), shutil.copyfile(src, "app.py")) are caught.
 _SOURCE_WRITE_RE = re.compile(
-    r"(open|Path|write_text|shutil|os\.remove|os\.rename|subprocess|eval|exec)\s*\("
+    r"(?:"
+    # open(..., "w") / mode="a" / "wb+" — a mode string starting with w/a.
+    # The comma before the mode keeps read opens (no mode, or "r") and
+    # nearby dict literals ({"w": ...}) out of the match.
+    r"open\s*\(.{0,400}?,\s*(?:mode\s*=\s*)?[\"'][wa][+b]?[\"']"
+    r"|write_text\s*\("
+    r"|write_bytes\s*\("
+    r"|\.write_\w+\s*\("
+    r"|shutil\.copy\w*\s*\("
+    r"|os\.replace\s*\("
+    r"|os\.rename\s*\("
+    r")",
+    re.DOTALL,
 )
 
-# V4A patch headers that carry a file path.
-_PATCH_FILE_HEADERS = (
-    "*** Update File:",
-    "*** Add File:",
-    "*** Delete File:",
+# Shell redirection inside a command string (subprocess.run("... > app.py",
+# shell=True), os.system) to a deny-suffixed file. Catches `>` and `>>`.
+_SHELL_REDIRECT_RE = re.compile(
+    r">\s*[\w./\\-]+\.(?:%s)\b" % "|".join(sorted(_DENY_SUFFIXES))
+)
+
+# V4A patch file headers, mirroring tools/patch_parser.py: `\s*` after
+# `***` accepts the no-space `***Update File:` form, and Move carries two
+# paths (`src -> dst`) — a move edits both places, so both are gated.
+_V4A_FILE_HEADER_RE = re.compile(
+    r"^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+?)\s*$"
+)
+_V4A_MOVE_HEADER_RE = re.compile(
+    r"^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+?)\s*$"
 )
 
 # Steering note appended to every block reason.
@@ -100,8 +139,33 @@ def _gate_enabled() -> bool:
 
 
 def _normalize_path(path: str) -> str:
-    """abspath + expanduser, without resolving symlinks."""
-    return os.path.abspath(os.path.expanduser(path))
+    """realpath + expanduser — symlink-resolved absolute form.
+
+    ``abspath`` deliberately does NOT resolve symlinks, which let a path
+    like ``/tmp/link/subdir/new.py`` (``link`` -> somewhere inside a repo)
+    dodge the ``.git`` walk. ``realpath`` resolves the link first, so the
+    walk climbs the repo's real ancestors.
+    """
+    return os.path.realpath(os.path.expanduser(path))
+
+
+def _resolve_for_task(path: str, task_id: str = "") -> str:
+    """Resolve *path* the way the write_file/patch tool layer would.
+
+    The tool layer anchors relative paths to the TASK workspace (live
+    terminal cwd, registered cwd override, ``$TERMINAL_CWD``, else process
+    cwd) — see ``tools.file_tools._resolve_path_for_task``. Reusing that
+    helper keeps the gate and the tools agreeing on where a relative
+    ``app.py`` actually lands, instead of the gate guessing process cwd.
+    Falls back to plain normalization when the helper can't be imported
+    (plugin loaded outside the repo) or refuses the input.
+    """
+    try:
+        from tools.file_tools import _resolve_path_for_task
+
+        return str(_resolve_path_for_task(path, task_id or "default"))
+    except Exception:
+        return _normalize_path(path)
 
 
 def _deny_suffix(path: str) -> str:
@@ -125,23 +189,34 @@ def _is_inside_git_repo(path: str) -> bool:
     return False
 
 
+def _clean_patch_path(raw: str) -> str:
+    """Strip the whitespace/backticks the model wraps V4A header paths in."""
+    return raw.strip().strip("`").strip()
+
+
 def _paths_from_v4a_patch(patch_text: str) -> List[str]:
     """Extract every file path named by a V4A patch's file headers.
 
-    Handles the trailing-path forms the model produces: bare paths,
-    surrounding whitespace, and backtick-quoted paths. Lines that merely
-    mention a header inside patch body context still parse — anything
-    starting with a known header is treated as a file section.
+    Header grammar mirrors ``tools/patch_parser.py``: optional whitespace
+    after ``***`` (the no-space ``***Update File:`` form parses too) and
+    ``*** Move File: src -> dst`` yields BOTH endpoints. Bare paths,
+    surrounding whitespace, and backtick-quoted paths are all handled.
     """
     paths: List[str] = []
     for line in patch_text.splitlines():
         stripped = line.strip()
-        for header in _PATCH_FILE_HEADERS:
-            if stripped.startswith(header):
-                target = stripped[len(header):].strip().strip("`").strip()
-                if target:
-                    paths.append(target)
-                break
+        move = _V4A_MOVE_HEADER_RE.match(stripped)
+        if move:
+            for endpoint in move.groups():
+                cleaned = _clean_patch_path(endpoint)
+                if cleaned:
+                    paths.append(cleaned)
+            continue
+        header = _V4A_FILE_HEADER_RE.match(stripped)
+        if header:
+            cleaned = _clean_patch_path(header.group(1))
+            if cleaned:
+                paths.append(cleaned)
     return paths
 
 
@@ -168,10 +243,10 @@ def _gated_paths(tool_name: str, args: Any) -> List[str]:
     return []
 
 
-def _first_denied_path(paths: List[str]) -> Optional[str]:
+def _first_denied_path(paths: List[str], task_id: str = "") -> Optional[str]:
     """First path that is both inside a git repo and source-suffixed."""
     for path in paths:
-        normalized = _normalize_path(path)
+        normalized = _resolve_for_task(path, task_id)
         if _deny_suffix(normalized) in _DENY_SUFFIXES and _is_inside_git_repo(
             normalized
         ):
@@ -180,10 +255,21 @@ def _first_denied_path(paths: List[str]) -> Optional[str]:
 
 
 def _execute_code_looks_like_source_write(args: Any) -> bool:
+    """True only when the snippet shows evidence of a file WRITE.
+
+    Best-effort, by design: execute_code exposes no path, so this is a
+    regex over the code text. Write-mode opens, write_* method calls,
+    copy/replace/rename, or a shell redirect to a deny-suffixed file all
+    count; read-only constructs do not.
+    """
     if not isinstance(args, dict):
         return False
     code = args.get("code")
-    return isinstance(code, str) and bool(_SOURCE_WRITE_RE.search(code))
+    if not isinstance(code, str):
+        return False
+    return bool(_SOURCE_WRITE_RE.search(code)) or bool(
+        _SHELL_REDIRECT_RE.search(code)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -194,18 +280,21 @@ def _execute_code_looks_like_source_write(args: Any) -> bool:
 def _on_pre_tool_call(
     tool_name: str = "",
     args: Any = None,
+    task_id: str = "",
     **_: Any,
 ) -> Optional[Dict[str, str]]:
     """Block in-context source edits inside git repos (E2E-gated).
 
     Returns ``None`` — tool proceeds untouched — unless the call would edit
     a source file in a repo (or execute_code looks like a source write),
-    in which case the delegate-lane steering message blocks it.
+    in which case the delegate-lane steering message blocks it. ``task_id``
+    comes from the hook dispatch layer and drives the same task-workspace
+    path resolution the file tools use.
     """
     if not _gate_enabled():
         return None
 
-    denied = _first_denied_path(_gated_paths(tool_name, args))
+    denied = _first_denied_path(_gated_paths(tool_name, args), task_id)
     if denied is not None:
         return {
             "action": "block",
