@@ -62,6 +62,8 @@ The code-lane-gate plugin blocks in-context source edits inside git repos (opt-i
 
 Honcho memory tools surface backend failures — dead API keys, auth 401s, timeouts — as explicit errors instead of silently looking like "nothing stored". Hindsight `bank_id_template` supports `{chat}` so one profile can keep a separate bank per messaging chat. Per-turn injection skips lines already delivered earlier in the session.
 
+- Memory — Hindsight seeds a retain_mission (skip transient task state) and two recall directives (prefer-newer, ignore session dumps) on first bank init
+
 ### The Discord house and its plugins
 
 Set a Discord home server once and Hermes provisions and keeps in sync the whole structure — Chat, Notifications, Honcho Memory, Models, Speeds — fully wired. `/sethomeserver` does it from one command (confirm required to move an existing one), wires `#gateway-restarts` as `agents-N` while up and `restarting-N-agents` while draining, then re-syncs at most hourly. The home_server plugin keeps the same layout idempotent: never deletes, a legacy Quotas category is renamed in place to Models, and existing home, notification, and rename targets are never clobbered. `#gateway-restarts` shows `agents-N` live and `restarting-N-agents` while draining.
