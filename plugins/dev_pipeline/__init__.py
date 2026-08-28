@@ -23,14 +23,15 @@ def register(ctx) -> None:
         check_dev_pipeline_requirements,
     )
 
-    ctx.register_tool(
-        name="delegate_development",
-        toolset="dev-pipeline",
-        schema=DELEGATE_DEVELOPMENT_SCHEMA,
-        handler=_handle_delegate_development,
-        check_fn=check_dev_pipeline_requirements,
-        emoji="🏗️",
-    )
+    # PARKED 2026-08-28 — re-enable when the user unparks.
+    # ctx.register_tool(
+    #     name="delegate_development",
+    #     toolset="dev-pipeline",
+    #     schema=DELEGATE_DEVELOMENT_SCHEMA,
+    #     handler=_handle_delegate_development,
+    #     check_fn=check_dev_pipeline_requirements,
+    #     emoji="🏗️",
+    # )
     ctx.register_tool(
         name="dev_pipeline_status",
         toolset="dev-pipeline",
