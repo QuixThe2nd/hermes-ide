@@ -1,6 +1,6 @@
 # quota_channels
 
-Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, **Grok**, and **OpenRouter** under a **Models** category. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), and — for Codex, z.ai, and Cursor — rolling 7-day consumed tokens in the same channel name. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
+Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, **Grok**, and **OpenRouter** under a **Models** category. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex, z.ai, and Cursor, and pending usage-limit resets for Codex and Grok — all in the same channel name. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
 
 ## What it does
 
@@ -76,6 +76,15 @@ Enable the toolset for sessions that should call the tool:
 hermes tools   # enable "Quota Channels" / quota_channels
 ```
 
+## Pending usage-limit resets
+
+Codex and Grok channel names end with a count of still-unused manual usage-limit resets; Grok also shows when the soonest one expires:
+
+- Codex — `Codex: 100% • 7d left • 2 resets` (from `rate_limit_reset_credits` in the same `wham/usage` payload)
+- Grok — `Grok: 46% • 3d left • 1 reset in 2d` (second gRPC-web call to `ConsumerUiSvc/GetRemainingResets`)
+
+A failed or unparseable resets lookup never fails the provider's tick: Codex drops the segment, Grok falls back to `0 resets`, and the channel is still renamed with fresh quota data.
+
 ## Credentials (never commit real values)
 
 | Provider | Location | Notes |
@@ -119,6 +128,6 @@ When the `quota_channels` toolset is enabled, the model may call:
 
 Returns compact JSON, e.g. `{"success":true,"did_quota":true,"providers":{...},"category":"renamed","sorted":false}`.
 
-When Grok's billing config omits the usage ratio (proto3 default 0) and carries a valid current usage-period marker (config field 8 type 1 or 2) with a valid reset timestamp, the Grok voice channel is renamed to `Grok: 100% • Nd left`. If the ratio is absent without that evidence, the provider fails honestly with an error instead of fabricating a percentage.
+When Grok's billing config omits the usage ratio (proto3 default 0) and carries a valid current usage-period marker (config field 8 type 1 or 2) with a valid reset timestamp, the Grok voice channel is renamed to `Grok: 100% • Nd left • 0 resets`. If the ratio is absent without that evidence, the provider fails honestly with an error instead of fabricating a percentage.
 
 Per-provider failures are isolated: a failing provider appears as `{"error": "..."}` under `providers` in debug JSON and does not block other providers. If every provider fails on a quota run, state is not advanced and channel sorting is skipped.

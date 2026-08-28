@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 # The voice-channel ordering policy is owned by fallback_quota_reorder; this
 # module reuses its score math, thresholds, and reliability ledger instead of
@@ -55,6 +55,9 @@ CURSOR_USAGE_URL = (
 )
 GROK_USAGE_URL = (
     "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
+)
+GROK_RESETS_URL = (
+    "https://grok.com/prod_mc_billing.ConsumerUiSvc/GetRemainingResets"
 )
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token"
@@ -263,14 +266,33 @@ def parse_codex_usage(text: str) -> Tuple[int, float]:
     return remaining, reset_secs
 
 
-def format_reset_left(seconds: float) -> str:
-    # granular reset countdown: days at 2+ days out, then hours, then minutes
+class ResetCredits(NamedTuple):
+    """Pending manual usage-limit resets, rendered as the trailing name segment."""
+
+    count: int
+    expiry_secs: Optional[float] = None
+
+
+def _reset_countdown(seconds: float) -> str:
+    # granular countdown: days at 2+ days out, then hours, then minutes
     secs = max(0, seconds)
     if secs >= 172800:
-        return f"{math.ceil(secs / 86400)}d left"
+        return f"{math.ceil(secs / 86400)}d"
     if secs >= 3600:
-        return f"{math.ceil(secs / 3600)}h left"
-    return f"{max(1, math.ceil(secs / 60))}m left"
+        return f"{math.ceil(secs / 3600)}h"
+    return f"{max(1, math.ceil(secs / 60))}m"
+
+
+def format_reset_left(seconds: float) -> str:
+    return f"{_reset_countdown(seconds)} left"
+
+
+def format_resets_segment(resets: ResetCredits) -> str:
+    # pending manual usage-limit resets, e.g. "1 reset in 2d" / "2 resets"
+    part = f"{resets.count} reset" if resets.count == 1 else f"{resets.count} resets"
+    if resets.count and resets.expiry_secs is not None:
+        part += f" in {_reset_countdown(resets.expiry_secs)}"
+    return part
 
 
 def format_compact_tokens(count: int) -> str:
@@ -292,21 +314,45 @@ def parse_token_segment_from_name(channel_name: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def parse_codex_reset_credits(text: str) -> Optional[ResetCredits]:
+    """Pending usage-limit resets from the same wham/usage payload.
+
+    Returns None when the `rate_limit_reset_credits` block is absent or
+    unreadable, so the resets segment is dropped rather than the tick failed.
+    """
+    try:
+        usage = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(usage, dict):
+        return None
+    credits = usage.get("rate_limit_reset_credits")
+    if not isinstance(credits, Mapping):
+        return None
+    try:
+        count = int(credits.get("available_count") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return ResetCredits(max(0, count))
+
+
 def format_codex_name(
     remaining: int,
     reset_secs: float,
     *,
     tokens_7d: Optional[int] = None,
     preserved_token_segment: Optional[str] = None,
+    resets: Optional[ResetCredits] = None,
 ) -> str:
-    reset_part = format_reset_left(reset_secs)
+    name = f"Codex: {remaining}%"
     if tokens_7d is not None:
-        mid = f"{format_compact_tokens(tokens_7d)} tok/7d"
+        name += f" \u2022 {format_compact_tokens(tokens_7d)} tok/7d"
     elif preserved_token_segment:
-        mid = preserved_token_segment
-    else:
-        return f"Codex: {remaining}% \u2022 {reset_part}"
-    return f"Codex: {remaining}% \u2022 {mid} \u2022 {reset_part}"
+        name += f" \u2022 {preserved_token_segment}"
+    name += f" \u2022 {format_reset_left(reset_secs)}"
+    if resets is not None:
+        name += f" \u2022 {format_resets_segment(resets)}"
+    return name
 
 
 def parse_kimi_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
@@ -562,8 +608,49 @@ def parse_grok_usage(
         raise QuotaChannelsError("grok: invalid billing response protobuf") from exc
 
 
-def format_grok_name(remaining: int, reset_secs: float) -> str:
-    return f"Grok: {remaining}% \u2022 {format_reset_left(reset_secs)}"
+def parse_grok_resets(
+    body_bytes: bytes, now_fn: NowFn = time.time
+) -> ResetCredits:
+    """Pending usage-limit resets from ConsumerUiSvc/GetRemainingResets.
+
+    Top-level field 10 entries are the pending reset tokens; each token's
+    field 30 nested message carries its validity end in field 1 (varint epoch
+    seconds). The soonest expiry is the one displayed.
+    """
+    try:
+        tokens = [
+            val
+            for field, wire, val in pb_fields(grpc_web_unwrap(body_bytes))
+            if field == 10 and wire == 2
+        ]
+        expiry_epoch: Optional[int] = None
+        for token in tokens:
+            for field, wire, val in pb_fields(token):
+                if field == 30 and wire == 2:
+                    for tfield, twire, tval in pb_fields(val):
+                        if tfield == 1 and twire == 0:
+                            if expiry_epoch is None or tval < expiry_epoch:
+                                expiry_epoch = tval
+        expiry_secs = (
+            None if expiry_epoch is None else max(0.0, expiry_epoch - now_fn())
+        )
+        return ResetCredits(len(tokens), expiry_secs)
+    except QuotaChannelsError:
+        raise
+    except (IndexError, struct.error, ValueError, TypeError, KeyError) as exc:
+        raise QuotaChannelsError("grok: invalid resets response protobuf") from exc
+
+
+def format_grok_name(
+    remaining: int,
+    reset_secs: float,
+    *,
+    resets: Optional[ResetCredits] = None,
+) -> str:
+    name = f"Grok: {remaining}% \u2022 {format_reset_left(reset_secs)}"
+    if resets is not None:
+        name += f" \u2022 {format_resets_segment(resets)}"
+    return name
 
 
 def format_openrouter_name() -> str:
@@ -899,12 +986,10 @@ def fetch_cursor_usage(
     return http_text(req, http_fn=http_fn)
 
 
-def fetch_grok_usage(
-    access: str,
-    http_fn: HttpFn = default_http,
-) -> Tuple[int, bytes]:
-    req = urllib.request.Request(
-        GROK_USAGE_URL,
+def _grok_grpc_request(url: str, access: str) -> urllib.request.Request:
+    # both billing service methods take an empty protobuf request frame
+    return urllib.request.Request(
+        url,
         data=b"\x00\x00\x00\x00\x00",
         headers={
             "Authorization": f"Bearer {access}",
@@ -917,13 +1002,27 @@ def fetch_grok_usage(
         },
         method="POST",
     )
-    return http_bin(req, http_fn=http_fn)
+
+
+def fetch_grok_usage(
+    access: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, bytes]:
+    return http_bin(_grok_grpc_request(GROK_USAGE_URL, access), http_fn=http_fn)
+
+
+def fetch_grok_resets(
+    access: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, bytes]:
+    # same gRPC-web shape as fetch_grok_usage, different service method
+    return http_bin(_grok_grpc_request(GROK_RESETS_URL, access), http_fn=http_fn)
 
 
 def _codex_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
-) -> Tuple[int, float]:
+) -> Tuple[int, float, Optional[ResetCredits]]:
     store = load_store()
     toks = store.get("providers", {}).get("openai-codex", {}).get("tokens", {})
     access = toks.get("access_token")
@@ -937,15 +1036,18 @@ def _codex_quota_metrics(
         raise QuotaChannelsError(
             f"codex usage endpoint returned {status}: {text[:200]}"
         )
-    return parse_codex_usage(text)
+    remaining, reset_secs = parse_codex_usage(text)
+    return remaining, reset_secs, parse_codex_reset_credits(text)
 
 
 def run_codex_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
-    remaining, reset_secs = _codex_quota_metrics(http_fn=http_fn, now_fn=now_fn)
-    return format_codex_name(remaining, reset_secs), reset_secs, "Codex"
+    remaining, reset_secs, resets = _codex_quota_metrics(
+        http_fn=http_fn, now_fn=now_fn
+    )
+    return format_codex_name(remaining, reset_secs, resets=resets), reset_secs, "Codex"
 
 
 def _kimi_quota_metrics(
@@ -1014,15 +1116,20 @@ def run_cursor_provider(
     )
 
 
+def _xai_access_token(store: dict) -> str:
+    toks = store.get("providers", {}).get("xai-oauth", {}).get("tokens", {})
+    access = toks.get("access_token")
+    if not access:
+        raise QuotaChannelsError("no xai-oauth access token in hermes auth store")
+    return access
+
+
 def _grok_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[int, float]:
     store = load_store()
-    toks = store.get("providers", {}).get("xai-oauth", {}).get("tokens", {})
-    access = toks.get("access_token")
-    if not access:
-        raise QuotaChannelsError("no xai-oauth access token in hermes auth store")
+    access = _xai_access_token(store)
     status, body = fetch_grok_usage(access, http_fn=http_fn)
     if status == 401:
         access = refresh_xai_tokens(store, http_fn=http_fn)
@@ -1034,12 +1141,45 @@ def _grok_quota_metrics(
     return parse_grok_usage(body, now_fn=now_fn)
 
 
+def fetch_grok_reset_credits(
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> ResetCredits:
+    store = load_store()
+    access = _xai_access_token(store)
+    status, body = fetch_grok_resets(access, http_fn=http_fn)
+    if status == 401:
+        access = refresh_xai_tokens(store, http_fn=http_fn)
+        status, body = fetch_grok_resets(access, http_fn=http_fn)
+    if status != 200:
+        raise QuotaChannelsError(
+            f"grok resets endpoint returned {status}: {body[:200]!r}"
+        )
+    return parse_grok_resets(body, now_fn=now_fn)
+
+
+def grok_reset_credits(
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[ResetCredits, Optional[str]]:
+    """Pending Grok resets plus any fetch error; never raises.
+
+    A failed or unparseable resets fetch degrades to zero pending resets so
+    the quota tick still renames the channel with fresh quota data.
+    """
+    try:
+        return fetch_grok_reset_credits(http_fn=http_fn, now_fn=now_fn), None
+    except Exception as exc:
+        return ResetCredits(0), _error_text(exc)
+
+
 def run_grok_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
     remaining, reset_secs = _grok_quota_metrics(http_fn=http_fn, now_fn=now_fn)
-    return format_grok_name(remaining, reset_secs), reset_secs, "Grok"
+    resets, _ = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
+    return format_grok_name(remaining, reset_secs, resets=resets), reset_secs, "Grok"
 
 
 PROVIDER_RUNNERS = {
@@ -1051,6 +1191,8 @@ PROVIDER_RUNNERS = {
 }
 
 QUOTA_METRICS = {
+    # codex alone returns a trailing pending-resets element (same payload);
+    # every entry ends with reset_secs, which is all callers rely on.
     "codex": _codex_quota_metrics,
     "kimi": _kimi_quota_metrics,
     "zai": _zai_quota_metrics,
@@ -1066,6 +1208,7 @@ def _format_channel_name(
     *,
     tokens_7d: Optional[int] = None,
     preserved_token_segment: Optional[str] = None,
+    resets: Optional[ResetCredits] = None,
 ) -> str:
     if key == "codex":
         return format_codex_name(
@@ -1073,6 +1216,7 @@ def _format_channel_name(
             reset_secs,
             tokens_7d=tokens_7d,
             preserved_token_segment=preserved_token_segment,
+            resets=resets,
         )
     if key == "zai":
         return format_zai_name(
@@ -1093,7 +1237,7 @@ def _format_channel_name(
     if key == "kimi":
         return format_kimi_name(metrics, reset_secs)
     if key == "grok":
-        return format_grok_name(metrics, reset_secs)
+        return format_grok_name(metrics, reset_secs, resets=resets)
     raise QuotaChannelsError(f"unknown provider key: {key}")
 
 
@@ -1475,40 +1619,57 @@ def run_provider_quota(
         return OPENROUTER_LABEL, float(OPENROUTER_RESET_SECONDS), name, rename, {}
 
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
+    resets: Optional[ResetCredits] = None
     if key == "cursor":
         auto_remaining, api_remaining, reset_secs = raw
         fmt_metrics: Any = (auto_remaining, api_remaining)
+    elif key == "codex":
+        # Live `_codex_quota_metrics` returns (remaining, reset_secs, ResetCredits).
+        # Existing tests (and any stub) still return the 2-tuple
+        # (remaining, reset_secs); missing credits omit the segment.
+        if len(raw) == 3:
+            remaining, reset_secs, resets = raw
+        else:
+            remaining, reset_secs = raw
+            resets = None
+        fmt_metrics = remaining
     else:
         remaining, reset_secs = raw
         fmt_metrics = remaining
 
     label = next(prov_label for prov_key, prov_label in PROVIDER_SPECS if prov_key == key)
 
-    token_info: Dict[str, Any] = {}
-    name = _format_channel_name(key, fmt_metrics, reset_secs)
+    provider_info: Dict[str, Any] = {}
+    if key == "grok":
+        resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
+        if reset_error:
+            provider_info["reset_error"] = reset_error
+
+    name = _format_channel_name(key, fmt_metrics, reset_secs, resets=resets)
 
     if key in TOKEN_FETCHERS:
         try:
             tokens_7d = TOKEN_FETCHERS[key](http_fn=http_fn, now_fn=now_fn)
-            token_info["tokens_7d"] = tokens_7d
+            provider_info["tokens_7d"] = tokens_7d
             name = _format_channel_name(
-                key, fmt_metrics, reset_secs, tokens_7d=tokens_7d
+                key, fmt_metrics, reset_secs, tokens_7d=tokens_7d, resets=resets
             )
         except Exception as exc:
-            token_info["token_error"] = _error_text(exc)
+            provider_info["token_error"] = _error_text(exc)
             current_name = fetch_channel_name(channel_id, headers, http_fn=http_fn)
             preserved = parse_token_segment_from_name(current_name or "")
             if preserved:
-                token_info["tokens_7d"] = "preserved"
+                provider_info["tokens_7d"] = "preserved"
                 name = _format_channel_name(
                     key,
                     fmt_metrics,
                     reset_secs,
                     preserved_token_segment=preserved,
+                    resets=resets,
                 )
 
     rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
-    return label, reset_secs, name, rename, token_info
+    return label, reset_secs, name, rename, provider_info
 
 
 def update_category(
@@ -1563,7 +1724,7 @@ def run_tick(
         )
         for key, label, channel_id in config["providers"]:
             try:
-                prov_label, reset_secs, channel_name, rename, token_info = (
+                prov_label, reset_secs, channel_name, rename, provider_info = (
                     run_provider_quota(
                         key, channel_id, headers, http_fn=http_fn, now_fn=now_fn
                     )
@@ -1580,7 +1741,7 @@ def run_tick(
                 "remaining": remaining,
                 "reset_seconds": reset_secs,
                 "rename": rename,
-                **token_info,
+                **provider_info,
             }
             readings[key] = {
                 "pct": _reading_pct(remaining),

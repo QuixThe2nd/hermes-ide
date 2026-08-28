@@ -227,6 +227,10 @@ def _provider_http_router(
 
             return 200, _build_grok_grpc_body(24.0, int(fixed_ts + 600))
 
+        if "GetRemainingResets" in url:
+            # no pending usage-limit resets in these fixtures
+            return 200, b"\x00\x00\x00\x00\x00"
+
         if "profiles/me" in url:
             if "codex" in fail_token:
                 return 503, b"codex token down"
