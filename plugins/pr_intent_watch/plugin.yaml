@@ -1,0 +1,8 @@
+name: pr_intent_watch
+default_enabled: true
+version: 1.0.0
+description: "Watch the hermes-ide fork for new PRs and comment an intent review (objective, not code)."
+author: Hermes Agent
+kind: backend
+hooks:
+  - on_gateway_start
