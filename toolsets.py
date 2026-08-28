@@ -307,6 +307,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "assistant_handoff": {
+        "description": "Mission-aware close or one-way escalation for locked assistant WhatsApp chats",
+        "tools": ["end_session", "escalate_task"],
+        "includes": [],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

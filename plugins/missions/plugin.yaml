@@ -8,3 +8,4 @@ provides_tools:
   - dispatch_agent
   - dispatch_assistant
   - end_session
+  - escalate_task

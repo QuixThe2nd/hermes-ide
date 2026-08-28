@@ -247,9 +247,12 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-# Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
-# never pay their schema; once a session enables them they stay direct.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
+# Session-gated toolsets. Off ``_HERMES_CORE_TOOLS`` so clients never pay
+# their schema unless explicitly enabled; once enabled they must stay direct
+# because their availability is itself the session/auth boundary.
+_DIRECT_SURFACE_TOOLSETS = frozenset(
+    {"assistant_handoff", "desktop_ui", "hermes_starts", "project"}
+)
 
 
 def is_deferrable_tool_name(name: str) -> bool:
