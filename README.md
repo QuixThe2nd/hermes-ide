@@ -16,7 +16,7 @@ A fresh Hermes starts off stupid, and it only slowly learns: skills from experie
 
 ### Wheels-included
 
-This repo is part of Quix/Parsa's effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree. The dev pipelines come prebuilt. Capability that makes the out-of-box experience better belongs here, not in a pile of private scripts. Upstream keeps its repo slim and ships capability externally — Debian to this fork's Ubuntu — and this fork is deliberately the opposite.
+This repo is part of an effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree. The dev pipelines come prebuilt. Capability that makes the out-of-box experience better belongs here, not in a pile of private scripts. Upstream keeps its repo slim and ships capability externally — Debian to this fork's Ubuntu — and this fork is deliberately the opposite.
 
 ### Discord-native
 
