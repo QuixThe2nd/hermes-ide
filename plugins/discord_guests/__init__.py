@@ -48,6 +48,20 @@ _GUEST_ALLOW = (
     | _PERMISSION_ATTACH_FILES
     | _PERMISSION_SEND_MESSAGES_IN_THREADS
 )
+# Administrative bits that must never appear in an allow mask this plugin writes.
+_FORBIDDEN_ADMIN_BITS = (
+    (1 << 1)  # KICK_MEMBERS
+    | (1 << 2)  # BAN_MEMBERS
+    | _PERMISSION_ADMINISTRATOR
+    | (1 << 4)  # MANAGE_CHANNELS
+    | (1 << 5)  # MANAGE_GUILD
+    | (1 << 13)  # MANAGE_MESSAGES
+    | (1 << 17)  # MENTION_EVERYONE
+    | (1 << 28)  # MANAGE_NICKNAMES
+    | (1 << 29)  # MANAGE_WEBHOOKS
+    | (1 << 34)  # MANAGE_THREADS
+    | (1 << 40)  # MODERATE_MEMBERS
+)
 
 # REST write pacing: at least 0.3s between writes, and 429 retry_after is
 # always honoured before a retry.
@@ -156,6 +170,17 @@ def _parse_token_line(line: str) -> str:
 
 
 def _read_discord_token() -> str:
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+
+        token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
+        if token:
+            return token
+    except UnscopedSecretError:
+        return ""
+    except Exception:
+        pass
+
     try:
         with _env_path().open("r", encoding="utf-8") as fh:
             for line in fh:
@@ -394,6 +419,73 @@ def _lounge_channel_name(guest_slug: str, host: str) -> str:
     return f"{guest_slug}-{host_slug}-{_LOUNGE_SUFFIX}"
 
 
+def _unique_lounge_channel_name(base_name: str, user_id: str) -> str:
+    suffix = user_id[-4:]
+    max_base = 100 - len(suffix) - 1
+    trimmed = base_name[:max_base] if len(base_name) > max_base else base_name
+    return f"{trimmed}-{suffix}"
+
+
+def _lounge_owner_user_id(
+    channels: List[Dict[str, Any]],
+    chat_category_id: str,
+    channel_id: str,
+    guests: List[Dict[str, Any]],
+) -> Optional[str]:
+    for guest in guests:
+        if guest.get("channel_id") == channel_id:
+            return str(guest.get("user_id") or "")
+    channel = _get_channel_by_id(channels, channel_id)
+    if not channel:
+        return None
+    if str(channel.get("parent_id") or "") != chat_category_id:
+        return None
+    return None
+
+
+def _find_lounge_by_name(
+    channels: List[Dict[str, Any]],
+    chat_category_id: str,
+    channel_name: str,
+) -> str:
+    for channel in channels:
+        if str(channel.get("parent_id") or "") != chat_category_id:
+            continue
+        if str(channel.get("name") or "").strip().lower() == channel_name:
+            return str(channel.get("id") or "")
+    return ""
+
+
+def _resolve_lounge_channel(
+    channels: List[Dict[str, Any]],
+    chat_category_id: str,
+    channel_name: str,
+    guest_user_id: str,
+    guests: List[Dict[str, Any]],
+    existing_guest: Optional[Dict[str, Any]],
+) -> Tuple[str, str, bool]:
+    """Return (channel_id, final_channel_name, needs_create)."""
+    if existing_guest:
+        tracked_id = str(existing_guest.get("channel_id") or "")
+        tracked = _get_channel_by_id(channels, tracked_id)
+        if tracked and str(tracked.get("parent_id") or "") == chat_category_id:
+            return tracked_id, str(tracked.get("name") or channel_name), False
+
+    name_match_id = _find_lounge_by_name(channels, chat_category_id, channel_name)
+    if name_match_id:
+        owner = _lounge_owner_user_id(channels, chat_category_id, name_match_id, guests)
+        if owner is None or owner == guest_user_id:
+            tracked = _get_channel_by_id(channels, name_match_id)
+            final_name = str((tracked or {}).get("name") or channel_name)
+            return name_match_id, final_name, False
+
+    if name_match_id:
+        unique_name = _unique_lounge_channel_name(channel_name, guest_user_id)
+        return "", unique_name, True
+
+    return "", channel_name, True
+
+
 def _fetch_guild_channels(token: str, guild_id: str) -> List[Dict[str, Any]]:
     payload = _discord_request(
         token,
@@ -405,15 +497,28 @@ def _fetch_guild_channels(token: str, guild_id: str) -> List[Dict[str, Any]]:
     return [ch for ch in (payload.get("data") or []) if isinstance(ch, dict)]
 
 
+def _category_exists(channels: List[Dict[str, Any]], category_id: str) -> bool:
+    for channel in channels:
+        if (
+            str(channel.get("id") or "") == category_id
+            and channel.get("type") == _CHANNEL_TYPE_GUILD_CATEGORY
+        ):
+            return True
+    return False
+
+
 def _find_chat_category(
     channels: List[Dict[str, Any]],
     *,
-    chat_category_id: str,
-    guild_id: str,
+    explicit_category_id: str = "",
+    saved_category_id: str = "",
+    use_saved: bool = True,
 ) -> str:
-    """Explicit id wins; else the category named Chat (case-insensitive)."""
-    if chat_category_id:
-        return chat_category_id
+    """Explicit id wins when present; else saved id (if allowed); else Chat by name."""
+    if explicit_category_id:
+        return explicit_category_id
+    if use_saved and saved_category_id and _category_exists(channels, saved_category_id):
+        return saved_category_id
     for channel in channels:
         if channel.get("type") == _CHANNEL_TYPE_GUILD_CATEGORY:
             if str(channel.get("name") or "").strip().lower() == _CHAT_CATEGORY_NAME:
@@ -432,7 +537,49 @@ def _lockdown_targets(channels: List[Dict[str, Any]]) -> List[str]:
     return targets
 
 
-def _put_everyone_deny_view(token: str, channel_id: str, guild_id: str) -> None:
+def _get_channel_by_id(
+    channels: List[Dict[str, Any]], channel_id: str
+) -> Optional[Dict[str, Any]]:
+    for channel in channels:
+        if str(channel.get("id") or "") == channel_id:
+            return channel
+    return None
+
+
+def _existing_overwrite_bits(
+    channels: List[Dict[str, Any]], channel_id: str, target_id: str
+) -> Tuple[int, int]:
+    channel = _get_channel_by_id(channels, channel_id)
+    if not channel:
+        return 0, 0
+    for overwrite in channel.get("permission_overwrites") or []:
+        if str(overwrite.get("id") or "") == target_id:
+            try:
+                allow = int(overwrite.get("allow") or 0)
+            except (TypeError, ValueError):
+                allow = 0
+            try:
+                deny = int(overwrite.get("deny") or 0)
+            except (TypeError, ValueError):
+                deny = 0
+            return allow, deny
+    return 0, 0
+
+
+def _put_everyone_deny_view(
+    token: str,
+    channel_id: str,
+    guild_id: str,
+    *,
+    channels: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    existing_allow, existing_deny = 0, 0
+    if channels is not None:
+        existing_allow, existing_deny = _existing_overwrite_bits(
+            channels, channel_id, guild_id
+        )
+    allow = existing_allow & ~_PERMISSION_VIEW_CHANNEL
+    deny = existing_deny | _PERMISSION_VIEW_CHANNEL
     _discord_request(
         token,
         "PUT",
@@ -440,13 +587,26 @@ def _put_everyone_deny_view(token: str, channel_id: str, guild_id: str) -> None:
         {
             "id": guild_id,
             "type": _OVERWRITE_TYPE_ROLE,
-            "allow": 0,
-            "deny": _PERMISSION_VIEW_CHANNEL,
+            "allow": allow,
+            "deny": deny,
         },
     )
 
 
-def _put_member_allow(token: str, channel_id: str, user_id: str) -> None:
+def _put_member_allow(
+    token: str,
+    channel_id: str,
+    user_id: str,
+    *,
+    channels: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    existing_allow, existing_deny = 0, 0
+    if channels is not None:
+        existing_allow, existing_deny = _existing_overwrite_bits(
+            channels, channel_id, user_id
+        )
+    allow = (existing_allow | _GUEST_ALLOW) & ~_FORBIDDEN_ADMIN_BITS
+    deny = existing_deny & ~_GUEST_ALLOW
     _discord_request(
         token,
         "PUT",
@@ -454,8 +614,8 @@ def _put_member_allow(token: str, channel_id: str, user_id: str) -> None:
         {
             "id": user_id,
             "type": _OVERWRITE_TYPE_MEMBER,
-            "allow": _GUEST_ALLOW,
-            "deny": 0,
+            "allow": allow,
+            "deny": deny,
         },
     )
 
@@ -466,6 +626,22 @@ def _delete_member_overwrite(token: str, channel_id: str, user_id: str) -> None:
         "DELETE",
         f"{_DISCORD_API_BASE}/channels/{channel_id}/permissions/{user_id}",
     )
+
+
+def _revoke_member_overwrite_best_effort(
+    token: str,
+    channel_id: str,
+    user_id: str,
+    channels: List[Dict[str, Any]],
+) -> None:
+    if not channel_id or not _get_channel_by_id(channels, channel_id):
+        return
+    try:
+        _delete_member_overwrite(token, channel_id, user_id)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return
+        raise
 
 
 def _fetch_member(
@@ -563,8 +739,8 @@ def _handle_setup(args: Dict[str, Any], token: str) -> str:
         channels = _fetch_guild_channels(token, resolved_guild_id)
         chat_category_id = _find_chat_category(
             channels,
-            chat_category_id="",
-            guild_id=resolved_guild_id,
+            saved_category_id=state["chat_category_id"],
+            use_saved=resolved_guild_id == state.get("guild_id", ""),
         )
         if not chat_category_id:
             return json.dumps(
@@ -585,7 +761,9 @@ def _handle_setup(args: Dict[str, Any], token: str) -> str:
     denied: List[str] = []
     if run_lockdown:
         for target_id in _lockdown_targets(lockdown_channels):
-            _put_everyone_deny_view(token, target_id, resolved_guild_id)
+            _put_everyone_deny_view(
+                token, target_id, resolved_guild_id, channels=lockdown_channels
+            )
             denied.append(target_id)
 
     state["guild_id"] = resolved_guild_id
@@ -667,8 +845,8 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     channels = _fetch_guild_channels(token, resolved_guild_id)
     chat_category_id = _find_chat_category(
         channels,
-        chat_category_id=state["chat_category_id"],
-        guild_id=resolved_guild_id,
+        saved_category_id=state["chat_category_id"],
+        use_saved=resolved_guild_id == state.get("guild_id", ""),
     )
     if not chat_category_id:
         return json.dumps(
@@ -688,23 +866,28 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     host_slug = _resolve_host_slug(token, resolved_guild_id, host_override)
     channel_name = _lounge_channel_name(guest_slug, host_slug)
 
-    # Idempotent: reuse a lounge of this exact name under Chat when present.
-    channel_id = ""
-    for channel in channels:
-        if str(channel.get("parent_id") or "") != chat_category_id:
-            continue
-        if str(channel.get("name") or "").strip().lower() == channel_name:
-            channel_id = str(channel.get("id") or "")
-            break
+    existing_guest = next(
+        (g for g in state["guests"] if g["user_id"] == guest_user_id), None
+    )
+    old_channel_id = str((existing_guest or {}).get("channel_id") or "")
+
+    channel_id, final_channel_name, needs_create = _resolve_lounge_channel(
+        channels,
+        chat_category_id,
+        channel_name,
+        guest_user_id,
+        state["guests"],
+        existing_guest,
+    )
 
     created = False
-    if not channel_id:
+    if needs_create:
         created_channel = _discord_request(
             token,
             "POST",
             f"{_DISCORD_API_BASE}/guilds/{resolved_guild_id}/channels",
             {
-                "name": channel_name,
+                "name": final_channel_name,
                 "type": _CHANNEL_TYPE_GUILD_TEXT,
                 "parent_id": chat_category_id,
             },
@@ -714,12 +897,24 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
             return json.dumps(
                 {"success": False, "error": "lounge creation did not return an id"}
             )
+        channels.append(created_channel)
         created = True
+        channel_name = final_channel_name
+    else:
+        channel_name = final_channel_name
 
-    _put_member_allow(token, channel_id, guest_user_id)
+    if old_channel_id and old_channel_id != channel_id:
+        _revoke_member_overwrite_best_effort(
+            token, old_channel_id, guest_user_id, channels
+        )
+
+    _put_member_allow(token, channel_id, guest_user_id, channels=channels)
     # Belt-and-braces: the lounge stays private even if category perms drift.
-    _put_everyone_deny_view(token, channel_id, resolved_guild_id)
+    _put_everyone_deny_view(
+        token, channel_id, resolved_guild_id, channels=channels
+    )
 
+    state["guild_id"] = resolved_guild_id
     state["chat_category_id"] = chat_category_id
     guests = [g for g in state["guests"] if g["user_id"] != guest_user_id]
     guests.append(
@@ -783,8 +978,8 @@ def _handle_remove(args: Dict[str, Any], token: str) -> str:
         channels = _fetch_guild_channels(token, resolved_guild_id)
         chat_category_id = _find_chat_category(
             channels,
-            chat_category_id=state["chat_category_id"],
-            guild_id=resolved_guild_id,
+            saved_category_id=state["chat_category_id"],
+            use_saved=resolved_guild_id == state.get("guild_id", ""),
         )
         channel_id = ""
         for channel in channels:
@@ -883,17 +1078,7 @@ def handle_discord_guests(args: dict, **kwargs: Any) -> str:
 
 
 def check_requirements() -> bool:
-    try:
-        path = _env_path()
-        if not path.is_file():
-            return False
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("DISCORD_BOT_TOKEN="):
-                    return bool(_parse_token_line(line))
-        return False
-    except Exception:
-        return False
+    return bool(_read_discord_token())
 
 
 def register(ctx) -> None:
