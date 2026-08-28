@@ -237,17 +237,30 @@ def _ensure_discord_mock() -> None:
     # (title, description, color). MagicMock auto-attributes work too,
     # but some tests construct and inspect .title/.description directly.
     class _FakeEmbed:
-        def __init__(self, *, title=None, description=None, color=None, **_):
+        def __init__(self, *, title=None, description=None, color=None, url=None, **_):
             self.title = title
             self.description = description
             self.color = color
+            self.url = url
             self.fields = []
             self.footer = None
+            self.author = None
+            self.thumbnail = None
         def add_field(self, *, name=None, value=None, inline=False, **_):
             self.fields.append({"name": name, "value": value, "inline": inline})
             return self
         def set_footer(self, *, text=None, icon_url=None, **_):
             self.footer = {"text": text, "icon_url": icon_url}
+            return self
+        def set_author(self, *, name=None, icon_url=None, url=None, **_):
+            self.author = type(
+                "EmbedAuthor",
+                (),
+                {"name": name, "icon_url": icon_url, "url": url},
+            )()
+            return self
+        def set_thumbnail(self, *, url=None, **_):
+            self.thumbnail = type("EmbedThumbnail", (), {"url": url})()
             return self
     discord_mod.Embed = _FakeEmbed
 
