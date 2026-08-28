@@ -154,6 +154,15 @@ class TestLoadPreciseReadings:
             "grok": (99, GROK_RESET),
         }
 
+    def test_public_contract_stays_a_two_field_unpack(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # the documented shape: pct, seconds = load_precise_readings(...)[slug]
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(_precise_fixture(), now_fn=lambda: NOW)
+        pct, seconds = load_precise_readings(1800, now_fn=lambda: NOW)["codex"]
+        assert (pct, seconds) == (99, CODEX_RESET)
+
     def test_corrupt_state_file_returns_empty(self, monkeypatch, tmp_path: Path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / STATE_FILENAME).write_text("((", encoding="utf-8")

@@ -25,6 +25,86 @@ class TestParseChannelNameAccept:
         assert reading.reset_seconds == 25 * 86400
 
 
+class TestParseResetsSegment:
+    """Trailing pending-reset segment rendered by quota_channels (Codex/Grok)."""
+
+    def test_zero_resets(self):
+        reading = parse_channel_name(
+            "grok", f"Grok: 43% {BULLET} 3d left {BULLET} 0 resets"
+        )
+        assert reading is not None
+        assert reading.pct == 43
+        assert reading.reset_seconds == 3 * 86400
+        assert reading.reset_count == 0
+        assert reading.reset_expiry_seconds is None
+
+    def test_codex_count_only_has_no_expiry_clock(self):
+        reading = parse_channel_name(
+            "codex",
+            f"Codex: 100% {BULLET} 571.4M tok/7d {BULLET} 7d left {BULLET} 1 reset",
+        )
+        assert reading is not None
+        assert reading.pct == 100
+        assert reading.reset_seconds == 7 * 86400
+        assert reading.reset_count == 1
+        # no `in <t>` countdown: the reset term falls back to the usage clock
+        assert reading.reset_expiry_seconds is None
+
+    def test_grok_count_with_expiry(self):
+        reading = parse_channel_name(
+            "grok", f"Grok: 46% {BULLET} 3d left {BULLET} 1 reset in 2d"
+        )
+        assert reading is not None
+        assert reading.pct == 46
+        assert reading.reset_seconds == 3 * 86400
+        assert reading.reset_count == 1
+        assert reading.reset_expiry_seconds == 2 * 86400
+
+    def test_plural_count_with_hour_expiry(self):
+        reading = parse_channel_name(
+            "grok", f"Grok: 46% {BULLET} 3d left {BULLET} 2 resets in 5h"
+        )
+        assert reading is not None
+        assert reading.reset_count == 2
+        assert reading.reset_expiry_seconds == 5 * 3600
+
+    def test_cursor_form_stays_resets_free(self):
+        # Cursor has no resets API, so its regex never grows the segment
+        assert (
+            parse_channel_name(
+                "cursor", f"Cursor: 76%/58% {BULLET} 25d left {BULLET} 1 reset"
+            )
+            is None
+        )
+
+    def test_kimi_resets_segment_parses_but_stays_inert(self):
+        # Kimi has no resets API: the shared regex still accepts the segment
+        # so a polluted name stays readable, but only Codex/Grok extract it
+        reading = parse_channel_name(
+            "kimi", f"Kimi: 10% {BULLET} 7d left {BULLET} 3 resets"
+        )
+        assert reading is not None
+        assert reading.pct == 10
+        assert reading.reset_seconds == 7 * 86400
+        assert not reading.reset_count
+        assert reading.reset_expiry_seconds is None
+
+    def test_zai_resets_segment_with_expiry_stays_inert(self):
+        reading = parse_channel_name(
+            "zai", f"z.ai: 70% {BULLET} 7d left {BULLET} 1 reset in 2d"
+        )
+        assert reading is not None
+        assert reading.pct == 70
+        assert not reading.reset_count
+        assert reading.reset_expiry_seconds is None
+
+    def test_garbage_resets_segment_is_rejected(self):
+        assert (
+            parse_channel_name("grok", f"Grok: 46% {BULLET} 3d left {BULLET} resets")
+            is None
+        )
+
+
 class TestParseChannelNameReject:
     @pytest.mark.parametrize(
         "channel_key,name",
