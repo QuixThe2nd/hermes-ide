@@ -141,6 +141,19 @@ class MockDiscordRouter:
         self.channel_counter = 0
         self.rate_limit_pending = 0
         self.channels_by_guild: Dict[str, List[Dict[str, Any]]] = {}
+        self.permission_delete_http_code: Dict[tuple, int] = {}
+
+    def _permission_delete_raises(self, channel_id: str, overwrite_id: str, url: str) -> None:
+        code = self.permission_delete_http_code.get((channel_id, overwrite_id))
+        if code is None:
+            return
+        raise urllib.error.HTTPError(
+            url,
+            code,
+            f"HTTP {code}",
+            hdrs=None,
+            fp=BytesIO(b"{}"),
+        )
 
     def _guild_channels(self, guild_id: str) -> List[Dict[str, Any]]:
         if guild_id in self.channels_by_guild:
@@ -266,6 +279,7 @@ class MockDiscordRouter:
                     body,
                 )
                 return self._response({}, status=204, empty=True)
+            self._permission_delete_raises(channel_id, overwrite_id, url)
             self.overwrites.pop((channel_id, overwrite_id), None)
             self._remove_channel_overwrite(channel_id, overwrite_id)
             return self._response({}, status=204, empty=True)
@@ -1062,6 +1076,94 @@ class TestLoungeIdentity:
                 "channel_id": channel_id,
             }
         ]
+
+    def test_readd_to_new_channel_revokes_old_member_overwrite(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        first = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert first["success"] is True
+        old_channel_id = first["channel_id"]
+        assert (old_channel_id, "111") in discord_router.overwrites
+
+        for channel in discord_router.channels:
+            if channel.get("id") == old_channel_id:
+                channel["parent_id"] = "cat-other"
+                break
+
+        second = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert second["success"] is True
+        assert second["created"] is True
+        assert second["channel_id"] != old_channel_id
+        assert (old_channel_id, "111") not in discord_router.overwrites
+        assert (second["channel_id"], "111") in discord_router.overwrites
+        assert (
+            "DELETE",
+            f"/channels/{old_channel_id}/permissions/111",
+        ) in _endpoints(discord_router)
+
+        saved = _read_state(_isolate_env)
+        assert saved["guests"] == [
+            {
+                "user_id": "111",
+                "name": "Ada Lovelace",
+                "channel_id": second["channel_id"],
+            }
+        ]
+
+    def test_readd_succeeds_when_old_overwrite_delete_returns_404(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        first = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert first["success"] is True
+        old_channel_id = first["channel_id"]
+        discord_router.permission_delete_http_code[(old_channel_id, "111")] = 404
+
+        for channel in discord_router.channels:
+            if channel.get("id") == old_channel_id:
+                channel["parent_id"] = "cat-other"
+                break
+
+        second = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert second["success"] is True
+        assert second["created"] is True
+        assert second["channel_id"] != old_channel_id
+        assert (second["channel_id"], "111") in discord_router.overwrites
+
+        saved = _read_state(_isolate_env)
+        assert saved["guests"][0]["channel_id"] == second["channel_id"]
+
+    def test_readd_succeeds_when_old_channel_missing_from_guild(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(
+            _isolate_env,
+            {
+                "guild_id": "guild-1",
+                "chat_category_id": "cat-chat",
+                "guests": [
+                    {
+                        "user_id": "111",
+                        "name": "Ada Lovelace",
+                        "channel_id": "chan-deleted",
+                    }
+                ],
+            },
+        )
+        discord_router.channels = [
+            ch for ch in discord_router.channels if ch.get("id") != "chan-deleted"
+        ]
+
+        result = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert result["success"] is True
+        assert result["created"] is True
+        assert result["channel_id"] != "chan-deleted"
+        assert not any(
+            call["method"] == "DELETE"
+            and "/permissions/111" in call["url"]
+            and "chan-deleted" in call["url"]
+            for call in discord_router.calls
+        )
+        assert _read_state(_isolate_env)["guests"][0]["channel_id"] == result["channel_id"]
 
 
 class TestGuildCategoryResolution:

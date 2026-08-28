@@ -665,6 +665,29 @@ def _delete_member_overwrite(token: str, channel_id: str, user_id: str) -> None:
     )
 
 
+def _guild_has_channel(channels: List[Dict[str, Any]], channel_id: str) -> bool:
+    return any(str(channel.get("id") or "") == channel_id for channel in channels)
+
+
+def _revoke_stale_member_overwrite(
+    token: str,
+    channel_id: str,
+    user_id: str,
+    channels: List[Dict[str, Any]],
+) -> None:
+    """Best-effort revoke when re-pointing a guest to a different lounge."""
+    if not channel_id:
+        return
+    if not _guild_has_channel(channels, channel_id):
+        return
+    try:
+        _delete_member_overwrite(token, channel_id, user_id)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return
+        raise
+
+
 def _fetch_member(
     token: str,
     guild_id: str,
@@ -929,7 +952,9 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     _put_everyone_deny_view(token, channel_id, resolved_guild_id, channels)
 
     if old_channel_id and old_channel_id != channel_id:
-        _delete_member_overwrite(token, old_channel_id, guest_user_id)
+        _revoke_stale_member_overwrite(
+            token, old_channel_id, guest_user_id, channels
+        )
 
     state["guild_id"] = resolved_guild_id
     state["chat_category_id"] = chat_category_id
