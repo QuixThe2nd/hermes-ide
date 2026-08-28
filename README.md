@@ -54,6 +54,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
   - Discord — auto-threaded root-turn finals ping via inline mention when the reply reference can't attach
   - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
+  - Discord — clarify prompts are numbered plain text (no buttons; Discord component views time out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
   - Gateway — system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context
   - Missions — assistant WhatsApp chats expose mission-aware `end_session` or one-way `escalate_task`

@@ -91,8 +91,9 @@ _DISCORD_SELECT_MAX_ROWS = 5
 _DISCORD_MODEL_SELECT_CAPACITY = (
     _DISCORD_SELECT_MAX_ROWS - 2
 ) * _DISCORD_SELECT_MAX_OPTIONS
-_DISCORD_BUTTON_LABEL_LIMIT = 80
-_DISCORD_ELLIPSIS = "\u2026"
+# Embed field values cap at 1024 chars; Discord rejects the whole message on
+# overrun. Used by send_clarify to pack the numbered choice list.
+_DISCORD_EMBED_FIELD_LIMIT = 1024
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
@@ -8030,22 +8031,26 @@ class DiscordAdapter(BasePlatformAdapter):
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Render a clarify prompt with one Discord button per choice.
+        """Render a clarify prompt as numbered plain text — no buttons.
 
-        Multi-choice mode (``choices`` non-empty): renders a button per option
-        plus a final "✏️ Other (type answer)" button. Picking "Other" flips
-        the clarify entry into text-capture mode so the next user message in
-        the session becomes the response. Numeric clicks resolve immediately
-        via ``resolve_gateway_clarify(clarify_id, choice_text)``.
+        Discord component views expire with their interaction token
+        (``approvals.discord_prompt_timeout``, default 300s, hard-capped by
+        Discord's 15-minute expiry), which left a dead button row on every
+        prompt the user didn't answer in time. Plain text has no such clock,
+        so both render modes are text-only and the gateway's text-intercept
+        resolves the reply instead:
 
-        Open-ended mode (``choices`` empty/None): renders the question as
-        plain embed text — no buttons. The gateway's text-intercept captures
-        the next message in this session and resolves the clarify.
+          * Multi-choice mode (``choices`` non-empty): the options render as a
+            numbered list and ``mark_awaiting_text(clarify_id)`` flips the
+            entry into text-capture mode, so a number ("2"), the option text,
+            or a free-form answer all resolve.
+          * Open-ended mode (``choices`` empty/None): the question plus a
+            reply hint; the entry already awaits text at registration.
 
         Choice normalisation: ``choices`` may contain bare strings OR dicts
         (LLMs sometimes emit ``[{"description": "..."}]`` instead of bare
-        strings, which would otherwise render as raw Python repr on the
-        button label). Dict choices are unwrapped against the canonical
+        strings, which would otherwise render as raw Python repr in the
+        numbered list). Dict choices are unwrapped against the canonical
         LLM tool-call keys ``label``, ``description``, ``text``, ``title``
         in that order. Dicts with none of those keys are dropped.
         """
@@ -8079,8 +8084,8 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
-            # instead of bare strings, which would render as raw Python repr on
-            # the button label. Unwrap the common shapes, then stringify.
+            # instead of bare strings, which would render as raw Python repr in
+            # the numbered list. Unwrap the common shapes, then stringify.
             def _flatten_choice(c):
                 if c is None:
                     return ""
@@ -8094,10 +8099,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     # dicts that aren't meant to be choices (e.g., a
                     # developer-error wiring that passes a Button-shaped
                     # object). Picking them would leak raw enum values
-                    # or 4-char model identifiers onto user-facing buttons.
+                    # or 4-char model identifiers into the visible list.
                     # If a dict has none of the canonical keys, drop it
                     # rather than picking some random field — a garbage
-                    # button label is worse than no button at all.
+                    # line is worse than a shorter list.
                     for key in ("label", "description", "text", "title"):
                         v = c.get(key)
                         if isinstance(v, str) and v.strip():
@@ -8110,47 +8115,90 @@ class DiscordAdapter(BasePlatformAdapter):
             clean_choices = [
                 s for s in (_flatten_choice(c) for c in (choices or [])) if s
             ]
-            # Discord allows up to 5 buttons per row, 5 rows per view = 25.
-            # We reserve one slot for the "Other" button, so cap at 24 choices.
-            clean_choices = clean_choices[:24]
 
+            reply_hint = "Reply in this channel with your answer."
             if clean_choices:
-                embed.add_field(
-                    name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
-                    inline=False,
+                # Multi-select clarifies register their flag on the pending
+                # entry; look it up by id so the reply hint matches the
+                # coercions the gateway will actually accept.
+                is_multi_select = False
+                try:
+                    from tools import clarify_gateway as _cg
+                    with _cg._lock:
+                        _entry = _cg._entries.get(clarify_id)
+                    is_multi_select = bool(
+                        _entry and getattr(_entry, "multi_select", False)
+                    )
+                except Exception:
+                    is_multi_select = False
+                reply_hint = (
+                    "Multiple selections allowed — reply with the numbers "
+                    "separated by commas or spaces (e.g. \"1, 3\"), the "
+                    "option text, or your own answer."
+                    if is_multi_select
+                    else "Reply with the number, the option text, or your own answer."
                 )
-                view = ClarifyChoiceView(
-                    choices=clean_choices,
-                    clarify_id=clarify_id,
-                    allowed_user_ids=self._allowed_user_ids,
-                    allowed_role_ids=self._allowed_role_ids,
-                )
-            else:
-                embed.add_field(
-                    name="Reply",
-                    value="Reply in this channel with your answer.",
-                    inline=False,
-                )
-                view = None
+                # Text-only prompt: enable text-capture so the gateway
+                # intercept picks up the typed reply (number, option text, or
+                # free text). Mirrors the base-platform plaintext fallback.
+                try:
+                    from tools.clarify_gateway import mark_awaiting_text
+                    mark_awaiting_text(clarify_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] clarify mark_awaiting_text failed (id=%s): %s",
+                        self.name, clarify_id, exc,
+                    )
 
-            # Mirror the question in plain content — embeds are invisible on
-            # some clients (see send_exec_approval).
-            clarify_tail = (
-                "\n\nPick one below, or click ✏️ Other to type a custom answer."
-                if clean_choices
-                else "\n\nReply in this channel with your answer."
+            choice_lines = [
+                f"{i}. {c}" for i, c in enumerate(clean_choices, start=1)
+            ]
+
+            def _pack_choice_field(lines: List[str], hint: str) -> str:
+                """Pack the numbered list + hint into one embed field value.
+
+                Embed field values cap at 1024 chars and Discord rejects the
+                whole message when they overrun, so drop whole trailing lines
+                rather than cutting an option in half — a "+N more" note beats
+                a half-rendered choice, and the full list always lives in the
+                plain ``content`` alongside.
+                """
+                suffix = f"\n\n{hint}"
+                budget = _DISCORD_EMBED_FIELD_LIMIT - utf16_len(suffix)
+                kept: List[str] = []
+                for line in lines:
+                    candidate = "\n".join(kept + [line])
+                    if utf16_len(candidate) > budget:
+                        break
+                    kept.append(line)
+                dropped = len(lines) - len(kept)
+                if dropped:
+                    kept.append(f"… +{dropped} more in the message above")
+                return "\n".join(kept) + suffix
+
+            embed.add_field(
+                name="Choices" if choice_lines else "Reply",
+                value=(
+                    _pack_choice_field(choice_lines, reply_hint)
+                    if choice_lines
+                    else reply_hint
+                ),
+                inline=False,
             )
+
+            # Mirror the question and the numbered choices in plain content —
+            # embeds are invisible on some clients (see send_exec_approval).
+            prompt_body = str(question or "").strip()
+            if choice_lines:
+                prompt_body = "\n".join([prompt_body, ""] + choice_lines)
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(),
-                tail=clarify_tail,
+                "❓ **Hermes needs your input**", prompt_body,
+                tail=f"\n\n{reply_hint}",
             )
             mention = self._clarify_mention_content()
             if mention:
                 content = f"{mention}\n{content}"
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed}
-            if view is not None:
-                send_kwargs["view"] = view
             if mention:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
                 if allowed_mentions_cls is not None:
@@ -8161,8 +8209,6 @@ class DiscordAdapter(BasePlatformAdapter):
                         replied_user=False,
                     )
             msg = await channel.send(**send_kwargs)
-            if view:
-                view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
@@ -9253,7 +9299,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ChoicePickerView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -10083,240 +10129,7 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
-    class ClarifyChoiceView(discord.ui.View):
-        """Interactive button view for the clarify tool's multiple-choice prompts.
 
-        Renders one button per choice (max 24) plus a final ``✏️ Other`` button.
-        Picking a numeric choice resolves the gateway clarify entry immediately;
-        picking ``Other`` flips the entry into text-capture mode so the next
-        user message in the session becomes the response (the gateway's
-        text-intercept handles the resolution).
-
-        Auth gating mirrors ``ExecApprovalView`` — only users/roles in the
-        Discord adapter's allowlist may answer. Single-use: after the first
-        valid click all buttons disable and the embed updates to show who
-        answered and what they chose.
-        """
-
-        def __init__(
-            self,
-            choices: List[str],
-            clarify_id: str,
-            allowed_user_ids: set,
-            allowed_role_ids: Optional[set] = None,
-        ):
-            super().__init__(timeout=_read_discord_prompt_timeout())
-            self.choices = list(choices)[:24]
-            self.clarify_id = clarify_id
-            self.allowed_user_ids = allowed_user_ids
-            self.allowed_role_ids = allowed_role_ids or set()
-            self.resolved = False
-
-            for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars. On mobile the
-                # visible width is much narrower (often <40 chars before it
-                # wraps to 2 lines and the second line gets cut off), so we
-                # cap aggressively and cut at a word boundary when possible
-                # to keep the trailing text readable.
-                #
-                # Cut strategy (most-preferred to least-preferred):
-                #   1. Last space in the trailing half of the budget
-                #      (cleanest word boundary)
-                #   2. Last soft boundary in the trailing half of the
-                #      budget (hyphen, comma, period, paren)
-                #   3. Hard cut at the budget limit (last resort)
-                prefix = f"{index + 1}. "
-                budget = _DISCORD_BUTTON_LABEL_LIMIT - utf16_len(prefix)
-                if utf16_len(choice) <= budget:
-                    label_body = choice
-                else:
-                    truncated = _prefix_within_utf16_limit(
-                        choice,
-                        max(0, budget - utf16_len(_DISCORD_ELLIPSIS)),
-                    ).rstrip()
-                    cut_at = -1
-                    # 1. Last space in the trailing half of the budget.
-                    space = truncated.rfind(" ")
-                    if space >= len(truncated) // 2:
-                        cut_at = space
-                    # 2. Soft boundary — only if no word boundary found.
-                    # Find the latest soft boundary in the trailing half
-                    # of the budget; that maximizes preserved text length.
-                    # Cut AT the soft boundary (inclusive) so the label
-                    # ends on the soft char (e.g. "-" or ",") rather than
-                    # on the alpha char that followed it.
-                    if cut_at < 0:
-                        latest_soft = max(
-                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
-                            default=-1,
-                        )
-                        if latest_soft >= len(truncated) // 2:
-                            cut_at = latest_soft + 1
-                    if cut_at > 0:
-                        truncated = truncated[:cut_at]
-                    label_body = truncated.rstrip() + _DISCORD_ELLIPSIS
-                button = discord.ui.Button(
-                    label=f"{prefix}{label_body}",
-                    style=discord.ButtonStyle.primary,
-                    custom_id=f"clarify:{clarify_id}:{index}",
-                )
-                button.callback = self._make_choice_callback(index, choice)
-                self.add_item(button)
-
-            other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)",
-                style=discord.ButtonStyle.secondary,
-                custom_id=f"clarify:{clarify_id}:other",
-            )
-            other_btn.callback = self._on_other
-            self.add_item(other_btn)
-
-        def _check_auth(self, interaction: "discord.Interaction") -> bool:
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
-
-        def _make_choice_callback(self, index: int, choice: str):
-            async def _callback(interaction: "discord.Interaction"):
-                await self._resolve_choice(interaction, index, choice)
-            return _callback
-
-        async def _resolve_choice(
-            self,
-            interaction: "discord.Interaction",
-            index: int,
-            choice: str,
-        ) -> None:
-            """Resolve the clarify with a chosen option."""
-            if self.resolved:
-                await interaction.response.send_message(
-                    "This prompt has already been answered~", ephemeral=True,
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
-                return
-
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-
-            embed = interaction.message.embeds[0] if (
-                interaction.message and interaction.message.embeds
-            ) else None
-            if embed:
-                user = getattr(interaction, "user", None)
-                display_name = getattr(user, "display_name", "user")
-                embed.color = discord.Color.green()
-                embed.set_footer(text=f"Answered by {display_name}: {choice}")
-
-            try:
-                await interaction.response.edit_message(embed=embed, view=self)
-            except Exception:
-                logger.debug(
-                    "Discord clarify edit_message failed for %s",
-                    self.clarify_id,
-                    exc_info=True,
-                )
-                try:
-                    await interaction.response.defer()
-                except Exception:
-                    pass
-
-            # Resolve via the gateway clarify primitive — same mechanism as
-            # Telegram. Look up the canonical choice text from the entry so
-            # we round-trip the original value, not a button-label variant.
-            resolved_text: Optional[str] = None
-            try:
-                from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-                entry = _clarify_entries.get(self.clarify_id)
-                if entry and entry.choices and 0 <= index < len(entry.choices):
-                    resolved_text = entry.choices[index]
-            except Exception:
-                resolved_text = None
-            if resolved_text is None:
-                resolved_text = choice
-
-            try:
-                from tools.clarify_gateway import resolve_gateway_clarify
-                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
-                logger.info(
-                    "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
-                    self.clarify_id, resolved_text,
-                    getattr(getattr(interaction, "user", None), "display_name", "?"),
-                    resolved,
-                )
-            except Exception as exc:
-                logger.error(
-                    "Discord clarify resolve_gateway_clarify failed (id=%s): %s",
-                    self.clarify_id, exc,
-                )
-
-        async def _on_other(self, interaction: "discord.Interaction") -> None:
-            """Flip the clarify entry into text-capture mode."""
-            if self.resolved:
-                await interaction.response.send_message(
-                    "This prompt has already been answered~", ephemeral=True,
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
-                return
-
-            # Don't pop the entry — the gateway's text-intercept needs it
-            # until the user actually types. Just mark it as awaiting text
-            # and disable the buttons so the user can't double-click.
-            try:
-                from tools.clarify_gateway import mark_awaiting_text
-                mark_awaiting_text(self.clarify_id)
-            except Exception as exc:
-                logger.warning(
-                    "Discord clarify mark_awaiting_text failed (id=%s): %s",
-                    self.clarify_id, exc,
-                )
-
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-
-            embed = interaction.message.embeds[0] if (
-                interaction.message and interaction.message.embeds
-            ) else None
-            if embed:
-                user = getattr(interaction, "user", None)
-                display_name = getattr(user, "display_name", "user")
-                embed.color = discord.Color.blue()
-                embed.set_footer(
-                    text=f"Awaiting typed response from {display_name}…",
-                )
-
-            try:
-                await interaction.response.edit_message(embed=embed, view=self)
-            except Exception:
-                try:
-                    await interaction.response.defer()
-                except Exception:
-                    pass
-
-        async def on_timeout(self):
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-            # Visually update the Discord message so buttons appear disabled.
-            msg = getattr(self, '_message', None)
-            if msg:
-                try:
-                    embed = msg.embeds[0] if msg.embeds else None
-                    if embed:
-                        embed.color = discord.Color.greyple()
-                        embed.set_footer(text="⏱ Prompt expired — no action taken")
-                    await msg.edit(embed=embed, view=self)
-                except Exception:
-                    pass
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 
