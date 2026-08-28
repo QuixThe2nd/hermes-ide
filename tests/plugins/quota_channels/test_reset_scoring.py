@@ -68,6 +68,16 @@ class TestDisplayRanksUseResetCredits:
         # kimi 0.6 * 168/25 = 4.03 still beats codex's neutral 1.0
         assert ranks["kimi"] < ranks["codex"]
 
+    def test_injected_resets_on_a_non_reset_provider_stay_inert(self):
+        # Kimi has no resets API: even a polluted state row with reset fields
+        # scores the remaining term only and still sinks at 0%
+        readings = {
+            "kimi": _reading(0, WEEK, reset_count=4, reset_expiry_seconds=60),
+            "zai": _reading(40, 22 * DAY),
+        }
+        ranks = quota_display_ranks(readings)
+        assert ranks["zai"] < ranks["kimi"]
+
 
 class TestStatePersistsResets:
     def test_save_state_round_trips_reset_fields(self, monkeypatch, tmp_path):

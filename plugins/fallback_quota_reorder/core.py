@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from plugins.fallback_quota_reorder.reliability import (
     ReliabilityRates,
@@ -32,6 +32,17 @@ CHANNEL_KEY_TO_PROVIDER: Dict[str, str] = {
     "grok": "xai-oauth",
     "cursor": "cursor",
 }
+
+# Providers with a manual usage-limit resets API — the only ones whose
+# pending resets earn the additive score term. Reset fields that leak into
+# any other provider's channel name, state row, or reading are inert.
+RESET_CREDIT_PROVIDERS = frozenset({"openai-codex", "xai-oauth"})
+# the quota channel keys whose provider is in RESET_CREDIT_PROVIDERS
+RESET_CREDIT_CHANNEL_KEYS = frozenset(
+    key
+    for key, slug in CHANNEL_KEY_TO_PROVIDER.items()
+    if slug in RESET_CREDIT_PROVIDERS
+)
 
 DEFAULT_QUOTA_INTERVAL_SECONDS = 1800
 POST_QUOTA_OFFSET_SECONDS = 120
@@ -87,21 +98,6 @@ class QuotaReading:
     # provider exposes no reset-expiry clock, so the reset term falls back to
     # the usage-reset countdown.
     reset_count: int = 0
-    reset_expiry_seconds: Optional[float] = None
-
-
-class PreciseReading(NamedTuple):
-    """A quota_channels state entry, widened with pending-reset credits.
-
-    ``pct``/``reset_seconds`` always come from state. The reset fields are
-    None when the state entry does not carry them — an absent count is not
-    the same statement as an explicit zero, so callers keep whatever the
-    channel name parsed instead of dropping it.
-    """
-
-    pct: int
-    reset_seconds: float
-    reset_count: Optional[int] = None
     reset_expiry_seconds: Optional[float] = None
 
 
@@ -206,12 +202,18 @@ def parse_channel_name(channel_key: str, channel_name: str) -> Optional[QuotaRea
         pct = int(match.group(2))
         reset_value = int(match.group(3))
         reset_unit = match.group(4)
-        reset_count = int(match.group(5) or 0)
-        reset_expiry_seconds = (
-            None
-            if match.group(6) is None
-            else parse_countdown_seconds(int(match.group(6)), match.group(7))
-        )
+        if channel_key in RESET_CREDIT_CHANNEL_KEYS:
+            reset_count = int(match.group(5) or 0)
+            reset_expiry_seconds = (
+                None
+                if match.group(6) is None
+                else parse_countdown_seconds(int(match.group(6)), match.group(7))
+            )
+        else:
+            # Kimi/z.ai have no resets API: a resets segment that polluted
+            # their name parses, but never reaches the reading
+            reset_count = 0
+            reset_expiry_seconds = None
 
     reset_seconds = parse_countdown_seconds(reset_value, reset_unit)
     return QuotaReading(
@@ -373,7 +375,8 @@ def fetch_channel_names(
 
 def readings_from_names(
     names: Mapping[str, str],
-    precise_readings: Optional[Mapping[str, PreciseReading]] = None,
+    precise_readings: Optional[Mapping[str, Tuple[int, float]]] = None,
+    precise_reset_fields: Optional[Mapping[str, Tuple[int, Optional[float]]]] = None,
 ) -> Dict[str, QuotaReading]:
     readings: Dict[str, QuotaReading] = {}
     for key in CHANNEL_KEYS:
@@ -383,41 +386,39 @@ def readings_from_names(
         if precise is not None:
             # precise state beats the day-rounded channel name; it also scores
             # providers whose name did not parse strictly
-            if not isinstance(precise, PreciseReading):
-                # legacy (pct, reset_seconds) tuples stay acceptable
-                precise = PreciseReading(*precise)
+            pct, reset_seconds = precise
             base = reading or QuotaReading(
                 channel_key=key,
                 provider=CHANNEL_KEY_TO_PROVIDER[key],
                 channel_name=name,
-                pct=precise.pct,
-                reset_seconds=precise.reset_seconds,
+                pct=pct,
+                reset_seconds=reset_seconds,
             )
-            overrides: Dict[str, Any] = {
-                "pct": precise.pct,
-                "reset_seconds": precise.reset_seconds,
-            }
-            if precise.reset_count is not None:
+            overrides: Dict[str, Any] = {"pct": pct, "reset_seconds": reset_seconds}
+            resets = (precise_reset_fields or {}).get(key)
+            if resets is not None:
                 # state that carries reset credits replaces the name-parsed
                 # ones; state that predates them keeps what the name showed
-                overrides["reset_count"] = precise.reset_count
-                overrides["reset_expiry_seconds"] = precise.reset_expiry_seconds
+                overrides["reset_count"] = resets[0]
+                overrides["reset_expiry_seconds"] = resets[1]
             reading = replace(base, **overrides)
         if reading is not None:
             readings[reading.provider] = reading
     return readings
 
 
-def load_precise_readings(
+def _fresh_quota_state_readings(
     quota_interval_seconds: int,
     *,
     now_fn: NowFn = time.time,
-) -> Dict[str, PreciseReading]:
-    """Map provider slug -> PreciseReading from quota_channels state.
+) -> Mapping[str, Any]:
+    """quota_channels state readings mapping, or {} when unusable.
 
-    Empty when the state file is missing/corrupt, predates the readings
-    schema, or its last_quota_success is older than 2 * quota_interval_seconds
-    — callers then fall back to strict channel-name parsing.
+    The one freshness gate shared by ``load_precise_readings`` and
+    ``load_precise_reset_fields``: empty when the state file is
+    missing/corrupt, predates the readings schema, or its
+    last_quota_success is older than 2 * quota_interval_seconds — callers
+    then fall back to strict channel-name parsing.
     """
     from plugins.quota_channels.core import state_path as quota_state_path
 
@@ -438,7 +439,22 @@ def load_precise_readings(
     entries = raw.get("readings")
     if not isinstance(entries, Mapping):
         return {}
-    precise: Dict[str, PreciseReading] = {}
+    return entries
+
+
+def load_precise_readings(
+    quota_interval_seconds: int,
+    *,
+    now_fn: NowFn = time.time,
+) -> Dict[str, Tuple[int, float]]:
+    """Map provider slug -> (pct, reset_seconds) from quota_channels state.
+
+    Empty when the state file is missing/corrupt, predates the readings
+    schema, or its last_quota_success is older than 2 * quota_interval_seconds
+    — callers then fall back to strict channel-name parsing.
+    """
+    entries = _fresh_quota_state_readings(quota_interval_seconds, now_fn=now_fn)
+    precise: Dict[str, Tuple[int, float]] = {}
     for slug, entry in entries.items():
         if not isinstance(entry, Mapping):
             continue
@@ -447,22 +463,46 @@ def load_precise_readings(
             reset_seconds = float(entry["reset_seconds"])
         except (KeyError, TypeError, ValueError):
             continue
-        reset_count: Optional[int] = None
-        if "reset_count" in entry:
-            try:
-                reset_count = int(entry["reset_count"])
-            except (TypeError, ValueError):
-                reset_count = None
-        reset_expiry: Optional[float] = None
+        precise[str(slug)] = (pct, reset_seconds)
+    return precise
+
+
+def load_precise_reset_fields(
+    quota_interval_seconds: int,
+    *,
+    now_fn: NowFn = time.time,
+) -> Dict[str, Tuple[int, Optional[float]]]:
+    """Map slug -> (reset_count, reset_expiry_seconds_or_None) from state.
+
+    Same state file and freshness rules as ``load_precise_readings``. Only
+    rows whose provider has a resets API (see ``RESET_CREDIT_PROVIDERS``)
+    and that actually carry a ``reset_count`` appear — everyone else is
+    absent, so callers keep whatever the channel name parsed instead of an
+    invented zero. An unreadable count drops the row the same way; a
+    missing or unreadable expiry stays None (no separate clock).
+    """
+    entries = _fresh_quota_state_readings(quota_interval_seconds, now_fn=now_fn)
+    fields: Dict[str, Tuple[int, Optional[float]]] = {}
+    for slug, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        provider = str(CHANNEL_KEY_TO_PROVIDER.get(slug, slug)).strip().lower()
+        if provider not in RESET_CREDIT_PROVIDERS:
+            continue
+        if "reset_count" not in entry:
+            continue
+        try:
+            count = int(entry["reset_count"])
+        except (TypeError, ValueError):
+            continue
+        expiry: Optional[float] = None
         if entry.get("reset_expiry_seconds") is not None:
             try:
-                reset_expiry = float(entry["reset_expiry_seconds"])
+                expiry = float(entry["reset_expiry_seconds"])
             except (TypeError, ValueError):
-                reset_expiry = None
-        precise[str(slug)] = PreciseReading(
-            pct, reset_seconds, reset_count, reset_expiry
-        )
-    return precise
+                expiry = None
+        fields[str(slug)] = (count, expiry)
+    return fields
 
 
 def _entry_identity(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
@@ -515,6 +555,19 @@ def format_readings_line(
     return ", ".join(parts)
 
 
+def _reset_credit_count(reading: QuotaReading) -> int:
+    """The pending-reset count that actually scores for ``reading``.
+
+    Contract gate: only providers with a resets API
+    (``RESET_CREDIT_PROVIDERS`` — Codex/Grok) have reset credits, so a
+    reset field injected into any other provider's reading counts as zero
+    everywhere: no score term, no low-quota escape.
+    """
+    if str(reading.provider).strip().lower() not in RESET_CREDIT_PROVIDERS:
+        return 0
+    return max(0, int(reading.reset_count))
+
+
 def score_provider(
     reading: QuotaReading,
     rates: Optional[ReliabilityRates] = None,
@@ -537,13 +590,15 @@ def score_provider(
     exactly like zero resets at 100% remaining when the two clocks match.
     Providers without a reset-expiry API (Codex) reuse the usage-reset
     countdown for the reset term, which is what makes that invariant hold
-    for them; a count of 0 adds nothing.
+    for them; a count of 0 adds nothing. Only Codex/Grok have a resets API
+    at all — reset fields on any other provider are inert (see
+    ``_reset_credit_count``).
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
     quota_frac = max(0.0, min(float(reading.pct) / 100.0, 1.0))
     resolved = rates or ReliabilityRates()
     remaining_term = quota_frac * (REFERENCE_HOURS / hours)
-    reset_count = max(0, int(reading.reset_count))
+    reset_count = _reset_credit_count(reading)
     reset_term = 0.0
     if reset_count:
         # no separate expiry clock (Codex): the reset wallet spends on the
@@ -564,9 +619,10 @@ def is_low_quota(reading: QuotaReading) -> bool:
     A 0% wallet with at least one pending usage-limit reset is equivalent
     to a full one (the reset term replaces the remaining term), so it stays
     in the healthy bucket; only a genuinely empty wallet with zero pending
-    resets sinks.
+    resets sinks. Resets only exist for Codex/Grok — an injected count on
+    any other provider sinks with the wallet it polluted.
     """
-    return reading.pct < LOW_QUOTA_PCT and reading.reset_count <= 0
+    return reading.pct < LOW_QUOTA_PCT and _reset_credit_count(reading) <= 0
 
 
 def compute_desired_order(
@@ -966,7 +1022,9 @@ def run_reorder(
     names = fetch_channel_names(channel_ids, http_fn=http_fn)
     name_readings = readings_from_names(names)
     readings = readings_from_names(
-        names, load_precise_readings(quota_interval_seconds, now_fn=now_fn)
+        names,
+        load_precise_readings(quota_interval_seconds, now_fn=now_fn),
+        load_precise_reset_fields(quota_interval_seconds, now_fn=now_fn),
     )
 
     from hermes_cli.config import load_config

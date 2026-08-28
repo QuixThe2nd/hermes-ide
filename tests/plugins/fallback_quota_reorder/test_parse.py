@@ -77,6 +77,27 @@ class TestParseResetsSegment:
             is None
         )
 
+    def test_kimi_resets_segment_parses_but_stays_inert(self):
+        # Kimi has no resets API: the shared regex still accepts the segment
+        # so a polluted name stays readable, but only Codex/Grok extract it
+        reading = parse_channel_name(
+            "kimi", f"Kimi: 10% {BULLET} 7d left {BULLET} 3 resets"
+        )
+        assert reading is not None
+        assert reading.pct == 10
+        assert reading.reset_seconds == 7 * 86400
+        assert not reading.reset_count
+        assert reading.reset_expiry_seconds is None
+
+    def test_zai_resets_segment_with_expiry_stays_inert(self):
+        reading = parse_channel_name(
+            "zai", f"z.ai: 70% {BULLET} 7d left {BULLET} 1 reset in 2d"
+        )
+        assert reading is not None
+        assert reading.pct == 70
+        assert not reading.reset_count
+        assert reading.reset_expiry_seconds is None
+
     def test_garbage_resets_segment_is_rejected(self):
         assert (
             parse_channel_name("grok", f"Grok: 46% {BULLET} 3d left {BULLET} resets")

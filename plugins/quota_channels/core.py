@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Seq
 # The voice-channel ordering policy is owned by fallback_quota_reorder; this
 # module reuses its score math, thresholds, and reliability ledger instead of
 # copying divergent formulas. The import is acyclic — fallback_quota_reorder
-# only touches quota_channels lazily inside load_precise_readings.
+# only touches quota_channels lazily inside its precise-state loaders.
 from plugins.fallback_quota_reorder.core import (
     CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
     QuotaReading,

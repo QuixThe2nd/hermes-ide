@@ -11,12 +11,12 @@ from __future__ import annotations
 import pytest
 
 from plugins.fallback_quota_reorder.core import (
-    PreciseReading,
     QuotaReading,
     REFERENCE_HOURS,
     compute_desired_order,
     is_low_quota,
     load_precise_readings,
+    load_precise_reset_fields,
     readings_from_names,
     score_provider,
 )
@@ -137,6 +137,58 @@ class TestNoResetCreditsIsUnchanged:
         )
 
 
+class TestResetGate:
+    """Only Codex/Grok have a resets API; reset fields anywhere else are inert."""
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["kimi-coding", "zai", "cursor", "openrouter"],
+    )
+    def test_injected_resets_score_exactly_like_zero(self, provider: str):
+        polluted = _reading(
+            provider, 0, WEEK, reset_count=1, reset_expiry_seconds=3600
+        )
+        clean = _reading(provider, 0, WEEK)
+        assert score_provider(polluted) == score_provider(clean) == 0.0
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["kimi-coding", "zai", "cursor", "openrouter"],
+    )
+    def test_injected_resets_never_lift_the_low_quota_sink(self, provider: str):
+        assert is_low_quota(_reading(provider, 0, WEEK, reset_count=1))
+        assert is_low_quota(_reading(provider, 0, WEEK, reset_count=3))
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["kimi-coding", "zai", "cursor", "openrouter"],
+    )
+    def test_injected_resets_stay_inert_in_the_desired_order(
+        self, provider: str
+    ):
+        other = "zai" if provider != "zai" else "kimi-coding"
+        entries = [
+            {"provider": provider, "model": "m"},
+            {"provider": other, "model": "other"},
+        ]
+        readings = {
+            provider: _reading(provider, 0, WEEK, reset_count=5),
+            other: _reading(other, 3, 1800),
+        }
+        ordered = compute_desired_order(entries, readings)
+        # the polluted 0% wallet still sinks behind the low-but-real row
+        assert [entry["provider"] for entry in ordered] == [other, provider]
+
+    def test_gate_matches_the_provider_slug_case_insensitively(self):
+        assert score_provider(_reading("XAI-OAuth ", 0, WEEK, reset_count=1)) == 1.0
+        assert score_provider(_reading("OpenAI-Codex", 0, WEEK, reset_count=2)) == 2.0
+
+    def test_codex_and_grok_still_score_their_resets(self):
+        assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=1))
+        assert not is_low_quota(_reading("openai-codex", 0, WEEK, reset_count=3))
+        assert score_provider(_reading("xai-oauth", 0, WEEK, reset_count=1)) == 1.0
+
+
 class TestLowQuotaSinkRule:
     def test_emptied_wallet_with_pending_reset_stays_healthy(self):
         entries = [
@@ -178,15 +230,18 @@ class TestLowQuotaSinkRule:
     def test_is_low_quota_requires_empty_and_reset_free(self):
         assert is_low_quota(_reading("zai", 4, WEEK))
         assert not is_low_quota(_reading("zai", 5, WEEK))
-        assert not is_low_quota(_reading("zai", 0, WEEK, reset_count=1))
-        assert not is_low_quota(_reading("zai", 0, WEEK, reset_count=3))
+        # resets only exist for Codex/Grok: an injected zai count is inert,
+        # so the emptied wallet sinks anyway
+        assert is_low_quota(_reading("zai", 0, WEEK, reset_count=1))
+        assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=1))
+        assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=3))
 
 
 class TestPreciseStateResets:
     def test_state_reset_fields_reach_the_reading(self):
         names = {"grok": f"Grok: 46% {BULLET} 3d left {BULLET} 0 resets"}
         readings = readings_from_names(
-            names, {"grok": PreciseReading(46, 3 * DAY, 1, 2 * DAY)}
+            names, {"grok": (46, 3 * DAY)}, {"grok": (1, 2 * DAY)}
         )
         reading = readings["xai-oauth"]
         assert reading.pct == 46
@@ -197,7 +252,7 @@ class TestPreciseStateResets:
     def test_state_without_reset_fields_keeps_the_name_parsed_resets(self):
         # a pre-upgrade state file must not erase resets the name still shows
         names = {"codex": f"Codex: 100% {BULLET} 7d left {BULLET} 1 reset"}
-        readings = readings_from_names(names, {"codex": PreciseReading(100, WEEK)})
+        readings = readings_from_names(names, {"codex": (100, WEEK)})
         assert readings["openai-codex"].reset_count == 1
         assert readings["openai-codex"].reset_expiry_seconds is None
 
@@ -205,11 +260,11 @@ class TestPreciseStateResets:
         # when state DOES carry the count, it is the fresher source
         names = {"codex": f"Codex: 100% {BULLET} 7d left {BULLET} 2 resets"}
         readings = readings_from_names(
-            names, {"codex": PreciseReading(100, WEEK, 0, None)}
+            names, {"codex": (100, WEEK)}, {"codex": (0, None)}
         )
         assert readings["openai-codex"].reset_count == 0
 
-    def test_quota_channels_state_round_trips_into_precise_readings(
+    def test_quota_channels_state_round_trips_into_both_contracts(
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -233,9 +288,82 @@ class TestPreciseStateResets:
             now_fn=lambda: NOW,
         )
 
+        # the public 2-tuple contract stays reset-free...
         precise = load_precise_readings(1800, now_fn=lambda: NOW)
+        assert precise["grok"] == (46, 3 * DAY)
+        assert precise["codex"] == (100, WEEK)
+        assert precise["kimi"] == (80, WEEK)
 
-        assert precise["grok"] == PreciseReading(46, 3 * DAY, 1, 2 * DAY)
-        assert precise["codex"] == PreciseReading(100, WEEK, 2, None)
+        # ...and reset credits ride the dedicated function instead
+        resets = load_precise_reset_fields(1800, now_fn=lambda: NOW)
+        assert resets["grok"] == (1, 2 * DAY)
+        assert resets["codex"] == (2, None)
         # rows without resets keep the legacy absence, not a zero
-        assert precise["kimi"] == PreciseReading(80, WEEK, None, None)
+        assert "kimi" not in resets
+
+    def test_state_reset_fields_are_gated_to_reset_providers(
+        self, monkeypatch, tmp_path
+    ):
+        # reset fields polluting a non-Codex/Grok row never leave the state
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "kimi": {
+                    "pct": 80,
+                    "reset_seconds": WEEK,
+                    "label": "Kimi",
+                    "reset_count": 4,
+                    "reset_expiry_seconds": 60,
+                },
+                "zai": {
+                    "pct": 70,
+                    "reset_seconds": WEEK,
+                    "label": "z.ai",
+                    "reset_count": 2,
+                },
+            },
+            now_fn=lambda: NOW,
+        )
+
+        assert load_precise_reset_fields(1800, now_fn=lambda: NOW) == {}
+
+        names = {"kimi": f"Kimi: 80% {BULLET} 7d left"}
+        readings = readings_from_names(
+            names,
+            load_precise_readings(1800, now_fn=lambda: NOW),
+            load_precise_reset_fields(1800, now_fn=lambda: NOW),
+        )
+        assert readings["kimi-coding"].reset_count == 0
+        assert readings["kimi-coding"].reset_expiry_seconds is None
+        assert score_provider(readings["kimi-coding"]) == pytest.approx(0.8)
+
+    def test_stale_state_hides_reset_fields_too(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "grok": {
+                    "pct": 46,
+                    "reset_seconds": 3 * DAY,
+                    "label": "Grok",
+                    "reset_count": 1,
+                }
+            },
+            now_fn=lambda: NOW - 2 * 1800 - 1,
+        )
+        assert load_precise_reset_fields(1800, now_fn=lambda: NOW) == {}
+
+    def test_unreadable_state_count_drops_the_row(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "grok": {
+                    "pct": 46,
+                    "reset_seconds": 3 * DAY,
+                    "label": "Grok",
+                    "reset_count": "many",
+                    "reset_expiry_seconds": "soon",
+                }
+            },
+            now_fn=lambda: NOW,
+        )
+        assert load_precise_reset_fields(1800, now_fn=lambda: NOW) == {}
