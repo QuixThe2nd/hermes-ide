@@ -3188,8 +3188,10 @@ def terminal_tool(
                         "Blocked: command or referenced script cannot restart, stop, or "
                         "uninstall the gateway from inside the gateway process. The gateway would "
                         "kill this command before it could complete (SIGTERM propagates "
-                        "to child processes). Run `hermes gateway restart` from a "
-                        "separate shell outside the running gateway."
+                        "to child processes). To restart the gateway, call the `restart` tool "
+                        "(same drain path as `/restart` — it waits for this turn to finish). "
+                        "For stop/uninstall, run `hermes gateway restart|stop` from a separate "
+                        "shell outside the running gateway."
                     ),
                     "status": "error",
                 }, ensure_ascii=False)

@@ -1579,7 +1579,10 @@ def execute_code(
                 "Blocked: cannot restart or stop the gateway from inside the "
                 "gateway process. The gateway would kill this script before "
                 "it could complete (SIGTERM propagates to child processes). "
-                "Run the lifecycle command from a shell outside the gateway."
+                "To restart the gateway, call the `restart` tool (same drain "
+                "path as `/restart` — it waits for this turn to finish); for "
+                "stop/uninstall, run the lifecycle command from a shell "
+                "outside the gateway."
             )
 
     # Dispatch: remote backends use file-based RPC, local uses UDS

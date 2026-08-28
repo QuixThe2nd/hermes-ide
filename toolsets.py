@@ -313,6 +313,19 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # Agent-callable gateway restart — the plugin (plugins/gateway_restart)
+    # registers the tool; this entry makes the toolset resolvable by name.
+    # Deliberately NOT in _HERMES_CORE_TOOLS: restart is gateway-plugin
+    # capability, not a core tool, and its check_fn hides it anywhere without
+    # a live GatewayRunner (CLI, cron subprocesses, ...).
+    "gateway": {
+        "description": (
+            "Agent-callable gateway restart — same drain path as /restart"
+        ),
+        "tools": ["restart"],
+        "includes": [],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

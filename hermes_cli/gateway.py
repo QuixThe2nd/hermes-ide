@@ -8579,7 +8579,9 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
+                "Inside the gateway, use the `restart` tool (same drain path as /restart)\n"
+                "or the /restart command. Otherwise, run `hermes gateway restart` from a\n"
+                "shell outside the running gateway."
             )
             sys.exit(1)
 
