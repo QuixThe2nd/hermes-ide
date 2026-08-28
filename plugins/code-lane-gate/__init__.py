@@ -8,9 +8,12 @@ Wires one behaviour:
   (``delegate_cursor_agent`` for small/medium tasks, ``delegate_claude_agent``
   with ``/goal`` for medium/large) instead of the in-context file tools.
 
-Off by default: the gate only evaluates when ``CODE_LANE_GATE_E2E=1``.
-With the env unset (or ``0``) the hook returns ``None`` immediately and
-no scan happens.
+On by default: the gate evaluates unless ``CODE_LANE_GATE_E2E`` carries
+an explicit opt-out (``0``, ``false``, ``no``, ``off`` —
+case-insensitive, whitespace-stripped). With an opt-out set the hook
+returns ``None`` immediately and no scan happens; any other value
+(unset, ``1``, ``true``, unrecognized garbage) leaves it enabled —
+fail closed, because blocking is the gate's purpose.
 
 What counts as a gated source edit:
 
@@ -68,8 +71,10 @@ from typing import Any, Dict, List, Optional
 # Configuration
 # ---------------------------------------------------------------------------
 
-# The gate is dark until this env var is set. E2E rollout switch — flip to
-# "0" (or unset) to go back to pass-through with no scan at all.
+# The gate is ON unless this env var carries an explicit opt-out. Set it
+# to "0" (also "false"/"no"/"off", case-insensitive) to go back to
+# pass-through with no scan at all; any other value — including the
+# deployment host's "1" — keeps it enabled.
 _ENV_GATE_ENABLED = "CODE_LANE_GATE_E2E"
 
 # Source-code suffixes (after the final dot, lowercased) that route through
@@ -142,8 +147,14 @@ _BLOCK_STEER = (
 
 
 def _gate_enabled() -> bool:
-    return os.environ.get(_ENV_GATE_ENABLED, "").strip().lower() in {
-        "1", "true", "yes", "on",
+    """True unless the env var carries an explicit opt-out.
+
+    Unset, ``1``, and any unrecognized value all enable the gate — it
+    fails closed, because blocking is its purpose. Only ``0``/``false``/
+    ``no``/``off`` (case-insensitive, stripped) disable it.
+    """
+    return os.environ.get(_ENV_GATE_ENABLED, "").strip().lower() not in {
+        "0", "false", "no", "off",
     }
 
 
@@ -301,7 +312,8 @@ def _on_pre_tool_call(
     task_id: str = "",
     **_: Any,
 ) -> Optional[Dict[str, str]]:
-    """Block in-context source edits inside git repos (E2E-gated).
+    """Block in-context source edits inside git repos (on by default;
+    opt out with ``CODE_LANE_GATE_E2E=0``).
 
     Returns ``None`` — tool proceeds untouched — unless the call would edit
     a source file in a repo (or execute_code looks like a source write),

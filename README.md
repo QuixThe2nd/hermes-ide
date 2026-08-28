@@ -52,7 +52,7 @@ The dev-pipeline plugin hands a repo and task to an automated pipeline: MoA plan
 
 ### Code-lane gate
 
-The code-lane-gate plugin blocks in-context source edits inside git repos (opt-in via `CODE_LANE_GATE_E2E=1`) to steer coding to the delegate lanes. Terminal writes are a known v1 bypass.
+The code-lane-gate plugin blocks in-context source edits inside git repos (on by default; opt out via `CODE_LANE_GATE_E2E=0`) to steer coding to the delegate lanes. Terminal writes are a known v1 bypass.
 
 ### Mixture of Agents
 
