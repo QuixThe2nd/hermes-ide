@@ -2,8 +2,10 @@
 
 Covers ``plugins/code-lane-gate/``:
 
-  * Kill-switch — the hook is dark (returns None, no scan) unless
-    ``CODE_LANE_GATE_E2E`` is set.
+  * Opt-out switch — the gate is on by default (env unset blocks);
+    ``CODE_LANE_GATE_E2E=0`` (also ``false``/``no``/``off``, case-
+    insensitive and stripped) makes the hook return None with no scan,
+    while ``1`` and unrecognized values keep it enabled.
   * Blocking — write_file, patch mode=replace, patch mode=patch (V4A
     headers, including the no-space ``***Update File:`` form and BOTH
     ``*** Move File:`` endpoints), relative paths anchored to a task
@@ -92,26 +94,47 @@ def task_cwd_store(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Kill-switch
+# Opt-out switch (default on)
 # ---------------------------------------------------------------------------
 
 
-class TestKillSwitch:
-    def test_default_off_no_scan(self, fake_repo):
-        """Env unset → the hook returns None even for a would-block call."""
+class TestOptOut:
+    def test_env_unset_blocks_by_default(self, fake_repo):
+        """Env unset → the gate is ON: a would-block call blocks."""
         mod = _load_plugin_init()
+        args = {"path": str(fake_repo / "app.py"), "content": "x = 1\n"}
+        out = mod._on_pre_tool_call(tool_name="write_file", args=args)
+        assert isinstance(out, dict) and out["action"] == "block"
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+    def test_opt_out_values_disable(self, fake_repo, monkeypatch, value):
+        """0/false/no/off → the hook returns None before any scan."""
+        mod = _load_plugin_init()
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", value)
         args = {"path": str(fake_repo / "app.py"), "content": "x = 1\n"}
         assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
 
-    def test_explicit_zero_disables(self, fake_repo, monkeypatch):
+    def test_opt_out_is_case_insensitive_and_stripped(
+        self, fake_repo, monkeypatch
+    ):
+        """Mixed-case, whitespace-padded opt-outs still disable."""
         mod = _load_plugin_init()
-        monkeypatch.setenv("CODE_LANE_GATE_E2E", "0")
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", "  OFF ")
         args = {"path": str(fake_repo / "app.py"), "content": "x = 1\n"}
         assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
 
-    def test_e2e_on_enables(self, fake_repo, monkeypatch):
+    def test_explicit_one_enables(self, fake_repo, monkeypatch):
+        """The deployment host's systemd drop-in sets =1 — still enabled."""
         mod = _load_plugin_init()
         monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
+        args = {"path": str(fake_repo / "app.py"), "content": "x = 1\n"}
+        out = mod._on_pre_tool_call(tool_name="write_file", args=args)
+        assert isinstance(out, dict) and out["action"] == "block"
+
+    def test_unrecognized_value_fails_closed(self, fake_repo, monkeypatch):
+        """Garbage is not an opt-out — the gate's purpose is blocking."""
+        mod = _load_plugin_init()
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", "maybe")
         args = {"path": str(fake_repo / "app.py"), "content": "x = 1\n"}
         out = mod._on_pre_tool_call(tool_name="write_file", args=args)
         assert isinstance(out, dict) and out["action"] == "block"
