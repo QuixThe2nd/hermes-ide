@@ -6,17 +6,27 @@
 
 A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behavior, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
 
-**Why this fork exists:** stock Hermes needs a lot of config. It does not arrive wheels-included. You spend a long time wiring providers, channels, memory, notifications, a home server, and skills before it feels like a working assistant.
+### Why this fork exists
 
-A fresh Hermes also starts off stupid, and it only slowly learns: skills from experience, memory of who you are, your conventions, the shape of your homelab. Learning is the point of Hermes — but day-one is bare.
+Stock Hermes needs a lot of config. It does not arrive wheels-included. You spend a long time wiring providers, channels, memory, notifications, a home server, and skills before it feels like a working assistant.
+
+### It starts off stupid
+
+A fresh Hermes starts off stupid, and it only slowly learns: skills from experience, memory of who you are, your conventions, the shape of your homelab. Learning is the point of Hermes — but day-one is bare.
+
+### Wheels-included
 
 This repo is part of Quix/Parsa's effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree. The dev pipelines come prebuilt. Capability that makes the out-of-box experience better belongs here, not in a pile of private scripts. Upstream keeps its repo slim and ships capability externally — Debian to this fork's Ubuntu — and this fork is deliberately the opposite.
 
-That's why `/sethomeserver` exists, and why this fork ships its own Discord home-server layout instead of making every operator invent one. Chat lives in `#inbox` and `#outbox`; notifications land in `#model-fallback`, `#gateway-restarts`, and `#other`; the Honcho Memory channels keep memory visible; Models is the quota voice-channel wall; Speeds carries the download walls. One command provisions and wires all of it — the `hermes_starts` inbox, the home and notification channels, `#gateway-restarts` showing `agents-N` while agents are live and `restarting-N-agents` while draining, `quota_channels`, `speed_channels`. It's idempotent, it never deletes, and moving an existing home server requires a confirm.
+### Discord-native
 
 This fork is **Discord-native**. Discord isn't just another gateway adapter here — it's the primary operator surface, where the work gets driven from. Telegram, Slack, WhatsApp, Signal, and the CLI still work; Discord is where the house is.
 
 The design centers on a **home server**: one Discord guild is the house. `/sethomeserver` makes that guild the home. Everything else hangs off it.
+
+So this fork ships its own home-server layout instead of making every operator invent one. Chat lives in `#inbox` and `#outbox`; notifications land in `#model-fallback`, `#gateway-restarts`, and `#other`; the Honcho Memory channels keep memory visible; Models is the quota voice-channel wall; Speeds carries the download walls. One command provisions and wires all of it — the `hermes_starts` inbox, the home and notification channels, `#gateway-restarts` showing `agents-N` while agents are live and `restarting-N-agents` while draining, `quota_channels`, `speed_channels`. It's idempotent, it never deletes, and moving an existing home server requires a confirm.
+
+### The house is the IDE
 
 That home server is the **second brain** and the **IDE**. Tickets, `#inbox` and `#outbox`, the Honcho Memory channels, the Models quota wall, the Speeds download walls, the `#gateway-restarts` drain, and the coding work itself all live as channels in that one server — not behind a separate dashboard or an Electron window. The Discord server IS the workspace.
 
