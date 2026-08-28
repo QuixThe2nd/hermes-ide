@@ -303,7 +303,7 @@ class TestRunTickModelsIntegration:
         }
         renames = dict(discord.renames)
         assert renames["c6"] == {"name": "OpenRouter: 100% • Unlimited"}
-        assert renames["c5"] == {"name": "Grok: 81% • 5d left"}
+        assert renames["c5"] == {"name": "Grok: 81% • 5d left • 0 resets"}
         # State reading for the virtual row is the synthetic full wallet.
         state = json.loads(state_path().read_text(encoding="utf-8"))
         assert state["readings"]["openrouter"] == {

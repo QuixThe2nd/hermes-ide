@@ -371,13 +371,15 @@ class TestParseGrokUsage:
         def fake_http(req, timeout=25.0):
             if "GetGrokCreditsConfig" in req.full_url:
                 return 200, body
+            if "GetRemainingResets" in req.full_url:
+                return 200, b"\x00\x00\x00\x00\x00"
             raise AssertionError(req.full_url)
 
         name, reset_secs, label = run_grok_provider(
             http_fn=fake_http, now_fn=lambda: period_end - 86400 * 3
         )
         assert label == "Grok"
-        assert name == "Grok: 100% \u2022 3d left"
+        assert name == "Grok: 100% \u2022 3d left \u2022 0 resets"
         assert reset_secs == 86400 * 3
 
     def test_remaining_from_name_grok_percent(self):
@@ -580,13 +582,15 @@ class TestMockedProviderFetch:
         def fake_http(req, timeout=25.0):
             if "GetGrokCreditsConfig" in req.full_url:
                 return 200, body
+            if "GetRemainingResets" in req.full_url:
+                return 200, b"\x00\x00\x00\x00\x00"
             raise AssertionError(req.full_url)
 
         name, reset_secs, label = run_grok_provider(
             http_fn=fake_http, now_fn=lambda: period_end - 86400 * 3
         )
         assert label == "Grok"
-        assert name == "Grok: 90% \u2022 3d left"
+        assert name == "Grok: 90% \u2022 3d left \u2022 0 resets"
         status, fetched = fetch_grok_usage("grok-tok", http_fn=fake_http)
         assert status == 200
         remaining, parsed_secs = parse_grok_usage(
@@ -817,13 +821,15 @@ class TestOAuthRefreshRetry:
                 if len(billing_calls) == 1:
                     return 401, b"unauthorized"
                 return 200, body
+            if "GetRemainingResets" in url:
+                return 200, b"\x00\x00\x00\x00\x00"
             raise AssertionError(url)
 
         name, reset_secs, label = run_grok_provider(
             http_fn=fake_http, now_fn=lambda: period_end - 86400
         )
         assert label == "Grok"
-        assert name == "Grok: 85% \u2022 24h left"
+        assert name == "Grok: 85% \u2022 24h left \u2022 0 resets"
         assert reset_secs == 86400
         assert len(refresh_calls) == 1
         assert len(billing_calls) == 2
