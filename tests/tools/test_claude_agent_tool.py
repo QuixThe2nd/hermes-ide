@@ -966,6 +966,30 @@ def test_goal_detection_is_case_insensitive(monkeypatch, repo, fake_binary):
     assert len(_goal_condition(captured["cmd"])) <= 4000
 
 
+@pytest.mark.parametrize("separator", ["\v", "\f", " "])
+def test_goal_spills_with_unicode_whitespace_separator(
+    monkeypatch, repo, fake_binary, separator
+):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal" + separator + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    # Any str.isspace() character separates /goal from its condition, so the
+    # overlong condition spills to the brief like a plain space would.
+    assert (repo / GOAL_BRIEF_NAME).is_file()
+    assert (repo / GOAL_BRIEF_NAME).read_text(encoding="utf-8") == task
+    assert _p_value(captured["cmd"]).startswith("/goal ")
+    assert len(_goal_condition(captured["cmd"])) <= 4000
+    assert result["goal_brief_path"] == str(repo / GOAL_BRIEF_NAME)
+
+
 def test_goalkeeper_task_not_treated_as_goal(monkeypatch, repo, fake_binary):
     from tools import claude_agent_tool
 

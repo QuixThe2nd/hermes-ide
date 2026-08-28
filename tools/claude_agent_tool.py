@@ -364,9 +364,11 @@ def _extract_goal_condition(prompt: str) -> Optional[str]:
     Detection is case-insensitive on the ``/goal`` token after leading
     whitespace, and only when the token ends there: the next character must
     be whitespace or nothing at all, so ``/goalkeeper`` or ``/goal-foo`` is
-    an ordinary task, not a goal. The condition is everything after that
-    one separator — in ``-p`` mode the whole remainder is the condition,
-    not just the first line; a bare ``/goal`` yields an empty condition.
+    an ordinary task, not a goal. Any Unicode whitespace counts as the
+    separator, not just ASCII spaces and newlines. The condition is
+    everything after that one separator — in ``-p`` mode the whole remainder
+    is the condition, not just the first line; a bare ``/goal`` yields an
+    empty condition.
     """
     body = prompt.lstrip()
     if not body.lower().startswith("/goal"):
@@ -374,7 +376,7 @@ def _extract_goal_condition(prompt: str) -> Optional[str]:
     remainder = body[len("/goal"):]
     if not remainder:
         return ""
-    if remainder[0] not in (" ", "\t", "\n", "\r"):
+    if not remainder[0].isspace():
         return None
     return remainder[1:]
 
