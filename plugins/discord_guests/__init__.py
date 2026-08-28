@@ -56,7 +56,7 @@ _MAX_RATE_LIMIT_RETRIES = 3
 _MAX_RETRY_AFTER_SECONDS = 60.0
 
 _CHAT_CATEGORY_NAME = "chat"  # matched case-insensitively
-_DEFAULT_HOST_SLUG = "steve"
+_DEFAULT_HOST_SLUG = "agent"  # last-resort fallback only
 _LOUNGE_SUFFIX = "lounge"
 _MAX_SLUG_LEN = 80
 _CHANNEL_TYPE_GUILD_TEXT = 0
@@ -103,8 +103,11 @@ DISCORD_GUESTS_SCHEMA = {
             "host": {
                 "type": "string",
                 "description": (
-                    "Host slug used in the lounge name, default steve — the "
-                    "channel is named #<guest>-<host>-lounge (add action)."
+                    "Host slug override for the lounge name — without it the "
+                    "host comes from plugin settings (host_slug) or the bot's "
+                    "own display name. The channel is named "
+                    "#<guest>-<host>-lounge, or #<guest>-lounge when the "
+                    "guest and host slugs match (add action)."
                 ),
             },
             "guild_id": {
@@ -341,8 +344,53 @@ def _member_display_name(member: Dict[str, Any]) -> str:
     return str(user.get("id") or "")
 
 
+def _host_slug_from_settings() -> str:
+    """``plugins.entries.discord_guests.settings.host_slug`` from config.yaml.
+
+    Read the same way ``hermes_starts`` reads its settings block. Any failure
+    (no config, missing block, import error) is simply "not set" — host
+    resolution then falls through to the bot's own display name.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return ""
+    entry = ((cfg.get("plugins") or {}).get("entries") or {}).get("discord_guests") or {}
+    return str((entry.get("settings") or {}).get("host_slug") or "").strip()
+
+
+def _resolve_host_slug(token: str, guild_id: str, host_override: str) -> str:
+    """The host part of the lounge name — first match wins:
+
+    1. ``host_override`` (the per-call ``host`` arg)
+    2. ``host_slug`` from plugin settings
+    3. the bot's own display name in the guild (nick, else global name,
+       else username), slugified
+    4. the literal fallback "agent"
+
+    The guild API is only hit when the first two come up empty.
+    """
+    slug = _slugify(host_override) or _slugify(_host_slug_from_settings())
+    if slug:
+        return slug
+    try:
+        me = _discord_request(
+            token,
+            "GET",
+            f"{_DISCORD_API_BASE}/guilds/{guild_id}/members/@me",
+        )
+        slug = _slugify(_member_display_name(me))
+    except Exception:
+        slug = ""
+    return slug or _DEFAULT_HOST_SLUG
+
+
 def _lounge_channel_name(guest_slug: str, host: str) -> str:
     host_slug = _slugify(host) or _DEFAULT_HOST_SLUG
+    if guest_slug == host_slug:
+        return f"{guest_slug}-{_LOUNGE_SUFFIX}"
     return f"{guest_slug}-{host_slug}-{_LOUNGE_SUFFIX}"
 
 
@@ -580,7 +628,7 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     guild_id = str(args.get("guild_id") or "").strip()
     user_id = str(args.get("user_id") or "").strip()
     member_prefix = str(args.get("member") or "").strip()
-    host = str(args.get("host") or "").strip() or _DEFAULT_HOST_SLUG
+    host_override = str(args.get("host") or "").strip()
 
     if not user_id and not member_prefix:
         return json.dumps(
@@ -637,7 +685,8 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     guest_slug = _slugify(display_name)
     if not guest_slug:
         guest_slug = guest_user_id
-    channel_name = _lounge_channel_name(guest_slug, host)
+    host_slug = _resolve_host_slug(token, resolved_guild_id, host_override)
+    channel_name = _lounge_channel_name(guest_slug, host_slug)
 
     # Idempotent: reuse a lounge of this exact name under Chat when present.
     channel_id = ""
@@ -727,8 +776,10 @@ def _handle_remove(args: Dict[str, Any], token: str) -> str:
             return json.dumps({"success": False, "error": member_error})
         guest_user_id = str(member.get("user", {}).get("id") or "")
         display_name = _member_display_name(member)
-        host = str(args.get("host") or "").strip() or _DEFAULT_HOST_SLUG
-        channel_name = _lounge_channel_name(_slugify(display_name) or guest_user_id, host)
+        host_slug = _resolve_host_slug(
+            token, resolved_guild_id, str(args.get("host") or "").strip()
+        )
+        channel_name = _lounge_channel_name(_slugify(display_name) or guest_user_id, host_slug)
         channels = _fetch_guild_channels(token, resolved_guild_id)
         chat_category_id = _find_chat_category(
             channels,

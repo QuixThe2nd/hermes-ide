@@ -122,6 +122,17 @@ class MockDiscordRouter:
                 "roles": [],
                 "user": {"id": "333", "username": "bob", "global_name": None},
             },
+            "444": {
+                "nick": None,
+                "roles": [],
+                "user": {"id": "444", "username": "winnie", "global_name": "Winnie"},
+            },
+        }
+        # The bot itself, as /guilds/{gid}/members/@me answers.
+        self.self_member: Dict[str, Any] = {
+            "nick": "Big Steve",
+            "roles": [],
+            "user": {"id": "9001", "username": "hermes-agent", "global_name": "Hermes"},
         }
         self.search_results: List[Dict[str, Any]] = []
         self.overwrites: Dict[tuple, Dict[str, Any]] = {}
@@ -156,6 +167,9 @@ class MockDiscordRouter:
 
         if method == "GET" and "/members/search" in url:
             return self._response(self.search_results)
+
+        if method == "GET" and "/guilds/" in url and "/members/@me" in url:
+            return self._response(self.self_member)
 
         if method == "GET" and "/guilds/" in url and "/members/" in url:
             user_id = url.split("/members/")[1].split("/")[0].split("?")[0]
@@ -235,6 +249,22 @@ def _read_state(home: Path) -> Dict[str, Any]:
     return json.loads((home / "discord_guests" / "state.json").read_text(encoding="utf-8"))
 
 
+def _write_host_slug_setting(home: Path, host_slug: str) -> None:
+    """Set plugins.entries.discord_guests.settings.host_slug in config.yaml."""
+    (home / "config.yaml").write_text(
+        "plugins:\n"
+        "  entries:\n"
+        "    discord_guests:\n"
+        "      settings:\n"
+        f"        host_slug: {host_slug}\n",
+        encoding="utf-8",
+    )
+
+
+def _fetched_self_member(router: MockDiscordRouter) -> bool:
+    return any("/members/@me" in url for _, url in _endpoints(router))
+
+
 class TestCheckRequirements:
     def test_missing_env(self, discord_guests_module, _isolate_env):
         assert discord_guests_module.check_requirements() is False
@@ -276,9 +306,14 @@ class TestSlugAndNaming:
         assert discord_guests_module._member_display_name(member(None, "Global", "user")) == "Global"
         assert discord_guests_module._member_display_name(member(None, None, "user")) == "user"
 
-    def test_lounge_name_default_and_custom_host(self, discord_guests_module):
-        assert discord_guests_module._lounge_channel_name("ada", "") == "ada-steve-lounge"
+    def test_lounge_name_host_and_slug_collapse(self, discord_guests_module):
+        assert discord_guests_module._lounge_channel_name("ada", "") == "ada-agent-lounge"
         assert discord_guests_module._lounge_channel_name("ada", "Quix") == "ada-quix-lounge"
+        # Guest and host slugs matching collapses — no stutter.
+        assert discord_guests_module._lounge_channel_name("ada", "ada") == "ada-lounge"
+
+    def test_default_host_slug_is_agent(self, discord_guests_module):
+        assert discord_guests_module._DEFAULT_HOST_SLUG == "agent"
 
 
 class TestSetup:
@@ -371,7 +406,7 @@ class TestAdd:
         assert result["user_id"] == "111"
         assert result["name"] == "Ada Lovelace"
         assert result["channel_id"] == "chan-new-1"
-        assert result["channel_name"] == "ada-lovelace-steve-lounge"
+        assert result["channel_name"] == "ada-lovelace-big-steve-lounge"
         assert result["created"] is True
         assert result["chat_category_id"] == "cat-chat"
         assert result["matched_by"] == "name prefix"
@@ -381,6 +416,7 @@ class TestAdd:
             ("GET", "/guilds/guild-1/members/search?query=Ada"),
             ("GET", "/guilds/guild-1/roles"),
             ("GET", "/guilds/guild-1/channels"),
+            ("GET", "/guilds/guild-1/members/@me"),
             ("POST", "/guilds/guild-1/channels"),
             ("PUT", "/channels/chan-new-1/permissions/111"),
             ("PUT", "/channels/chan-new-1/permissions/guild-1"),
@@ -388,9 +424,9 @@ class TestAdd:
         assert discord_router.calls[0]["headers"]["Authorization"] == "Bot test-bot-token"
         assert "test-bot-token" not in json.dumps(result)
 
-        create_body = json.loads(discord_router.calls[4]["body"])
+        create_body = json.loads(discord_router.calls[5]["body"])
         assert create_body == {
-            "name": "ada-lovelace-steve-lounge",
+            "name": "ada-lovelace-big-steve-lounge",
             "type": 0,
             "parent_id": "cat-chat",
         }
@@ -427,17 +463,65 @@ class TestAdd:
     ):
         result = _call(discord_guests_module, {"action": "add", "user_id": "333"})
         assert result["success"] is True
-        assert result["channel_name"] == "bob-steve-lounge"
+        assert result["channel_name"] == "bob-big-steve-lounge"
         assert "matched_by" not in result
 
-    def test_add_with_custom_host_slug(
+    def test_host_slug_derived_from_bot_nickname(
         self, discord_guests_module, token_env, discord_router
     ):
+        result = _call(discord_guests_module, {"action": "add", "user_id": "444"})
+        assert result["success"] is True
+        assert result["channel_name"] == "winnie-big-steve-lounge"
+        assert _fetched_self_member(discord_router) is True
+
+    def test_host_slug_falls_back_to_global_name_then_username(
+        self, discord_guests_module, token_env, discord_router
+    ):
+        discord_router.self_member = {
+            "nick": None,
+            "roles": [],
+            "user": {"id": "9001", "username": "hermes-agent", "global_name": "Hermes Bot"},
+        }
+        result = _call(discord_guests_module, {"action": "add", "user_id": "444"})
+        assert result["success"] is True
+        assert result["channel_name"] == "winnie-hermes-bot-lounge"
+
+        discord_router.self_member["user"]["global_name"] = None
+        # Empty host override falls through: the username now derives the slug.
+        result = _call(discord_guests_module, {"action": "add", "user_id": "444", "host": ""})
+        assert result["success"] is True
+        assert result["created"] is True
+        assert result["channel_name"] == "winnie-hermes-agent-lounge"
+
+    def test_host_slug_setting_overrides_derivation(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_host_slug_setting(_isolate_env, "quix")
+        result = _call(discord_guests_module, {"action": "add", "user_id": "444"})
+        assert result["success"] is True
+        assert result["channel_name"] == "winnie-quix-lounge"
+        # Settings short-circuit before any identity lookup.
+        assert _fetched_self_member(discord_router) is False
+
+    def test_host_arg_overrides_setting_and_derivation(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_host_slug_setting(_isolate_env, "quix")
         result = _call(
-            discord_guests_module, {"action": "add", "user_id": "333", "host": "Quix"}
+            discord_guests_module, {"action": "add", "user_id": "333", "host": "Boss"}
         )
         assert result["success"] is True
-        assert result["channel_name"] == "bob-quix-lounge"
+        assert result["channel_name"] == "bob-boss-lounge"
+        assert _fetched_self_member(discord_router) is False
+
+    def test_matching_guest_and_host_slugs_collapse(
+        self, discord_guests_module, token_env, discord_router
+    ):
+        # Bot nickname "Winnie" derives the same slug as the guest's name.
+        discord_router.self_member["nick"] = "Winnie"
+        result = _call(discord_guests_module, {"action": "add", "user_id": "444"})
+        assert result["success"] is True
+        assert result["channel_name"] == "winnie-lounge"
 
     def test_add_is_idempotent(
         self, discord_guests_module, token_env, discord_router
@@ -566,7 +650,7 @@ class TestRemove:
     ):
         # A lounge exists (say, from a previous install) but no state entry.
         discord_router.channels.append(
-            {"id": "chan-orphan", "name": "bob-steve-lounge", "type": 0, "parent_id": "cat-chat"}
+            {"id": "chan-orphan", "name": "bob-big-steve-lounge", "type": 0, "parent_id": "cat-chat"}
         )
 
         result = _call(discord_guests_module, {"action": "remove", "user_id": "333"})

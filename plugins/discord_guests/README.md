@@ -3,11 +3,22 @@
 **Invite a bot or a friend, and they get a private lounge of their own.**
 
 Adding a guest auto-creates a private text channel `#<guest>-<host>-lounge`
-(default host: `steve`, e.g. `#ada-steve-lounge`) under the server's **Chat**
-category. Only that member — plus the people who already see Chat, i.e. the
-owner and bots with admin — can view it. `@everyone` stays view-denied
-everywhere. Access is per-channel overwrites only; nothing beyond the channel
-itself is ever created or assigned.
+(e.g. bot "Big Steve" + guest "Winnie" → `#winnie-big-steve-lounge`) under the
+server's **Chat** category. Only that member — plus the people who already see
+Chat, i.e. the owner and bots with admin — can view it. `@everyone` stays
+view-denied everywhere. Access is per-channel overwrites only; nothing beyond
+the channel itself is ever created or assigned.
+
+The host part of the name comes from the running bot itself — first match wins:
+
+1. the per-call `host` argument,
+2. `plugins.entries.discord_guests.settings.host_slug` in `config.yaml`,
+3. the bot's own display name in the guild (nick, else global name, else
+   username), slugified,
+4. the literal fallback `agent`.
+
+When the guest and host slugs match, the name collapses to `#<guest>-lounge`
+(no stutter).
 
 ## Setup
 
