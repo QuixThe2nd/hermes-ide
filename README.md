@@ -25,6 +25,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
 - **Plugins**
   - dev-pipeline — hand a repo + task to an automated pipeline: MoA planning, Cursor execution, mechanical verification, dual-model review, draft PR, with plain-English stage-progress messages to your chat (same-phase heartbeats skipped) and a status tool
   - dev-pipeline claude-endurance lane — Claude Code (claude-glm) builds for broad/long tasks
+  - dev-pipeline — delegate_development is parked (not registered); dev_pipeline_status stays live
   - Discord History — read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default)
   - Papercuts — structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs
   - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox, and each opening is a single message that anchors its own thread
