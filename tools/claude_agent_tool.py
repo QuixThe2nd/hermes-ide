@@ -361,18 +361,22 @@ def _run_and_stream(
 def _extract_goal_condition(prompt: str) -> Optional[str]:
     """Return the ``/goal`` condition inside ``prompt``, or None.
 
-    Detection is case-insensitive on the ``/goal`` prefix after leading
-    whitespace. The condition is everything after that prefix with one
-    following space or newline stripped — in ``-p`` mode the whole remainder
-    is the condition, not just the first line.
+    Detection is case-insensitive on the ``/goal`` token after leading
+    whitespace, and only when the token ends there: the next character must
+    be whitespace or nothing at all, so ``/goalkeeper`` or ``/goal-foo`` is
+    an ordinary task, not a goal. The condition is everything after that
+    one separator — in ``-p`` mode the whole remainder is the condition,
+    not just the first line; a bare ``/goal`` yields an empty condition.
     """
     body = prompt.lstrip()
     if not body.lower().startswith("/goal"):
         return None
     remainder = body[len("/goal"):]
-    if remainder[:1] in (" ", "\n"):
-        remainder = remainder[1:]
-    return remainder
+    if not remainder:
+        return ""
+    if remainder[0] not in (" ", "\t", "\n", "\r"):
+        return None
+    return remainder[1:]
 
 
 def _shorten_goal_condition(condition: str) -> str:

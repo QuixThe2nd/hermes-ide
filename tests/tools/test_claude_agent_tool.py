@@ -966,6 +966,25 @@ def test_goal_detection_is_case_insensitive(monkeypatch, repo, fake_binary):
     assert len(_goal_condition(captured["cmd"])) <= 4000
 
 
+def test_goalkeeper_task_not_treated_as_goal(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goalkeeper " + "x" * 5000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    # "/goal" must be a whole token: "/goalkeeper" is a different command,
+    # so the long task passes through with no spill or rewrite.
+    assert _p_value(captured["cmd"]) == task
+    assert not (repo / GOAL_BRIEF_NAME).exists()
+    assert result["goal_brief_path"] is None
+
+
 def test_non_goal_long_task_untouched(monkeypatch, repo, fake_binary):
     from tools import claude_agent_tool
 
