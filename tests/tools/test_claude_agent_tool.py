@@ -817,3 +817,192 @@ def test_clean_run_has_empty_warnings(monkeypatch, repo, fake_binary):
     )
     assert result["success"] is True
     assert result["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# /goal condition 4000-char pre-flight spill
+# ---------------------------------------------------------------------------
+
+GOAL_BRIEF_NAME = ".hermes-claude-goal-brief.md"
+
+
+def _patch_spawn(monkeypatch, captured: dict) -> None:
+    """Mock the spawn layer, capturing argv; no real CLI is invoked."""
+    from tools import claude_agent_tool
+
+    def _fake_run_and_stream(
+        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp
+    ):
+        captured["cmd"] = list(cmd)
+        captured["workdir"] = workdir
+        log_text = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "Done.",
+            }
+        )
+        return None, str(log_dir / "fake-log.jsonl"), log_text, 0.5, 0
+
+    monkeypatch.setattr(claude_agent_tool, "_run_and_stream", _fake_run_and_stream)
+
+
+def _p_value(cmd: list) -> str:
+    # The task prompt is the trailing positional argument after the flags.
+    return cmd[-1]
+
+
+def _goal_condition(cmd: list) -> str:
+    return _p_value(cmd)[len("/goal "):]
+
+
+def test_goal_condition_exactly_at_limit_passes_through(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    condition = "x" * 4000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + condition, workdir=str(repo)
+        )
+    )
+    assert result["success"] is True
+    # At exactly 4000 chars the task is handed to the CLI untouched.
+    assert _p_value(captured["cmd"]) == "/goal " + condition
+    assert not (repo / GOAL_BRIEF_NAME).exists()
+    assert result["goal_brief_path"] is None
+
+
+def test_goal_condition_4001_spills_to_brief(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+
+    brief = repo / GOAL_BRIEF_NAME
+    assert brief.is_file()
+    assert brief.read_text(encoding="utf-8") == task
+    assert (brief.stat().st_mode & 0o777) == 0o644
+
+    p_value = _p_value(captured["cmd"])
+    assert p_value.startswith("/goal ")
+    condition = _goal_condition(captured["cmd"])
+    assert len(condition) <= 4000
+    assert GOAL_BRIEF_NAME in condition
+    assert result["goal_brief_path"] == str(brief)
+
+
+def test_goal_spill_preserves_first_line_and_keeps_full_brief(
+    monkeypatch, repo, fake_binary
+):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal tests are green\n" + "y" * 5000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+
+    condition = _goal_condition(captured["cmd"])
+    assert condition.startswith("tests are green ")
+    assert len(condition) <= 4000
+    assert GOAL_BRIEF_NAME in condition
+
+    # The file is the source of truth: full original task, long remainder
+    # included.
+    brief = repo / GOAL_BRIEF_NAME
+    assert brief.read_text(encoding="utf-8") == task
+
+
+def test_goal_detection_ignores_leading_whitespace(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "\n   /goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert _p_value(captured["cmd"]).startswith("/goal ")
+    assert len(_goal_condition(captured["cmd"])) <= 4000
+    brief = repo / GOAL_BRIEF_NAME
+    assert brief.is_file()
+    # The brief holds the original task unmodified, leading whitespace and all.
+    assert brief.read_text(encoding="utf-8") == task
+
+
+def test_goal_detection_is_case_insensitive(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/GOAL " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert (repo / GOAL_BRIEF_NAME).is_file()
+    assert _p_value(captured["cmd"]).startswith("/goal ")
+    assert len(_goal_condition(captured["cmd"])) <= 4000
+
+
+def test_non_goal_long_task_untouched(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "z" * 10_000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    # One-shot tasks get no length check, no file, no rewrite.
+    assert _p_value(captured["cmd"]) == task
+    assert not (repo / GOAL_BRIEF_NAME).exists()
+    assert result["goal_brief_path"] is None
+
+
+def test_goal_spill_write_failure_aborts_before_spawn(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    def _raise(self, *args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(Path, "write_text", _raise)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + "x" * 4001, workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert str(repo / GOAL_BRIEF_NAME) in result["error"]
+    assert "read-only filesystem" in result["error"]
+    # The write failure must abort before anything is spawned.
+    assert captured == {}

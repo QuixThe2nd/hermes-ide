@@ -27,6 +27,17 @@ environments (it runs with ``set -u`` and dies on an unbound ``$HOME``).
 ``--dangerously-skip-permissions`` is deliberately NOT passed: it is refused
 when the process runs as root.
 
+Goal-condition spill
+--------------------
+Claude Code caps ``/goal`` conditions at ``GOAL_CONDITION_MAX_CHARS``
+(4000) and refuses to start a run whose condition is longer — and in ``-p``
+mode the ENTIRE remainder after ``/goal`` is the condition, not just the
+first line. Callers stay free to pass one long ``task`` string: an
+over-limit ``/goal`` task is rewritten before spawn, writing the original
+task to ``<workdir>/.hermes-claude-goal-brief.md`` and replacing the ``-p``
+argument with a short ``/goal`` condition (first line plus a pointer to
+that file). Non-goal tasks are never rewritten.
+
 Log format
 ----------
 Stdout is streamed to ``<HERMES_HOME>/claude-runs/<timestamp>-<pid>.jsonl``.
@@ -77,6 +88,13 @@ STALL_WATCHDOG_SECONDS = 600
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep,Bash"
 DEFAULT_PERMISSION_MODE = "acceptEdits"
 _ALLOWED_PERMISSION_MODES = ("acceptEdits", "plan")
+
+# Claude Code refuses /goal conditions longer than this many characters, so
+# an over-limit task is spilled to a brief file in workdir before spawn.
+GOAL_CONDITION_MAX_CHARS = 4000
+GOAL_BRIEF_FILENAME = ".hermes-claude-goal-brief.md"
+_GOAL_BRIEF_SUFFIX = f" Full brief (must follow): {GOAL_BRIEF_FILENAME}"
+_GOAL_BRIEF_FALLBACK_CONDITION = "the task described in the brief file is complete"
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +355,40 @@ def _run_and_stream(
 
 
 # ---------------------------------------------------------------------------
+# /goal condition spill
+# ---------------------------------------------------------------------------
+
+def _extract_goal_condition(prompt: str) -> Optional[str]:
+    """Return the ``/goal`` condition inside ``prompt``, or None.
+
+    Detection is case-insensitive on the ``/goal`` prefix after leading
+    whitespace. The condition is everything after that prefix with one
+    following space or newline stripped — in ``-p`` mode the whole remainder
+    is the condition, not just the first line.
+    """
+    body = prompt.lstrip()
+    if not body.lower().startswith("/goal"):
+        return None
+    remainder = body[len("/goal"):]
+    if remainder[:1] in (" ", "\n"):
+        remainder = remainder[1:]
+    return remainder
+
+
+def _shorten_goal_condition(condition: str) -> str:
+    """Build a condition within ``GOAL_CONDITION_MAX_CHARS`` pointing at the brief.
+
+    Keeps the first line of the original condition when it fits alongside
+    the follow-file suffix; otherwise falls back to a generic completion
+    phrase (fallback + suffix is always far under the limit).
+    """
+    first_line = condition.split("\n", 1)[0].strip()
+    if len(first_line) + len(_GOAL_BRIEF_SUFFIX) > GOAL_CONDITION_MAX_CHARS:
+        first_line = _GOAL_BRIEF_FALLBACK_CONDITION
+    return first_line + _GOAL_BRIEF_SUFFIX
+
+
+# ---------------------------------------------------------------------------
 # Tool implementation
 # ---------------------------------------------------------------------------
 
@@ -378,6 +430,27 @@ def delegate_claude_agent(
                 f"{list(_ALLOWED_PERMISSION_MODES)}, got: {permission_mode!r}"
             ),
         )
+
+    # Pre-flight /goal rewrite: the child CLI caps /goal conditions at
+    # GOAL_CONDITION_MAX_CHARS and never starts an over-limit run, so spill
+    # the full task to a brief file in workdir and hand the child a short
+    # condition pointing at it. Runs before binary resolution/spawn so a
+    # failed write never leaves a half-started child.
+    prompt = str(task).strip()
+    goal_brief_path: Optional[str] = None
+    goal_condition = _extract_goal_condition(prompt)
+    if goal_condition is not None and len(goal_condition) > GOAL_CONDITION_MAX_CHARS:
+        brief_path = workdir_path / GOAL_BRIEF_FILENAME
+        try:
+            brief_path.write_text(str(task), encoding="utf-8")
+            os.chmod(brief_path, 0o644)
+        except OSError as exc:
+            return _make_result(
+                success=False,
+                error=f"failed to write /goal brief file {brief_path}: {exc}",
+            )
+        prompt = "/goal " + _shorten_goal_condition(goal_condition)
+        goal_brief_path = str(brief_path)
 
     model_name = str(model or "").strip()
     binary = resolve_claude_binary(model_name)
@@ -423,7 +496,7 @@ def delegate_claude_agent(
             "--output-format",
             "stream-json",
             "--verbose",
-            str(task).strip(),
+            prompt,
         ]
     )
 
@@ -454,6 +527,7 @@ def delegate_claude_agent(
         "permission_denials": parsed.get("permission_denials") or [],
         "log_path": log_path,
         "warnings": extract_log_warnings(log_text),
+        "goal_brief_path": goal_brief_path,
     }
 
     if watchdog_error:
