@@ -71,6 +71,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Models — Z.AI silent default is GLM-5.3, with GLM-5.3-Flash as fallback
   - Config — `security.allow_agent_config_writes` opts out of the write_file/patch guard on the Hermes config file (operator request; default off)
   - Display — optional native OS notification when a turn finishes (`display.notify_on_complete`, off by default; SSH target supported)
+- Compression — `compression.tail_mode` defaults to `lean` (clamped 10-25K tail; `legacy` restores the 0.20×threshold verbatim tail)
 
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this header is upstream's README.
 
