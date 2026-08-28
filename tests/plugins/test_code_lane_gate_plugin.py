@@ -8,7 +8,8 @@ Covers ``plugins/code-lane-gate/``:
     headers, including the no-space ``***Update File:`` form and BOTH
     ``*** Move File:`` endpoints), relative paths anchored to a task
     workspace, symlinked paths into a repo, and the execute_code
-    write heuristic each block a source-file edit with the
+    write heuristic (every write open() mode — w, w+, wb, wb+, w+b,
+    a, x, r+, rb+) each block a source-file edit with the
     delegate-lane steering message.
   * Allow-listing — .md inside a repo, .py outside any repo, the
     Hermes memories MEMORY.md, and read-only execute_code snippets
@@ -270,6 +271,41 @@ class TestBlocking:
         args = {"code": "with open(f, 'w') as fh:\n    fh.write(src)\n"}
         _assert_block(mod._on_pre_tool_call(tool_name="execute_code", args=args))
 
+    @pytest.mark.parametrize(
+        "mode",
+        ["w", "w+", "wb", "wb+", "w+b", "a", "x", "r+", "rb+"],
+    )
+    def test_execute_code_write_mode_matrix_blocks(self, monkeypatch, mode):
+        """Every Python write mode blocks — including the wb+/w+b forms a
+        single character class ([wa][+b]?) never matched. The mode is
+        captured and judged by content: any w/a/x, or a + that upgrades
+        even an r-mode to read-write, is a write."""
+        mod = _load_plugin_init()
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
+        args = {"code": f'fh = open("app.py", "{mode}")\n'}
+        _assert_block(mod._on_pre_tool_call(tool_name="execute_code", args=args))
+
+    def test_execute_code_write_mode_kwarg_blocks(self, monkeypatch):
+        """The mode= keyword spelling of a write open blocks too."""
+        mod = _load_plugin_init()
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
+        args = {"code": "fh = open('app.py', mode='wb+')\n"}
+        _assert_block(mod._on_pre_tool_call(tool_name="execute_code", args=args))
+
+    def test_execute_code_later_write_open_blocks(self, monkeypatch):
+        """A read open earlier in the snippet must not mask a later
+        write-mode open — every open's mode is judged, not just the
+        first match."""
+        mod = _load_plugin_init()
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
+        args = {
+            "code": (
+                "src = open('in.txt', 'r').read()\n"
+                "out = open('app.py', 'wb+')\n"
+            )
+        }
+        _assert_block(mod._on_pre_tool_call(tool_name="execute_code", args=args))
+
     def test_execute_code_shutil_copyfile_blocks(self, monkeypatch):
         mod = _load_plugin_init()
         monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
@@ -287,6 +323,14 @@ class TestBlocking:
         mod = _load_plugin_init()
         monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
         args = {"code": "cfg = open('app.py', 'r').read()\n"}
+        assert mod._on_pre_tool_call(tool_name="execute_code", args=args) is None
+
+    @pytest.mark.parametrize("mode", ["r", "rb", "rt"])
+    def test_execute_code_read_mode_matrix_passes(self, monkeypatch, mode):
+        """Modes built only from r/b/t never write — they pass."""
+        mod = _load_plugin_init()
+        monkeypatch.setenv("CODE_LANE_GATE_E2E", "1")
+        args = {"code": f'fh = open("app.py", "{mode}")\n'}
         assert mod._on_pre_tool_call(tool_name="execute_code", args=args) is None
 
     def test_execute_code_read_text_and_eval_pass(self, monkeypatch):

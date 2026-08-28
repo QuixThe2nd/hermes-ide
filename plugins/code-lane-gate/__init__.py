@@ -22,13 +22,14 @@ What counts as a gated source edit:
   grammar ``tools/patch_parser.py`` accepts, so a form the real parser
   would honour can't slip past the gate.
 * ``execute_code`` — best-effort regex heuristic over ``code`` for WRITE
-  evidence: write-mode ``open(..., "w")`` calls, ``write_text`` /
-  ``write_bytes`` / ``.write_*`` methods, ``shutil.copy*`` /
-  ``os.replace`` / ``os.rename``, or a shell redirect to a
-  deny-suffixed file. Read-only snippets (``open(..., "r")``,
-  ``Path(...).read_text()``, ``eval("1+1")``) pass. No path is available
-  for this tool, so a heuristic match blocks without the repo/suffix
-  scoping below.
+  evidence: ``open(...)`` calls whose mode string contains ``w``/``a``/
+  ``x`` or ``+`` (so ``"w"``, ``"wb+"``, ``"w+b"``, ``"r+"`` all write),
+  ``write_text`` / ``write_bytes`` / ``.write_*`` methods,
+  ``shutil.copy*`` / ``os.replace`` / ``os.rename``, or a shell redirect
+  to a deny-suffixed file. Read-only snippets (``open(..., "r")``,
+  ``open(..., "rb")``, ``Path(...).read_text()``, ``eval("1+1")``) pass.
+  No path is available for this tool, so a heuristic match blocks
+  without the repo/suffix scoping below.
 
 Each collected path is resolved BEFORE the checks, the same way the
 tool layer resolves it: relative paths anchor to the TASK workspace
@@ -87,20 +88,33 @@ _DENY_SUFFIXES = frozenset(
 # match write-mode opens and write-shaped calls only, so read-only code
 # (open(..., "r"), read_text(), eval("1+1")) passes while real writes
 # (open(f, "w"), shutil.copyfile(src, "app.py")) are caught.
+#
+# open() modes are NOT enumerated as permutations in one character class
+# — a class like [wa][+b]? silently misses real write modes Python
+# accepts ("wb+", "w+b"). Instead the mode string is captured and judged
+# by content: a quoted run of [rwaxbt+] (1-4 chars, every documented
+# mode) after the comma of an open( call. The comma keeps read opens
+# (no mode arg) and nearby dict literals ({"w": ...}) out of the match.
+_OPEN_MODE_RE = re.compile(
+    r"open\s*\(.{0,400}?,\s*(?:mode\s*=\s*)?[\"']([rwaxbt+]{1,4})[\"']",
+    re.DOTALL,
+)
+
+# A captured open() mode is a WRITE when any of these chars appear in
+# it: w/a/x create or truncate, and + upgrades any mode (even "r+") to
+# read-write. Modes built only from r/b/t ("r", "rb", "rt") read.
+_WRITE_MODE_CHARS = frozenset("wax+")
+
+# Write-shaped calls that carry no mode string to parse.
 _SOURCE_WRITE_RE = re.compile(
     r"(?:"
-    # open(..., "w") / mode="a" / "wb+" — a mode string starting with w/a.
-    # The comma before the mode keeps read opens (no mode, or "r") and
-    # nearby dict literals ({"w": ...}) out of the match.
-    r"open\s*\(.{0,400}?,\s*(?:mode\s*=\s*)?[\"'][wa][+b]?[\"']"
-    r"|write_text\s*\("
+    r"write_text\s*\("
     r"|write_bytes\s*\("
     r"|\.write_\w+\s*\("
     r"|shutil\.copy\w*\s*\("
     r"|os\.replace\s*\("
     r"|os\.rename\s*\("
     r")",
-    re.DOTALL,
 )
 
 # Shell redirection inside a command string (subprocess.run("... > app.py",
@@ -260,15 +274,19 @@ def _execute_code_looks_like_source_write(args: Any) -> bool:
     Best-effort, by design: execute_code exposes no path, so this is a
     regex over the code text. Write-mode opens, write_* method calls,
     copy/replace/rename, or a shell redirect to a deny-suffixed file all
-    count; read-only constructs do not.
+    count; read-only constructs do not. Every open(..., "mode") in the
+    snippet is judged — an early read open must not mask a later write.
     """
     if not isinstance(args, dict):
         return False
     code = args.get("code")
     if not isinstance(code, str):
         return False
-    return bool(_SOURCE_WRITE_RE.search(code)) or bool(
-        _SHELL_REDIRECT_RE.search(code)
+    if _SOURCE_WRITE_RE.search(code) or _SHELL_REDIRECT_RE.search(code):
+        return True
+    return any(
+        _WRITE_MODE_CHARS.intersection(match.group(1))
+        for match in _OPEN_MODE_RE.finditer(code)
     )
 
 
