@@ -242,6 +242,20 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_duration_plus_repeat_greater_than_one_is_rejected(self, tmp_cron_dir):
+        """'2m' is one-shot; --repeat 720 must not silently become a one-shot.
+
+        Recurring durations need the explicit 'every 2m' form.
+        """
+        with pytest.raises(ValueError, match="one-shot"):
+            create_job(prompt="Watcher", schedule="2m", repeat=720)
+        assert load_jobs() == []
+
+    def test_every_duration_keeps_explicit_repeat(self, tmp_cron_dir):
+        job = create_job(prompt="Watcher", schedule="every 2m", repeat=720)
+        assert job["schedule"]["kind"] == "interval"
+        assert job["repeat"]["times"] == 720
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
