@@ -6,7 +6,15 @@
 
 A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behavior, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
 
-**Philosophy:** upstream keeps its repo slim and ships capability externally; this fork is the opposite — a preconfigured, batteries-included distribution (Debian vs Ubuntu). Important tooling comes preinstalled, dev pipelines come prebuilt, and well-integrated capability belongs in the tree.
+**Why this fork exists:** stock Hermes needs a lot of config. It does not arrive wheels-included. You spend a long time wiring providers, channels, memory, notifications, a home server, and skills before it feels like a working assistant.
+
+A fresh Hermes also starts off stupid, and it only slowly learns: skills from experience, memory of who you are, your conventions, the shape of your homelab. Learning is the point of Hermes — but day-one is bare.
+
+This repo is part of Quix/Parsa's effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree. The dev pipelines come prebuilt. Capability that makes the out-of-box experience better belongs here, not in a pile of private scripts. Upstream keeps its repo slim and ships capability externally — Debian to this fork's Ubuntu — and this fork is deliberately the opposite.
+
+That's why `/sethomeserver` exists, and why this fork ships its own Discord home-server layout instead of making every operator invent one. Chat lives in `#inbox` and `#outbox`; notifications land in `#model-fallback`, `#gateway-restarts`, and `#other`; the Honcho Memory channels keep memory visible; Models is the quota voice-channel wall; Speeds carries the download walls. One command provisions and wires all of it — the `hermes_starts` inbox, the home and notification channels, `#gateway-restarts` showing `agents-N` while agents are live and `restarting-N-agents` while draining, `quota_channels`, `speed_channels`. It's idempotent, it never deletes, and moving an existing home server requires a confirm.
+
+None of that stops the learning. Day one just arrives with the house already built — then it still learns.
 
 **What's different here:**
 - **Tools**
