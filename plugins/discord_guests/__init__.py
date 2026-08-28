@@ -361,30 +361,53 @@ def _host_slug_from_settings() -> str:
     return str((entry.get("settings") or {}).get("host_slug") or "").strip()
 
 
-def _resolve_host_slug(token: str, guild_id: str, host_override: str) -> str:
+def _fetch_bot_user(token: str) -> Dict[str, Any]:
+    """GET /users/@me — the bot's own user object; {} when unavailable."""
+    try:
+        return _discord_request(token, "GET", f"{_DISCORD_API_BASE}/users/@me")
+    except Exception:
+        return {}
+
+
+def _bot_user_id(bot_user: Optional[Dict[str, Any]]) -> str:
+    return str((bot_user or {}).get("id") or "")
+
+
+def _resolve_host_slug(
+    token: str,
+    guild_id: str,
+    host_override: str,
+    bot_user: Optional[Dict[str, Any]] = None,
+) -> str:
     """The host part of the lounge name — first match wins:
 
     1. ``host_override`` (the per-call ``host`` arg)
     2. ``host_slug`` from plugin settings
-    3. the bot's own display name in the guild (nick, else global name,
-       else username), slugified
+    3. the bot's own display name in the guild, slugified: GET /users/@me
+       for the bot id, GET /guilds/{gid}/members/{bot_id} for the nick,
+       then nick, else global name, else username
     4. the literal fallback "agent"
 
-    The guild API is only hit when the first two come up empty.
+    The API is only hit when the first two come up empty. ``bot_user`` is a
+    /users/@me payload the caller already fetched, if any. Discord answers
+    /guilds/{gid}/members/@me with 400 — that path is never called.
     """
     slug = _slugify(host_override) or _slugify(_host_slug_from_settings())
     if slug:
         return slug
-    try:
-        me = _discord_request(
-            token,
-            "GET",
-            f"{_DISCORD_API_BASE}/guilds/{guild_id}/members/@me",
-        )
-        slug = _slugify(_member_display_name(me))
-    except Exception:
-        slug = ""
-    return slug or _DEFAULT_HOST_SLUG
+
+    bot_id = _bot_user_id(bot_user if bot_user is not None else _fetch_bot_user(token))
+    member: Dict[str, Any] = {}
+    if bot_id:
+        try:
+            member = _discord_request(
+                token,
+                "GET",
+                f"{_DISCORD_API_BASE}/guilds/{guild_id}/members/{bot_id}",
+            )
+        except Exception:
+            member = {}
+    return _slugify(_member_display_name(member)) or _DEFAULT_HOST_SLUG
 
 
 def _lounge_channel_name(guest_slug: str, host: str) -> str:
@@ -650,16 +673,21 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     if not guest_user_id:
         return json.dumps({"success": False, "error": "member resolved without a user id"})
 
+    # Anyone holding ADMINISTRATOR is refused — except the host bot itself,
+    # which carries admin yet is its own guest like anyone else.
+    bot_user: Optional[Dict[str, Any]] = None
     if _member_is_admin(token, resolved_guild_id, member):
-        return json.dumps(
-            {
-                "success": False,
-                "error": (
-                    f"member {_member_display_name(member)} has ADMINISTRATOR; "
-                    "they already see everything and are not added as a guest"
-                ),
-            }
-        )
+        bot_user = _fetch_bot_user(token)
+        if guest_user_id != _bot_user_id(bot_user):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"member {_member_display_name(member)} has ADMINISTRATOR; "
+                        "they already see everything and are not added as a guest"
+                    ),
+                }
+            )
 
     state = _load_state()
     state["guild_id"] = state["guild_id"] or resolved_guild_id
@@ -685,7 +713,7 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     guest_slug = _slugify(display_name)
     if not guest_slug:
         guest_slug = guest_user_id
-    host_slug = _resolve_host_slug(token, resolved_guild_id, host_override)
+    host_slug = _resolve_host_slug(token, resolved_guild_id, host_override, bot_user)
     channel_name = _lounge_channel_name(guest_slug, host_slug)
 
     # Idempotent: reuse a lounge of this exact name under Chat when present.

@@ -38,7 +38,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - fallback_watch — tails agent.log and alerts a Discord channel whenever the primary model falls back, cooldown-deduped (opt-in, off by default)
   - home_server — set a Discord home server once and Hermes provisions and keeps in sync the whole structure (Chat / Notifications / Honcho Memory / Models / Speeds), fully wired; `#gateway-restarts` shows `agents-N` live and `restarting-N-agents` while draining; idempotent, never deletes, a legacy Quotas category is renamed in place to Models, existing home, notification, and rename targets are never clobbered
   - speed_channels — Discord download walls for qBittorrent, SABnzbd, and slskd: voice-channel names carry live throughput and queue depth, category label stays fresh between ticks
-  - discord_guests — adding a guest auto-creates a private #{name}-steve-lounge under Chat; @everyone stays view-denied
+  - discord_guests — adding a guest auto-creates a private #{name}-{bot}-lounge under Chat; @everyone stays view-denied (host slug overridable via settings)
 - **Other**
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)

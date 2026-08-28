@@ -128,7 +128,8 @@ class MockDiscordRouter:
                 "user": {"id": "444", "username": "winnie", "global_name": "Winnie"},
             },
         }
-        # The bot itself, as /guilds/{gid}/members/@me answers.
+        # The bot itself: its user object answers /users/@me, its member
+        # object answers /guilds/{gid}/members/{bot_id}.
         self.self_member: Dict[str, Any] = {
             "nick": "Big Steve",
             "roles": [],
@@ -165,14 +166,27 @@ class MockDiscordRouter:
         if method == "GET" and url.endswith("/users/@me/guilds"):
             return self._response(self.guilds)
 
+        if method == "GET" and url.endswith("/users/@me"):
+            return self._response(self.self_member["user"])
+
         if method == "GET" and "/members/search" in url:
             return self._response(self.search_results)
 
-        if method == "GET" and "/guilds/" in url and "/members/@me" in url:
-            return self._response(self.self_member)
+        if url.endswith("/members/@me"):
+            # Live Discord rejects @me on guild-member paths — a 400 here is
+            # what the plugin gets, so any caller of the old endpoint fails.
+            raise urllib.error.HTTPError(
+                url,
+                400,
+                "Bad Request",
+                hdrs=None,
+                fp=BytesIO(json.dumps({"message": "400: Bad Request"}).encode("utf-8")),
+            )
 
         if method == "GET" and "/guilds/" in url and "/members/" in url:
             user_id = url.split("/members/")[1].split("/")[0].split("?")[0]
+            if user_id == self._self_user_id():
+                return self._response(self.self_member)
             return self._response(self.members_by_id.get(user_id, {}))
 
         if method == "GET" and url.endswith("/roles"):
@@ -210,6 +224,9 @@ class MockDiscordRouter:
             raise AssertionError(f"channel deletion attempted: {url}")
 
         raise AssertionError(f"unexpected request: {method} {url}")
+
+    def _self_user_id(self) -> str:
+        return str((self.self_member.get("user") or {}).get("id") or "")
 
     @staticmethod
     def _response(payload, status: int = 200, empty: bool = False):
@@ -261,7 +278,17 @@ def _write_host_slug_setting(home: Path, host_slug: str) -> None:
     )
 
 
-def _fetched_self_member(router: MockDiscordRouter) -> bool:
+def _fetched_bot_identity(router: MockDiscordRouter) -> bool:
+    """GET /users/@me — the bot-identity lookup host derivation needs.
+
+    endswith, not `in`: the guild-resolution call to /users/@me/guilds must
+    not count as an identity lookup.
+    """
+    return any(url.endswith("/users/@me") for _, url in _endpoints(router))
+
+
+def _requested_members_at_me(router: MockDiscordRouter) -> bool:
+    """The /guilds/{gid}/members/@me path Discord answers with 400."""
     return any("/members/@me" in url for _, url in _endpoints(router))
 
 
@@ -416,7 +443,8 @@ class TestAdd:
             ("GET", "/guilds/guild-1/members/search?query=Ada"),
             ("GET", "/guilds/guild-1/roles"),
             ("GET", "/guilds/guild-1/channels"),
-            ("GET", "/guilds/guild-1/members/@me"),
+            ("GET", "/users/@me"),
+            ("GET", "/guilds/guild-1/members/9001"),
             ("POST", "/guilds/guild-1/channels"),
             ("PUT", "/channels/chan-new-1/permissions/111"),
             ("PUT", "/channels/chan-new-1/permissions/guild-1"),
@@ -424,7 +452,7 @@ class TestAdd:
         assert discord_router.calls[0]["headers"]["Authorization"] == "Bot test-bot-token"
         assert "test-bot-token" not in json.dumps(result)
 
-        create_body = json.loads(discord_router.calls[5]["body"])
+        create_body = json.loads(discord_router.calls[6]["body"])
         assert create_body == {
             "name": "ada-lovelace-big-steve-lounge",
             "type": 0,
@@ -472,7 +500,9 @@ class TestAdd:
         result = _call(discord_guests_module, {"action": "add", "user_id": "444"})
         assert result["success"] is True
         assert result["channel_name"] == "winnie-big-steve-lounge"
-        assert _fetched_self_member(discord_router) is True
+        # Derived via /users/@me (bot id) then /members/{bot_id} (nick).
+        assert _fetched_bot_identity(discord_router) is True
+        assert ("GET", "/guilds/guild-1/members/9001") in _endpoints(discord_router)
 
     def test_host_slug_falls_back_to_global_name_then_username(
         self, discord_guests_module, token_env, discord_router
@@ -501,7 +531,7 @@ class TestAdd:
         assert result["success"] is True
         assert result["channel_name"] == "winnie-quix-lounge"
         # Settings short-circuit before any identity lookup.
-        assert _fetched_self_member(discord_router) is False
+        assert _fetched_bot_identity(discord_router) is False
 
     def test_host_arg_overrides_setting_and_derivation(
         self, discord_guests_module, token_env, discord_router, _isolate_env
@@ -512,7 +542,7 @@ class TestAdd:
         )
         assert result["success"] is True
         assert result["channel_name"] == "bob-boss-lounge"
-        assert _fetched_self_member(discord_router) is False
+        assert _fetched_bot_identity(discord_router) is False
 
     def test_matching_guest_and_host_slugs_collapse(
         self, discord_guests_module, token_env, discord_router

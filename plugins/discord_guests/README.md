@@ -36,12 +36,15 @@ overwrite permissions.
 
 | Action | What it does |
 |---|---|
-| `add` | Resolves the member (`user_id`, or a name prefix via member search), refuses anyone holding ADMINISTRATOR, then creates — or reuses — the lounge under Chat, allows the member on it, and denies `@everyone` view on the lounge itself so it stays private even if category perms drift. |
+| `add` | Resolves the member (`user_id`, or a name prefix via member search), refuses anyone holding ADMINISTRATOR (the host bot itself excepted), then creates — or reuses — the lounge under Chat, allows the member on it, and denies `@everyone` view on the lounge itself so it stays private even if category perms drift. |
 | `remove` | Takes the member overwrite off the lounge. The channel and its history are kept — delete it manually if you really want it gone. |
 | `list` | Current guests from state, with live channel existence. |
 | `setup` | Optional: persist guild + Chat category; first-run `@everyone` view lockdown. |
 
-Members with ADMINISTRATOR are never added — they already see everything.
+Members with ADMINISTRATOR are never added — they already see everything. The
+one exception is the host bot itself: it holds admin, yet adding it provisions
+its own lounge (guest and host slugs match, so the name collapses to
+`#<host>-lounge`).
 
 Guests are persisted in `$HERMES_HOME/discord_guests/state.json`. REST only,
 ≥0.3s between writes, 429 `retry_after` honoured, token never printed.
