@@ -515,6 +515,10 @@ def _coerce_str(value: Any) -> str:
 DELEGATE_CLAUDE_AGENT_SCHEMA = {
     "name": "delegate_claude_agent",
     "description": (
+        "Lane rule: use for MEDIUM TO LARGE jobs; small to medium goes to "
+        "delegate_cursor_agent. Default the task to /goal <observable done "
+        "condition> — goal mode auto-continues until done; a one-shot prompt "
+        "is the exception. "
         "Delegate a software development task to the Claude Code CLI running "
         "against a coding-model wrapper: GLM (z.ai coding plan) via the local "
         "claude-glm wrapper for general long-running tasks, or Kimi K3 via "
@@ -532,9 +536,11 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                 "type": "string",
                 "description": (
                     "The coding task brief for Claude Code to perform. "
-                    "May start with '/goal <condition>' to run goal mode "
-                    "headless: the run auto-continues across turns until a "
-                    "model judge confirms the condition is met or impossible."
+                    "Start it with '/goal <condition>' to run goal mode "
+                    "headless — the default: the run auto-continues across "
+                    "turns until a model judge confirms the condition is "
+                    "met or impossible. A task not starting with /goal "
+                    "should still be phrased as a verifiable done condition."
                 ),
             },
             "workdir": {

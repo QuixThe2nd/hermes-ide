@@ -2240,6 +2240,8 @@ def delegate_cursor_agent(
 CURSOR_AGENT_SCHEMA = {
     "name": "delegate_cursor_agent",
     "description": (
+        "Lane rule: use for SMALL TO MEDIUM jobs; medium to large goes to "
+        "delegate_claude_agent (with /goal). "
         "Delegate a software development task to a Cursor My Machines Cloud "
         "Agent. The run happens in a Cursor-managed CLOUD checkout built from "
         "what is already PUSHED to workdir's GitHub origin (origin URL, plus "
