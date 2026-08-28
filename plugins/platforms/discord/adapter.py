@@ -134,6 +134,110 @@ def _cursor_cloud_agent_markdown_progress(url: str) -> str:
     )
 
 
+_CLAUDE_AGENT_STATUS_PREFIX = "Claude Code Agent: "
+_CLAUDE_AGENT_ICON_URL = "https://claude.ai/images/claude_app_icon.png"
+_CLAUDE_AGENT_BRAND_URL = "https://claude.ai"
+_CLAUDE_VIEWER_ALLOWED_HOSTS = frozenset({"192.168.30.20", "100.109.12.0"})
+_CLAUDE_AGENT_RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
+
+
+def _claude_agent_status_url(content: str) -> Optional[str]:
+    """Return the watch URL when *content* is exactly a Claude Code Agent status line."""
+    if content is None:
+        return None
+    text = content.strip()
+    if not text.startswith(_CLAUDE_AGENT_STATUS_PREFIX):
+        return None
+    url = text[len(_CLAUDE_AGENT_STATUS_PREFIX) :].strip()
+    if not url or any(ch.isspace() for ch in url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        return None
+    hostname = parsed.hostname
+    if hostname not in _CLAUDE_VIEWER_ALLOWED_HOSTS:
+        return None
+    decoded_path = unquote(parsed.path)
+    if ".." in decoded_path:
+        return None
+    if decoded_path != "/":
+        return None
+    if parsed.query:
+        return None
+    # Test the raw URL for the delimiter: urlparse drops a bare trailing "#",
+    # leaving parsed.fragment empty, so a present-but-empty fragment must be
+    # rejected here rather than slip through the stem regex guard.
+    if "#" in url and not _CLAUDE_AGENT_RUN_STEM_RE.fullmatch(parsed.fragment):
+        return None
+    return url
+
+
+def _claude_agent_embed_spec(url: str) -> Dict[str, Any]:
+    """Pure-data embed fields for a Claude Code Agent live-progress card."""
+    return {
+        "title": "Claude Code Agent",
+        "url": url,
+        "description": _format_discord_markdown_link("Watch live session", url),
+        "author": {
+            "name": "Claude Code",
+            "icon_url": _CLAUDE_AGENT_ICON_URL,
+            "url": _CLAUDE_AGENT_BRAND_URL,
+        },
+        "thumbnail": _CLAUDE_AGENT_ICON_URL,
+        "color": 0xD97757,
+        "footer": "Anthropic · Claude Code",
+    }
+
+
+def _build_claude_agent_embed(url: str) -> Any:
+    """Build a discord.Embed for a Claude Code Agent live-progress URL."""
+    spec = _claude_agent_embed_spec(url)
+    embed = discord.Embed(
+        title=spec["title"],
+        url=spec["url"],
+        description=spec["description"],
+        color=spec["color"],
+    )
+    author = spec["author"]
+    embed.set_author(
+        name=author["name"],
+        icon_url=author["icon_url"],
+        url=author["url"],
+    )
+    embed.set_thumbnail(url=spec["thumbnail"])
+    embed.set_footer(text=spec["footer"])
+    return embed
+
+
+def _claude_agent_markdown_progress(url: str) -> str:
+    """Forum/fail-soft markdown form — no raw dumped URL."""
+    return (
+        f"{_CLAUDE_AGENT_STATUS_PREFIX}"
+        f"{_format_discord_markdown_link('Watch live session', url)}"
+    )
+
+
+def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Callable[[str], Any]]]:
+    """Resolve an agent status line to ``(url, markdown_line, embed_factory)``.
+
+    Matched prefixes are disjoint, so at most one branch applies. Returns
+    ``None`` for ordinary content, which takes the plain-text send path.
+    """
+    claude_url = _claude_agent_status_url(content)
+    if claude_url:
+        return claude_url, _claude_agent_markdown_progress(claude_url), _build_claude_agent_embed
+    cursor_url = _cursor_cloud_agent_status_url(content)
+    if cursor_url:
+        return (
+            cursor_url,
+            _cursor_cloud_agent_markdown_progress(cursor_url),
+            _build_cursor_cloud_agent_embed,
+        )
+    return None
+
+
 class _Snowflake:
     """Minimal object exposing ``.id`` — satisfies discord.py's Snowflake
     protocol for ``channel.history(before=...)`` without constructing a
@@ -3807,16 +3911,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
-            cursor_url = _cursor_cloud_agent_status_url(content)
-            if cursor_url:
-                markdown_progress = _cursor_cloud_agent_markdown_progress(cursor_url)
+            agent_progress = _agent_progress_embed_payload(content)
+            if agent_progress:
+                agent_url, markdown_progress, build_embed = agent_progress
                 if self._is_forum_parent(channel):
                     content = markdown_progress
                 else:
                     reference = self._reply_reference_for_send(reply_to, channel, metadata)
                     try:
                         msg = await channel.send(
-                            embed=_build_cursor_cloud_agent_embed(cursor_url),
+                            embed=build_embed(agent_url),
                             reference=reference,
                         )
                         message_id = str(msg.id)
@@ -3840,7 +3944,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         return result
                     except Exception as e:
                         logger.debug(
-                            "[%s] Cursor Cloud Agent embed send failed; falling back to markdown link: %s",
+                            "[%s] agent progress embed send failed; falling back to markdown link: %s",
                             self.name,
                             e,
                         )
