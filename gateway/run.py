@@ -7209,6 +7209,11 @@ class TurnRunner:
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        # Compact thought-line token count: the gateway caches agents across
+        # turns, so session_*_tokens are cumulative. Snapshot them here and
+        # diff after run_conversation() to get THIS turn's counts.
+        _turn_start_reasoning_toks = getattr(agent, "session_reasoning_tokens", 0) or 0
+        _turn_start_completion_toks = getattr(agent, "session_completion_tokens", 0) or 0
         try:
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -7351,6 +7356,24 @@ class TurnRunner:
             _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
         _resolved_model = getattr(_agent, "model", None) if _agent else None
+
+        # This turn's token deltas for the compact thought line: prefer the
+        # reasoning-token delta (what the line describes), fall back to the
+        # completion-token delta when the provider doesn't report reasoning
+        # separately. Neither moved → None, and the line omits the count.
+        # max() guards mid-run counter resets (e.g. session reset zeroing
+        # the cumulative counters) from producing a negative delta.
+        _turn_reasoning_toks = max(
+            0,
+            (getattr(_agent, "session_reasoning_tokens", 0) or 0)
+            - _turn_start_reasoning_toks,
+        )
+        _turn_completion_toks = max(
+            0,
+            (getattr(_agent, "session_completion_tokens", 0) or 0)
+            - _turn_start_completion_toks,
+        )
+        _thought_tokens = _turn_reasoning_toks or _turn_completion_toks or None
 
         # Sync session_id immediately after run_conversation(). Compression
         # can rotate before a follow-up model call fails; the failure return
@@ -7538,6 +7561,9 @@ class TurnRunner:
         return {
             "final_response": final_response,
             "last_reasoning": result.get("last_reasoning"),
+            # This turn's reasoning/output tokens (reasoning preferred) for
+            # the compact thought line's "(N tokens)" suffix.
+            "thought_tokens": _thought_tokens,
             "messages": ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else [],
             "api_calls": ctx.result_holder[0].get("api_calls", 0) if ctx.result_holder[0] else 0,
             "failed": ctx.result_holder[0].get("failed", False) if ctx.result_holder[0] else False,
@@ -22186,8 +22212,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if last_reasoning:
                         # Render style is per-platform: Discord defaults to "-# "
                         # subtext (native small grey metadata text); "compact"
-                        # shows only a one-line "thought for Xs" duration note;
-                        # other platforms keep the fenced code block.
+                        # shows only a one-line "thought for Xs" duration note
+                        # (plus this turn's "(N tokens)" when the provider
+                        # reported a count); other platforms keep the fenced
+                        # code block.
                         try:
                             from gateway.display_config import resolve_display_setting
                             _reasoning_style = resolve_display_setting(
@@ -22204,6 +22232,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             last_reasoning,
                             _turn_seconds,
                             _platform_config_key(source.platform),
+                            thought_tokens=agent_result.get("thought_tokens"),
                         )
                         if _reasoning_prefix:
                             response = f"{_reasoning_prefix}\n\n{response}"

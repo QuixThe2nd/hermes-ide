@@ -2,9 +2,9 @@
 
 Two invariants:
 
-1. ``reasoning_style: compact`` shows ONLY a one-line "thought for Xs"
-   duration note (Discord subtext / italic elsewhere) and never the
-   chain-of-thought body.
+1. ``reasoning_style: compact`` shows ONLY a one-line "💭 thought for Xs"
+   duration note (Discord subtext / italic elsewhere), optionally suffixed
+   with this turn's "(N tokens)" count, and never the chain-of-thought body.
 2. On a multiplexed gateway, the reasoning prepend and runtime footer
    resolve ``display.*`` from the SERVING profile's config.yaml — the home
    ``_run_agent`` scoped the turn to — not the default profile home.
@@ -25,6 +25,7 @@ def _render_final_response(
     platform_key: str,
     last_reasoning: str,
     turn_seconds,
+    thought_tokens: int | None = None,
 ) -> str:
     """Mirror the ``_handle_message_with_agent`` prepend gate + helper call.
 
@@ -36,7 +37,9 @@ def _render_final_response(
     if not resolve_display_setting(config, platform_key, "show_reasoning", False):
         return FINAL_ANSWER
     style = resolve_display_setting(config, platform_key, "reasoning_style", "code")
-    prefix = format_reasoning_prefix(style, last_reasoning, turn_seconds, platform_key)
+    prefix = format_reasoning_prefix(
+        style, last_reasoning, turn_seconds, platform_key, thought_tokens=thought_tokens
+    )
     return f"{prefix}\n\n{FINAL_ANSWER}" if prefix else FINAL_ANSWER
 
 
@@ -56,7 +59,7 @@ class TestCompactReasoningStyle:
             last_reasoning=REASONING_BODY,
             turn_seconds=11.0,
         )
-        assert rendered.startswith("-# thought for 11s")
+        assert rendered.startswith("-# 💭 thought for 11s")
         assert REASONING_BODY not in rendered
         assert rendered.endswith(f"\n\n{FINAL_ANSWER}")
 
@@ -68,7 +71,7 @@ class TestCompactReasoningStyle:
                 last_reasoning=REASONING_BODY,
                 turn_seconds=11.0,
             )
-            assert rendered.startswith("_thought for 11s_"), platform_key
+            assert rendered.startswith("_💭 thought for 11s_"), platform_key
             assert REASONING_BODY not in rendered
 
     def test_show_reasoning_false_suppresses_thought_line(self):
@@ -117,8 +120,99 @@ class TestCompactReasoningStyle:
                 last_reasoning=REASONING_BODY,
                 turn_seconds=turn_seconds,
             )
-            assert rendered.startswith(f"-# thought for {expected}"), turn_seconds
+            assert rendered.startswith(f"-# 💭 thought for {expected}"), turn_seconds
             assert expected == _format_duration(turn_seconds)
+
+
+class TestCompactThoughtTokens:
+    """``compact`` appends this turn's token count when the provider reports one.
+
+    The gateway diffs cumulative ``session_*_tokens`` counters around
+    ``run_conversation()`` and passes the per-turn delta in as
+    ``thought_tokens``. The 💭 marker is always present; a positive count
+    appends an ``(N tokens)`` suffix, while a missing/zero count leaves
+    the bare duration line.
+    """
+
+    def test_discord_appends_token_count(self):
+        rendered = _render_final_response(
+            _compact_config("discord"),
+            platform_key="discord",
+            last_reasoning=REASONING_BODY,
+            turn_seconds=3.9,
+            thought_tokens=598,
+        )
+        assert rendered.startswith("-# 💭 thought for 3.9s (598 tokens)")
+        assert REASONING_BODY not in rendered
+        assert rendered.endswith(f"\n\n{FINAL_ANSWER}")
+
+    def test_non_discord_appends_token_count(self):
+        for platform_key in ("telegram", "slack", "matrix"):
+            rendered = _render_final_response(
+                _compact_config(platform_key),
+                platform_key=platform_key,
+                last_reasoning=REASONING_BODY,
+                turn_seconds=3.9,
+                thought_tokens=598,
+            )
+            assert rendered.startswith("_💭 thought for 3.9s (598 tokens)_"), platform_key
+            assert REASONING_BODY not in rendered
+
+    def test_missing_or_zero_tokens_keep_plain_duration_line(self):
+        for thought_tokens in (None, 0):
+            rendered = _render_final_response(
+                _compact_config("discord"),
+                platform_key="discord",
+                last_reasoning=REASONING_BODY,
+                turn_seconds=3.9,
+                thought_tokens=thought_tokens,
+            )
+            assert rendered.startswith("-# 💭 thought for 3.9s"), thought_tokens
+            assert "tokens" not in rendered, thought_tokens
+            assert "💭" in rendered, thought_tokens
+
+    def test_helper_contract_exact_strings(self):
+        from gateway.display_config import format_reasoning_prefix
+
+        assert (
+            format_reasoning_prefix(
+                "compact", "scratch", 3.9, "discord", thought_tokens=598
+            )
+            == "-# 💭 thought for 3.9s (598 tokens)"
+        )
+        assert (
+            format_reasoning_prefix(
+                "compact", "scratch", 3.9, "telegram", thought_tokens=598
+            )
+            == "_💭 thought for 3.9s (598 tokens)_"
+        )
+        assert (
+            format_reasoning_prefix("compact", "scratch", 3.9, "discord")
+            == "-# 💭 thought for 3.9s"
+        )
+        assert (
+            format_reasoning_prefix("compact", "scratch", 3.9, "telegram")
+            == "_💭 thought for 3.9s_"
+        )
+
+    def test_large_counts_render_plain_integers(self):
+        rendered = _render_final_response(
+            _compact_config("discord"),
+            platform_key="discord",
+            last_reasoning=REASONING_BODY,
+            turn_seconds=63.0,
+            thought_tokens=123456,
+        )
+        assert rendered.startswith("-# 💭 thought for 1m03s (123456 tokens)")
+
+    def test_non_compact_styles_ignore_token_count(self):
+        from gateway.display_config import format_reasoning_prefix
+
+        for style in ("code", "blockquote", "subtext"):
+            rendered = format_reasoning_prefix(
+                style, REASONING_BODY, 3.9, "discord", thought_tokens=598
+            )
+            assert "598" not in rendered, style
 
 
 class TestReasoningStyleAcceptsCompact:
