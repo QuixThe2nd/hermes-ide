@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from plugins.fallback_quota_reorder.core import (
+    PreciseReading,
     load_precise_readings,
     readings_from_names,
     run_reorder,
@@ -150,8 +151,8 @@ class TestLoadPreciseReadings:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         save_state(_precise_fixture(), now_fn=lambda: NOW)
         assert load_precise_readings(1800, now_fn=lambda: NOW + 2 * 1800) == {
-            "codex": (99, CODEX_RESET),
-            "grok": (99, GROK_RESET),
+            "codex": PreciseReading(99, CODEX_RESET),
+            "grok": PreciseReading(99, GROK_RESET),
         }
 
     def test_corrupt_state_file_returns_empty(self, monkeypatch, tmp_path: Path):
@@ -178,7 +179,7 @@ class TestLoadPreciseReadings:
         }
         (tmp_path / STATE_FILENAME).write_text(json.dumps(state), encoding="utf-8")
         assert load_precise_readings(1800, now_fn=lambda: NOW) == {
-            "codex": (100, CODEX_RESET)
+            "codex": PreciseReading(100, CODEX_RESET)
         }
 
 

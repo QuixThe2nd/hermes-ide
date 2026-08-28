@@ -17,15 +17,17 @@ Silent success for the headless CLI; failures print `fallback-quota-reorder: <me
 
 Chain entries are never renamed; the only membership change is the primary-rotation swap below. All other config keys are untouched.
 
-1. **Healthy scored entries** — entries with a readable quota and `pct >= 5` sort by **highest score first**:
+1. **Healthy scored entries** — entries with a readable quota and `pct >= 5` (or any percentage with at least one pending reset, see below) sort by **highest score first**:
 
-   `score = quota_frac × (168 / hours_remaining) × rate_24h × rate_1h`
+   `score = (quota_frac × 168/hours_remaining + resets × 168/hours_reset_expires) × rate_24h × rate_1h`
 
    - `hours_remaining` is `reset_seconds / 3600`, floored at one minute so a nearly-reset wallet is not divided by zero.
    - `quota_frac` is remaining percent / 100, clamped to `[0, 1]`.
    - Time enters **inversely**: a wallet resetting sooner is more urgent to spend now and scores higher; a wallet resetting in exactly 168 hours (one week, the reference horizon) scores its quota fraction 1:1, and anything later is diluted below it.
    - `rate_24h` / `rate_1h` are API success fractions from the last 24 hours and last hour. Fewer than 3 (24h) or 2 (1h) samples stays **1.0** so a quiet provider is not punished.
-2. **Low quota sink** — entries with parsed `pct` below 5 sink behind all healthy scored entries; among themselves they still sort by the same score, highest first.
+
+   **Pending usage-limit resets are additive.** Codex and Grok channels end with `• N reset(s)[ in <t>]`; each pending manual reset stacks one more full wallet (`quota_frac` of 1.0) onto the score on **its own expiry clock** — Grok's soonest token validity-end when the name shows `in <t>`, otherwise the same usage-reset countdown as the remaining term (Codex exposes no reset-expiry clock). The invariant: **one pending reset at 0% remaining scores exactly like zero resets at 100% remaining when the two clocks are equal**, and each extra reset adds another full wallet with no cap. The uptime factors multiply both terms, and providers without a resets API (Kimi, z.ai, Cursor, the OpenRouter virtual row) keep the remaining term alone — no bonus, no penalty.
+2. **Low quota sink** — entries with parsed `pct` below 5 **and no pending resets** sink behind all healthy scored entries; among themselves they still sort by the same score, highest first. A 0% wallet with ≥1 pending reset is equivalent to a full one, so it stays in the healthy bucket.
 3. **Unreadable tail** — entries with no readable quota (unmapped provider slug, unreadable channel name, or an `openrouter` model other than Ox Alpha) keep their relative order and go after all scored entries.
 
 ### Unlimited Ox Alpha route
@@ -140,6 +142,8 @@ Standard: `Grok: 75% • 8h left`
 
 With optional token enrichment from quota_channels: `Codex: 99% • 2.2B tok/7d • 7d left`
 
+With optional trailing pending-reset segment (Codex/Grok): `Grok: 46% • 3d left • 1 reset in 2d` or `Codex: 100% • 7d left • 2 resets`
+
 Cursor variant (pct = min of the two values): `Cursor: 76%/58% • 25d left`
 
-Countdown units: `Nd`, `Nh`, `Nm` followed by ` left` (`d` = 86400s, `h` = 3600s, `m` = 60s). Any name that does not match the full anchored pattern — including truncation at Discord's 100-character limit — is treated as unreadable.
+Countdown units: `Nd`, `Nh`, `Nm` followed by ` left` (`d` = 86400s, `h` = 3600s, `m` = 60s); the same units follow `in` inside the resets segment. Any name that does not match the full anchored pattern — including truncation at Discord's 100-character limit — is treated as unreadable.
