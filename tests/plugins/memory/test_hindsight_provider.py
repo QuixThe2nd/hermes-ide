@@ -1381,6 +1381,73 @@ class TestBankIdTemplate:
         assert p._bank_id == "hermes-coder"
         assert p._bank_id_template == "hermes-{profile}"
 
+    def test_resolve_chat_placeholder_sanitizes_jid(self):
+        result = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            profile="winnie",
+            workspace="",
+            platform="whatsapp",
+            user="",
+            session="",
+            chat="120363429264251361@g.us",
+        )
+        assert result == "winnie-whatsapp-120363429264251361-g-us"
+
+    def test_resolve_empty_chat_collapses_to_platform(self):
+        result = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            profile="winnie",
+            workspace="",
+            platform="cli",
+            user="",
+            session="",
+            chat="",
+        )
+        assert result == "winnie-cli"
+
+    def test_different_chats_resolve_to_different_banks(self):
+        a = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            platform="whatsapp",
+            chat="111@g.us",
+        )
+        b = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            platform="whatsapp",
+            chat="222@g.us",
+        )
+        assert a != b
+        assert a.startswith("winnie-whatsapp-")
+        assert b.startswith("winnie-whatsapp-")
+
+    def test_provider_uses_chat_in_bank_id_template(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id": "quix-assistant",
+            "bank_id_template": "winnie-{platform}-{chat}",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(
+            session_id="s1",
+            hermes_home=str(tmp_path),
+            platform="whatsapp",
+            chat_id="120363429264251361@g.us",
+            agent_identity="winnie",
+            agent_workspace="hermes",
+        )
+        assert p._bank_id == "winnie-whatsapp-120363429264251361-g-us"
+
 
 # ---------------------------------------------------------------------------
 # Availability tests
