@@ -225,6 +225,19 @@ def test_comment_false_reviews_but_never_posts(home, monkeypatch):
     assert fake.posted == []
     assert not any(call[0] == "post_issue_comment" for call in fake.calls)
 
+    # The review is the whole job under comment:false — record it handled so
+    # later ticks do not burn another LLM call on the same PR.
+    state = load_state()
+    assert state["seen"]["5"]["skipped"] is True
+    assert state["seen"]["5"]["commented"] is False
+
+    summary, captured = _run(home, fake, monkeypatch, section={"comment": False})
+    assert summary["reviewed"] == 0
+    assert summary["commented"] == 0
+    assert captured == []  # no second review of PR 5
+    assert fake.posted == []
+    assert not any(call[0] == "post_issue_comment" for call in fake.calls)
+
 
 def test_dry_run_posts_nothing_and_writes_no_state(home, monkeypatch):
     seed_state(home, seen={"1": seen_entry(skipped=True)})

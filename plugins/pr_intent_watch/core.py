@@ -452,21 +452,26 @@ def run_tick(*, config_path: Path | None = None, dry_run: bool = False) -> dict:
             continue
 
         summary["reviewed"] += 1
-        commented = False
         if config.comment and not dry_run:
             try:
                 github.post_issue_comment(
                     config.repo, number, token, review_module.format_comment(result)
                 )
-                commented = True
-                summary["commented"] += 1
             except github.GitHubRateLimit as exc:
                 logger.warning("pr_intent_watch: rate limited on PR %s: %s", number, exc)
                 break
             except github.GitHubError as exc:
                 logger.warning("pr_intent_watch: comment post failed on PR %s: %s", number, exc)
+                # Left unseen so the next tick retries the POST.
                 summary["errors"] += 1
-        seen[key] = _seen_entry(head_sha, commented=commented, skipped=False)
+                continue
+            seen[key] = _seen_entry(head_sha, commented=True, skipped=False)
+            summary["commented"] += 1
+        else:
+            # comment:false (or dry run): the review is the whole job. Record
+            # it handled so the next tick does not re-review the same PR.
+            # Dry run never persists state, so this is inert there.
+            seen[key] = _seen_entry(head_sha, commented=False, skipped=True)
         summary["new"] += 1
 
     if not dry_run:
