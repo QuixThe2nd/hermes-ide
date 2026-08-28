@@ -161,6 +161,15 @@ def test_claude_task_description_requires_verifiable_done_condition():
     assert "done condition" in task
 
 
+def test_schema_task_description_mentions_goal_cap():
+    from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
+
+    task = DELEGATE_CLAUDE_AGENT_SCHEMA["parameters"]["properties"]["task"][
+        "description"
+    ]
+    assert "4000" in task
+
+
 def test_cursor_schema_description_states_lane_rule():
     import tools.cursor_agent_tool  # noqa: F401
     from tools.registry import registry
@@ -785,6 +794,49 @@ def test_error_subtype_keeps_original_error_for_empty_report(
     )
     assert result["success"] is False
     assert "subtype" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_goal_refusal_report_reclassified_as_failure(
+    monkeypatch, repo, fake_binary
+):
+    """A goal refusal wearing a success result must not count as success."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_RESULT_TEXT",
+        "Goal condition is limited to 4000 characters (got 7421)",
+    )
+    monkeypatch.setenv("FAKE_CLAUDE_NUM_TURNS", "0")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal tests are green", workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert "goal refusal" in result["error"]
+    assert result["num_turns"] == 0
+    assert (
+        result["final_report"]
+        == "Goal condition is limited to 4000 characters (got 7421)"
+    )
+
+
+@_REAL_SUBPROC
+def test_normal_success_report_not_flagged(monkeypatch, repo, fake_binary):
+    """The goal-refusal backstop must leave genuine success reports alone."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert result["error"] is None
+    assert result["final_report"] == "Done."
 
 
 @_REAL_SUBPROC
