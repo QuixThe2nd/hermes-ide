@@ -127,6 +127,11 @@ class MockDiscordRouter:
                 "roles": [],
                 "user": {"id": "444", "username": "winnie", "global_name": "Winnie"},
             },
+            "555": {
+                "nick": None,
+                "roles": [],
+                "user": {"id": "555", "username": "winnie2", "global_name": "Winnie"},
+            },
         }
         # The bot itself, as /guilds/{gid}/members/@me answers.
         self.self_member: Dict[str, Any] = {
@@ -136,6 +141,7 @@ class MockDiscordRouter:
         }
         self.search_results: List[Dict[str, Any]] = []
         self.overwrites: Dict[tuple, Dict[str, Any]] = {}
+        self.overwrite_delete_404: set = set()
         self.deleted_channels: List[str] = []
         self.channel_counter = 0
         self.rate_limit_pending = 0
@@ -202,14 +208,54 @@ class MockDiscordRouter:
             if method == "PUT":
                 body = json.loads(request.data.decode("utf-8")) if request.data else {}
                 self.overwrites[(channel_id, overwrite_id)] = body
+                self._sync_channel_overwrite(channel_id, overwrite_id, body)
                 return self._response({}, status=204, empty=True)
-            self.overwrites.pop((channel_id, overwrite_id), None)
+            key = (channel_id, overwrite_id)
+            if key in self.overwrite_delete_404:
+                raise urllib.error.HTTPError(
+                    url,
+                    404,
+                    "Not Found",
+                    hdrs=None,
+                    fp=BytesIO(b"{}"),
+                )
+            self.overwrites.pop(key, None)
+            self._remove_channel_overwrite(channel_id, overwrite_id)
             return self._response({}, status=204, empty=True)
 
         if method == "DELETE" and re.fullmatch(rf"{re.escape(_API_BASE)}/channels/[^/]+", url):
             raise AssertionError(f"channel deletion attempted: {url}")
 
         raise AssertionError(f"unexpected request: {method} {url}")
+
+    def _sync_channel_overwrite(
+        self, channel_id: str, overwrite_id: str, body: Dict[str, Any]
+    ) -> None:
+        for channel in self.channels:
+            if str(channel.get("id") or "") != channel_id:
+                continue
+            overwrites = list(channel.get("permission_overwrites") or [])
+            updated = False
+            for idx, overwrite in enumerate(overwrites):
+                if str(overwrite.get("id") or "") == overwrite_id:
+                    overwrites[idx] = dict(body)
+                    updated = True
+                    break
+            if not updated:
+                overwrites.append(dict(body))
+            channel["permission_overwrites"] = overwrites
+            return
+
+    def _remove_channel_overwrite(self, channel_id: str, overwrite_id: str) -> None:
+        for channel in self.channels:
+            if str(channel.get("id") or "") != channel_id:
+                continue
+            channel["permission_overwrites"] = [
+                ow
+                for ow in (channel.get("permission_overwrites") or [])
+                if str(ow.get("id") or "") != overwrite_id
+            ]
+            return
 
     @staticmethod
     def _response(payload, status: int = 200, empty: bool = False):
@@ -266,19 +312,66 @@ def _fetched_self_member(router: MockDiscordRouter) -> bool:
 
 
 class TestCheckRequirements:
-    def test_missing_env(self, discord_guests_module, _isolate_env):
+    def test_missing_env(self, discord_guests_module, _isolate_env, monkeypatch):
+        monkeypatch.setattr(
+            "agent.secret_scope.get_secret",
+            lambda name, default="": default,
+        )
         assert discord_guests_module.check_requirements() is False
 
-    def test_empty_token(self, discord_guests_module, _isolate_env):
+    def test_empty_token(self, discord_guests_module, _isolate_env, monkeypatch):
+        monkeypatch.setattr(
+            "agent.secret_scope.get_secret",
+            lambda name, default="": default,
+        )
         (_isolate_env / ".env").write_text("DISCORD_BOT_TOKEN=\n", encoding="utf-8")
         assert discord_guests_module.check_requirements() is False
 
     def test_valid_token(self, discord_guests_module, token_env):
         assert discord_guests_module.check_requirements() is True
 
-    def test_missing_token_blocks_handler(
-        self, discord_guests_module, _isolate_env, discord_router
+    def test_token_from_get_secret(self, discord_guests_module, _isolate_env, monkeypatch):
+        monkeypatch.setattr(
+            "agent.secret_scope.get_secret",
+            lambda name, default="": "scoped-token" if name == "DISCORD_BOT_TOKEN" else default,
+        )
+        assert discord_guests_module._read_discord_token() == "scoped-token"
+        assert discord_guests_module.check_requirements() is True
+
+    def test_token_from_process_env(self, discord_guests_module, _isolate_env, monkeypatch):
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "env-token")
+        assert discord_guests_module._read_discord_token() == "env-token"
+
+    def test_env_fallback_when_get_secret_empty(
+        self, discord_guests_module, token_env, monkeypatch
     ):
+        monkeypatch.setattr(
+            "agent.secret_scope.get_secret",
+            lambda name, default="": default,
+        )
+        assert discord_guests_module._read_discord_token() == "test-bot-token"
+
+    def test_unscoped_secret_error_fails_closed(
+        self, discord_guests_module, _isolate_env, monkeypatch
+    ):
+        from agent.secret_scope import UnscopedSecretError
+
+        def _raise_unscoped(name, default=""):
+            raise UnscopedSecretError("no scope")
+
+        monkeypatch.setattr("agent.secret_scope.get_secret", _raise_unscoped)
+        (_isolate_env / ".env").write_text("DISCORD_BOT_TOKEN=from-file\n", encoding="utf-8")
+        assert discord_guests_module.check_requirements() is False
+        assert discord_guests_module._read_discord_token() == ""
+
+    def test_missing_token_blocks_handler(
+        self, discord_guests_module, _isolate_env, discord_router, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "agent.secret_scope.get_secret",
+            lambda name, default="": default,
+        )
         result = _call(discord_guests_module, {"action": "add", "user_id": "111"})
         assert result == {"success": False, "error": "Discord bot token not configured"}
         assert discord_router.calls == []
@@ -485,13 +578,14 @@ class TestAdd:
         result = _call(discord_guests_module, {"action": "add", "user_id": "444"})
         assert result["success"] is True
         assert result["channel_name"] == "winnie-hermes-bot-lounge"
+        first_channel_id = result["channel_id"]
 
         discord_router.self_member["user"]["global_name"] = None
-        # Empty host override falls through: the username now derives the slug.
+        # Empty host override falls through: same guest reuses the tracked lounge.
         result = _call(discord_guests_module, {"action": "add", "user_id": "444", "host": ""})
         assert result["success"] is True
-        assert result["created"] is True
-        assert result["channel_name"] == "winnie-hermes-agent-lounge"
+        assert result["created"] is False
+        assert result["channel_id"] == first_channel_id
 
     def test_host_slug_setting_overrides_derivation(
         self, discord_guests_module, token_env, discord_router, _isolate_env
@@ -826,6 +920,247 @@ class TestPacing:
         discord_guests_module._last_write_at = time.monotonic() - 10
         discord_guests_module._pace_write()
         assert sleeps == []
+
+
+class TestOverwriteMerge:
+    _EXTRA_ALLOW = 1 << 12
+    _EXTRA_DENY = 1 << 18
+
+    def test_setup_lockdown_merges_existing_everyone_overwrite(
+        self, discord_guests_module, token_env, discord_router
+    ):
+        for channel in discord_router.channels:
+            if channel["id"] == "cat-chat":
+                channel["permission_overwrites"] = [
+                    {
+                        "id": "guild-1",
+                        "type": 0,
+                        "allow": self._EXTRA_ALLOW,
+                        "deny": self._EXTRA_DENY,
+                    }
+                ]
+                break
+
+        result = _call(discord_guests_module, {"action": "setup"})
+        assert result["success"] is True
+
+        overwrite = discord_router.overwrites[("cat-chat", "guild-1")]
+        assert overwrite["deny"] & _VIEW_CHANNEL
+        assert overwrite["allow"] & self._EXTRA_ALLOW == self._EXTRA_ALLOW
+        assert overwrite["deny"] & self._EXTRA_DENY == self._EXTRA_DENY
+
+    def test_add_merges_existing_everyone_overwrite_on_lounge(
+        self, discord_guests_module, token_env, discord_router
+    ):
+        discord_router.channels.append(
+            {
+                "id": "chan-preseed",
+                "name": "bob-big-steve-lounge",
+                "type": 0,
+                "parent_id": "cat-chat",
+                "permission_overwrites": [
+                    {
+                        "id": "guild-1",
+                        "type": 0,
+                        "allow": self._EXTRA_ALLOW,
+                        "deny": self._EXTRA_DENY,
+                    }
+                ],
+            }
+        )
+
+        result = _call(discord_guests_module, {"action": "add", "user_id": "333"})
+        assert result["success"] is True
+        assert result["channel_id"] == "chan-preseed"
+        assert result["created"] is False
+
+        overwrite = discord_router.overwrites[("chan-preseed", "guild-1")]
+        assert overwrite["deny"] & _VIEW_CHANNEL
+        assert overwrite["allow"] & self._EXTRA_ALLOW == self._EXTRA_ALLOW
+        assert overwrite["deny"] & self._EXTRA_DENY == self._EXTRA_DENY
+
+
+class TestLoungeReuse:
+    def test_same_display_name_gets_distinct_lounges(
+        self, discord_guests_module, token_env, discord_router
+    ):
+        first = _call(discord_guests_module, {"action": "add", "user_id": "444"})
+        second = _call(discord_guests_module, {"action": "add", "user_id": "555"})
+        assert first["success"] is True and second["success"] is True
+        assert first["channel_id"] != second["channel_id"]
+        assert second["channel_name"].endswith("-555")
+        assert ("chan-new-1", "555") not in discord_router.overwrites
+        assert ("chan-new-1", "444") in discord_router.overwrites
+        assert ("chan-new-2", "555") in discord_router.overwrites
+
+    def test_readd_after_nick_change_reuses_tracked_channel(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(
+            _isolate_env,
+            {
+                "guild_id": "guild-1",
+                "chat_category_id": "cat-chat",
+                "guests": [
+                    {
+                        "user_id": "111",
+                        "name": "Old Nick",
+                        "channel_id": "chan-tracked",
+                    }
+                ],
+            },
+        )
+        discord_router.channels.append(
+            {
+                "id": "chan-tracked",
+                "name": "old-nick-big-steve-lounge",
+                "type": 0,
+                "parent_id": "cat-chat",
+            }
+        )
+
+        result = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert result["success"] is True
+        assert result["channel_id"] == "chan-tracked"
+        assert result["created"] is False
+        assert result["name"] == "Ada Lovelace"
+        create_calls = [
+            call for call in discord_router.calls if call["method"] == "POST"
+        ]
+        assert create_calls == []
+
+    def test_readd_to_new_channel_revokes_old_member_overwrite(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(
+            _isolate_env,
+            {
+                "guild_id": "guild-1",
+                "chat_category_id": "cat-chat",
+                "guests": [
+                    {
+                        "user_id": "111",
+                        "name": "Ada Lovelace",
+                        "channel_id": "chan-old",
+                    }
+                ],
+            },
+        )
+        discord_router.channels.append(
+            {
+                "id": "chan-old",
+                "name": "ada-lovelace-big-steve-lounge",
+                "type": 0,
+                "parent_id": "cat-other",
+            }
+        )
+        discord_router.overwrites[("chan-old", "111")] = {
+            "id": "111",
+            "type": 1,
+            "allow": _EXPECTED_GUEST_ALLOW,
+            "deny": 0,
+        }
+
+        result = _call(discord_guests_module, {"action": "add", "user_id": "111"})
+        assert result["success"] is True
+        assert result["channel_id"] == "chan-new-1"
+        assert result["created"] is True
+        assert ("chan-old", "111") not in discord_router.overwrites
+        assert (
+            "DELETE",
+            "/channels/chan-old/permissions/111",
+        ) in _endpoints(discord_router)
+        saved = _read_state(_isolate_env)
+        assert saved["guests"][0]["channel_id"] == "chan-new-1"
+
+    def test_readd_revoke_treats_404_as_success(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(
+            _isolate_env,
+            {
+                "guild_id": "guild-1",
+                "chat_category_id": "cat-chat",
+                "guests": [
+                    {
+                        "user_id": "333",
+                        "name": "Bob",
+                        "channel_id": "chan-gone",
+                    }
+                ],
+            },
+        )
+        discord_router.channels.append(
+            {
+                "id": "chan-gone",
+                "name": "bob-big-steve-lounge",
+                "type": 0,
+                "parent_id": "cat-other",
+            }
+        )
+        discord_router.overwrite_delete_404.add(("chan-gone", "333"))
+
+        result = _call(discord_guests_module, {"action": "add", "user_id": "333"})
+        assert result["success"] is True
+        assert result["channel_id"] == "chan-new-1"
+        assert _read_state(_isolate_env)["guests"][0]["channel_id"] == "chan-new-1"
+
+
+class TestGuildCategoryIsolation:
+    def test_add_to_different_guild_uses_that_guilds_chat_category(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(
+            _isolate_env,
+            {
+                "guild_id": "guild-1",
+                "chat_category_id": "cat-chat",
+                "guests": [],
+            },
+        )
+        discord_router.guilds.append({"id": "guild-2", "name": "Other Guild"})
+        discord_router.channels = [
+            {"id": "cat-chat-b", "name": "Chat", "type": 4, "parent_id": None},
+        ]
+
+        result = _call(
+            discord_guests_module,
+            {"action": "add", "user_id": "333", "guild_id": "guild-2"},
+        )
+        assert result["success"] is True
+        assert result["guild_id"] == "guild-2"
+        assert result["chat_category_id"] == "cat-chat-b"
+
+        create_body = json.loads(
+            next(call["body"] for call in discord_router.calls if call["method"] == "POST")
+        )
+        assert create_body["parent_id"] == "cat-chat-b"
+        assert create_body["parent_id"] != "cat-chat"
+
+    def test_setup_to_different_guild_resolves_local_chat_category(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(
+            _isolate_env,
+            {
+                "guild_id": "guild-1",
+                "chat_category_id": "cat-chat",
+                "guests": [],
+            },
+        )
+        discord_router.guilds.append({"id": "guild-2", "name": "Other Guild"})
+        discord_router.channels = [
+            {"id": "cat-chat-b", "name": "Chat", "type": 4, "parent_id": None},
+        ]
+
+        result = _call(
+            discord_guests_module,
+            {"action": "setup", "guild_id": "guild-2", "lockdown": False},
+        )
+        assert result["success"] is True
+        assert result["guild_id"] == "guild-2"
+        assert result["chat_category_id"] == "cat-chat-b"
+        assert _read_state(_isolate_env)["chat_category_id"] == "cat-chat-b"
 
 
 class TestNoGuestRoleMentions:
