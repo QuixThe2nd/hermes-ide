@@ -2,7 +2,7 @@
 
 When discord.py is NOT installed at module load time, the
 ``if DISCORD_AVAILABLE:`` guard at the bottom of gateway/platforms/discord.py
-evaluates to False and is skipped — leaving ExecApprovalView and its four
+evaluates to False and is skipped — leaving ExecApprovalView and its three
 siblings undefined in the module globals.
 
 check_discord_requirements() must call _define_discord_view_classes() after
@@ -12,7 +12,9 @@ DISCORD_AVAILABLE flips to True.  Without this, the first button interaction
 DISCORD_AVAILABLE=True.
 
 Fixes: lazy-install path NameError for ExecApprovalView, SlashConfirmView,
-UpdatePromptView, ModelPickerView, ClarifyChoiceView.
+UpdatePromptView, ModelPickerView.  (ClarifyChoiceView was removed when
+Discord clarify prompts went back to numbered plain text — component views
+expire with Discord's interaction token.)
 """
 import importlib
 from unittest.mock import patch
@@ -23,15 +25,14 @@ _VIEW_NAMES = [
     "SlashConfirmView",
     "UpdatePromptView",
     "ModelPickerView",
-    "ClarifyChoiceView",
 ]
 
 
 class TestDefineDiscordViewClasses:
     """_define_discord_view_classes() registers all UI view classes in module globals."""
 
-    def test_registers_all_five_view_classes(self, monkeypatch):
-        """Calling _define_discord_view_classes() must (re)define all 5 view classes."""
+    def test_registers_all_four_view_classes(self, monkeypatch):
+        """Calling _define_discord_view_classes() must (re)define all 4 view classes."""
         dp = importlib.import_module("plugins.platforms.discord.adapter")
 
         # Remove the classes to simulate the state where the module was loaded

@@ -1,7 +1,7 @@
 """Security regression tests: Discord component views honor allowlists.
 
 The interactive component views (ExecApprovalView, SlashConfirmView,
-UpdatePromptView, ModelPickerView, ClarifyChoiceView) historically accepted only
+UpdatePromptView, ModelPickerView) historically accepted only
 ``allowed_user_ids``. Deployments that configure DISCORD_ALLOWED_ROLES
 without DISCORD_ALLOWED_USERS therefore had a wide-open component
 surface: any guild member who could see the prompt could approve exec
@@ -10,6 +10,10 @@ the same user would be rejected at the slash and on_message gates.
 
 These tests pin user/role/global allowlist semantics, explicit allow-all
 handling, and fail-closed behavior so the parity cannot regress.
+
+(ClarifyChoiceView was removed when Discord clarify prompts went back to
+numbered plain text — component views expire with Discord's interaction
+token, so clarify answers arrive as text instead.)
 """
 
 from types import SimpleNamespace
@@ -19,7 +23,6 @@ import pytest
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
 from plugins.platforms.discord.adapter import (  # noqa: E402
-    ClarifyChoiceView,
     ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
@@ -134,10 +137,16 @@ def test_update_prompt_view_accepts_role_allowlist():
     assert view._check_auth(_interaction(99999, role_ids=[7])) is False
 
 
-def test_clarify_choice_view_accepts_role_allowlist():
-    view = ClarifyChoiceView(
-        choices=["one", "two"],
-        clarify_id="clarify-1",
+def test_model_picker_view_accepts_role_allowlist():
+    async def _noop(*_a, **_k):
+        return ""
+
+    view = ModelPickerView(
+        providers=[],
+        current_model="m",
+        current_provider="p",
+        session_key="s",
+        on_model_selected=_noop,
         allowed_user_ids=set(),
         allowed_role_ids={42},
     )
@@ -156,11 +165,6 @@ def test_clarify_choice_view_accepts_role_allowlist():
         lambda: ExecApprovalView(session_key="s", allowed_user_ids=set()),
         lambda: SlashConfirmView(session_key="s", confirm_id="c", allowed_user_ids=set()),
         lambda: UpdatePromptView(session_key="s", allowed_user_ids=set()),
-        lambda: ClarifyChoiceView(
-            choices=["one"],
-            clarify_id="c",
-            allowed_user_ids=set(),
-        ),
     ],
 )
 def test_views_empty_allowlists_reject_by_default(view_factory, monkeypatch):

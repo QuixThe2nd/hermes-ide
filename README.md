@@ -51,6 +51,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
 - Discord — multiplexed profiles honor their own display.reasoning_style; compact renders "thought for Xs"
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
   - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
+  - Discord — clarify prompts are numbered plain text (no buttons; Discord component views time out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
   - Gateway — system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context
   - Gateway — goal-bound WhatsApp missions (missions plugin: `dispatch_assistant`/`end_session`): mission-only DMs (`platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`, off by default) are answered only while an assistant-mission is bound to the chat; a mission on a `@g.us` group admits exactly that group — no mention required, all members in one shared session; profile-scoped pairing no longer mirrors into the global allowlist
