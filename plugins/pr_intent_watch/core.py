@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
 from plugins.pr_intent_watch import github
 from plugins.pr_intent_watch import review as review_module
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — non-POSIX (no fcntl at all)
+    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +29,11 @@ DEFAULT_SKIP_DRAFTS = False
 DEFAULT_COMMENT = True
 DEFAULT_MAX_FILE_NAMES = 40
 DEFAULT_MAX_COMMITS = 20
+DEFAULT_LISTEN_HOST = "0.0.0.0"
+DEFAULT_LISTEN_PORT = 8645
+DEFAULT_WEBHOOK_PATH = "/webhooks/pr-intent-watch"
+MIN_LISTEN_PORT = 1
+MAX_LISTEN_PORT = 65535
 
 STATE_FILENAME = Path("state") / "pr_intent_watch.json"
 PER_PAGE = 50
@@ -45,6 +57,9 @@ class WatchConfig:
     comment: bool = DEFAULT_COMMENT
     max_file_names: int = DEFAULT_MAX_FILE_NAMES
     max_commits: int = DEFAULT_MAX_COMMITS
+    listen_host: str = DEFAULT_LISTEN_HOST
+    listen_port: int = DEFAULT_LISTEN_PORT
+    webhook_path: str = DEFAULT_WEBHOOK_PATH
 
 
 def _hermes_home() -> Path:
@@ -136,6 +151,13 @@ def watch_config_from_raw(raw: Mapping[str, Any] | None) -> WatchConfig:
     repo = _str("repo", DEFAULT_REPO)
     if "/" not in repo:
         repo = DEFAULT_REPO
+    listen_port = min(
+        MAX_LISTEN_PORT, max(MIN_LISTEN_PORT, _int("listen_port", DEFAULT_LISTEN_PORT))
+    )
+    webhook_path = _str("webhook_path", DEFAULT_WEBHOOK_PATH)
+    if not webhook_path.startswith("/"):
+        # A path GitHub can never POST to is a config typo, not an address.
+        webhook_path = DEFAULT_WEBHOOK_PATH
 
     return WatchConfig(
         enabled=_bool("enabled", True) and not plugin_disabled_in_raw(raw),
@@ -146,6 +168,9 @@ def watch_config_from_raw(raw: Mapping[str, Any] | None) -> WatchConfig:
         comment=_bool("comment", DEFAULT_COMMENT),
         max_file_names=max(1, _int("max_file_names", DEFAULT_MAX_FILE_NAMES)),
         max_commits=max(1, _int("max_commits", DEFAULT_MAX_COMMITS)),
+        listen_host=_str("listen_host", DEFAULT_LISTEN_HOST),
+        listen_port=listen_port,
+        webhook_path=webhook_path,
     )
 
 
@@ -165,26 +190,59 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    """Atomic state write (temp + rename); mkstemp keeps the mode at 0600."""
+    """Atomic state write (temp + rename); mkstemp keeps the mode at 0600.
+
+    Guarded by a short exclusive lock so the webhook worker and a concurrent
+    poll tick (separate processes or threads) cannot clobber each other's
+    JSON. The lock is an flock on the state *directory* fd — a sibling lock
+    file would need cleaning up, and flocking the JSON itself is worthless
+    when every save replaces its inode.
+    """
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".pr-intent-watch.", suffix=".tmp"
-    )
+    with _STATE_WRITE_LOCK, _lock_state_dir(path.parent):
+        fd, tmp = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".pr-intent-watch.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, indent=2, sort_keys=True)
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
+#: Serializes saves within one process (the lock file would not: two threads
+#: hold two different dir fds, and flock availability is best-effort anyway).
+_STATE_WRITE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _lock_state_dir(directory: Path):
+    if fcntl is None:
+        yield
+        return
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=2, sort_keys=True)
+        dir_fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        yield
+        return
+    try:
         try:
-            os.chmod(tmp, 0o600)
+            fcntl.flock(dir_fd, fcntl.LOCK_EX)
         except OSError:
-            pass
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            pass  # best-effort: the atomic rename still holds below us
+        yield
+    finally:
+        os.close(dir_fd)  # closing releases the flock
 
 
 def prune_seen(seen: Mapping[str, Any], cap: int = MAX_SEEN_ENTRIES) -> dict:
@@ -280,6 +338,159 @@ def build_review_metadata(
     }
 
 
+# ── One PR ──────────────────────────────────────────────────────────────────
+
+
+def review_one_pr(number: int, *, config: WatchConfig, token: str, state: dict) -> dict:
+    """Review a single PR — the one path the poll loop and the webhook share.
+
+    Applies the skip rules (seen-map, draft, author, existing marker), fetches
+    metadata only, asks for the intent review, and posts the marker comment.
+    Mutates ``state['seen']`` in place; the CALLER persists the state, so a
+    rate-limited or failed call can be left unwritten on purpose.
+
+    Returns a per-PR summary: ``action`` (what happened), the counters
+    ``run_tick`` aggregates, ``rate_limited`` (stop the poll loop early), and
+    ``dirty`` (the seen-map changed and the caller should save).
+    """
+    summary: dict[str, Any] = {
+        "action": "",
+        "reviewed": 0,
+        "commented": 0,
+        "skipped": 0,
+        "new": 0,
+        "errors": 0,
+        "rate_limited": False,
+        "dirty": False,
+    }
+    key = str(number)
+    seen = state.get("seen")
+    if not isinstance(seen, dict):
+        seen = {}
+        state["seen"] = seen
+
+    entry = seen.get(key)
+    if isinstance(entry, dict) and (entry.get("commented") or entry.get("skipped")):
+        summary["action"] = "already_seen"
+        return summary
+
+    def _mark(head_sha: str, *, commented: bool, skipped: bool) -> None:
+        seen[key] = _seen_entry(head_sha, commented=commented, skipped=skipped)
+        summary["dirty"] = True
+
+    try:
+        pull = github.get_pull(config.repo, number, token)
+    except github.GitHubRateLimit as exc:
+        logger.warning("pr_intent_watch: rate limited before PR %s: %s", number, exc)
+        summary["action"] = "rate_limited"
+        summary["rate_limited"] = True
+        return summary
+    except github.GitHubError as exc:
+        logger.warning("pr_intent_watch: pull fetch failed on PR %s: %s", number, exc)
+        summary["action"] = "fetch_failed"
+        summary["errors"] = 1
+        return summary
+
+    head_sha = _head_sha(pull)
+    author = _author(pull).lower()
+
+    if bool(pull.get("draft")) and config.skip_drafts:
+        _mark(head_sha, commented=False, skipped=True)
+        summary["action"] = "skipped_draft"
+        summary["skipped"] = 1
+        summary["new"] = 1
+        return summary
+    if author and author in config.skip_authors:
+        _mark(head_sha, commented=False, skipped=True)
+        summary["action"] = "skipped_author"
+        summary["skipped"] = 1
+        summary["new"] = 1
+        return summary
+
+    try:
+        comments = github.list_issue_comments(config.repo, number, token)
+    except github.GitHubRateLimit as exc:
+        logger.warning("pr_intent_watch: rate limited before PR %s: %s", number, exc)
+        summary["action"] = "rate_limited"
+        summary["rate_limited"] = True
+        return summary
+    except github.GitHubError as exc:
+        logger.warning("pr_intent_watch: comments fetch failed on PR %s: %s", number, exc)
+        summary["action"] = "fetch_failed"
+        summary["errors"] = 1
+        return summary
+
+    if github.has_intent_marker(comments):
+        # Already reviewed on GitHub (state lost) — idempotent, never
+        # double-post. Recording it as commented keeps future ticks cheap.
+        _mark(head_sha, commented=True, skipped=False)
+        summary["action"] = "already_commented"
+        summary["skipped"] = 1
+        summary["new"] = 1
+        return summary
+
+    try:
+        files = github.list_files(
+            config.repo, number, token, max_files=config.max_file_names
+        )
+        commits = github.list_commits(
+            config.repo, number, token, max_commits=config.max_commits
+        )
+    except github.GitHubRateLimit as exc:
+        logger.warning("pr_intent_watch: rate limited before PR %s: %s", number, exc)
+        summary["action"] = "rate_limited"
+        summary["rate_limited"] = True
+        return summary
+    except github.GitHubError as exc:
+        logger.warning("pr_intent_watch: metadata fetch failed on PR %s: %s", number, exc)
+        summary["action"] = "fetch_failed"
+        summary["errors"] = 1
+        return summary
+
+    metadata = build_review_metadata(
+        pull,
+        files,
+        commits,
+        max_file_names=config.max_file_names,
+        max_commits=config.max_commits,
+    )
+    result = review_module.review_intent(metadata)
+    if result is None:
+        # No usable review — leave unmarked so the next attempt retries.
+        _mark(head_sha, commented=False, skipped=False)
+        summary["action"] = "review_failed"
+        summary["errors"] = 1
+        return summary
+
+    summary["reviewed"] = 1
+    if config.comment:
+        try:
+            github.post_issue_comment(
+                config.repo, number, token, review_module.format_comment(result)
+            )
+        except github.GitHubRateLimit as exc:
+            logger.warning("pr_intent_watch: rate limited on PR %s: %s", number, exc)
+            summary["action"] = "rate_limited"
+            summary["rate_limited"] = True
+            return summary
+        except github.GitHubError as exc:
+            logger.warning("pr_intent_watch: comment post failed on PR %s: %s", number, exc)
+            # Left unseen so the next attempt retries the POST.
+            summary["action"] = "post_failed"
+            summary["errors"] = 1
+            return summary
+        _mark(head_sha, commented=True, skipped=False)
+        summary["action"] = "commented"
+        summary["commented"] = 1
+    else:
+        # comment:false: the review is the whole job. Record it handled so
+        # the next pass does not burn another LLM call on the same PR.
+        _mark(head_sha, commented=False, skipped=True)
+        summary["action"] = "reviewed"
+    summary["new"] = 1
+    return summary
+
+
 # ── Tick ────────────────────────────────────────────────────────────────────
 
 
@@ -365,9 +576,10 @@ def run_tick(*, config_path: Path | None = None, dry_run: bool = False) -> dict:
             len(seen),
         )
         if not dry_run:
-            save_state(
-                {"repo": config.repo, "seen": prune_seen(seen), "baseline_complete": True}
-            )
+            state["repo"] = config.repo
+            state["seen"] = prune_seen(seen)
+            state["baseline_complete"] = True
+            save_state(state)
         return summary
 
     candidates = []
@@ -384,102 +596,21 @@ def run_tick(*, config_path: Path | None = None, dry_run: bool = False) -> dict:
     # Oldest first: a rate limit mid-tick still comments the earlier PRs.
     candidates.sort(key=lambda pull: int(pull.get("number") or 0))
 
+    # A dry run reviews but never posts: comment=false is the whole toggle.
+    effective = config if not dry_run else replace(config, comment=False)
     for pull in candidates:
         number = _pull_number(pull)
-        key = str(number)
-        head_sha = _head_sha(pull)
-        author = _author(pull).lower()
-
-        if bool(pull.get("draft")) and config.skip_drafts:
-            seen[key] = _seen_entry(head_sha, commented=False, skipped=True)
-            summary["skipped"] += 1
-            summary["new"] += 1
+        if number is None:
             continue
-        if author and author in config.skip_authors:
-            seen[key] = _seen_entry(head_sha, commented=False, skipped=True)
-            summary["skipped"] += 1
-            summary["new"] += 1
-            continue
-
-        try:
-            comments = github.list_issue_comments(config.repo, number, token)
-        except github.GitHubRateLimit as exc:
-            logger.warning("pr_intent_watch: rate limited before PR %s: %s", number, exc)
+        result = review_one_pr(number, config=effective, token=token, state=state)
+        for field in ("reviewed", "commented", "skipped", "new", "errors"):
+            summary[field] += int(result.get(field, 0))
+        if result.get("rate_limited"):
             break
-        except github.GitHubError as exc:
-            logger.warning("pr_intent_watch: comments fetch failed on PR %s: %s", number, exc)
-            summary["errors"] += 1
-            continue
-
-        if github.has_intent_marker(comments):
-            # Already reviewed on GitHub (state lost) — idempotent, never
-            # double-post. Recording it as commented keeps future ticks cheap.
-            seen[key] = _seen_entry(head_sha, commented=True, skipped=False)
-            summary["skipped"] += 1
-            summary["new"] += 1
-            continue
-
-        try:
-            detail = github.get_pull(config.repo, number, token)
-            files = github.list_files(
-                config.repo, number, token, max_files=config.max_file_names
-            )
-            commits = github.list_commits(
-                config.repo, number, token, max_commits=config.max_commits
-            )
-        except github.GitHubRateLimit as exc:
-            logger.warning("pr_intent_watch: rate limited before PR %s: %s", number, exc)
-            break
-        except github.GitHubError as exc:
-            logger.warning("pr_intent_watch: metadata fetch failed on PR %s: %s", number, exc)
-            summary["errors"] += 1
-            continue
-
-        # The list item and the detail fetch carry the same fields; merging
-        # keeps the metadata working even when one of the two is sparse.
-        metadata = build_review_metadata(
-            {**pull, **detail},
-            files,
-            commits,
-            max_file_names=config.max_file_names,
-            max_commits=config.max_commits,
-        )
-        result = review_module.review_intent(metadata)
-        if result is None:
-            # No usable review — leave unmarked so the next tick retries.
-            seen[key] = _seen_entry(head_sha, commented=False, skipped=False)
-            summary["errors"] += 1
-            continue
-
-        summary["reviewed"] += 1
-        if config.comment and not dry_run:
-            try:
-                github.post_issue_comment(
-                    config.repo, number, token, review_module.format_comment(result)
-                )
-            except github.GitHubRateLimit as exc:
-                logger.warning("pr_intent_watch: rate limited on PR %s: %s", number, exc)
-                break
-            except github.GitHubError as exc:
-                logger.warning("pr_intent_watch: comment post failed on PR %s: %s", number, exc)
-                # Left unseen so the next tick retries the POST.
-                summary["errors"] += 1
-                continue
-            seen[key] = _seen_entry(head_sha, commented=True, skipped=False)
-            summary["commented"] += 1
-        else:
-            # comment:false (or dry run): the review is the whole job. Record
-            # it handled so the next tick does not re-review the same PR.
-            # Dry run never persists state, so this is inert there.
-            seen[key] = _seen_entry(head_sha, commented=False, skipped=True)
-        summary["new"] += 1
 
     if not dry_run:
-        save_state(
-            {
-                "repo": config.repo,
-                "seen": prune_seen(seen),
-                "baseline_complete": True,
-            }
-        )
+        state["repo"] = config.repo
+        state["seen"] = prune_seen(state.get("seen") or {})
+        state["baseline_complete"] = True
+        save_state(state)
     return summary

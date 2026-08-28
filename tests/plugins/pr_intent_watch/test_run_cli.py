@@ -102,6 +102,68 @@ def test_unexpected_error_exits_one(monkeypatch, capsys):
     assert "unexpected error" in capsys.readouterr().out.lower()
 
 
+# ── --serve ─────────────────────────────────────────────────────────────────
+
+
+def test_serve_flag_runs_the_webhook_listener(monkeypatch, tmp_path):
+    from hermes_constants import get_hermes_home
+    from plugins.pr_intent_watch import webhook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        webhook, "serve", lambda **kwargs: recorded.append(kwargs) or 0
+    )
+
+    assert run_module.main(["--serve"]) == 0
+    assert recorded == [{"config_path": get_hermes_home() / "config.yaml"}]
+
+
+def test_serve_exit_code_is_forwarded(monkeypatch):
+    from plugins.pr_intent_watch import webhook
+
+    monkeypatch.setattr(webhook, "serve", lambda **kwargs: 1)
+    assert run_module.main(["--serve"]) == 1
+
+
+def test_serve_never_reconciles_the_scheduler(monkeypatch):
+    """The serve process IS the schedule — arming units from inside it would
+    fight the gateway's reconcile."""
+    from plugins.pr_intent_watch import lifecycle
+    from plugins.pr_intent_watch import webhook
+
+    def boom(*args, **kwargs):
+        raise AssertionError("serve must not reconcile the scheduler")
+
+    monkeypatch.setattr(lifecycle, "reconcile_scheduler_on_load", boom)
+    monkeypatch.setattr(webhook, "serve", lambda **kwargs: 0)
+    assert run_module.main(["--serve"]) == 0
+
+
+def test_serve_flag_suppresses_the_one_shot_tick(monkeypatch, capsys):
+    recorded = _tick_stub(monkeypatch, {"reviewed": 1})
+    from plugins.pr_intent_watch import webhook
+
+    monkeypatch.setattr(webhook, "serve", lambda **kwargs: 0)
+    assert run_module.main(["--serve"]) == 0
+    assert recorded == []  # serve owns the loop, not a single pass
+    assert "pr-intent-watch:" not in capsys.readouterr().out
+
+
+# ── --print-webhook-secret ──────────────────────────────────────────────────
+
+
+def test_print_webhook_secret_prints_and_exits_zero(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert run_module.main(["--print-webhook-secret"]) == 0
+    first = capsys.readouterr().out.strip()
+    assert len(first) >= 32
+
+    # Persisted, not regenerated — a new secret would orphan the GitHub hook.
+    assert run_module.main(["--print-webhook-secret"]) == 0
+    assert capsys.readouterr().out.strip() == first
+
+
 # ── the way the timer actually invokes it ────────────────────────────────────
 
 

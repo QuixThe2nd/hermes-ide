@@ -1,4 +1,5 @@
-"""Scheduler self-install invariants: systemd user oneshot+timer (mocked systemctl)."""
+"""Scheduler self-install invariants: systemd user Type=simple serve service
+(mocked systemctl), plus retirement of the legacy oneshot+timer pair."""
 
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ class FakeSystemctl:
     def __init__(self, *, system_running: bool = True):
         self.calls: list[list[str]] = []
         self.system_running = system_running
-        self.timer_enabled = False
-        self.timer_active = False
+        self.enabled: set[str] = set()
+        self.active: set[str] = set()
 
     def __call__(self, args):
         self.calls.append(list(args))
@@ -24,137 +25,158 @@ class FakeSystemctl:
                 return 0, "running\n", ""
             return 1, "", "Failed to connect to bus: No such file or directory\n"
         if "is-enabled" in args:
-            if self.timer_enabled:
-                return 0, "enabled\n", ""
-            return 1, "disabled\n", ""
+            name = args[-1]
+            return (0, "enabled\n", "") if name in self.enabled else (1, "disabled\n", "")
         if "is-active" in args:
-            if self.timer_active:
-                return 0, "active\n", ""
-            return 3, "inactive\n", ""
+            name = args[-1]
+            return (0, "active\n", "") if name in self.active else (3, "inactive\n", "")
         if "enable" in args and "--now" in args:
-            self.timer_enabled = True
-            self.timer_active = True
+            self.enabled.add(args[-1])
+            self.active.add(args[-1])
             return 0, "", ""
         if "stop" in args:
-            self.timer_active = False
+            self.active.discard(args[-1])
         if "disable" in args:
-            self.timer_enabled = False
+            self.enabled.discard(args[-1])
         return 0, "", ""
+
+
+# The pre-serve model's unit: oneshot, no [Install], activated by a timer.
+LEGACY_ONESHOT_BODY = """[Unit]
+Description=Hermes PR intent watch (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hermes/run.py
+WorkingDirectory=/opt/hermes
+Environment=HERMES_HOME=%h/.hermes
+StandardOutput=journal
+StandardError=journal
+"""
 
 
 def _line(body: str, prefix: str) -> str:
     return next(line for line in body.splitlines() if line.startswith(prefix))
 
 
-def test_reconcile_writes_both_units_pointing_at_run_py(tmp_path):
+def _expected_service_body() -> str:
+    return lc.render_service_unit(
+        python_executable=lc.resolve_unit_python(),
+        run_py=lc.RUN_PY,
+        repo_root=lc.REPO_ROOT,
+    )
+
+
+def test_reconcile_writes_simple_serve_service(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
     ctl = FakeSystemctl()
 
     result = lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir,
-        run_systemctl=ctl,
-        config={"pr_intent_watch": {"poll_seconds": 300}},
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
     )
 
     assert result is not None and result.skip_reason is None and result.changed
     service = (unit_dir / lc.SERVICE_NAME).read_text(encoding="utf-8")
-    timer = (unit_dir / lc.TIMER_NAME).read_text(encoding="utf-8")
 
-    # ExecStart targets run.py in the repo — never a leftover copied script.
+    # ExecStart targets run.py --serve in the repo — the long-running process.
     python = lc.resolve_unit_python()
     assert (
         _line(service, "ExecStart=")
-        == f"ExecStart={format_exec_start([python, str(lc.RUN_PY)])}"
+        == f"ExecStart={format_exec_start([python, str(lc.RUN_PY), '--serve'])}"
     )
-    assert "[Install]" not in service  # oneshot is timer-activated only
-    assert _line(service, "Type=") == "Type=oneshot"
-    for directive in ("Persistent=true", "WantedBy=timers.target", "AccuracySec=1s"):
-        assert directive in service + timer
+    assert _line(service, "Type=") == "Type=simple"
+    assert _line(service, "Restart=") == "Restart=on-failure"
     assert _line(service, "Environment=HERMES_HOME=") == "Environment=HERMES_HOME=%h/.hermes"
     assert _line(service, "WorkingDirectory=") == f"WorkingDirectory={lc.REPO_ROOT}"
-    assert _line(timer, "Unit=") == f"Unit={lc.SERVICE_NAME}"
+    # enable --now (the gateway-start self-heal) needs an install target.
+    assert _line(service, "WantedBy=") == "WantedBy=default.target"
 
-    # Writes trigger daemon-reload, then enable --now of the timer only.
+    # Writes trigger daemon-reload, then enable --now of the SERVICE only.
     assert any("daemon-reload" in c for c in ctl.calls)
     enable_calls = [c for c in ctl.calls if "enable" in c]
-    assert enable_calls and all(c[-1] == lc.TIMER_NAME for c in enable_calls)
-    assert result.enabled and result.timer_active
+    assert enable_calls and all(c[-1] == lc.SERVICE_NAME for c in enable_calls)
+    assert result.enabled and result.active
+    # The poll lives inside --serve — no timer unit is written anymore.
+    assert not (unit_dir / lc.TIMER_NAME).exists()
+
+
+def test_leftover_oneshot_unit_is_rewritten_as_serve_unit(tmp_path):
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / lc.SERVICE_NAME).write_text(LEGACY_ONESHOT_BODY, encoding="utf-8")
+    ctl = FakeSystemctl()
+
+    result = lc.reconcile_scheduler_on_load(
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
+    )
+
+    service = (unit_dir / lc.SERVICE_NAME).read_text(encoding="utf-8")
+    assert service == _expected_service_body()
+    assert _line(service, "Type=") == "Type=simple"
+    assert result.changed and result.enabled and result.active
+    assert any("daemon-reload" in c for c in ctl.calls)
+
+
+def test_leftover_timer_is_stopped_disabled_and_removed(tmp_path):
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / lc.TIMER_NAME).write_text("[Unit]\n", encoding="utf-8")
+    ctl = FakeSystemctl()
+
+    result = lc.reconcile_scheduler_on_load(
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
+    )
+
+    # A firing timer would double-poll next to --serve's in-process poll.
+    assert result is not None and result.timer_retired
+    assert not (unit_dir / lc.TIMER_NAME).exists()
+    assert any("stop" in c and c[-1] == lc.TIMER_NAME for c in ctl.calls)
+    assert any("disable" in c and c[-1] == lc.TIMER_NAME for c in ctl.calls)
+    assert any("daemon-reload" in c for c in ctl.calls)
+    # The serve service is still armed.
+    assert result.enabled and result.active
+    assert (unit_dir / lc.SERVICE_NAME).is_file()
 
 
 def test_second_reconcile_with_identical_content_is_noop(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
     ctl = FakeSystemctl()
-    config = {"pr_intent_watch": {"poll_seconds": 300}}
-    lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir, run_systemctl=ctl, config=config
-    )
-    units = [unit_dir / name for name in lc.UNIT_NAMES]
-    first_bodies = [u.read_text(encoding="utf-8") for u in units]
-    mtimes = [u.stat().st_mtime_ns for u in units]
+    lc.reconcile_scheduler_on_load(unit_dir=unit_dir, run_systemctl=ctl, config={})
+    service_path = unit_dir / lc.SERVICE_NAME
+    first_body = service_path.read_text(encoding="utf-8")
+    mtime = service_path.stat().st_mtime_ns
 
     ctl.calls.clear()
     result = lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir, run_systemctl=ctl, config=config
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
     )
 
     assert result is not None and result.changed is False
-    assert [u.read_text(encoding="utf-8") for u in units] == first_bodies
-    assert [u.stat().st_mtime_ns for u in units] == mtimes
-    # Unchanged units + already enabled/active timer → no reload, no enable.
+    assert service_path.read_text(encoding="utf-8") == first_body
+    assert service_path.stat().st_mtime_ns == mtime
+    # Unchanged unit + already enabled/active service → no reload, no enable.
     assert not any("daemon-reload" in c for c in ctl.calls)
     assert not any("enable" in c for c in ctl.calls)
 
 
-def test_default_interval_maps_to_every_five_minutes(tmp_path):
+def test_inactive_service_is_reenabled(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
+    ctl = FakeSystemctl()
+    lc.reconcile_scheduler_on_load(unit_dir=unit_dir, run_systemctl=ctl, config={})
+    ctl.calls.clear()
+    ctl.active.discard(lc.SERVICE_NAME)  # crashed and not restarted
 
-    lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir,
-        run_systemctl=FakeSystemctl(),
-        config={},
+    result = lc.reconcile_scheduler_on_load(
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
     )
 
-    timer = (unit_dir / lc.TIMER_NAME).read_text(encoding="utf-8")
-    assert (
-        _line(timer, "OnCalendar=")
-        == "OnCalendar=*-*-* *:00,05,10,15,20,25,30,35,40,45,50,55:00"
-    )
+    assert result is not None and result.active
+    assert any("enable" in c and c[-1] == lc.SERVICE_NAME for c in ctl.calls)
 
 
-def test_interval_from_config_used_in_rendered_timer(tmp_path):
-    unit_dir = tmp_path / "systemd" / "user"
-
-    lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir,
-        run_systemctl=FakeSystemctl(),
-        config={"pr_intent_watch": {"poll_seconds": 900}},
-    )
-
-    timer = (unit_dir / lc.TIMER_NAME).read_text(encoding="utf-8")
-    assert _line(timer, "OnCalendar=") == "OnCalendar=*-*-* *:00,15,30,45:00"
-
-
-def test_on_calendar_covers_the_poll_space():
-    assert (
-        lc.on_calendar_from_poll_seconds(300)
-        == "*-*-* *:00,05,10,15,20,25,30,35,40,45,50,55:00"
-    )
-    assert lc.on_calendar_from_poll_seconds(3600) == "*-*-* *:00:00"
-    assert lc.on_calendar_from_poll_seconds(60) == "*-*-* *:00,01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59:00"
-    # Junk never produces a broken calendar — fall back to the default cadence.
-    assert lc.on_calendar_from_poll_seconds("junk") == lc.on_calendar_from_poll_seconds(300)
-
-
-def test_poll_seconds_from_config_floors_at_sixty():
-    assert lc.poll_seconds_from_config(None) == 300
-    assert lc.poll_seconds_from_config({}) == 300
-    assert lc.poll_seconds_from_config({"pr_intent_watch": {"poll_seconds": 30}}) == 60
-    assert (
-        lc.poll_seconds_from_config({"pr_intent_watch": {"poll_seconds": "junk"}}) == 300
-    )
-
-
-def test_disabled_plugin_does_not_enable_timer(tmp_path):
+def test_disabled_plugin_does_not_enable_service(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
     ctl = FakeSystemctl()
 
@@ -170,15 +192,16 @@ def test_disabled_plugin_does_not_enable_timer(tmp_path):
         assert result is not None
         assert result.skip_reason == "plugin explicitly disabled"
         assert not result.enabled
-        assert not any("enable" in c for c in ctl.calls)
+        assert ctl.calls == []  # nothing installed → nothing to touch
         assert not (unit_dir / lc.SERVICE_NAME).exists()
         assert not (unit_dir / lc.TIMER_NAME).exists()
 
 
-def test_disabled_plugin_retires_leftover_timer(tmp_path):
+def test_disabled_plugin_stops_and_disables_service_and_timer(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
     unit_dir.mkdir(parents=True)
-    (unit_dir / lc.TIMER_NAME).write_text("[Unit]\n", encoding="utf-8")
+    for name in lc.UNIT_NAMES:
+        (unit_dir / name).write_text("[Unit]\n", encoding="utf-8")
     ctl = FakeSystemctl()
 
     result = lc.reconcile_scheduler_on_load(
@@ -188,7 +211,9 @@ def test_disabled_plugin_retires_leftover_timer(tmp_path):
     )
 
     assert result is not None and result.skip_reason
-    assert any("disable" in c and c[-1] == lc.TIMER_NAME for c in ctl.calls)
+    for name in lc.UNIT_NAMES:
+        assert any("stop" in c and c[-1] == name for c in ctl.calls), name
+        assert any("disable" in c and c[-1] == name for c in ctl.calls), name
     assert not any("enable" in c for c in ctl.calls)
 
 

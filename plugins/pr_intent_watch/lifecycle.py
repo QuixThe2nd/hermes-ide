@@ -1,13 +1,17 @@
-"""Self-install of the pr_intent_watch systemd user timer.
+"""Self-install of the pr_intent_watch systemd user service.
 
 Mirrors ``plugins/fallback_quota_reorder/lifecycle.py`` (itself mirroring
-``plugins/auto_update``): on gateway start, write the oneshot+timer pair
-into ``~/.config/systemd/user``, daemon-reload when the content changed,
-and enable --now the timer — Linux with a reachable systemd **user**
-manager only. Everything else logs once and stays out of the way;
-reconcile never raises into plugin load. ``run.py`` (the oneshot entry)
-must never call back into this module, or a tick could re-arm its own
-scheduler.
+``plugins/auto_update``): on gateway start, write the long-running
+``Type=simple`` unit into ``~/.config/systemd/user`` — ``run.py --serve``,
+which is the live webhook listener plus the in-process poll backup —
+daemon-reload when the content changed, and enable ``--now`` the service.
+A leftover oneshot+timer pair from the old model is rewritten/retired: with
+the poll living inside ``--serve``, a firing timer would double-poll.
+
+Linux with a reachable systemd **user** manager only. Everything else logs
+once and stays out of the way; reconcile never raises into plugin load.
+``run.py`` (including ``--serve``) must never call back into this module, or
+a tick could re-arm its own scheduler.
 """
 
 from __future__ import annotations
@@ -18,20 +22,15 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Sequence
 
 from plugins.auto_update.systemd import default_systemctl_runner, format_exec_start
-from plugins.pr_intent_watch.core import (
-    DEFAULT_POLL_SECONDS,
-    MIN_POLL_SECONDS,
-    plugin_disabled_in_raw,
-    watch_config_from_raw,
-)
+from plugins.pr_intent_watch.core import plugin_disabled_in_raw
 
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "hermes-pr-intent-watch.service"
-TIMER_NAME = "hermes-pr-intent-watch.timer"
+TIMER_NAME = "hermes-pr-intent-watch.timer"  # retired, but still cleaned up
 UNIT_NAMES = (SERVICE_NAME, TIMER_NAME)
 
 # plugins/pr_intent_watch/lifecycle.py -> repo root — never the cwd of
@@ -48,7 +47,8 @@ _skip_logged = False
 class ReconcileResult:
     changed: bool = False
     enabled: bool = False
-    timer_active: bool = False
+    active: bool = False
+    timer_retired: bool = False
     skip_reason: str | None = None
     warnings: tuple[str, ...] = ()
 
@@ -65,7 +65,7 @@ def resolve_unit_python(repo_root: Path = REPO_ROOT) -> str:
     """Interpreter for the unit: the repo venv when present, else the running one.
 
     Never ``which("python3")`` — an ambient interpreter without the hermes tree
-    importable crashes the oneshot at import. The venv ``python`` symlink is
+    importable crashes the service at import. The venv ``python`` symlink is
     used as-is (resolving it yields the base interpreter, without ``yaml``).
     """
     venv_python = repo_root / "venv" / "bin" / "python"
@@ -77,65 +77,37 @@ def resolve_unit_python(repo_root: Path = REPO_ROOT) -> str:
     return sys.executable
 
 
-def on_calendar_from_poll_seconds(poll_seconds: int) -> str:
-    """Explicit minute list for the timer: 300s → every 5 minutes, and so on."""
-    try:
-        seconds = int(poll_seconds)
-    except (TypeError, ValueError):
-        seconds = DEFAULT_POLL_SECONDS
-    step = max(1, round(max(MIN_POLL_SECONDS, seconds) / 60))
-    minutes = ["00"] if step >= 60 else [f"{m:02d}" for m in range(0, 60, step)]
-    return f"*-*-* *:{','.join(minutes)}:00"
-
-
-def plugin_explicitly_disabled(raw: Mapping[str, object] | None) -> bool:
+def plugin_explicitly_disabled(raw: object | None) -> bool:
     """True when config.yaml disables this plugin by name or section flag.
 
     The disable rules live in ``core`` (the tick consults the same ones);
     this name mirrors the sibling plugins' lifecycle surface.
     """
-    return plugin_disabled_in_raw(raw)
-
-
-def poll_seconds_from_config(raw: Mapping[str, object] | None) -> int:
-    """``pr_intent_watch.poll_seconds`` (default 300), floored at 60."""
-    return watch_config_from_raw(raw if isinstance(raw, Mapping) else {}).poll_seconds
+    return plugin_disabled_in_raw(raw)  # type: ignore[arg-type]
 
 
 def render_service_unit(*, python_executable: str, run_py: Path, repo_root: Path) -> str:
-    # No [Install] section on purpose: the oneshot is activated solely by the
-    # timer; enabling the service itself would add a pointless boot-time run.
+    # ``Type=simple``: the process serves the webhook and polls in-process,
+    # so it stays up between events; ``Restart=on-failure`` rides out crashes.
     # ``%h`` is systemd's user-home specifier — expanded by the user manager,
     # so it must NOT go through the %-escaping path quoting helpers.
     return f"""[Unit]
-Description=Hermes PR intent watch (oneshot)
+Description=Hermes PR intent watch (live webhook + poll)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
-ExecStart={format_exec_start([python_executable, str(run_py)])}
+Type=simple
+ExecStart={format_exec_start([python_executable, str(run_py), "--serve"])}
 WorkingDirectory={_format_path(str(repo_root))}
 Environment=HERMES_HOME=%h/.hermes
+Restart=on-failure
+RestartSec=10s
 StandardOutput=journal
 StandardError=journal
-"""
-
-
-def render_timer_unit(*, on_calendar: str) -> str:
-    return f"""[Unit]
-Description=Hermes PR intent watch schedule
-
-[Timer]
-OnCalendar={on_calendar}
-# AccuracySec=1s keeps the poll cadence honest; systemd's 1min default
-# could push two five-minute polls nine minutes apart.
-AccuracySec=1s
-Persistent=true
-Unit={SERVICE_NAME}
 
 [Install]
-WantedBy=timers.target
+WantedBy=default.target
 """
 
 
@@ -174,30 +146,50 @@ def write_unit_if_changed(path: Path, content: str) -> bool:
 
 
 def user_systemd_available(runner: SystemctlRunner) -> bool:
-    """Probe the user manager; a degraded-but-alive instance still runs timers."""
+    """Probe the user manager; a degraded-but-alive instance still runs units."""
     code, out, _err = runner(["systemctl", "--user", "is-system-running"])
     if code == 0:
         return True
     return code == 1 and "degraded" in (out or "").lower()
 
 
-def _timer_enabled(runner: SystemctlRunner) -> bool:
-    code, out, _err = runner(["systemctl", "--user", "is-enabled", TIMER_NAME])
+def _unit_enabled(runner: SystemctlRunner, name: str) -> bool:
+    code, out, _err = runner(["systemctl", "--user", "is-enabled", name])
     return code == 0 and (out or "").strip() in {"enabled", "static"}
 
 
-def _timer_active(runner: SystemctlRunner) -> bool:
-    code, out, _err = runner(["systemctl", "--user", "is-active", TIMER_NAME])
+def _unit_active(runner: SystemctlRunner, name: str) -> bool:
+    code, out, _err = runner(["systemctl", "--user", "is-active", name])
     return code == 0 and (out or "").strip() == "active"
 
 
-def _stop_timer(runner: SystemctlRunner) -> list[str]:
+def _unit_exists(unit_dir: Path, name: str) -> bool:
+    try:
+        return (unit_dir / name).is_file()
+    except OSError:
+        return False
+
+
+def _stop_unit(runner: SystemctlRunner, name: str) -> list[str]:
     warnings: list[str] = []
     for action in ("stop", "disable"):
-        code, _, err = runner(["systemctl", "--user", action, TIMER_NAME])
+        code, _, err = runner(["systemctl", "--user", action, name])
         if code != 0:
-            warnings.append(f"failed to {action} {TIMER_NAME}: {err.strip() or code}")
+            warnings.append(f"failed to {action} {name}: {err.strip() or code}")
     return warnings
+
+
+def _retire_timer(runner: SystemctlRunner, unit_dir: Path) -> tuple[list[str], bool]:
+    """Stop+disable+remove the legacy timer. Returns (warnings, did_something)."""
+    if not _unit_exists(unit_dir, TIMER_NAME):
+        return [], False
+    warnings = _stop_unit(runner, TIMER_NAME)
+    try:
+        (unit_dir / TIMER_NAME).unlink()
+    except OSError as exc:
+        warnings.append(f"failed to remove {TIMER_NAME}: {exc}")
+        return warnings, True
+    return warnings, True
 
 
 def _log_skip_once(reason: str) -> None:
@@ -208,7 +200,7 @@ def _log_skip_once(reason: str) -> None:
     logger.info("pr_intent_watch scheduler self-install skipped: %s", reason)
 
 
-def _load_raw_config() -> Mapping[str, object] | None:
+def _load_raw_config() -> object | None:
     try:
         from plugins.pr_intent_watch.core import load_config_section
 
@@ -225,29 +217,26 @@ def _reconcile(
     *,
     unit_dir: Path | None,
     run_systemctl: SystemctlRunner | None,
-    config: Mapping[str, object] | None,
+    config: object | None,
 ) -> ReconcileResult:
     raw = config if config is not None else _load_raw_config()
 
     if plugin_explicitly_disabled(raw):
-        # The plugin owns the timer, so disabling the plugin must retire a
-        # previously installed one — otherwise it would tick forever.
+        # The plugin owns the service, so disabling the plugin must retire a
+        # previously installed one — otherwise it would serve forever.
         _log_skip_once("plugin explicitly disabled in config")
+        target_dir = unit_dir or default_unit_dir()
+        runner = run_systemctl or default_systemctl_runner
         warnings: list[str] = []
-        timer_unit = (unit_dir or default_unit_dir()) / TIMER_NAME
-        try:
-            leftover = timer_unit.is_file()
-        except OSError:
-            leftover = False
-        if leftover:
-            runner = run_systemctl or default_systemctl_runner
-            warnings.extend(_stop_timer(runner))
+        for name in UNIT_NAMES:
+            if _unit_exists(target_dir, name):
+                warnings.extend(_stop_unit(runner, name))
         return ReconcileResult(
             skip_reason="plugin explicitly disabled", warnings=tuple(warnings)
         )
 
     if not is_linux():
-        _log_skip_once("not Linux (systemd user timer unavailable)")
+        _log_skip_once("not Linux (systemd user manager unavailable)")
         return ReconcileResult(skip_reason="not Linux")
 
     runner = run_systemctl or default_systemctl_runner
@@ -256,42 +245,45 @@ def _reconcile(
         return ReconcileResult(skip_reason="systemd user manager unavailable")
 
     target_dir = unit_dir or default_unit_dir()
-    on_calendar = on_calendar_from_poll_seconds(poll_seconds_from_config(raw))
-    service_body = render_service_unit(
-        python_executable=resolve_unit_python(),
-        run_py=RUN_PY,
-        repo_root=REPO_ROOT,
+    # A leftover oneshot unit from the timer model is simply rewritten —
+    # write_unit_if_changed swaps in the serve unit and triggers a reload.
+    changed = write_unit_if_changed(
+        target_dir / SERVICE_NAME,
+        render_service_unit(
+            python_executable=resolve_unit_python(),
+            run_py=RUN_PY,
+            repo_root=REPO_ROOT,
+        ),
     )
-    timer_body = render_timer_unit(on_calendar=on_calendar)
 
-    changed = False
-    for name, body in ((SERVICE_NAME, service_body), (TIMER_NAME, timer_body)):
-        if write_unit_if_changed(target_dir / name, body):
-            changed = True
+    # The poll lives inside --serve now; a still-installed timer would
+    # double-poll, so retire it and drop the unit file.
+    timer_warnings, timer_touched = _retire_timer(runner, target_dir)
+    changed = changed or timer_touched
+    warnings = list(timer_warnings)
 
-    warnings = []
     if changed:
         code, _, err = runner(["systemctl", "--user", "daemon-reload"])
         if code != 0:
             warnings.append(f"failed to daemon-reload: {err.strip() or code}")
 
-    enabled = _timer_enabled(runner)
-    timer_active = _timer_active(runner)
-    if not (enabled and timer_active):
+    enabled = _unit_enabled(runner, SERVICE_NAME)
+    active = _unit_active(runner, SERVICE_NAME)
+    if not (enabled and active):
         # Idempotent self-heal: enable --now is safe on an already-enabled
-        # timer and starts it when it is merely inactive.
-        code, _, err = runner(["systemctl", "--user", "enable", "--now", TIMER_NAME])
+        # service and starts it when it is merely inactive.
+        code, _, err = runner(["systemctl", "--user", "enable", "--now", SERVICE_NAME])
         if code != 0:
-            warnings.append(f"failed to enable timer: {err.strip() or code}")
+            warnings.append(f"failed to enable service: {err.strip() or code}")
         else:
-            # enable --now on a timer enables and starts it.
             enabled = True
-            timer_active = True
+            active = True
 
     return ReconcileResult(
         changed=changed,
         enabled=enabled,
-        timer_active=timer_active,
+        active=active,
+        timer_retired=timer_touched,
         warnings=tuple(warnings),
     )
 
@@ -300,12 +292,12 @@ def reconcile_scheduler_on_load(
     *,
     unit_dir: Path | None = None,
     run_systemctl: SystemctlRunner | None = None,
-    config: Mapping[str, object] | None = None,
+    config: object | None = None,
 ) -> ReconcileResult | None:
-    """Install/reconcile the user timer pair. Never raises into plugin load.
+    """Install/reconcile the user service. Never raises into plugin load.
 
-    Never call from ``run.py`` — the oneshot must not re-reconcile its own
-    scheduler. Returns None only when an unexpected error was contained.
+    Never call from ``run.py`` — the serve process must not re-reconcile its
+    own scheduler. Returns None only when an unexpected error was contained.
     """
     try:
         return _reconcile(

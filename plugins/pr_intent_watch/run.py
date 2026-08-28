@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Headless CLI entry for pr_intent_watch ticks (what the timer starts)."""
+"""Headless CLI entry for pr_intent_watch (what the systemd service runs).
+
+Default is one poll tick. ``--serve`` is the long-running mode the service
+actually starts: the live GitHub webhook listener plus the in-process poll
+backup. It never reconciles the scheduler — arming units is the gateway
+hook's job.
+"""
 
 from __future__ import annotations
 
@@ -38,9 +44,37 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run reviews but post nothing and write no state.",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help=(
+            "Serve the live GitHub webhook (HMAC-verified) and poll in-process "
+            "until SIGTERM; this is what the systemd unit runs."
+        ),
+    )
+    parser.add_argument(
+        "--print-webhook-secret",
+        action="store_true",
+        help="Print the webhook signing secret (for registering the GitHub hook) and exit.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    if args.print_webhook_secret:
+        from plugins.pr_intent_watch.core import load_state
+        from plugins.pr_intent_watch.webhook import ensure_webhook_secret
+
+        print(ensure_webhook_secret(load_state()))
+        return 0
+
+    if args.serve:
+        from plugins.pr_intent_watch.webhook import serve as serve_webhook
+
+        try:
+            return serve_webhook(config_path=Path(args.config))
+        except KeyboardInterrupt:
+            return 0
 
     try:
         summary = run_tick(

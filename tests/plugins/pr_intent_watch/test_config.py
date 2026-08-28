@@ -10,7 +10,10 @@ import pytest
 import yaml
 
 from plugins.pr_intent_watch.core import (
+    DEFAULT_LISTEN_HOST,
+    DEFAULT_LISTEN_PORT,
     DEFAULT_REPO,
+    DEFAULT_WEBHOOK_PATH,
     PrIntentWatchError,
     load_config_section,
     load_watch_config,
@@ -29,6 +32,9 @@ def test_defaults_when_section_absent():
     assert config.comment is True
     assert config.max_file_names == 40
     assert config.max_commits == 20
+    assert config.listen_host == DEFAULT_LISTEN_HOST == "0.0.0.0"
+    assert config.listen_port == DEFAULT_LISTEN_PORT == 8645
+    assert config.webhook_path == DEFAULT_WEBHOOK_PATH == "/webhooks/pr-intent-watch"
 
 
 def test_defaults_when_raw_is_not_a_mapping():
@@ -48,6 +54,9 @@ def test_explicit_values_are_kept():
                 "comment": False,
                 "max_file_names": 10,
                 "max_commits": 5,
+                "listen_host": "127.0.0.1",
+                "listen_port": 9000,
+                "webhook_path": "/hooks/pr-intent",
             }
         }
     )
@@ -58,6 +67,9 @@ def test_explicit_values_are_kept():
     assert config.comment is False
     assert config.max_file_names == 10
     assert config.max_commits == 5
+    assert config.listen_host == "127.0.0.1"
+    assert config.listen_port == 9000
+    assert config.webhook_path == "/hooks/pr-intent"
 
 
 def test_invalid_types_fall_back_to_defaults():
@@ -72,6 +84,9 @@ def test_invalid_types_fall_back_to_defaults():
                 "comment": 1,  # type: ignore[dict-item]
                 "max_file_names": "40",  # type: ignore[dict-item]
                 "max_commits": None,  # type: ignore[dict-item]
+                "listen_host": 7,  # type: ignore[dict-item]
+                "listen_port": "8645",  # type: ignore[dict-item]
+                "webhook_path": 12,  # type: ignore[dict-item]
             }
         }
     )
@@ -83,6 +98,52 @@ def test_invalid_types_fall_back_to_defaults():
     assert config.comment is True
     assert config.max_file_names == 40
     assert config.max_commits == 20
+    assert config.listen_host == DEFAULT_LISTEN_HOST
+    assert config.listen_port == DEFAULT_LISTEN_PORT
+    assert config.webhook_path == DEFAULT_WEBHOOK_PATH
+
+
+# ── listener settings ───────────────────────────────────────────────────────
+
+
+def test_listen_port_is_clamped_into_the_valid_range():
+    assert watch_config_from_raw({"pr_intent_watch": {"listen_port": 0}}).listen_port == 1
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"listen_port": -5}}).listen_port == 1
+    )
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"listen_port": 70000}}).listen_port
+        == 65535
+    )
+    assert watch_config_from_raw({"pr_intent_watch": {"listen_port": 1}}).listen_port == 1
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"listen_port": 65535}}).listen_port
+        == 65535
+    )
+
+
+def test_listen_port_bool_is_not_an_int():
+    # bool is an int subclass — True must not become port 1.
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"listen_port": True}}).listen_port
+        == DEFAULT_LISTEN_PORT
+    )
+
+
+def test_webhook_path_requires_a_leading_slash():
+    # A path GitHub can never POST to is a typo, not an address.
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"webhook_path": "hooks/pr"}}).webhook_path
+        == DEFAULT_WEBHOOK_PATH
+    )
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"webhook_path": ""}}).webhook_path
+        == DEFAULT_WEBHOOK_PATH
+    )
+    assert (
+        watch_config_from_raw({"pr_intent_watch": {"webhook_path": "/webhooks/pr"}}).webhook_path
+        == "/webhooks/pr"
+    )
 
 
 def test_poll_seconds_floored_at_sixty():
