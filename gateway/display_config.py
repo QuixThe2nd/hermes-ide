@@ -40,7 +40,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
     #   "blockquote"-> each line prefixed with "> "
     #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
-    #   "compact"   -> single "thought for Xs" duration line, no CoT text
+    #   "compact"   -> single "💭 thought for Xs" duration line, no CoT text;
+    #                  appends " (N tokens)" when this turn's count is known
     # Discord defaults to "subtext"; everywhere else defaults to "code".
     "reasoning_style": "code",
     "tool_preview_length": 0,
@@ -278,6 +279,7 @@ def format_reasoning_prefix(
     last_reasoning: str | None,
     turn_seconds: float | None,
     platform_key: str,
+    thought_tokens: int | None = None,
 ) -> str:
     """Render the reasoning block prepended to a final response.
 
@@ -286,10 +288,13 @@ def format_reasoning_prefix(
     ``show_reasoning`` gate and prepend the result as ``f"{prefix}\\n\\n{response}"``.
 
     ``compact`` never includes chain-of-thought text: it renders a single
-    duration line (``-# thought for 12s`` on Discord, ``_thought for 12s_``
-    elsewhere) so users see that the model reasoned without dumping the
-    reasoning itself. Duration formatting reuses
-    :func:`gateway.runtime_footer._format_duration`.
+    💭-marked duration line (``-# 💭 thought for 12s`` on Discord,
+    ``_💭 thought for 12s_`` elsewhere) so users see that the model reasoned
+    without dumping the reasoning itself. When ``thought_tokens`` carries
+    THIS turn's reasoning/output token count, the line gains a
+    ``(N tokens)`` suffix (``-# 💭 thought for 12s (N tokens)``); a
+    missing/zero count leaves the bare duration line. Duration formatting
+    reuses :func:`gateway.runtime_footer._format_duration`.
     """
     if not last_reasoning:
         return ""
@@ -297,9 +302,11 @@ def format_reasoning_prefix(
         duration = _format_duration(turn_seconds)
         if not duration:
             return ""
+        if thought_tokens:
+            duration += f" ({thought_tokens} tokens)"
         if platform_key == "discord":
-            return f"-# thought for {duration}"
-        return f"_thought for {duration}_"
+            return f"-# 💭 thought for {duration}"
+        return f"_💭 thought for {duration}_"
     # Collapse long reasoning to keep messages readable
     lines = last_reasoning.strip().splitlines()
     if len(lines) > 15:

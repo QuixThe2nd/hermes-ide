@@ -48,7 +48,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Discord — `DISCORD_ALLOWED_GUILDS`: any member of a listed server can talk to the bot (DMs unaffected)
   - Discord — threads renamed once, after the first reply lands, never mid-turn
   - Discord — progress updates respect each platform's real message limits
-- Discord — multiplexed profiles honor their own display.reasoning_style; compact renders "thought for Xs"
+- Discord — multiplexed profiles honor their own display.reasoning_style; compact renders "💭 thought for Xs" with an optional "(N tokens)" per-turn count
   - Discord — only the completed turn-final answer reply-pings the user; streaming previews and interim messages stay standalone
   - Discord — clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out)
   - Discord — resolve_ticket propose is terminal: the confirmation embed is the reply, no follow-up message
