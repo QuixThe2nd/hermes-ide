@@ -1,0 +1,36 @@
+# Discord Guests
+
+**Invite a bot or a friend, and they get a private lounge of their own.**
+
+Adding a guest auto-creates a private text channel `#<guest>-<host>-lounge`
+(default host: `steve`, e.g. `#ada-steve-lounge`) under the server's **Chat**
+category. Only that member — plus the people who already see Chat, i.e. the
+owner and bots with admin — can view it. `@everyone` stays view-denied
+everywhere. Access is per-channel overwrites only; nothing beyond the channel
+itself is ever created or assigned.
+
+## Setup
+
+1. The plugin is default-enabled in this fork.
+2. Ensure `$HERMES_HOME/.env` contains a non-empty `DISCORD_BOT_TOKEN`.
+3. Optional first-time `action='setup'`: pins the guild and Chat category, and
+   (first setup only) denies `@everyone` view on every category and top-level
+   channel. The Chat category is resolved by name, case-insensitively, unless
+   `chat_category_id` is passed.
+
+The bot needs **Manage Channels** and **Manage Roles**-equivalent channel
+overwrite permissions.
+
+## Actions
+
+| Action | What it does |
+|---|---|
+| `add` | Resolves the member (`user_id`, or a name prefix via member search), refuses anyone holding ADMINISTRATOR, then creates — or reuses — the lounge under Chat, allows the member on it, and denies `@everyone` view on the lounge itself so it stays private even if category perms drift. |
+| `remove` | Takes the member overwrite off the lounge. The channel and its history are kept — delete it manually if you really want it gone. |
+| `list` | Current guests from state, with live channel existence. |
+| `setup` | Optional: persist guild + Chat category; first-run `@everyone` view lockdown. |
+
+Members with ADMINISTRATOR are never added — they already see everything.
+
+Guests are persisted in `$HERMES_HOME/discord_guests/state.json`. REST only,
+≥0.3s between writes, 429 `retry_after` honoured, token never printed.
