@@ -1,9 +1,11 @@
 """Tests for the agent-callable ``restart`` tool (plugins/gateway_restart).
 
-The tool must be the ``/restart`` slash command's exact twin: same
-``.restart_notify.json`` payload, same supervisor/container routing, same
-``request_restart(...)`` drain call. Never a second drain, never the blocked
-shell/systemctl path.
+The tool must be the ``/restart`` slash command's exact twin *after* the
+requester confirms: same ``.restart_notify.json`` payload, same
+supervisor/container routing, same ``request_restart(...)`` drain call. The
+confirm gate itself pings the requester and only the exact word ``restart``
+unlocks the bounce — never a second drain, never the blocked
+shell/systemctl path, and the ``/restart`` slash command stays ungated.
 """
 
 from __future__ import annotations
@@ -118,6 +120,31 @@ def _bind_session(**kwargs):
     set_session_vars(**kwargs)
 
 
+def _mock_confirm(monkeypatch, reply):
+    """Stub the confirm gate: record the registration, return ``reply``.
+
+    ``reply`` is what ``wait_for_response`` would hand the tool — the exact
+    word, a wrong reply, or ``None`` for a timeout. Registering is stubbed
+    too so mocked waits don't leave real entries armed.
+    """
+    import tools.clarify_gateway as cg
+
+    register = MagicMock(return_value=None)
+    wait = MagicMock(return_value=reply)
+    monkeypatch.setattr(cg, "register", register)
+    monkeypatch.setattr(cg, "wait_for_response", wait)
+    return register, wait
+
+
+# A confirmable session: platform + chat + session key all bound.
+_TELEGRAM_SESSION = {
+    "platform": "telegram",
+    "chat_id": "42",
+    "chat_type": "dm",
+    "session_key": "tg-42",
+}
+
+
 # ── registration ────────────────────────────────────────────────────────────
 
 
@@ -194,8 +221,9 @@ def test_handler_refuses_cron_sessions(gateway_loop, monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
+    register, _wait = _mock_confirm(monkeypatch, "restart")
 
-    _bind_session(cron_session="1")
+    _bind_session(cron_session="1", **_TELEGRAM_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -204,15 +232,18 @@ def test_handler_refuses_cron_sessions(gateway_loop, monkeypatch):
     assert result["success"] is False
     assert "cron" in result["error"].lower()
     runner.request_restart.assert_not_called()
+    # The cron refuse happens before any ping — no prompt is registered.
+    register.assert_not_called()
 
 
 def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
+    register, wait = _mock_confirm(monkeypatch, "restart")
     monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "1")
 
-    _bind_session(platform="telegram", chat_id="42", chat_type="dm")
+    _bind_session(**_TELEGRAM_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -223,14 +254,18 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     assert result["via_service"] is True
     assert "active_agents" in result
     runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    # The bounce only happened because the requester typed the exact word.
+    register.assert_called_once()
+    wait.assert_called_once()
 
 
 def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
+    _register, wait = _mock_confirm(monkeypatch, "restart")
 
-    _bind_session(platform="telegram", chat_id="42", chat_type="dm")
+    _bind_session(**_TELEGRAM_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -240,15 +275,21 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
     assert result["status"] == "restarting"
     assert result["via_service"] is False
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    wait.assert_called_once()
 
 
 def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
+    _mock_confirm(monkeypatch, "restart")
     monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: True)
 
-    result = json.loads(handle_restart({}))
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
 
     assert result["success"] is True
     assert result["via_service"] is True
@@ -262,12 +303,20 @@ def test_handler_reports_in_progress_without_second_restart(
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop, **{flag: True})
+    register, wait = _mock_confirm(monkeypatch, "restart")
 
-    result = json.loads(handle_restart({}))
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
 
     assert result["success"] is True
     assert result["status"] == "already_in_progress"
     runner.request_restart.assert_not_called()
+    # Already draining → no ping and no confirm wait.
+    register.assert_not_called()
+    wait.assert_not_called()
     # A restart already in flight owns the notify payload — no second write.
     assert not (tmp_path / ".restart_notify.json").exists()
 
@@ -278,6 +327,7 @@ def test_handler_persists_restart_notify_from_session_context(
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
+    _mock_confirm(monkeypatch, "restart")
 
     _bind_session(
         platform="telegram",
@@ -286,6 +336,7 @@ def test_handler_persists_restart_notify_from_session_context(
         thread_id="topic-7",
         user_id="u1",
         message_id="m5",
+        session_key="tg-99",
     )
     try:
         result = json.loads(handle_restart({}))
@@ -315,18 +366,177 @@ def test_handler_persists_restart_notify_from_session_context(
     assert not (tmp_path / ".restart_last_processed.json").exists()
 
 
-def test_handler_restarts_without_a_messaging_session(gateway_loop, monkeypatch):
-    """No platform/chat bound (e.g. an api_server turn) — restart still works."""
+# ── the confirm gate ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "reply", ["yes", "Restart", "/restart", "restart please", "   ", ""]
+)
+def test_confirm_rejects_anything_but_the_exact_word(gateway_loop, monkeypatch, reply):
+    """`yes`, `Restart`, `/restart`, extra words, whitespace — all cancel."""
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
+    register, wait = _mock_confirm(monkeypatch, reply)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert result["error"]
+    runner.request_restart.assert_not_called()
+    register.assert_called_once()
+    wait.assert_called_once()
+
+
+def test_confirm_timeout_cancels(gateway_loop, monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    _mock_confirm(monkeypatch, None)  # wait_for_response timeout
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert "no confirmation" in result["error"]
+    runner.request_restart.assert_not_called()
+
+
+def test_confirm_prompt_mentions_the_discord_requester(gateway_loop, monkeypatch):
+    """Discord prompts start with the requester's snowflake and stay in-thread."""
+    from gateway.config import Platform
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = make_restart_runner()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._gateway_loop = gateway_loop
+    runner._background_tasks = set()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+    _mock_confirm(monkeypatch, "restart")
+
+    _bind_session(
+        platform="discord",
+        chat_id="55",
+        chat_type="thread",
+        thread_id="999",
+        user_id="123456789012345678",
+        session_key="discord-55",
+    )
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+
+    chat_id, content, metadata = adapter.sent_calls[0]
+    assert chat_id == "55"
+    assert content.startswith("<@123456789012345678> ")
+    assert "restart" in content
+    assert (metadata or {}).get("thread_id") == "999"
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+def test_confirm_prompt_has_no_mention_prefix_off_discord(gateway_loop, monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    adapter = next(iter(runner.adapters.values()))
+    _mock_confirm(monkeypatch, "restart")
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    # Telegram prompts are plain text — the <@id> ping is a Discord device.
+    _chat_id, content, _metadata = adapter.sent_calls[0]
+    assert not content.startswith("<@")
+
+
+def test_confirm_send_failure_disarms_the_prompt_and_cancels(
+    gateway_loop, monkeypatch
+):
+    """A failed prompt send cancels the restart and leaves no armed entry."""
+    from gateway.platforms.base import SendResult
+    from plugins.gateway_restart.tool import handle_restart
+    from tools import clarify_gateway as cg
+
+    runner, adapter = make_restart_runner()
+
+    async def _failing_send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=False, error="boom")
+
+    adapter.send = _failing_send
+    runner._gateway_loop = gateway_loop
+    runner._background_tasks = set()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert "confirmation prompt" in result["error"]
+    runner.request_restart.assert_not_called()
+    # The registered entry was reaped, not left armed to eat the next message.
+    assert cg.has_pending("tg-42") is False
+
+
+def test_confirm_refuses_when_no_chat_session_is_bound(gateway_loop, monkeypatch):
+    """No platform/chat bound (e.g. an api_server turn) — cannot confirm."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    register, _wait = _mock_confirm(monkeypatch, "restart")
 
     result = json.loads(handle_restart({}))
 
-    assert result["success"] is True
-    assert result["status"] == "restarting"
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    assert result["success"] is False
+    assert "cannot confirm" in result["error"].lower()
+    runner.request_restart.assert_not_called()
+    register.assert_not_called()
     assert runner._restart_command_source is None
+
+
+def test_confirm_refuses_without_a_live_adapter_for_the_platform(
+    gateway_loop, monkeypatch
+):
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, _adapter = make_restart_runner()  # telegram-only adapters map
+    runner._gateway_loop = gateway_loop
+    runner._background_tasks = set()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+    register, _wait = _mock_confirm(monkeypatch, "restart")
+
+    _bind_session(platform="discord", chat_id="55", session_key="discord-55")
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert "no live adapter" in result["error"].lower()
+    runner.request_restart.assert_not_called()
+    register.assert_not_called()
 
 
 def test_handler_survives_runner_without_a_loop(monkeypatch):
@@ -343,7 +553,11 @@ def test_handler_survives_runner_without_a_loop(monkeypatch):
     runner.request_restart.assert_not_called()
 
 
-# ── /restart keeps using the shared path ────────────────────────────────────
+# ── /restart keeps using the shared path (and never waits for the word) ─────
+#
+# The user already typed /restart — the slash command stays ungated by the
+# tool's confirm flow, so these tests mock begin_user_restart directly and
+# assert no clarify machinery is involved.
 
 
 @pytest.mark.asyncio
