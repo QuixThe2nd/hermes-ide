@@ -3,7 +3,7 @@
 ### Voice not working
 1. Check `stt.enabled: true` in config.yaml
 2. Verify provider: `pip install faster-whisper` or set API key
-3. In gateway: `/restart`. In CLI: exit and relaunch.
+3. In gateway: `/restart`, or the agent can call the `restart` tool itself (same drain path). In CLI: exit and relaunch.
 
 ### Tool not available
 1. `hermes tools` — check if toolset is enabled for your platform
@@ -18,7 +18,7 @@
 
 ### Changes not taking effect
 - **Tools/skills:** `/reset` starts a new session with updated toolset
-- **Config changes:** In gateway: `/restart`. In CLI: exit and relaunch.
+- **Config changes:** In gateway: `/restart`, or call the `restart` tool (same drain path). In CLI: exit and relaunch.
 - **Code changes:** Restart the CLI or gateway process
 
 ### web_extract shows a stale page (result caching)

@@ -90,6 +90,20 @@ def is_container_restart_context() -> bool:
     return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
 
+def user_restart_via_service() -> bool:
+    """Route a user-initiated restart (``/restart``, the ``restart`` tool) via
+    the service-manager exit path?
+
+    True when a service manager (systemd/launchd/s6) supervises the gateway or
+    the gateway runs inside a Docker/Podman container: exit with code 75 so the
+    supervisor / container restart policy relaunches us. The detached
+    subprocess approach (setsid + bash) doesn't work under systemd (KillMode
+    kills the cgroup) or Docker (tini exits when the gateway dies, taking the
+    detached helper with it).
+    """
+    return is_gateway_supervisor_process() or is_container_restart_context()
+
+
 def parse_restart_drain_timeout(raw: object) -> float:
     """Parse a configured drain timeout, falling back to the shared default."""
     try:

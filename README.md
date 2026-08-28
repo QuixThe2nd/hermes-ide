@@ -44,6 +44,7 @@ A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-age
   - Gateway — steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context
   - Gateway — `/restart` parks only live chats, resumes only that snapshot, and shows each accepted LLM park steer in its shutdown warning
   - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
+  - Gateway — agent-callable `restart` tool uses the same drain path as `/restart`
   - Gateway — lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`)
   - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), wires `#gateway-restarts` as `agents-N` while up and `restarting-N-agents` while draining, then re-syncs at most hourly
   - Discord — sessions keyed to your stable username, not your per-server nickname

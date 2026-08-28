@@ -124,6 +124,7 @@ CONFIGURABLE_TOOLSETS = [
     ("dev-pipeline",    "🏗️ Dev Pipeline",              "durable automated development jobs"),
     ("quota_channels",  "📊 Quota Channels",            "quota_channels_tick (Discord voice-channel quota display)"),
     ("assistant_handoff", "📤 Assistant Handoff",        "mission close or one-way escalation"),
+    ("gateway",         "♻️ Gateway",                   "restart (same drain path as /restart)"),
 ]
 
 

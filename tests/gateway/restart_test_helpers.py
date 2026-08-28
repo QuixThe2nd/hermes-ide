@@ -97,6 +97,9 @@ def make_restart_runner(
     runner._handle_active_session_busy_message = (
         GatewayRunner._handle_active_session_busy_message.__get__(runner, GatewayRunner)
     )
+    runner.begin_user_restart = GatewayRunner.begin_user_restart.__get__(
+        runner, GatewayRunner
+    )
     runner._handle_restart_command = GatewayRunner._handle_restart_command.__get__(
         runner, GatewayRunner
     )
