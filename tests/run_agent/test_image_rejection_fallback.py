@@ -6,7 +6,7 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
-from run_agent import _strip_images_from_messages
+from run_agent import _looks_like_image_content_rejection, _strip_images_from_messages
 
 
 class TestStripImagesPreservesAlternation:
@@ -121,29 +121,16 @@ class TestImageRejectionPhraseIsolation:
     so they route to the correct recovery handler (e.g. _try_shrink_image_parts).
     """
 
-    # Reproduces the phrase list used in run_agent.py's error-handler block.
-    _REJECTION_PHRASES = (
-        "only 'text' content type is supported",
-        "only text content type is supported",
-        "image_url is not supported",
-        "image content is not supported",
-        "multimodal is not supported",
-        "multimodal content is not supported",
-        "multimodal input is not supported",
-        "vision is not supported",
-        "vision input is not supported",
-        "does not support images",
-        "does not support image input",
-        "does not support multimodal",
-        "does not support vision",
-        "model does not support image",
-        "image_url'. expected",
-        "no endpoints found that support image input",
-    )
-
     def _matches(self, body: str) -> bool:
-        low = body.lower()
-        return any(p in low for p in self._REJECTION_PHRASES)
+        return _looks_like_image_content_rejection(body)
+
+    def test_kimi_truncated_image_trips_recovery(self):
+        # Kimi/Moonshot reject truncated image bytes with this 400; the
+        # bad bytes are in immutable history so stripping must fire.
+        body = ("HTTP 400: Invalid request: prepare image failed error, "
+                "status code: 400, message: failed to decode image: invalid "
+                "or unsupported image format")
+        assert self._matches(body) is True
 
     def test_anthropic_image_too_large_does_not_trip(self):
         # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —
@@ -160,5 +147,29 @@ class TestImageRejectionPhraseIsolation:
 
 
 
+    def test_real_image_rejection_bodies_trip(self):
+        """Positive cases — real-world error wordings that should trigger."""
+        bodies = [
+            "Only 'text' content type is supported.",
+            "Bad request: multimodal is not supported by this model",
+            "This model does not support images",
+            "vision is not supported on this endpoint",
+            "model does not support image input",
+            # ChatGPT-account Codex backend (issue #23570) — rejects
+            # data:image/...base64 URLs in input_image fields. Without this
+            # match the agent cascaded into compression / context-too-large
+            # recovery instead of just stripping the images.
+            "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
+            # OpenRouter 404 when no upstream endpoint for the model accepts
+            # image input — issue #21160. The exact wording from the report.
+            "HTTP 404: No endpoints found that support image input",
+            # Alibaba/OpenAI-compatible endpoints can reject image-bearing
+            # messages without naming image_url explicitly. The first failed
+            # turn should still switch to text-only/aux-vision mode (#57948).
+            "The provided messages input is invalid. The error info is [Unexpected item type in content].",
+            "The image data you provided does not represent a valid image. Please check your input and try again.",
+        ]
+        for body in bodies:
+            assert self._matches(body) is True, f"false negative on: {body}"
 
 

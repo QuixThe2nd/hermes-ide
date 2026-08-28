@@ -77,13 +77,21 @@ def _safe_int(value: Any) -> int | None:
 # per compression run (its only non-recursive call site is the compress path;
 # the two recursive calls are the deliberate main-model retry that must NOT
 # re-issue the pin). Lean ``tail_mode`` additionally runs
-# ``_build_chunk_digests``, which issues its own ``call_llm`` calls directly
-# and never consults the pin — during a stall-fallback retry those digests
-# still target the stalled primary and degrade to per-segment placeholders.
-# Deliberate: the digest path is a best-effort augmentation, not the summary,
-# and pinning it would require weakening the single-use contract below.
+# ``_build_chunk_digests``, which issues its own ``call_llm`` calls directly.
+# Those digests consult ``attempt_summary_route_kwargs()`` (non-consuming):
+# during a stall-fallback retry they follow the summary onto the healthy
+# fallback backend instead of returning to the stalled primary. The consumed
+# echo below preserves the pin's single-use contract for the SUMMARY call —
+# the main-model retry still never re-issues the pinned route.
 _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
+)
+
+# Echo of the route the summary call consumed, for SIBLING aux calls of the
+# same attempt (lean digests). Context-local like the pin itself, so it can
+# never leak across threads or into an unrelated compression attempt.
+_SUMMARY_ROUTE_CONSUMED: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("hermes_summary_route_consumed", default=None)
 )
 
 # call_llm kwargs a pinned route may set. ``timeout`` lets a fallback entry
@@ -120,12 +128,36 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
     Single use by design. ``_generate_summary`` retries itself on the main
     model when the summary route fails; re-issuing the pinned route there
     would spend a second full deadline on the backend that just failed.
+
+    The consumed route is echoed into ``_SUMMARY_ROUTE_CONSUMED`` so that
+    SIBLING auxiliary calls in the same attempt (the lean chunk digests,
+    which run after the summary) can keep addressing the healthy fallback
+    backend instead of silently returning to the stalled task route
+    (#96634 post-merge review, secondary item).
     """
     route = _SUMMARY_ROUTE_PIN.get()
     if route is None:
         return None
     _SUMMARY_ROUTE_PIN.set(None)
+    _SUMMARY_ROUTE_CONSUMED.set(route)
     return route
+
+
+def attempt_summary_route_kwargs() -> Dict[str, Any]:
+    """Route kwargs for sibling aux calls of the CURRENT summary attempt.
+
+    Non-consuming. Prefers a still-pending pin (digest paths that run before
+    the summary), else the route the summary call just consumed. Empty when
+    no stall-fallback pin is active — normal task routing applies.
+    """
+    route = _SUMMARY_ROUTE_PIN.get() or _SUMMARY_ROUTE_CONSUMED.get()
+    if not route:
+        return {}
+    return {
+        field: route[field]
+        for field in _PINNED_ROUTE_FIELDS
+        if route.get(field) not in (None, "")
+    }
 
 
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
@@ -2251,6 +2283,11 @@ class ContextCompressor(ContextEngine):
             "chunk_count": 0,
             "total_duration_ms": None,
             "aux_call_duration_ms": None,
+            "queue_wait_ms": None,
+            "prompt_build_ms": None,
+            "time_to_first_progress_ms": None,
+            "summary_generation_ms": None,
+            "commit_ms": None,
             "fallback_used": False,
             "commit_status": "unknown",
             "split_status": "unknown",
@@ -2283,6 +2320,7 @@ class ContextCompressor(ContextEngine):
         aux_provider: str | None = None,
         aux_model: str | None = None,
         effective_aux_context: int | None = None,
+        phase_timings: Dict[str, Any] | None = None,
     ) -> None:
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if not isinstance(telemetry, dict):
@@ -2306,6 +2344,19 @@ class ContextCompressor(ContextEngine):
             )
         previous = telemetry.get("aux_call_duration_ms") or 0
         telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
+        for key in (
+            "queue_wait_ms",
+            "prompt_build_ms",
+            "time_to_first_progress_ms",
+            "summary_generation_ms",
+            "commit_ms",
+        ):
+            if isinstance(phase_timings, dict) and key in phase_timings:
+                value = _safe_int(phase_timings[key])
+                if key in {"queue_wait_ms", "summary_generation_ms"} and value is not None:
+                    telemetry[key] = (telemetry.get(key) or 0) + value
+                else:
+                    telemetry[key] = value
 
     def _emit_init_summary_once(self) -> None:
         """Emit the informative startup line once, on first resolution.
@@ -4627,6 +4678,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             try:
                 from agent.auxiliary_client import call_llm
 
+                # During a stall-fallback retry, follow the summary onto the
+                # pinned healthy route (non-consuming read) instead of
+                # re-addressing the stalled task backend (#96634 follow-up).
                 resp = call_llm(
                     messages=[{
                         "role": "user",
@@ -4634,6 +4688,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     }],
                     task="compression",
                     max_tokens=_LEAN_DIGEST_MAX_TOKENS,
+                    **attempt_summary_route_kwargs(),
                 )
                 body = (
                     resp.choices[0].message.content
@@ -4770,7 +4825,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         the middle turns without a summary rather than inject a useless
         placeholder.
         """
-        now = time.monotonic()
+        prompt_started_at = time.monotonic()
+        now = prompt_started_at
         if now < self._summary_failure_cooldown_until:
             logger.debug(
                 "Skipping context summary during cooldown (%.0fs remaining)",
@@ -5078,42 +5134,40 @@ This compaction should PRIORITISE preserving all information related to the focu
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            _aux_provider = ""
-            _aux_model = self.summary_model or ""
-            _aux_context = None
-            try:
-                from agent.auxiliary_client import _resolve_task_provider_model
-
-                _resolved_provider, _resolved_model, _, _, _ = _resolve_task_provider_model(
-                    "compression",
-                    model=(self.summary_model or ""),
-                )
-                _aux_provider = _resolved_provider or ""
-                _aux_model = _resolved_model or _aux_model or self.model or ""
-                if _aux_model == self.model:
-                    _aux_context = self.context_length
-            except Exception:
-                pass
+            # ``call_llm`` writes the one concrete route it actually selected;
+            # do not independently pre-resolve a second, potentially stale
+            # provider/model pair for telemetry or fast-lane certification.
+            _aux_route: Dict[str, str] = {}
+            call_kwargs["route_info"] = _aux_route
             # A pinned route (stall fallback, #78981) is an explicit override:
-            # it replaces the task-config route for this one call so the retry
-            # actually leaves the backend that just stalled, and it re-points
-            # the aux telemetry at where the request really went.
+            # it replaces task routing for this one call so the retry actually
+            # leaves the backend that just stalled. ``call_llm`` still records
+            # the final selected route in ``_aux_route``.
             _pinned_route = _pinned_summary_call_kwargs()
             if _pinned_route:
                 call_kwargs.update(_pinned_route)
-                _aux_provider = str(_pinned_route.get("provider") or _aux_provider)
-                _aux_model = str(_pinned_route.get("model") or _aux_model)
-                _aux_context = None
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
             # aborts the summary and compression falls back to a degraded static
             # marker, losing the real handoff (#23975). Re-entrant: a main-model
             # retry (_generate_summary recursion) re-enters harmlessly.
             _aux_call_start = time.monotonic()
+            _latency_info: Dict[str, int] = {
+                "prompt_build_ms": max(0, int((_aux_call_start - prompt_started_at) * 1000))
+            }
+            call_kwargs["latency_info"] = _latency_info
             try:
                 with aux_interrupt_protection():
                     response = call_llm(**call_kwargs)
             finally:
+                route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
+                _aux_provider = _aux_route.get("provider") or self.provider or ""
+                _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
+                _aux_context = (
+                    self.context_length
+                    if route_known and _aux_model == self.model
+                    else None
+                )
                 self._record_aux_compression_call(
                     prompt_messages=call_kwargs["messages"],
                     # Current main intentionally omits max_tokens from the aux
@@ -5124,6 +5178,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     aux_provider=_aux_provider,
                     aux_model=_aux_model,
                     effective_aux_context=_aux_context,
+                    phase_timings=_latency_info,
                 )
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some
