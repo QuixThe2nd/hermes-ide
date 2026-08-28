@@ -105,10 +105,13 @@ def test_category_label_tracks_poll_success_even_when_poll_skipped(
     )
 
 
-def test_latency_hysteresis_holds_small_jitter_and_redisplays_big_moves(
-    hermes, config, transport, now, ping
+def test_latency_hysteresis_holds_small_jitter_and_holds_big_moves_until_the_next_poll(
+    hermes, config, transport, ping
 ):
-    run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)  # displays 33ms
+    clock = {"t": 1_700_000_000.0}
+    now = lambda: clock["t"]  # noqa: E731
+
+    run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)  # polls, displays 33ms
     patches_after_first = transport.patch_calls
 
     # 36ms is within 5ms of the displayed 33.3 → keep 33, no category PATCH.
@@ -116,17 +119,42 @@ def test_latency_hysteresis_holds_small_jitter_and_redisplays_big_moves(
     report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
     assert report["did_poll"] is False
     assert report["latency_ms"] == 33.3
+    assert report["pending_latency_ms"] is None
     assert "33ms" in dict(transport.patched)["cat"]
     assert transport.patch_calls == patches_after_first
     assert load_state()["last_latency_ms"] == 33.3
 
-    # 40ms moves ≥5ms from the displayed value → redisplay as 40ms.
+    # 40ms moves ≥5ms from the displayed value → accepted, but held: showing
+    # it now would spend a latency-only PATCH the next timestamp update needs.
     ping.value = 40.0
     report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
+    assert report["did_poll"] is False
+    assert report["latency_ms"] == 33.3  # label keeps the displayed value
+    assert report["pending_latency_ms"] == 40.0
+    assert "33ms" in dict(transport.patched)["cat"]
+    assert transport.patch_calls == patches_after_first
+    state = load_state()
+    assert state["last_latency_ms"] == 33.3  # must NOT advance on a skipped poll
+    assert state["pending_latency_ms"] == 40.0
+
+    # Still no poll → the held value keeps waiting, still zero PATCHes.
+    report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
+    assert report["did_poll"] is False
+    assert report["pending_latency_ms"] == 40.0
+    assert transport.patch_calls == patches_after_first
+
+    # Next polling tick: one category PATCH carries the new timestamp AND the
+    # held 40ms; the latency change rides the rename that happens anyway.
+    clock["t"] += config["poll_interval_seconds"]
+    report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
+    assert report["did_poll"] is True
     assert report["latency_ms"] == 40.0
-    assert "40ms" in dict(transport.patched)["cat"]
+    assert report["pending_latency_ms"] is None
     assert transport.patch_calls == patches_after_first + 1
-    assert load_state()["last_latency_ms"] == 40.0
+    assert dict(transport.patched)["cat"] == (
+        f"Speeds • 40ms • {fmt_ts(now())}"
+        f" • Next: {fmt_time(int(now()) + config['poll_interval_seconds'])}"
+    )
 
 
 def test_ping_timeout_renders_but_never_fails_the_tick(
@@ -151,22 +179,53 @@ def test_ping_timeout_renders_but_never_fails_the_tick(
 def test_state_file_is_written_under_hermes_home(hermes, config, transport, now, ping):
     run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
     data = json.loads((hermes / "speed_channels_state.json").read_text(encoding="utf-8"))
-    assert data == {"last_poll_success": int(now()), "last_latency_ms": 33.3}
+    assert data == {
+        "last_poll_success": int(now()),
+        "last_latency_ms": 33.3,
+        "pending_latency_ms": None,  # a polling tick flushes, nothing held
+    }
 
 
-def test_skipped_poll_still_pings_and_persists_latency(hermes, config, transport, now, ping):
+def test_skipped_poll_still_pings_and_holds_latency(hermes, config, transport, now, ping):
     run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
-    ping.value = 60.0  # ≥5ms away → new displayed value
+    ping.value = 60.0  # ≥5ms away → accepted move, but no poll to flush it on
 
     report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
 
     assert report["did_poll"] is False
     assert ping.calls == 2
-    assert report["latency_ms"] == 60.0
-    # last_poll_success must not advance on a skipped poll.
+    assert report["latency_ms"] == 33.3  # the label keeps the displayed value
+    assert report["pending_latency_ms"] == 60.0
+    # Neither last_poll_success nor last_latency_ms advance on a skipped poll.
     state = load_state()
     assert state["last_poll_success"] == int(now())
-    assert state["last_latency_ms"] == 60.0
+    assert state["last_latency_ms"] == 33.3
+    assert state["pending_latency_ms"] == 60.0
+
+
+def test_timeout_on_a_skipped_tick_keeps_the_old_number_until_the_next_poll(
+    hermes, config, transport, ping
+):
+    clock = {"t": 1_700_000_000.0}
+    now = lambda: clock["t"]  # noqa: E731
+
+    run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)  # displays 33ms
+    ping.value = None
+
+    report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
+
+    # A timeout between polls is held like any other accepted move: the label
+    # keeps showing the last measured number rather than spending a rename.
+    assert report["did_poll"] is False
+    assert report["latency_ms"] == 33.3
+    assert report["pending_latency_ms"] is None
+    assert "33ms" in dict(transport.patched)["cat"]
+    assert load_state()["last_latency_ms"] == 33.3
+
+    clock["t"] += config["poll_interval_seconds"]
+    report = run_tick(config, now_fn=now, http_fn=transport, ping_fn=ping)
+    assert report["latency_ms"] is None  # the timeout finally shows on the poll
+    assert dict(transport.patched)["cat"].startswith("Speeds • timeout • ")
 
 
 # -- default_ping (fake subprocess.run; never a real binary or network) ------
@@ -202,6 +261,19 @@ def test_default_ping_parses_iputils_output(monkeypatch):
     assert seen["kwargs"]["timeout"] == 3
 
 
+def test_default_ping_darwin_drops_the_wait_flag(monkeypatch):
+    from plugins.speed_channels import core
+
+    monkeypatch.setattr(core.sys, "platform", "darwin")
+    seen = _fake_ping_run(monkeypatch, stdout=IPUTILS_LINE)
+
+    assert core.default_ping() == pytest.approx(33.338)
+    # macOS ping's -W is milliseconds, not seconds — "2" would wait 2ms and
+    # time every probe out, so only the outer subprocess timeout waits.
+    assert seen["argv"] == ["ping", "-c", "1", core.PING_HOST]
+    assert seen["kwargs"]["timeout"] == 3
+
+
 @pytest.mark.parametrize(
     "stdout, expected",
     [
@@ -209,6 +281,9 @@ def test_default_ping_parses_iputils_output(monkeypatch):
         ("time<1ms\n", 0.5),              # ceiling → pinned inside [0, 1)
         ("time<1 ms\n", 0.5),             # Windows-style spacing
         ("Reply from 1.1.1.1: bytes=32 time=33ms TTL=57\n", 33.0),  # Windows
+        ("Zeit=33ms\n", 33.0),            # German Windows label
+        ("Zeit<1ms\n", 0.5),              # German Windows ceiling
+        ("Antwort von 1.1.1.1: Bytes=32 Zeit=33ms TTL=57\n", 33.0),  # full line
     ],
 )
 def test_default_ping_accepts_the_known_output_shapes(monkeypatch, stdout, expected):
