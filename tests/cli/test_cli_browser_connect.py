@@ -31,11 +31,29 @@ def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
 class _FakeResponse:
     status = 200
 
+    def __init__(self, body=b""):
+        self._body = body if isinstance(body, bytes) else body.encode("utf-8")
+
+    def read(self):
+        return self._body
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+_CHROME_VERSION_JSON = (
+    b'{"Browser":"Chrome/120.0.6099.109","Protocol-Version":"1.3",'
+    b'"User-Agent":"Mozilla/5.0 Chrome/120.0.6099.109",'
+    b'"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/abc"}'
+)
+_ELECTRON_VERSION_JSON = (
+    b'{"Browser":"Electron/28.2.0","Protocol-Version":"1.3",'
+    b'"User-Agent":"Mozilla/5.0 Chrome/120.0.6099.109 Electron/28.2.0",'
+    b'"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/pos"}'
+)
 
 
 class TestChromeDebugLaunch:
@@ -45,7 +63,7 @@ class TestChromeDebugLaunch:
         def fake_urlopen(url, timeout):
             requested.append(url)
             if url.endswith("/json/version"):
-                return _FakeResponse()
+                return _FakeResponse(_CHROME_VERSION_JSON)
             raise OSError("unexpected probe")
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
@@ -55,6 +73,22 @@ class TestChromeDebugLaunch:
 
     def test_browser_debug_ready_rejects_non_cdp_listener(self):
         with patch("urllib.request.urlopen", side_effect=OSError("not cdp")):
+            assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is False
+
+    def test_browser_debug_ready_rejects_http_200_without_cdp_identity(self):
+        def fake_urlopen(url, timeout):
+            return _FakeResponse(b"ok")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is False
+
+    def test_browser_debug_ready_rejects_electron_cdp(self):
+        def fake_urlopen(url, timeout):
+            if url.endswith("/json/version"):
+                return _FakeResponse(_ELECTRON_VERSION_JSON)
+            raise OSError("unexpected probe")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is False
 
 
