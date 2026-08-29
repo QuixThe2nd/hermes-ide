@@ -46,11 +46,6 @@ RESTART_SCHEMA = {
 # call instead of hanging the worker thread forever.
 _BEGIN_RESTART_TIMEOUT_S = 15.0
 
-# How long the requester has to type the confirm word (clarify-like). The
-# inactivity heartbeat that keeps the waiting agent alive fires inside
-# wait_for_response.
-_CONFIRM_TIMEOUT_S = 600.0
-
 # The only reply that confirms a restart: this exact word, nothing else.
 _CONFIRM_WORD = "restart"
 
@@ -241,14 +236,9 @@ def _confirm_restart_with_requester(
             f"{getattr(send_result, 'error', None) or 'send failed'}"
         )
 
-    response = clarify_gateway.wait_for_response(clarify_id, _CONFIRM_TIMEOUT_S)
+    response = clarify_gateway.wait_for_response(clarify_id, 0)
     if str(response or "").strip() == _CONFIRM_WORD:
         return None
-    if response is None:
-        return (
-            "Restart cancelled — no confirmation within "
-            f"{int(_CONFIRM_TIMEOUT_S)}s."
-        )
     return (
         "Restart cancelled — the reply was not the exact word "
         f"`{_CONFIRM_WORD}`."
@@ -271,7 +261,7 @@ def handle_restart(args: dict, **_: Any) -> str:
        ``/restart``) proceeds to the same supervisor/container branch as
        ``/restart`` inside ``begin_user_restart``, with the requester's
        routing persisted to ``.restart_notify.json`` for the comeback
-       notice. Anything else, empty, or a timeout cancels with
+       notice. Anything else or empty cancels with
        ``{"success": false, "status": "cancelled"}``.
     5. On confirmation, returns once the restart is queued — the bounce
        happens after this turn ends.
@@ -321,10 +311,9 @@ def handle_restart(args: dict, **_: Any) -> str:
     except RuntimeError:
         current_loop = None
     if current_loop is loop:
-        # The confirm wait blocks a threading.Event for up to
-        # _CONFIRM_TIMEOUT_S — doing that ON the gateway loop would freeze
-        # the whole gateway, so an inline (non-executor) handler cannot use
-        # this tool.
+        # The confirm wait blocks a threading.Event until the requester
+        # replies — doing that ON the gateway loop would freeze the whole
+        # gateway, so an inline (non-executor) handler cannot use this tool.
         return _error_json(
             "The restart tool cannot wait for a confirmation on the gateway "
             "event loop; it must run from a tool worker thread."
