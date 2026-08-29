@@ -4794,15 +4794,21 @@ class TurnRunner:
         if event_type not in {"tool.started",}:
             return
 
-        # Never render a progress bubble for the clarify tool.  The
-        # adapter's send_clarify IS the user-facing rendering (interactive
-        # buttons or the numbered-text fallback), so a progress bubble is
-        # pure duplication — and in verbose mode it dumps the raw
-        # tool-call args JSON ({"question": ..., "choices": [...]}) into
-        # the chat.  Because the progress queue drains on a background
-        # task, that raw JSON typically lands right underneath the
-        # rendered prompt (#52374).
-        if tool_name == "clarify":
+        # Never render a progress bubble for a tool whose prompt IS a
+        # rendered message.  For ``clarify`` the adapter's send_clarify IS
+        # the user-facing rendering (interactive buttons or the
+        # numbered-text fallback), so a progress bubble is pure duplication
+        # — and in verbose mode it dumps the raw tool-call args JSON
+        # ({"question": ..., "choices": [...]}) into the chat.  For
+        # ``restart`` the tool's dedicated confirmation message (a Discord
+        # embed on capable adapters, plain text elsewhere) is the prompt,
+        # so a "♻️ restart" bubble underneath it is the same duplication.
+        # Because the progress queue drains on a background task, that
+        # bubble typically lands right underneath the rendered prompt
+        # (#52374).  Exact tool names only — progress is emitted before the
+        # tool handler can register any pending state, so nothing richer
+        # than the name can gate this.
+        if tool_name in {"clarify", "restart"}:
             return
 
         # Suppress tool-progress bubbles once the user has sent `stop`.

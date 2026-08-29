@@ -145,18 +145,103 @@ def _cancelled_json(message: str) -> str:
 
 
 def _drop_pending_confirm(clarify_mod: Any, clarify_id: str) -> None:
-    """Disarm a registered confirm prompt that will not be waited on.
+    """Disarm and reap a registered confirm prompt that will not be waited on.
 
     Used when the prompt send fails: a registered-but-never-delivered entry
     would otherwise stay armed and the gateway text-intercept would eat the
     requester's next message as its reply. Resolving with the empty sentinel
-    and reaping via ``wait_for_response`` pops the entry from the registry.
+    disarms it; ``wait_for_response`` then pops the entry from the registry
+    and the session index — this caller exits on the delivery error without
+    ever waiting, so the reap has to happen here.
+
+    The reap runs even when the resolve reports the entry was already
+    resolved: a racing user reply sets the event (first-writer-wins, so the
+    real reply stands and the sentinel is dropped) but only a wait pops the
+    entry, and this caller never waits. A resolved-yet-still-registered
+    entry would sit at the head of the session's clarify index and eat the
+    replies meant for the session's next clarify.
     """
     try:
-        if clarify_mod.resolve_gateway_clarify(clarify_id, ""):
-            clarify_mod.wait_for_response(clarify_id, 1.0)
+        clarify_mod.resolve_gateway_clarify(clarify_id, "")
+        # An already-set event (our sentinel or the racing reply) returns
+        # at once; an entry reaped elsewhere returns None. Nothing blocks.
+        clarify_mod.wait_for_response(clarify_id, 1.0)
     except Exception:
         logger.debug("Failed to drop pending restart confirm", exc_info=True)
+
+
+def _deliver_confirm_prompt(
+    adapter: Any,
+    loop: Any,
+    source: Any,
+    content: str,
+    metadata: dict,
+) -> Optional[str]:
+    """Deliver the confirmation prompt; ``None`` when exactly one landed.
+
+    Discord adapters that offer ``send_restart_confirmation`` render one
+    dedicated confirmation embed (requester ping included) — the Discord
+    presentation lives in the adapter, not here. Every other adapter,
+    Discord relay included, keeps the plain-text prompt. A rich send that
+    definitively failed (``SendResult.success`` False — pre-send failures
+    only; the adapter reports success only once the message exists) falls
+    back to exactly one plain prompt, so the requester never sees both and
+    never sees neither. A rich send that RAISES (the adapter lets
+    ``channel.send`` exceptions propagate precisely because the message
+    may already exist) is ambiguous: disarm, cancel, and no fallback.
+    """
+    from gateway.config import Platform
+
+    rich_send = getattr(adapter, "send_restart_confirmation", None)
+    use_rich = source.platform == Platform.DISCORD and callable(rich_send)
+    if use_rich:
+        coro = rich_send(
+            chat_id=source.chat_id,
+            prompt=_CONFIRM_PROMPT,
+            requester_user_id=str(getattr(source, "user_id", "") or ""),
+            metadata=metadata or None,
+        )
+    else:
+        coro = adapter.send(source.chat_id, content, metadata=metadata or None)
+
+    send_future = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        send_result = send_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception as exc:
+        # Ambiguous delivery (timeout / dead loop): same boundary rule as
+        # clarify — never assume the message did not land, so no duplicate
+        # plain fallback. The caller cancels and disarms the registration.
+        send_future.cancel()
+        return f"Failed to deliver the restart confirmation prompt: {exc}"
+    if send_result is None or getattr(send_result, "success", True) is not False:
+        return None
+
+    error = (
+        "Failed to deliver the restart confirmation prompt: "
+        f"{getattr(send_result, 'error', None) or 'send failed'}"
+    )
+    if not use_rich:
+        return error
+
+    # The embed never landed — one plain prompt, requester mention included.
+    fallback_future = asyncio.run_coroutine_threadsafe(
+        adapter.send(source.chat_id, content, metadata=metadata or None),
+        loop,
+    )
+    try:
+        fallback_result = fallback_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception as exc:
+        fallback_future.cancel()
+        return f"Failed to deliver the restart confirmation prompt: {exc}"
+    if (
+        fallback_result is not None
+        and getattr(fallback_result, "success", True) is False
+    ):
+        return (
+            "Failed to deliver the restart confirmation prompt: "
+            f"{getattr(fallback_result, 'error', None) or 'send failed'}"
+        )
+    return None
 
 
 def _confirm_restart_with_requester(
@@ -196,7 +281,10 @@ def _confirm_restart_with_requester(
 
     content = _CONFIRM_PROMPT
     # Discord: the ping is the point — prefix the requester's snowflake so
-    # the prompt notifies them. Sent via plain send(), not send_clarify(),
+    # the plain prompt notifies them. This full-text prompt is what non-
+    # Discord adapters send and what the rich path falls back to; the rich
+    # embed message instead shows the prompt once (embed-only) with just
+    # the mention as its content. Neither path goes through send_clarify,
     # so the `discord.clarify_mentions: false` opt-out cannot silence it.
     user_id = str(getattr(source, "user_id", "") or "")
     if source.platform == Platform.DISCORD and user_id.isdigit():
@@ -219,22 +307,10 @@ def _confirm_restart_with_requester(
         choices=None,
     )
 
-    send_future = asyncio.run_coroutine_threadsafe(
-        adapter.send(source.chat_id, content, metadata=metadata or None),
-        loop,
-    )
-    try:
-        send_result = send_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
-    except Exception as exc:
-        send_future.cancel()
+    deliver_error = _deliver_confirm_prompt(adapter, loop, source, content, metadata)
+    if deliver_error is not None:
         _drop_pending_confirm(clarify_gateway, clarify_id)
-        return f"Failed to deliver the restart confirmation prompt: {exc}"
-    if send_result is not None and getattr(send_result, "success", True) is False:
-        _drop_pending_confirm(clarify_gateway, clarify_id)
-        return (
-            "Failed to deliver the restart confirmation prompt: "
-            f"{getattr(send_result, 'error', None) or 'send failed'}"
-        )
+        return deliver_error
 
     response = clarify_gateway.wait_for_response(clarify_id, 0)
     if str(response or "").strip() == _CONFIRM_WORD:
