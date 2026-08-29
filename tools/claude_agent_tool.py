@@ -67,6 +67,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -96,6 +97,16 @@ GOAL_CONDITION_MAX_CHARS = 4000
 GOAL_BRIEF_FILENAME = ".hermes-claude-goal-brief.md"
 _GOAL_BRIEF_SUFFIX = f" Full brief (must follow): {GOAL_BRIEF_FILENAME}"
 _GOAL_BRIEF_FALLBACK_CONDITION = "the task described in the brief file is complete"
+
+# The child CLI can still refuse a goal after spawn: the run exits 0 with
+# subtype=success, 0 turns, and the rejection text (observed live: "Goal
+# condition is limited to 4000 characters (got 7421)") as the result field.
+# A success-shaped final report matching this phrasing is reclassified as a
+# failure in delegate_claude_agent.
+_GOAL_REFUSAL_RE = re.compile(
+    r"^goal (condition|set)[:\s]|goal condition is limited to|^no goal set",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +623,19 @@ def delegate_claude_agent(
         success = False
         error = "Claude Code reported success but returned an empty final report"
 
+    if success and _GOAL_REFUSAL_RE.search(base_fields["final_report"]):
+        # A goal-mode refusal surfaces as subtype=success with the rejection
+        # text in `result` and 0 turns (observed live with "Goal condition
+        # is limited to 4000 characters (got 7421)") — the run never
+        # started, so classifying it as success hands the caller a
+        # completed-looking no-op. Reclassify as failure so the dispatch
+        # can be retried instead of trusted.
+        success = False
+        error = (
+            "Claude Code reported success but the final report is a goal "
+            f"refusal: {base_fields['final_report'][:200]}"
+        )
+
     return _make_result(
         success=success,
         error=error,
@@ -658,7 +682,11 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                     "headless — the default: the run auto-continues across "
                     "turns until a model judge confirms the condition is "
                     "met or impossible. A task not starting with /goal "
-                    "should still be phrased as a verifiable done condition."
+                    "should still be phrased as a verifiable done condition. "
+                    "The /goal condition is capped at 4000 characters; "
+                    "longer tasks are auto-spilled to "
+                    "<workdir>/.hermes-claude-goal-brief.md with a short "
+                    "condition pointing at it."
                 ),
             },
             "workdir": {
