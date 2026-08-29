@@ -19,7 +19,6 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 WT = str(Path(__file__).resolve().parents[2])
-FAKE_WORKER = str(Path(__file__).resolve().parents[1] / "stress" / "_fake_worker.py")
 
 KANBAN_ENV_VARS = (
     "HERMES_HOME",
@@ -85,17 +84,33 @@ def test_expect_under_catches_mismatched_anchor(tmp_path, monkeypatch, isolated_
         kb.require_disposable_board(expect_under=other)
 
 
-def test_fake_worker_fails_closed_without_routing():
-    """End-to-end: spawning _fake_worker with NO isolation env refuses to run.
+FAKE_WORKER_SNIPPET = """\
+import os
+import sys
+
+sys.path.insert(0, os.getcwd())
+
+from hermes_cli.kanban_db import require_disposable_board
+
+require_disposable_board(expect_under=os.environ.get("HERMES_HOME") or None)
+"""
+
+
+def test_fake_worker_fails_closed_without_routing(tmp_path):
+    """End-to-end: spawning a fresh-process worker with NO isolation env refuses to run.
 
     Before pc_fa9ca887ebc61dc8's guard this helper would happily heartbeat
     and complete a task against whatever board the ambient environment
-    resolved — including the live one.
+    resolved — including the live one. The original helper lived in
+    tests/stress/_fake_worker.py; that never-executed suite was retired on
+    main, so a minimal worker is inlined here.
     """
+    worker = tmp_path / "_fake_worker.py"
+    worker.write_text(FAKE_WORKER_SNIPPET)
     env = {k: v for k, v in os.environ.items() if k not in KANBAN_ENV_VARS}
     env["HERMES_KANBAN_TASK"] = "guard-probe"
     proc = subprocess.run(
-        [sys.executable, FAKE_WORKER],
+        [sys.executable, str(worker)],
         capture_output=True,
         text=True,
         timeout=60,
