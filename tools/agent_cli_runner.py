@@ -21,7 +21,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import List, Mapping, Optional, Tuple
+from typing import Callable, List, Mapping, Optional, Tuple
 
 from tools.environments.local import build_subprocess_env
 
@@ -151,6 +151,7 @@ def run_agent_cli(
     run_timestamp: Optional[str] = None,
     log_path: Optional[Path] = None,
     env: Optional[Mapping[str, str]] = None,
+    on_spawn: Optional[Callable[[Path], None]] = None,
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
 
@@ -165,6 +166,13 @@ def run_agent_cli(
     ``env=None`` uses the legacy interactive default (see
     ``_default_subprocess_env``); an explicit mapping is used as-is (the
     executor passes its sanitized attempt environment).
+
+    ``on_spawn`` is invoked exactly once with the resolved ``log_path``,
+    after the subprocess exists and before the reader thread starts — the
+    hook a caller uses to announce the run's log path (e.g. a live-viewer
+    notice) while the run is still young. It is best-effort: any exception
+    it raises is logged at debug level and swallowed, so a broken callback
+    can never affect the run itself.
 
     Returns ``(error_code, log_path, log_text, duration_seconds, returncode)``.
     """
@@ -195,6 +203,12 @@ def run_agent_cli(
         )
         log_path = log_dir / f"{run_timestamp}-{proc.pid}.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if on_spawn is not None:
+        try:
+            on_spawn(log_path)
+        except Exception:
+            logger.debug("on_spawn callback failed for %s", log_path, exc_info=True)
 
     reader_done = threading.Event()
 

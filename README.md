@@ -92,7 +92,7 @@ Multiplexed profiles honor their own `display.reasoning_style`; compact renders 
 
 Clarify prompts @mention the requesting user by default (`discord.clarify_mentions: false` to opt out) and are numbered plain text — no buttons; Discord component views time out. `resolve_ticket` propose is terminal: the confirmation embed is the reply, no follow-up message.
 
-The typing indicator stays lit while a background delegated task is still running. MoA consult/debate progress renders as one self-editing embed per call. `delegate_cursor_agent` live progress posts a Cursor-branded embed with a Watch live session hyperlink instead of dumping the URL.
+The typing indicator stays lit while a background delegated task is still running. MoA consult/debate progress renders as one self-editing embed per call. `delegate_cursor_agent` live progress posts a Cursor-branded embed with a Watch live session hyperlink instead of dumping the URL. `delegate_claude_agent` live progress posts a Claude-branded embed deep-linking the local run viewer instead of dumping the URL.
 
 ### WhatsApp missions
 

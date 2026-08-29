@@ -72,11 +72,12 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.agent_cli_runner import run_agent_cli
 from tools.registry import registry
+from tools.tool_status import emit_tool_status
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,37 @@ def extract_log_warnings(log_text: str) -> List[str]:
 # Subprocess helpers
 # ---------------------------------------------------------------------------
 
+# Live-progress viewer that tails <HERMES_HOME>/claude-runs/<stem>.jsonl.
+# The Discord adapter renders a spawned-run notice as a branded embed only
+# when the URL's host is on its allowlist (_CLAUDE_VIEWER_ALLOWED_HOSTS in
+# plugins/platforms/discord/adapter.py) and the fragment fullmatches
+# ``[0-9]{8}-[0-9]{6}-[0-9]+`` — the delegate scheme guarantees the stem, so
+# the host is the one thing that must be kept in sync with that allowlist.
+# Constants for this fork's deployment; no env vars, no config keys.
+CLAUDE_VIEWER_HOST = "192.168.30.20"
+CLAUDE_VIEWER_PORT = 8787
+
+
+def _claude_viewer_status_line(stem: str) -> str:
+    """Return the mid-tool status line pointing at a run's live viewer page."""
+    return f"Claude Code Agent: http://{CLAUDE_VIEWER_HOST}:{CLAUDE_VIEWER_PORT}/#{stem}"
+
+
+def _emit_viewer_progress_notice(log_path: Path) -> None:
+    """Announce a freshly spawned run's viewer page via ``emit_tool_status``.
+
+    Emitted the moment the log path is known, so the user gets a
+    watch-live link while the run is still going rather than only in the
+    final tool result. Unbound dispatch is a no-op (the exact URL lands in
+    the result payload anyway); the emit is still defensive — a broken
+    callback context must never take the delegation down with it.
+    """
+    try:
+        emit_tool_status(_claude_viewer_status_line(Path(log_path).stem))
+    except Exception:
+        logger.debug("claude viewer progress notice failed", exc_info=True)
+
+
 def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     try:
         value = int(timeout_seconds)
@@ -339,8 +371,12 @@ def _run_and_stream(
     timeout_seconds: int,
     log_dir: Path,
     run_timestamp: str,
+    on_spawn: Optional[Callable[[Path], None]] = None,
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
+
+    ``on_spawn`` is handed straight to ``run_agent_cli`` — invoked once with
+    the resolved log path, right after spawn.
 
     Returns ``(error_code, log_path, log_text, duration_seconds, returncode)``.
     """
@@ -351,6 +387,7 @@ def _run_and_stream(
         stall_watchdog_seconds=STALL_WATCHDOG_SECONDS,
         log_dir=log_dir,
         run_timestamp=run_timestamp,
+        on_spawn=on_spawn,
     )
 
 
@@ -513,6 +550,7 @@ def delegate_claude_agent(
             timeout_seconds=clamped_timeout,
             log_dir=log_dir,
             run_timestamp=run_timestamp,
+            on_spawn=_emit_viewer_progress_notice,
         )
     except Exception as exc:
         logger.error("delegate_claude_agent spawn failed: %s", exc, exc_info=True)

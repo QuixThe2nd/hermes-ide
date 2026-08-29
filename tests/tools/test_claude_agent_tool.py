@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -820,6 +821,114 @@ def test_clean_run_has_empty_warnings(monkeypatch, repo, fake_binary):
 
 
 # ---------------------------------------------------------------------------
+# Live-progress viewer notice (spawn-time status line)
+# ---------------------------------------------------------------------------
+
+# Same run-stem shape the Discord adapter fullmatches before rendering the
+# notice as a branded embed (plugins/platforms/discord/adapter.py).
+_RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
+
+
+def test_viewer_status_line_prefix_and_stem_roundtrip():
+    from tools.claude_agent_tool import (
+        CLAUDE_VIEWER_HOST,
+        CLAUDE_VIEWER_PORT,
+        _claude_viewer_status_line,
+    )
+
+    # The host/port are the fork-deployment constants the adapter allowlists.
+    assert CLAUDE_VIEWER_HOST == "192.168.30.20"
+    assert CLAUDE_VIEWER_PORT == 8787
+
+    stem = "20260829-115024-2006506"
+    line = _claude_viewer_status_line(stem)
+    assert line == "Claude Code Agent: http://192.168.30.20:8787/#" + stem
+    assert line.startswith("Claude Code Agent: http://192.168.30.20:8787/#")
+    # The stem comes back out unchanged, in the adapter's run-stem format.
+    assert line.rsplit("#", 1)[1] == stem
+    assert _RUN_STEM_RE.fullmatch(line.rsplit("#", 1)[1])
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_invokes_on_spawn_once_with_resolved_log_path(tmp_path):
+    from tools.agent_cli_runner import run_agent_cli
+
+    spawned: list = []
+
+    error_code, log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "print('hi')"],
+        workdir=str(tmp_path),
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260829-115024",
+        on_spawn=spawned.append,
+    )
+
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == "hi\n"
+    # Exactly one call, carrying the very log path the run streams into.
+    assert spawned == [Path(log_path)]
+    assert Path(log_path).is_file()
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_on_spawn_raising_leaves_run_unaffected(tmp_path):
+    from tools.agent_cli_runner import run_agent_cli
+
+    def _boom(log_path: Path) -> None:
+        raise RuntimeError("callback exploded")
+
+    error_code, log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "print('hi')"],
+        workdir=str(tmp_path),
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260829-115024",
+        on_spawn=_boom,
+    )
+
+    # A broken callback is swallowed: the run itself still completes intact.
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == "hi\n"
+    assert Path(log_path).is_file()
+
+
+@_REAL_SUBPROC
+def test_delegate_emits_viewer_notice_once_at_spawn(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+    from tools.tool_status import tool_status_scope
+
+    _patch_binary(monkeypatch, fake_binary)
+    emitted: list = []
+
+    with tool_status_scope(emitted.append):
+        result = json.loads(
+            claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+        )
+
+    assert result["success"] is True
+    assert len(emitted) == 1
+    # The notice names exactly the run's own log stem in adapter-stem format.
+    stem = Path(result["log_path"]).stem
+    assert emitted[0] == claude_agent_tool._claude_viewer_status_line(stem)
+    assert _RUN_STEM_RE.fullmatch(emitted[0].rsplit("#", 1)[1])
+
+
+@_REAL_SUBPROC
+def test_delegate_run_unaffected_when_no_status_callback_bound(
+    monkeypatch, repo, fake_binary
+):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    # No tool_status_scope bound: the emit is a no-op and the run succeeds.
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
 # /goal condition 4000-char pre-flight spill
 # ---------------------------------------------------------------------------
 
@@ -831,7 +940,7 @@ def _patch_spawn(monkeypatch, captured: dict) -> None:
     from tools import claude_agent_tool
 
     def _fake_run_and_stream(
-        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp
+        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp, on_spawn=None
     ):
         captured["cmd"] = list(cmd)
         captured["workdir"] = workdir
