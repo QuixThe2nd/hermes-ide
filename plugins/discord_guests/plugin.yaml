@@ -1,0 +1,8 @@
+name: discord_guests
+default_enabled: true
+version: 1.0.0
+description: "Inviting a guest auto-creates a private lounge channel under the Chat category — only that member (plus whoever already sees Chat) can view it; @everyone stays view-denied everywhere."
+author: Hermes Agent
+kind: standalone
+provides_tools:
+  - discord_guests
