@@ -76,6 +76,8 @@ Hermes Starts lets your AI open conversations instead of only replying — it cr
 
 Discord History is a read-only search over an owner-authorized PostgreSQL archive of Discord messages (opt-in, off by default). Papercuts keeps a structured journal of workflow friction, plus an opt-in daily autofix cron (`hermes papercuts autofix install`) that turns small mechanical fixes into PRs. `auto_update` runs safe unattended Hermes updates on Linux/systemd via an independent timer (`hermes auto_update status|enable|disable|reconcile`; default every 30 minutes all day, idle-gated with stale streaming/unanswered rows ignored outside the idle window, no randomized delay). `discord_guests` auto-creates a private `#<guest>-<host>-lounge` text channel under Chat when a guest is added — `@everyone` stays view-denied, so the lounge is visible only to that member plus the house bots.
 
+`drift_watch` keeps a default-on eye on the live checkout: a timer inventories uncommitted drift twice hourly, auto-captures a patch plus untracked copies whenever the drift set changes, and attributes writes via auditd where available (`hermes drift_watch reconcile`; read-only toward git state).
+
 ### Gateway lifecycle and operator UX
 
 During stalls you can turn on a live provider retry/fallback progress bubble (`display.retry_progress`, off by default). Replies can end with a timing breakdown — total, API, tools, other (off by default upstream).
