@@ -14,8 +14,8 @@ from plugins.home_server.core import (
     template_fingerprint,
 )
 
-# 5 categories + 2 chat + 3 notifications + 4 memory + 6 model voices + 3 speeds.
-FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 6 + 3
+# 5 categories + 2 chat + 3 notifications + 4 memory + 5 model voices + 3 speeds.
+FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 5 + 3
 
 
 def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
@@ -458,8 +458,10 @@ def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, 
     """A "Models • <clock>" category from the live poller matches Models."""
     discord = make_discord()
     discord.add_channel(id=7001, name="Models \u2022 25/8 3:30pm", type=4)
-    for i, key in enumerate(("Codex", "Kimi", "z.ai", "Cursor", "Grok", "OpenRouter")):
+    for i, key in enumerate(("Codex", "Kimi", "z.ai", "Cursor", "Grok")):
         discord.add_channel(id=7100 + i, name=key, type=2, parent_id=7001)
+    # Leftover from before OpenRouter left the template: never deleted.
+    discord.add_channel(id=7199, name="OpenRouter", type=2, parent_id=7001)
 
     report = reconcile(http_fn=discord)
 
@@ -467,7 +469,8 @@ def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, 
     assert report["renamed"] == []
     assert report["adopted"] == ["category:Models"]
     assert state()["categories"]["quotas"] == "7001"
-    # No duplicate voice channels were minted.
+    # No duplicate voice channels were minted: the five template rows plus the
+    # OpenRouter leftover, which reconcile leaves where it is.
     voices = [
         c
         for c in discord.channels.values()
@@ -638,7 +641,6 @@ def test_quota_and_speeds_config_are_written_and_unrelated_keys_kept(
         "zai",
         "cursor",
         "grok",
-        "openrouter",
     }
     assert config["speed_channels"]["category_id"] == state()["categories"]["speeds"]
     assert set(config["speed_channels"]["channel_ids"]) == {
@@ -687,8 +689,9 @@ def test_disabled_feature_is_a_noop(hermes, make_discord, write_config):
     assert discord.mutations == []
 
 
-def test_models_template_has_six_voice_channels(hermes, make_discord, state):
-    """The canonical fresh provision creates a Models category with six rows."""
+def test_models_template_has_five_voice_channels(hermes, make_discord, state):
+    """The canonical fresh provision creates a Models category with five rows
+    (OpenRouter left the template — a fresh provision must not mint it)."""
     discord = make_discord()
     reconcile(http_fn=discord)
 
@@ -698,7 +701,7 @@ def test_models_template_has_six_voice_channels(hermes, make_discord, state):
         for c in discord.channels.values()
         if c["type"] == 2 and c["parent_id"] == models_cat
     )
-    assert voices == ["Codex", "Cursor", "Grok", "Kimi", "OpenRouter", "z.ai"]
+    assert voices == ["Codex", "Cursor", "Grok", "Kimi", "z.ai"]
     assert discord.channels[models_cat]["name"] == "Models"
 
 
@@ -706,7 +709,7 @@ def test_legacy_dynamic_quotas_category_is_renamed_in_place(
     hermes, make_discord, state
 ):
     """A pre-Models provision: the dynamic Quotas category is PATCHed to
-    Models, the five child IDs survive, and only OpenRouter is created."""
+    Models, the five child IDs survive, and no extra voice is created."""
     discord = make_discord()
     discord.add_channel(id=7001, name="Quotas • 25/8 3:30pm", type=4)
     legacy = {}
@@ -734,24 +737,24 @@ def test_legacy_dynamic_quotas_category_is_renamed_in_place(
         assert state()["channels"]["quotas"][name] == cid
         assert str(discord.channels[cid]["parent_id"]) == "7001"
         assert f"channel:{name}" not in report["created"]
-    # Exactly one channel is created for this module: OpenRouter.
-    assert report["created"].count("channel:OpenRouter") == 1
+    # OpenRouter left the template: nothing new is created for this module.
+    assert report["created"].count("channel:OpenRouter") == 0
     voices = [
         c
         for c in discord.channels.values()
         if c["type"] == 2 and str(c["parent_id"]) == "7001"
     ]
-    assert len(voices) == 6
+    assert len(voices) == 5
 
     # Idempotent: a second reconcile renames nothing and creates nothing.
-    openrouter_id = state()["channels"]["quotas"]["OpenRouter"]
+    codex_id = state()["channels"]["quotas"]["Codex"]
     mutations = len(discord.mutations)
     second = reconcile(http_fn=discord)
     assert second["created"] == []
     assert second["renamed"] == []
     assert second["adopted"] == []
     assert len(discord.mutations) == mutations
-    assert state()["channels"]["quotas"]["OpenRouter"] == openrouter_id
+    assert state()["channels"]["quotas"]["Codex"] == codex_id
 
 
 def test_legacy_exact_quotas_category_is_renamed_in_place(hermes, make_discord, state):
@@ -771,7 +774,7 @@ def test_legacy_exact_quotas_category_is_renamed_in_place(hermes, make_discord, 
         for c in discord.channels.values()
         if c["type"] == 2 and str(c["parent_id"]) == "7002"
     ]
-    assert len(voices) == 6
+    assert len(voices) == 5
 
 
 def test_legacy_quotas_is_left_alone_when_models_already_exists(

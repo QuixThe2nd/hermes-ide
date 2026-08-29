@@ -9,7 +9,7 @@ and keeps in sync the whole structure:
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
 * ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
-  ``Cursor``, ``Grok``, ``OpenRouter``
+  ``Cursor``, ``Grok``
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
@@ -192,16 +192,14 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             ChannelSpec("z.ai", CHANNEL_TYPE_VOICE, "zai"),
             ChannelSpec("Cursor", CHANNEL_TYPE_VOICE, "cursor"),
             ChannelSpec("Grok", CHANNEL_TYPE_VOICE, "grok"),
-            ChannelSpec("OpenRouter", CHANNEL_TYPE_VOICE, "openrouter"),
         ),
         legacy_categories=("Quotas",),
         embed_title="📊 Models",
         embed_description=(
             "Each voice channel is named after how much of that subscription's "
             "quota is left and when it resets, and the category orders them by "
-            "spendability — the same score the fallback router uses. OpenRouter "
-            "is the unlimited Ox Alpha row, pinned at 100%. Hermes keeps the "
-            "names up to date automatically."
+            "spendability — the same score the fallback router uses. Hermes "
+            "keeps the names up to date automatically."
         ),
     ),
     "speeds": ModuleSpec(
