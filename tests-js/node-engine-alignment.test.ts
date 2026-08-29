@@ -20,6 +20,7 @@ function readJson<T>(relativePath: string): T {
 
 function parseVersion(version: string): [number, number, number] {
   const [major = 0, minor = 0, patch = 0] = version.split('-', 1)[0].split('.').map(Number)
+
   return [major, minor, patch]
 }
 
@@ -32,13 +33,16 @@ function compare(left: string, right: string): number {
       return have[index] - want[index]
     }
   }
+
   return 0
 }
 
 function satisfiesClause(version: string, clause: string): boolean {
   assert.match(clause, /^(?:\^|>=|<=|>|<|=)?\d+(?:\.\d+){0,2}$/, `unsupported semver clause: ${clause}`)
+
   if (clause.startsWith('^')) {
     const bound = clause.slice(1)
+
     return parseVersion(version)[0] === parseVersion(bound)[0] && compare(version, bound) >= 0
   }
 
@@ -46,6 +50,7 @@ function satisfiesClause(version: string, clause: string): boolean {
   assert.ok(match)
   const [, operator = '=', bound] = match
   const result = compare(version, bound)
+
   return operator === '>='
     ? result >= 0
     : operator === '<='
@@ -60,6 +65,7 @@ function satisfiesClause(version: string, clause: string): boolean {
 function satisfiesRange(version: string, range: string): boolean {
   const alternatives = range.split('||').map(alternative => alternative.trim().split(/\s+/))
   alternatives.flat().forEach(clause => satisfiesClause(version, clause))
+
   return alternatives.some(clauses => clauses.every(clause => satisfiesClause(version, clause)))
 }
 
@@ -69,6 +75,7 @@ const lockfile = readJson<Lockfile>('package-lock.json')
 
 function nodeRange(manifest: Manifest, label: string): string {
   assert.ok(manifest.engines?.node, `${label} must declare engines.node`)
+
   return manifest.engines.node
 }
 
@@ -76,12 +83,12 @@ describe('Node engine alignment', () => {
   const rootRange = nodeRange(rootManifest, 'root package.json')
   const desktopRange = nodeRange(desktopManifest, 'apps/desktop/package.json')
 
-  test.each(['22.22.0', '22.23.1', '24.0.0', '26.0.0'])('all workspace manifests accept supported Node %s', version => {
+  test.each(['22.22.0', '22.23.1', '24.11.0', '24.18.2', '26.0.0'])('all workspace manifests accept supported Node %s', version => {
     assert.ok(satisfiesRange(version, rootRange))
     assert.ok(satisfiesRange(version, desktopRange))
   })
 
-  test.each(['22.21.1', '23.0.0', '25.2.1'])(
+  test.each(['22.21.1', '23.0.0', '24.0.0', '24.10.9', '25.2.1'])(
     'all workspace manifests reject dependency-incompatible Node %s',
     version => {
       assert.ok(!satisfiesRange(version, rootRange))

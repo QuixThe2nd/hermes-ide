@@ -3,13 +3,13 @@
 A user sets a HOME SERVER once (``/sethomeserver``) and this module provisions
 and keeps in sync the whole structure:
 
-* ``Chat``            — text channels ``inbox``, ``outbox``
 * ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
-  ``other``
+  ``other`` (first: pinned to the top of the guild)
+* ``Chat``            — text channels ``inbox``, ``outbox``
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
 * ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
-  ``Cursor``, ``Grok``, ``OpenRouter``
+  ``Cursor``, ``Grok``
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
@@ -29,6 +29,7 @@ channels are left alone, and nothing is ever deleted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -56,14 +57,19 @@ STATE_FILENAME = "state.json"
 
 # Reconcile is debounced to at most once per hour when driven from the
 # gateway-connect / cron entry point (``sync_if_due``). An explicit
-# ``/sethomeserver`` bypasses the debounce.
+# ``/sethomeserver`` bypasses the debounce, and so does a template change
+# (the stored fingerprint no longer matching — see should_sync).
 SYNC_DEBOUNCE_SECONDS = 3600
 
 # Honour Discord's ``retry_after`` on 429, but never sleep unboundedly inside a
 # slash command — cap a single backoff and give up after one retry.
 MAX_RETRY_AFTER_SECONDS = 10.0
 
-MODULE_KEYS = ("chat", "notifications", "memory", "quotas", "speeds")
+# Canonical template order — Notifications first. The order is load-bearing:
+# reconcile numbers the enabled categories 0..N in this order (Notifications
+# lands at the top of the guild) and the template fingerprint covers it, so
+# reordering here re-syncs provisioned guilds automatically.
+MODULE_KEYS = ("notifications", "chat", "memory", "quotas", "speeds")
 
 # Env var holding the bot token in HERMES_HOME/secrets/discord.env. Exposed as
 # a constant so tests (and any future caller) reference the same key instead of
@@ -121,21 +127,6 @@ class ModuleSpec:
 
 
 TEMPLATE: Dict[str, ModuleSpec] = {
-    "chat": ModuleSpec(
-        key="chat",
-        category="Chat",
-        channels=(
-            ChannelSpec("inbox", CHANNEL_TYPE_TEXT, "inbox"),
-            ChannelSpec("outbox", CHANNEL_TYPE_TEXT, "outbox"),
-        ),
-        embed_title="💬 Chat",
-        embed_description=(
-            "This inbox is where Hermes starts conversations when it has "
-            "something to tell you. The outbox is for messages you hand off "
-            "to Hermes. Cron deliveries, cross-platform messages, and gateway "
-            "lifecycle pings land in the Notifications category instead."
-        ),
-    ),
     "notifications": ModuleSpec(
         key="notifications",
         category="Notifications",
@@ -157,6 +148,21 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             "primary model was abandoned for a fallback, and other catches "
             "everything else worth flagging. Conversation belongs in Chat — "
             "nothing here needs a reply."
+        ),
+    ),
+    "chat": ModuleSpec(
+        key="chat",
+        category="Chat",
+        channels=(
+            ChannelSpec("inbox", CHANNEL_TYPE_TEXT, "inbox"),
+            ChannelSpec("outbox", CHANNEL_TYPE_TEXT, "outbox"),
+        ),
+        embed_title="💬 Chat",
+        embed_description=(
+            "This inbox is where Hermes starts conversations when it has "
+            "something to tell you. The outbox is for messages you hand off "
+            "to Hermes. Cron deliveries, cross-platform messages, and gateway "
+            "lifecycle pings land in the Notifications category instead."
         ),
     ),
     "memory": ModuleSpec(
@@ -186,16 +192,14 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             ChannelSpec("z.ai", CHANNEL_TYPE_VOICE, "zai"),
             ChannelSpec("Cursor", CHANNEL_TYPE_VOICE, "cursor"),
             ChannelSpec("Grok", CHANNEL_TYPE_VOICE, "grok"),
-            ChannelSpec("OpenRouter", CHANNEL_TYPE_VOICE, "openrouter"),
         ),
         legacy_categories=("Quotas",),
         embed_title="📊 Models",
         embed_description=(
             "Each voice channel is named after how much of that subscription's "
             "quota is left and when it resets, and the category orders them by "
-            "spendability — the same score the fallback router uses. OpenRouter "
-            "is the unlimited Ox Alpha row, pinned at 100%. Hermes keeps the "
-            "names up to date automatically."
+            "spendability — the same score the fallback router uses. Hermes "
+            "keeps the names up to date automatically."
         ),
     ),
     "speeds": ModuleSpec(
@@ -214,6 +218,42 @@ TEMPLATE: Dict[str, ModuleSpec] = {
         ),
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Template fingerprint
+# ---------------------------------------------------------------------------
+
+
+def template_fingerprint() -> str:
+    """Stable sha256 of the canonical TEMPLATE, order included.
+
+    Covers exactly what reconcile provisions: module keys in order, category
+    name (and its legacy names), and each channel's name/kind/key/alias
+    prefixes. Embed copy and wiring are excluded — they are not guild
+    structure. Stored on state.json after a successful reconcile and compared
+    by ``should_sync`` so an in-code template change re-syncs provisioned
+    guilds immediately instead of waiting out the hourly debounce.
+    """
+    canonical = [
+        {
+            "key": key,
+            "category": spec.category,
+            "channels": [
+                {
+                    "name": channel.name,
+                    "kind": channel.kind,
+                    "key": channel.key,
+                    "alias_prefixes": list(channel.alias_prefixes),
+                }
+                for channel in spec.channels
+            ],
+            "legacy_categories": list(spec.legacy_categories),
+        }
+        for key, spec in TEMPLATE.items()
+    ]
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -430,11 +470,19 @@ class DiscordClient:
         return payload
 
     def create_channel(
-        self, guild_id: str, *, name: str, kind: int, parent_id: Optional[str] = None
+        self,
+        guild_id: str,
+        *,
+        name: str,
+        kind: int,
+        parent_id: Optional[str] = None,
+        position: Optional[int] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"name": name, "type": kind}
         if parent_id:
             body["parent_id"] = parent_id
+        if position is not None:
+            body["position"] = int(position)
         payload = self._request("POST", f"/guilds/{guild_id}/channels", body)
         if not isinstance(payload, dict) or not payload.get("id"):
             raise HomeServerError(f"discord channel create for {name!r} returned no id")
@@ -469,15 +517,28 @@ class DiscordClient:
             )
         return "moved"
 
-    def rename_channel(self, channel_id: str, name: str, *, skip_on_429: bool = False) -> str:
+    def rename_channel(
+        self,
+        channel_id: str,
+        name: str,
+        *,
+        skip_on_429: bool = False,
+        position: Optional[int] = None,
+    ) -> str:
         """Rename only when the name actually changes (2 renames / 10 min / channel).
 
         ``skip_on_429`` mirrors quota_channels: the Speeds/Models category label
         is touched every tick, so a 429 there is expected and must not raise.
+        ``position`` rides the same PATCH (Discord applies both fields at once)
+        so a legacy-category migration does not burn a second rate-limited call
+        to seat the category in template order.
         """
         if self.channel_name(channel_id) == name:
             return "unchanged"
-        status, text = self._raw("PATCH", f"/channels/{channel_id}", {"name": name})
+        body: Dict[str, Any] = {"name": name}
+        if position is not None:
+            body["position"] = int(position)
+        status, text = self._raw("PATCH", f"/channels/{channel_id}", body)
         if status == 429 and skip_on_429:
             return "skipped"
         if status != 200:
@@ -485,6 +546,14 @@ class DiscordClient:
                 f"discord rename returned {status}: {text[:200]}"
             )
         return "renamed"
+
+    def set_channel_position(self, channel_id: str, position: int) -> Dict[str, Any]:
+        """Seat a channel/category at ``position`` among its siblings.
+
+        Uses the shared ``_request`` path, so it gets the standard 429
+        retry-after handling like every other mutating call.
+        """
+        return self._request("PATCH", f"/channels/{channel_id}", {"position": int(position)})
 
 
 def discord_client(
@@ -928,6 +997,7 @@ def _reconcile_module(
     channels: List[Dict[str, Any]],
     report: Dict[str, Any],
     prior_channels: Optional[Mapping[str, Any]] = None,
+    category_position: int = 0,
 ) -> Dict[str, Any]:
     """Ensure one category and its channels exist. Mutates ``channels`` so
     later modules see what earlier ones created.
@@ -977,17 +1047,21 @@ def _reconcile_module(
                 )
             if candidate is None:
                 continue
-            client.rename_channel(candidate, spec.category)
+            client.rename_channel(candidate, spec.category, position=category_position)
             for channel in channels:
                 if str(channel.get("id")) == candidate:
                     channel["name"] = spec.category
+                    channel["position"] = category_position
                     break
             report["renamed"].append(f"category:{legacy}->{spec.category}")
             category_id = candidate
             break
     if category_id is None:
         created = client.create_channel(
-            guild_id, name=spec.category, kind=CHANNEL_TYPE_CATEGORY
+            guild_id,
+            name=spec.category,
+            kind=CHANNEL_TYPE_CATEGORY,
+            position=category_position,
         )
         category_id = str(created["id"])
         channels.append(created)
@@ -1003,7 +1077,7 @@ def _reconcile_module(
     resolved: Dict[str, str] = {}
     prior = dict(prior_channels or {})
     known_ids = {str(c.get("id")) for c in channels}
-    for channel_spec in spec.channels:
+    for index, channel_spec in enumerate(spec.channels):
         channel_id = None
         stored = str(prior.get(channel_spec.name) or "").strip()
         if stored and stored in known_ids:
@@ -1082,6 +1156,7 @@ def _reconcile_module(
                 name=channel_spec.name,
                 kind=channel_spec.kind,
                 parent_id=category_id,
+                position=index,
             )
             channel_id = str(created["id"])
             channels.append(created)
@@ -1094,6 +1169,73 @@ def _reconcile_module(
         "category_id": category_id,
         "channels": resolved,
     }
+
+
+def _enabled_module_positions(modules: Mapping[str, bool]) -> Dict[str, int]:
+    """Ordinal Discord category position of each enabled module (template order).
+
+    Enabled categories are numbered 0..N-1 in MODULE_KEYS order, so
+    Notifications — when enabled — is always category position 0, the top of
+    the managed block. Disabled modules simply do not consume a slot.
+    """
+    positions: Dict[str, int] = {}
+    next_position = 0
+    for key in MODULE_KEYS:
+        if modules.get(key):
+            positions[key] = next_position
+            next_position += 1
+    return positions
+
+
+def _apply_positions(
+    client: DiscordClient,
+    channels: List[Dict[str, Any]],
+    modules: Mapping[str, bool],
+    state: Mapping[str, Any],
+    report: Dict[str, Any],
+) -> None:
+    """Seat the managed categories and their channels in template order.
+
+    Runs after every module is resolved, so an existing guild whose layout
+    drifted (e.g. a Notifications category created at the bottom by an older
+    template) is reordered, not just fresh creates. Only IDs reconcile itself
+    resolved are ever PATCHed: unmanaged categories/channels keep their
+    positions untouched (Discord may shift them around ours — that is fine, we
+    just never write to them). A channel whose current position already equals
+    the desired one is skipped, so a second reconcile against an in-order
+    guild issues no mutating calls at all.
+    """
+    def seat(channel_id: str, position: int, label: str) -> None:
+        if not channel_id:
+            return
+        current = next(
+            (c for c in channels if str(c.get("id")) == channel_id), None
+        )
+        if current is None:
+            return
+        try:
+            if int(current.get("position")) == position:
+                return
+        except (TypeError, ValueError):
+            pass  # missing/garbage position → set it explicitly
+        client.set_channel_position(channel_id, position)
+        current["position"] = position
+        report["positioned"].append(label)
+
+    for key, category_position in _enabled_module_positions(modules).items():
+        spec = TEMPLATE[key]
+        seat(
+            str(state["categories"].get(key) or ""),
+            category_position,
+            f"category:{spec.category}",
+        )
+        module_channels = state["channels"].get(key) or {}
+        for index, channel_spec in enumerate(spec.channels):
+            seat(
+                str(module_channels.get(channel_spec.name) or ""),
+                index,
+                f"channel:{channel_spec.name}",
+            )
 
 
 def reconcile(
@@ -1119,6 +1261,7 @@ def reconcile(
         "created": [],
         "adopted": [],
         "renamed": [],
+        "positioned": [],
         "embeds_posted": [],
         "wired": {},
         "home_channel": "skipped",
@@ -1136,11 +1279,13 @@ def reconcile(
     state: Dict[str, Any] = {
         "guild_id": guild_id,
         "last_sync": int(now_fn()),
+        "template_fingerprint": template_fingerprint(),
         "categories": dict(prior.get("categories") or {}),
         "channels": dict(prior.get("channels") or {}),
         "welcome_embeds": dict(prior.get("welcome_embeds") or {}),
     }
 
+    category_positions = _enabled_module_positions(modules)
     for key in MODULE_KEYS:
         if not modules[key]:
             continue
@@ -1152,6 +1297,7 @@ def reconcile(
             channels,
             report,
             prior_channels=(prior.get("channels") or {}).get(key) or {},
+            category_position=category_positions[key],
         )
         state["categories"][key] = outcome["category_id"]
         state["channels"][key] = outcome["channels"]
@@ -1176,6 +1322,10 @@ def reconcile(
                 )
                 state["welcome_embeds"][key] = message_id
                 report["embeds_posted"].append(f"{spec.category}/{text_spec.name}")
+
+    # Every module is resolved now — seat the managed categories and channels
+    # in template order (Notifications at the top of the managed block).
+    _apply_positions(client, channels, modules, state, report)
 
     # Persist before wiring: the hermes_starts hook discovers the shared inbox
     # by reading this state file, so it must exist on the very first run too.
@@ -1216,10 +1366,18 @@ def reconcile(
 
 
 def should_sync(state: Mapping[str, Any], *, now_fn: NowFn = time.time) -> bool:
-    """True when the last reconcile is older than the hourly debounce."""
+    """True when the last reconcile is older than the hourly debounce.
+
+    A template change short-circuits the debounce: when the stored fingerprint
+    is missing (a state file written before this field existed) or no longer
+    matches the in-code TEMPLATE, the guild is out of date and reconcile runs
+    immediately. The hourly debounce still governs an unchanged template.
+    """
     if not state:
         return True
     if not str(state.get("guild_id") or ""):
+        return True
+    if str(state.get("template_fingerprint") or "") != template_fingerprint():
         return True
     try:
         last = float(state.get("last_sync") or 0)

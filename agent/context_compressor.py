@@ -1863,9 +1863,25 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     placeholder so the outgoing request stops re-shipping the same multi-MB
     base-64 image blobs on every turn.
 
-    If no user message carries images, the list is returned unchanged.
-    If the only user message with images is the very first one (nothing
-    earlier to strip), the list is returned unchanged.
+    Tool results carry their own images (``vision_analyze`` and friends) and
+    are aged out on their own timeline: every image-bearing tool message
+    except the newest one is stripped, wherever it sits. Without that, a
+    session whose images arrive from tools rather than attachments has no
+    anchor to be "before" and keeps every blob forever (#89938).
+
+    The opening attachment gets the same keep-newest treatment: when the only
+    image-bearing user message is the very first one and a newer tool-result
+    image exists, the first message's images are replaced too (rule 1b) —
+    otherwise a session that opens with an attachment re-ships it forever.
+
+    Tool results are matched in both shapes: OpenAI-style content-part lists
+    and the native ``{_multimodal: True, content: [...]}`` dict envelope.
+    Image parts of all three wire shapes (Chat Completions ``image_url``,
+    Responses ``input_image``, Anthropic-native ``image``) are recognized.
+
+    If no message carries images at all, the list is returned unchanged. So
+    is a list whose only image-bearing user message is the very first one and
+    which has no tool-result images (nothing to strip in any rule).
 
     Shallow copies of touched messages only; input is never mutated.
     Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
@@ -1889,18 +1905,86 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             anchor = i
             break
 
-    if anchor <= 0:
-        # No image-bearing user message, or it's the very first message —
-        # nothing before it to strip.
+    # Newest tool message carrying an image. Tool-result images
+    # (``vision_analyze``, screenshot-returning tools) accumulate on their own
+    # timeline and the user anchor never protects the stale ones: a session
+    # whose only image-bearing user message is the FIRST one leaves
+    # ``anchor <= 0`` and strips nothing at all, so twenty tool results keep
+    # multi-MB of base64 in every request body until the provider answers 413
+    # -- and the 413 handler's recovery compaction lands right back here and
+    # frees nothing, which is the wedge in #89938. Keep the newest tool image,
+    # since that is the one the model is reasoning about, and drop every older
+    # one wherever it sits.
+    tool_anchor = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        # ``_tool_content_has_images`` (not the bare list matcher) so the
+        # native ``{_multimodal: True, content: [...]}`` dict envelope that
+        # vision_analyze can leave in the live list anchors here too —
+        # otherwise the newest envelope-shaped result is invisible to the
+        # scan and rule 2 strips it as if it were stale (#89938/#89965 gap).
+        if _tool_content_has_images(msg.get("content")):
+            tool_anchor = i
+            break
+
+    if anchor <= 0 and tool_anchor < 0:
+        # No image-bearing user message (or it is the very first, with nothing
+        # earlier to strip), and no tool-result images to age out either.
         return messages
+
+    def _is_stale(index: int, message: Dict[str, Any]) -> bool:
+        # Rule 1 (unchanged): everything before the newest image-bearing user
+        # message. Checked first so a tool result that is the newest of its
+        # kind but still sits before that anchor keeps today's behaviour.
+        if 0 < anchor and index < anchor:
+            return True
+        # Rule 1b: the opening attachment ages out once something newer
+        # supersedes it. When the ONLY image-bearing user message is the very
+        # first one (``anchor == 0``) and newer tool-result images exist, the
+        # model has moved on — but the opening base64 blob used to survive
+        # every compaction forever, which is half the wedge in #89938 (the
+        # reported session opened with a ~200KB poster). The strip replaces
+        # the image with a text placeholder, so the row keeps non-empty
+        # user-role text and the zero-user-turn guard (#58753) is satisfied.
+        # When nothing newer exists the opening image IS the newest image and
+        # is kept, consistent with keep-newest everywhere else.
+        if anchor == 0 and index == 0 and tool_anchor > 0:
+            return True
+        # Rule 2: a tool result whose image has been superseded by a newer
+        # one. Applies inside the protected tail as well -- the tail exists to
+        # preserve conversational continuity, not to pin bytes the model has
+        # already moved past.
+        return message.get("role") == "tool" and index != tool_anchor
 
     changed = False
     result: List[Dict[str, Any]] = []
     for i, msg in enumerate(messages):
-        if i >= anchor or not isinstance(msg, dict):
+        if not isinstance(msg, dict) or not _is_stale(i, msg):
             result.append(msg)
             continue
         content = msg.get("content")
+        # Native multimodal dict envelope ({_multimodal: True, content: [...]})
+        # — the shape vision_analyze hands back before adapters unwrap it.
+        # ``_strip_images_from_content`` only understands part lists, so route
+        # this through the tool-message stripper, which collapses the envelope
+        # to its text summary and drops the stale api_content sidecar.
+        if (
+            msg.get("role") == "tool"
+            and isinstance(content, dict)
+            and content.get("_multimodal")
+            and _tool_content_has_images(content)
+        ):
+            new_msg = _strip_images_from_tool_msg(msg)
+            if new_msg is None:
+                result.append(msg)
+                continue
+            result.append(new_msg)
+            changed = True
+            continue
         if not _content_has_images(content):
             result.append(msg)
             continue
@@ -5961,8 +6045,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         SimpleNamespace), for logging/display only. Matching logic must use
         :meth:`_tool_call_id_variants` instead — see its docstring."""
         if isinstance(tc, dict):
-            return tc.get("call_id", "") or tc.get("id", "") or ""
-        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+            return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
+        return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
 
     @staticmethod
     def _tool_call_id_variants(tc) -> set:
@@ -5999,33 +6083,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         silently dropped by the repair pass, re-exposing the original orphans.
         Stripping at the source avoids this entire class of mismatch.
         """
-        surviving_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    surviving_call_ids |= self._tool_call_id_variants(tc)
+        from agent.agent_runtime_helpers import _classify_tool_call_orphans
 
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    # Expand alias spellings on the RESULT side too — a
-                    # composite ``call|item`` tool_call_id must match a
-                    # tool_call registered under either half (#63000).
-                    result_call_ids |= tool_result_id_variants(cid)
+        (
+            surviving_call_ids,
+            result_call_ids,
+            orphaned_result_msgs,
+            missing_tool_calls,
+        ) = _classify_tool_call_orphans(messages)
+        orphaned_results = {id(m) for m in orphaned_result_msgs}
 
         # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (
-                    m.get("role") == "tool"
-                    and (rv := tool_result_id_variants(m.get("tool_call_id")))
-                    and not (rv & surviving_call_ids)
-                )
-            ]
+            messages = [m for m in messages if id(m) not in orphaned_results]
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
@@ -6037,7 +6107,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         #    matching result — checking only one variant per side is exactly
         #    the mismatch this method exists to avoid.
         stripped_count = 0
-        if surviving_call_ids - result_call_ids:
+        if missing_tool_calls:
             # --- In-flight tool chain protection (issue #79278) -------------
             # A strip here must distinguish a *pending* tool_call (the model's
             # live request whose result the executor has not yet appended) from

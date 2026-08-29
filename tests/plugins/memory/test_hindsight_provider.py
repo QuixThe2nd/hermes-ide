@@ -25,6 +25,8 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _DEFAULT_BANK_DIRECTIVES,
+    _DEFAULT_BANK_RETAIN_MISSION,
     _load_config,
     _load_simple_env,
     _build_embedded_profile_env,
@@ -370,6 +372,153 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+
+# ---------------------------------------------------------------------------
+# Bank defaults (retain mission + seeded directives) tests
+# ---------------------------------------------------------------------------
+
+
+def _make_bank_defaults_client(existing_names=()):
+    """Mock Hindsight client with the Banks-API surface _apply_bank_defaults uses."""
+    client = _make_mock_client()
+    client.update_bank_config = AsyncMock(return_value={})
+    client.list_directives = AsyncMock(
+        return_value=SimpleNamespace(
+            items=[SimpleNamespace(name=name) for name in existing_names]
+        )
+    )
+    client.create_directive = AsyncMock(return_value=SimpleNamespace(ok=True))
+    return client
+
+
+class TestBankDefaults:
+    def test_default_retain_mission_and_directives_seeded(self, provider_with_config):
+        """Unset bank missions -> default retain mission pushed, both
+        directives created when the bank has none."""
+        p = provider_with_config()  # no bank_mission / bank_retain_mission
+        client = _make_bank_defaults_client(existing_names=())
+        p._client = client
+
+        p._apply_bank_defaults()
+
+        client.update_bank_config.assert_called_once_with(
+            bank_id="test-bank",
+            retain_mission=_DEFAULT_BANK_RETAIN_MISSION,
+            reflect_mission=None,
+        )
+        created = [c.kwargs for c in client.create_directive.call_args_list]
+        assert [c["name"] for c in created] == ["prefer-newer-facts", "ignore-session-dumps"]
+        by_name = {c["name"]: c for c in created}
+        for directive in _DEFAULT_BANK_DIRECTIVES:
+            assert by_name[directive["name"]]["content"] == directive["content"]
+            assert by_name[directive["name"]]["priority"] == directive["priority"]
+            assert by_name[directive["name"]]["bank_id"] == "test-bank"
+
+    def test_shipped_default_mission_text(self):
+        # Guard the shipped default against accidental drift.
+        assert _DEFAULT_BANK_RETAIN_MISSION.startswith(
+            "Preserve durable knowledge about infrastructure, services, projects, tools,"
+        )
+        assert _DEFAULT_BANK_RETAIN_MISSION.endswith(
+            "Compress verbose operational detail into concise declarative facts."
+        )
+        assert [d["name"] for d in _DEFAULT_BANK_DIRECTIVES] == [
+            "prefer-newer-facts", "ignore-session-dumps",
+        ]
+
+    def test_existing_directives_are_not_recreated(self, provider_with_config):
+        p = provider_with_config()
+        client = _make_bank_defaults_client(
+            existing_names=("prefer-newer-facts", "ignore-session-dumps")
+        )
+        p._client = client
+
+        p._apply_bank_defaults()
+
+        client.create_directive.assert_not_called()
+        # The retain mission is still applied.
+        client.update_bank_config.assert_called_once()
+
+    def test_explicit_bank_missions_pass_through(self, provider_with_config):
+        p = provider_with_config(
+            bank_mission="Fake agent mission",
+            bank_retain_mission="Extract key facts",
+        )
+        client = _make_bank_defaults_client()
+        p._client = client
+
+        p._apply_bank_defaults()
+
+        client.update_bank_config.assert_called_once_with(
+            bank_id="test-bank",
+            retain_mission="Extract key facts",
+            reflect_mission="Fake agent mission",
+        )
+
+    def test_api_errors_never_raise(self, provider_with_config):
+        # All three calls fail.
+        p = provider_with_config()
+        client = _make_bank_defaults_client()
+        client.update_bank_config = AsyncMock(side_effect=RuntimeError("boom"))
+        client.list_directives = AsyncMock(side_effect=RuntimeError("boom"))
+        client.create_directive = AsyncMock(side_effect=RuntimeError("boom"))
+        p._client = client
+
+        p._apply_bank_defaults()  # must not raise
+        client.create_directive.assert_not_called()
+
+        # update fails, list succeeds, create fails.
+        p2 = provider_with_config()
+        client2 = _make_bank_defaults_client()
+        client2.update_bank_config = AsyncMock(side_effect=RuntimeError("boom"))
+        client2.create_directive = AsyncMock(side_effect=RuntimeError("boom"))
+        p2._client = client2
+
+        p2._apply_bank_defaults()  # must not raise
+        assert client2.create_directive.call_count == 2
+
+    def test_disabled_mode_skips_bank_defaults(self, provider):
+        client = _make_bank_defaults_client()
+        provider._mode = "disabled"
+        provider._client = client
+
+        provider._apply_bank_defaults()
+
+        client.update_bank_config.assert_not_called()
+        client.list_directives.assert_not_called()
+
+    def test_defaults_apply_on_first_client_creation(self, tmp_path, monkeypatch):
+        """The trigger lives in _get_client()'s creation branch — initialize()
+        stays lazy — and later calls don't re-apply."""
+        import builtins
+
+        provider = _provider_for_mode(tmp_path, monkeypatch, "cloud")
+        bank_client = _make_bank_defaults_client()
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **kw: None)
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "hindsight_client":
+                return SimpleNamespace(Hindsight=lambda **kw: bank_client)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+        client = provider._get_client()
+
+        assert client is bank_client
+        bank_client.update_bank_config.assert_called_once_with(
+            bank_id="test-bank",
+            retain_mission=_DEFAULT_BANK_RETAIN_MISSION,
+            reflect_mission=None,
+        )
+        assert bank_client.create_directive.call_count == 2
+
+        # Cached client on later calls -> defaults not re-applied.
+        assert provider._get_client() is bank_client
+        assert bank_client.update_bank_config.call_count == 1
 
 
 class TestPostSetup:

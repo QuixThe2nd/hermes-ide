@@ -12,9 +12,12 @@ throughput and queue depth, and refreshes the Speeds category label:
 Channel renames are rate-limited by Discord (2 per 10 min per channel), so a
 channel is only PATCHed when its name actually changes, and the category label
 — which is touched every tick — skips on 429 rather than raising. The label's
-ICMP latency to 1.1.1.1 is measured every tick but only redisplayed when it
-moves by 5ms or more, so jitter keeps the label byte-identical and the rename
-short-circuits as unchanged.
+ICMP latency to 1.1.1.1 is measured every tick but only accepted for display
+when it moves by 5ms or more, so jitter keeps the label byte-identical and the
+rename short-circuits as unchanged. Latency redisplay flushes only on polling
+ticks; between polls it is held in ``pending_latency_ms`` so every category
+PATCH carries the scheduled timestamp update and latency never steals the
+2-per-10-min rename budget.
 
 Downloader API shapes, env-file names and label formats follow the reference
 script the live deployment ran; the peer's absolute secret paths are resolved
@@ -27,6 +30,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -122,8 +126,12 @@ def load_state() -> dict:
 
 
 def save_state(
-    last_poll_success: int, last_latency_ms: Optional[float] = None
+    last_poll_success: int,
+    last_latency_ms: Optional[float] = None,
+    pending_latency_ms: Optional[float] = None,
 ) -> int:
+    """Atomically persist the tick's state; ``pending_latency_ms`` is the
+    latency move accepted between polls and waiting for the next rename."""
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -135,6 +143,7 @@ def save_state(
                 {
                     "last_poll_success": last_poll_success,
                     "last_latency_ms": last_latency_ms,
+                    "pending_latency_ms": pending_latency_ms,
                 },
                 handle,
                 indent=2,
@@ -335,9 +344,12 @@ def category_name(
 # ---------------------------------------------------------------------------
 
 # iputils: ``time=33.338 ms`` / ``time=33.3ms`` / ``time<1ms`` / ``time<1 ms``;
-# Windows: ``time=33ms`` / ``time<1ms``.
+# Windows: ``time=33ms`` / ``time<1ms``, localized as ``Zeit=33ms`` on German
+# Windows and other labels elsewhere. So match any short alphabetic label
+# before the ``=``/``<`` — the unit ``ms`` is the stable anchor, and a false
+# positive from one line per reply is not a realistic shape.
 _PING_TIME_RE = re.compile(
-    r"time([=<])\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE
+    r"[A-Za-z]+\s*([=<])\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE
 )
 
 
@@ -362,7 +374,12 @@ def default_ping() -> Optional[float]:
     unparseable output all mean "no answer this tick", which renders as
     ``timeout`` rather than failing the tick.
     """
-    if os.name == "nt":
+    if sys.platform == "darwin":
+        # macOS ping's -W is milliseconds, not seconds — a literal 2 waits
+        # 2ms and times every probe out. There is no clean fail-wait flag
+        # there, so the outer subprocess timeout does the waiting.
+        argv = ["ping", "-c", "1", PING_HOST]
+    elif os.name == "nt":
         argv = ["ping", "-n", "1", "-w", "2000", PING_HOST]
     else:
         argv = ["ping", "-c", "1", "-W", "2", PING_HOST]
@@ -381,12 +398,14 @@ def default_ping() -> Optional[float]:
 def displayed_latency(
     previous: Optional[float], sample: Optional[float]
 ) -> Optional[float]:
-    """Which latency value the label should show this tick.
+    """Which latency value this tick accepts for display.
 
     Keep ``previous`` unless there was none, the sample timed out, or the
     sample moved by ``LATENCY_HYSTERESIS_MS`` or more — a stable number keeps
     the category name byte-identical, so ``rename_channel`` short-circuits and
-    the timestamp/"Next:" updates keep their share of the rename budget.
+    the timestamp/"Next:" updates keep their share of the rename budget. The
+    accepted value is shown immediately on polling ticks and held in
+    ``pending_latency_ms`` between polls (see ``run_tick``).
     """
     if previous is None or sample is None:
         return sample
@@ -592,7 +611,12 @@ def run_tick(
     all-or-nothing block on every tick (polled or not) and is strictly
     best-effort: it can never raise, block a poll, or advance
     ``last_poll_success`` — its only effects are the label's latency slot and
-    ``last_latency_ms`` in the state file.
+    ``last_latency_ms`` / ``pending_latency_ms`` in the state file.
+
+    Rename-budget rule: latency redisplay flushes only on polling ticks;
+    between polls it is held in ``pending_latency_ms`` so every category PATCH
+    carries the scheduled timestamp update and latency never steals the
+    2-per-10-min rename budget.
     """
     state = load_state()
     interval = config["poll_interval_seconds"]
@@ -630,9 +654,23 @@ def run_tick(
         previous = float(previous) if previous is not None else None
     except (TypeError, ValueError):
         previous = None
-    latency_ms = displayed_latency(previous, sample)
+    accepted = displayed_latency(previous, sample)
 
-    save_state(int(last), latency_ms)
+    if did_poll:
+        # This tick renames the category anyway (new timestamp), so the
+        # freshest accepted latency rides along in the same PATCH at zero
+        # extra budget cost, and nothing is left held.
+        latency_ms = accepted
+        pending_latency_ms: Optional[float] = None
+    else:
+        # No budget to spend on a latency-only rename: keep the label at the
+        # old value (byte-identical ⇒ rename_channel short-circuits as
+        # "unchanged") and hold the accepted move until the next polling
+        # tick. A held value stays held — it only ever flushes on a poll.
+        latency_ms = previous
+        pending_latency_ms = accepted if accepted != previous else None
+
+    save_state(int(last), latency_ms, pending_latency_ms)
     label = category_name(last, interval, latency_ms, now_fn=now_fn)
     category_result = rename_channel(
         config["category_id"], label, headers, skip_on_429=True, http_fn=http_fn
@@ -643,5 +681,6 @@ def run_tick(
         "did_poll": did_poll,
         "category": category_result,
         "latency_ms": latency_ms,
+        "pending_latency_ms": pending_latency_ms,
         "names": names,
     }

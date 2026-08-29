@@ -74,6 +74,7 @@ class FakeDiscord:
                 name=body["name"],
                 type=body["type"],
                 parent_id=body.get("parent_id"),
+                position=body.get("position", 0),
             )
             return 201, json.dumps(chan).encode()
 
@@ -117,6 +118,9 @@ class FakeDiscord:
                 return 404, b'{"message": "Unknown Channel"}'
             if "parent_id" in body:
                 chan["parent_id"] = body["parent_id"]
+            if "position" in body:
+                chan["position"] = body["position"]
+            # A position-only PATCH must not clobber the name.
             chan["name"] = body.get("name", chan["name"])
             return 200, json.dumps(chan).encode()
 
