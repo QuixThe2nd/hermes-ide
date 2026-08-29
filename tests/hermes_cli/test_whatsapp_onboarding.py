@@ -115,5 +115,38 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     ws._whatsapp_onboarding_sessions.clear()
 
 
+def test_start_whatsapp_onboarding_unregistered_creds_are_not_connected(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text(
+        '{"registered": false, "pairingCode": "ABCD-1234"}',
+        encoding="utf-8",
+    )
+
+    class _NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    ws._whatsapp_onboarding_sessions.clear()
+    monkeypatch.setattr(ws, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(ws.secrets, "token_urlsafe", lambda size: "unregistered-creds")
+    monkeypatch.setattr(ws.threading, "Thread", _NoopThread)
+
+    result = asyncio.run(
+        ws.start_whatsapp_onboarding(
+            ws.WhatsAppOnboardingStart(mode="bot", allowed_users="")
+        )
+    )
+
+    assert result["pairing_id"] == "unregistered-creds"
+    assert result["status"] != "connected"
+    ws._whatsapp_onboarding_sessions.clear()
+
+
 
 

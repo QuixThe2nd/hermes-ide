@@ -72,6 +72,20 @@ def test_moa_default_off_not_enabled_on_fresh_discord_config():
     assert "moa" in _checklist_toolset_keys("discord")
 
 
+def test_assistant_handoff_default_off_outside_mission_profiles():
+    """assistant_handoff (missions plugin: end_session + escalate_task) must
+    not resolve on by default: only the locked assistant profile serving
+    WhatsApp mission/standing chats should opt in via an explicit
+    platform_toolsets entry. The old end_session-only toolset is gone —
+    end_session is never exposed profile-wide on its own."""
+    assert "assistant_handoff" in _DEFAULT_OFF_TOOLSETS
+    assert "end_session" not in _DEFAULT_OFF_TOOLSETS
+    for platform in ("discord", "whatsapp", "cli"):
+        assert "assistant_handoff" not in _get_platform_tools(
+            {}, platform, include_default_mcp_servers=False
+        )
+
+
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
     (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an
@@ -99,16 +113,56 @@ def test_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
-def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
-    """When at least one configured toolset is valid, tools still resolve, so
-    the runtime zero-tools warning must not fire (the migration-time check still
-    flags the individual bad name)."""
+def test_partially_valid_platform_toolsets_warns_on_unknown_name_only(caplog):
+    """A mixed valid+invalid config must name the bad entry at runtime — the
+    platform still resolves its valid toolsets, so the zero-tools line must
+    NOT fire (the migration-time check also flags the individual bad name)."""
+    import hermes_cli.tools_config as _tc
+    # The runtime warning fires once per platform per process; clear the guard
+    # so this test is deterministic regardless of prior resolutions.
+    _tc._warned_invalid_platform_toolsets.discard("cli")
     config = {"platform_toolsets": {"cli": ["hermes-cli", "bogus"]}}
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
         _get_platform_tools(config, "cli")
 
-    assert not any("#38798" in r.getMessage() for r in caplog.records)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("#38798" in m and "bogus" in m for m in warnings), warnings
+    assert not any("no valid toolsets" in m for m in warnings), warnings
+
+
+def test_unknown_toolset_name_not_echoed_as_enabled():
+    """An unknown name on the explicit list must never come back in the
+    resolved set as if it were an enabled toolset — the caller would believe
+    the platform has it while get_toolset() resolves zero tools (#38798).
+    _get_platform_tools also adds plugin toolsets and MCP names; only assert
+    about the bogus name's absence and overall non-emptiness."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "bogus"]}}
+
+    resolved = _get_platform_tools(config, "cli")
+
+    assert "bogus" not in resolved
+    assert resolved  # "hermes-cli"-derived tools still resolve
+
+
+def test_resolvable_mcp_passthrough_name_survives_unknown_filter(caplog):
+    """An MCP server name saved in platform_toolsets is not a toolset but DOES
+    resolve to tools — the #38798 unknown-name filter must keep it flowing and
+    must not name it as unknown, while still filtering a genuinely bad name."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli", "my_mcp_server", "bogus"]},
+        "mcp_servers": {"my_mcp_server": {"command": "npx", "args": ["-y", "mcp"]}},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        resolved = _get_platform_tools(config, "cli")
+
+    assert "my_mcp_server" in resolved
+    assert "bogus" not in resolved
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("my_mcp_server" in m for m in warnings), warnings
 
 
 
@@ -1071,8 +1125,8 @@ def _saved_list_from_before(platform="cli"):
 
 @_requires_recently_shipped
 def test_saved_list_gains_toolsets_that_shipped_after_it_was_written():
-    """The bug: a frozen list never gained bfl, so composite users got Nous
-    Portal video generation on upgrade and picker users silently did not."""
+    """The bug: a frozen list never gained a newly shipped toolset, so
+    composite users got it on upgrade and picker users silently did not."""
     on_composite = _get_platform_tools(
         {"platform_toolsets": {"cli": ["hermes-cli"]}},
         "cli",

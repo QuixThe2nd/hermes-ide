@@ -166,10 +166,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
@@ -280,6 +284,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Érvénytelen ellenőrzőpont-szám. Használj 1-{max} közötti értéket."
     restored:              "✅ Visszaállítva a(z) {hash} ellenőrzőpontra: {reason}\nA visszaállítás előtti pillanatkép automatikusan elmentve."
     kept_user_edits:       "↷ A kézi szerkesztéseid megmaradtak: {files}\nHasználd a /rollback <N> --all parancsot, hogy azokat is visszaállítsd."
+    kept_oversize:         "↷ Megtartva (túl nagy az ellenőrzőpontokhoz, nincs tárolt másolat, amire vissza lehetne állni): {files}"
+    failed_deletes:        "⚠️ Nem sikerült eltávolítani (a helyén maradt): {files}"
     restore_failed:        "❌ {error}"
 
   diff:
@@ -290,6 +296,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"
     success:               "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."
+    discord_pointer:       "💡 A teljes beállítást szeretnéd? A `/sethomeserver` egy egész home szerveret létesít — csevegés, memória, kvóták és sebességek — mind bekötve."
+
+  set_home_server:
+    discord_only:         "⚠️ A `/sethomeserver` csak Discordon működik — Discord kategóriákat, csatornákat és webhookokat hoz létre."
+    relay_blocked:        "⚠️ Ez az üzenet egy olyan relay-en érkezett, amely nem tudja hitelesíteni a Discord guild célokat. Futtasd a `/sethomeserver` parancsot natív Discord üzenetből."
+    no_guild:             "⚠️ Nem sikerült megállapítani a szervert. Futtasd a `/sethomeserver` parancsot a Discord home szervereden belül."
+    progress:             "🏗️ Home szerver létesítése folyamatban… (hiányzó csatornák létrehozása és bekötése — néhány másodpercig tart)"
+    confirm_required:     "⚠️ A home szervered már a(z) `{current}` guildra van beállítva.
+Futtasd a `/sethomeserver confirm` parancsot a(z) `{guild_id}` guildra való áthelyezéséhez. Semmi sem törlődik soha, de az új guild a nulláról lesz létesítve."
+    save_failed:          "Nem sikerült menteni a home szerver beállítást: {error}"
+    provision_failed:     "❌ A létesítés sikertelen: {error}"
+    success:              "🏠 Home szerver létesítve a(z) `{guild_id}` guildhoz.
+**Létrehozva ({created_count}):** {created_list}
+**Közzétett üdvözlő üzenetek:** {embeds_count}
+**Bekötve:** {wired_list} ({wired_count})
+**Engedélyezett modulok:** {modules_count}/5
+Home csatorna: {home_channel_state} — a meglévő home csatornák soha nem íródnak felül.
+Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

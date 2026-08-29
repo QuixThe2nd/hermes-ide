@@ -9,12 +9,16 @@ import re
 import stat
 import sys
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
+
+_API_BASE = "https://discord.com/api/v10"
+_MENTION_UID = "123456789012345678"
 
 
 @pytest.fixture(autouse=True)
@@ -46,13 +50,58 @@ def token_env(_isolate_env):
     return env_path
 
 
+def _write_state(home: Path, counter: int = 0, channel_id: str = "channel-existing") -> Path:
+    state_path = home / "hermes_starts" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "guild_id": "guild-1",
+                "channel_id": channel_id,
+                "channel_name": "inbox",
+                "welcome_message_id": "msg-0",
+                "counter": counter,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return state_path
+
+
+def _write_plugin_settings(home: Path, settings: Dict[str, Any]) -> None:
+    """Drop a hermes_starts settings block into the isolated config.yaml."""
+    config = {
+        "plugins": {
+            "entries": {
+                "hermes_starts": {
+                    "enabled": True,
+                    "settings": settings,
+                }
+            }
+        }
+    }
+    (home / "config.yaml").write_text(
+        json.dumps(config, indent=2), encoding="utf-8"
+    )
+
+
 class MockDiscordRouter:
+    """Routes the Discord REST calls the plugin makes, the way Discord answers.
+
+    Thread-member adds really do come back as an empty 204 body, and
+    ``_discord_request`` must treat that as success rather than a JSON error.
+    """
+
     def __init__(self) -> None:
         self.calls: List[Dict[str, Any]] = []
         self.guilds: List[Dict[str, str]] = [{"id": "guild-1", "name": "Test Guild"}]
         self.channel_counter = 0
         self.message_counter = 0
+        self.thread_counter = 0
         self.fail_pin = False
+        self.fail_thread_create = False
+        self.fail_thread_member = False
+        self.thread_returns_no_id = False
 
     def __call__(self, request):
         self.calls.append(
@@ -80,6 +129,22 @@ class MockDiscordRouter:
                 }
             )
 
+        if method == "POST" and "/messages/" in url and url.endswith("/threads"):
+            if self.fail_thread_create:
+                raise urllib.error.HTTPError(
+                    url, 403, "Forbidden", hdrs=None, fp=BytesIO(b'{"message": "no thread"}')
+                )
+            self.thread_counter += 1
+            body = json.loads(request.data.decode("utf-8")) if request.data else {}
+            payload = {
+                "id": f"thread-{self.thread_counter}",
+                "name": body.get("name", ""),
+                "type": body.get("type", 11),
+            }
+            if self.thread_returns_no_id:
+                payload.pop("id")
+            return self._response(payload)
+
         if method == "POST" and "/channels/" in url and url.endswith("/messages"):
             self.message_counter += 1
             body = json.loads(request.data.decode("utf-8")) if request.data else {}
@@ -89,6 +154,13 @@ class MockDiscordRouter:
             if "content" in body:
                 payload["content"] = body["content"]
             return self._response(payload)
+
+        if method == "PUT" and "/thread-members/" in url:
+            if self.fail_thread_member:
+                raise urllib.error.HTTPError(
+                    url, 403, "Forbidden", hdrs=None, fp=BytesIO(b'{"message": "no member"}')
+                )
+            return self._response({}, status=204, empty=True)
 
         if method == "PUT" and "/pins/" in url:
             if self.fail_pin:
@@ -100,10 +172,11 @@ class MockDiscordRouter:
         raise AssertionError(f"unexpected request: {method} {url}")
 
     @staticmethod
-    def _response(payload, status: int = 200):
+    def _response(payload, status: int = 200, empty: bool = False):
         mock_resp = MagicMock()
         mock_resp.status = status
-        mock_resp.read.return_value = json.dumps(payload).encode("utf-8")
+        raw = b"" if empty else json.dumps(payload).encode("utf-8")
+        mock_resp.read.return_value = raw
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
         return mock_resp
@@ -120,41 +193,51 @@ def _call(hermes_starts_module, args: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(hermes_starts_module.handle_start_conversation(args))
 
 
+def _endpoints(router: MockDiscordRouter) -> List[Any]:
+    assert all(call["url"].startswith(_API_BASE) for call in router.calls)
+    return [
+        (call["method"], call["url"][len(_API_BASE):])
+        for call in router.calls
+    ]
+
+
+def _posted_contents(router: MockDiscordRouter) -> List[str]:
+    """Content-bearing message bodies, in posting order (welcome embed excluded)."""
+    return [
+        json.loads(call["body"])["content"]
+        for call in router.calls
+        if call["method"] == "POST"
+        and call["url"].endswith("/messages")
+        and call["body"]
+        and '"content"' in call["body"]
+    ]
+
+
 class TestMessageFormat:
     def test_compose_message_with_next_move(self, hermes_starts_module):
         text = hermes_starts_module._compose_message(
-            3,
-            "advice",
-            "warm",
             "You have been skipping lunch again.",
             "Block 30 minutes on your calendar tomorrow.",
         )
         assert text == (
-            "**💬 Hermes started something #3 — advice [warm]**\n"
             "You have been skipping lunch again.\n"
+            "\n"
             "*Where I'd take this:* Block 30 minutes on your calendar tomorrow."
         )
 
     def test_compose_message_without_next_move(self, hermes_starts_module):
-        text = hermes_starts_module._compose_message(
-            1, "joke", "playful", "Why did the linter cross the road?", ""
-        )
-        assert text == (
-            "**💬 Hermes started something #1 — joke [playful]**\n"
-            "Why did the linter cross the road?"
-        )
+        text = hermes_starts_module._compose_message("Why did the linter cross the road?", "")
+        assert text == "Why did the linter cross the road?"
         assert "Where I'd take this" not in text
 
 
 class TestSplitting:
     def test_split_on_paragraph_boundaries(self, hermes_starts_module):
-        header = "**💬 Hermes started something #1 — observation [direct]**\n"
-        footer = "\n*Where I'd take this:* do better"
         body = "A" * 1200 + "\n\n" + "B" * 1200
-        parts = hermes_starts_module._split_message(header + body + footer)
+        parts = hermes_starts_module._split_message(body)
         assert len(parts) >= 2
         assert all(len(part) <= hermes_starts_module._MAX_MESSAGE_LEN for part in parts)
-        assert "".join(parts).replace("\n\n", "") == (header + body + footer).replace("\n\n", "")
+        assert "".join(parts).replace("\n\n", "") == body.replace("\n\n", "")
 
     def test_hard_wrap_without_paragraph_boundaries(self, hermes_starts_module):
         chunk = "x" * 4000
@@ -162,6 +245,36 @@ class TestSplitting:
         assert len(parts) >= 3
         assert all(len(part) <= hermes_starts_module._MAX_MESSAGE_LEN for part in parts)
         assert "".join(parts) == chunk
+
+    def test_mention_prefix_stays_with_first_part(self, hermes_starts_module):
+        delivery = f"<@{_MENTION_UID}>\n" + "A" * 1200 + "\n\n" + "B" * 1200
+        parts = hermes_starts_module._split_message(delivery)
+        assert len(parts) == 2
+        assert parts[0].startswith(f"<@{_MENTION_UID}>\n")
+        assert not parts[1].startswith("<@")
+        assert all(len(part) <= hermes_starts_module._MAX_MESSAGE_LEN for part in parts)
+
+    def test_split_delivery_reserves_mention_room_near_limit(self, hermes_starts_module):
+        prefix = f"<@{_MENTION_UID}>\n"
+        opening = "x" * 1940
+
+        parts = hermes_starts_module._split_delivery(opening, _MENTION_UID)
+
+        assert parts[0].startswith(prefix)
+        # The anchor carries opening text after the ping — packed into the
+        # room the split reserved for the prefix — never the ping alone.
+        assert set(parts[0][len(prefix):]) == {"x"}
+        assert len(parts[0]) == hermes_starts_module._MAX_MESSAGE_LEN
+        assert parts[0][len(prefix):] + "".join(parts[1:]) == opening
+        assert all(
+            len(part) <= hermes_starts_module._MAX_MESSAGE_LEN for part in parts
+        )
+        assert "<@" not in "".join(parts[1:])
+
+        # Without a mention, delivery splitting is the plain split.
+        assert hermes_starts_module._split_delivery(opening, "") == (
+            hermes_starts_module._split_message(opening)
+        )
 
 
 class TestCheckRequirements:
@@ -180,20 +293,7 @@ class TestCounterPersistence:
     def test_counter_increments_and_persists(
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
-        state_path = _isolate_env / "hermes_starts" / "state.json"
-        state_path.parent.mkdir(parents=True)
-        state_path.write_text(
-            json.dumps(
-                {
-                    "guild_id": "guild-1",
-                    "channel_id": "channel-existing",
-                    "channel_name": "inbox",
-                    "welcome_message_id": "msg-0",
-                    "counter": 4,
-                }
-            ),
-            encoding="utf-8",
-        )
+        state_path = _write_state(_isolate_env, counter=4)
 
         first = _call(
             hermes_starts_module,
@@ -251,20 +351,7 @@ class TestHttpErrors:
     def test_http_error_returns_failure_without_raising(
         self, hermes_starts_module, token_env, monkeypatch, _isolate_env
     ):
-        state_path = _isolate_env / "hermes_starts" / "state.json"
-        state_path.parent.mkdir(parents=True)
-        state_path.write_text(
-            json.dumps(
-                {
-                    "guild_id": "guild-1",
-                    "channel_id": "channel-existing",
-                    "channel_name": "inbox",
-                    "welcome_message_id": "msg-0",
-                    "counter": 0,
-                }
-            ),
-            encoding="utf-8",
-        )
+        _write_state(_isolate_env)
 
         def _raise_http(request):
             raise urllib.error.HTTPError(
@@ -305,9 +392,12 @@ class TestSetupProvisioning:
         assert saved["counter"] == 0
         assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
 
-        methods = [call["method"] for call in discord_router.calls]
-        assert methods == ["GET", "POST", "POST", "PUT"]
-        assert "Authorization" in discord_router.calls[0]["headers"]
+        assert _endpoints(discord_router) == [
+            ("GET", "/users/@me/guilds"),
+            ("POST", "/guilds/guild-1/channels"),
+            ("POST", "/channels/channel-1/messages"),
+            ("PUT", "/channels/channel-1/pins/msg-1"),
+        ]
         assert discord_router.calls[0]["headers"]["Authorization"] == "Bot test-bot-token"
         assert "test-bot-token" not in json.dumps(result)
 
@@ -323,10 +413,6 @@ class TestSetupProvisioning:
             "description"
         ]
         assert embed["footer"]["text"] == "Started by your Hermes agent via Hermes Starts"
-
-        pin_call = discord_router.calls[3]
-        assert pin_call["method"] == "PUT"
-        assert "/pins/" in pin_call["url"]
 
     def test_single_guild_auto_detect(self, hermes_starts_module, token_env, discord_router):
         discord_router.guilds = [{"id": "solo-guild", "name": "Only Server"}]
@@ -415,7 +501,73 @@ class TestSetupProvisioning:
         assert "pin failed" in result["warning"]
 
 
-class TestStartAutoProvision:
+class TestStartSingleMessage:
+    """The opening itself is the one visible starter message, and the thread
+    hangs off it — no stub, no repost of the opening inside the thread."""
+
+    def test_short_start_posts_one_channel_message_and_anchors_thread(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+
+        result = _call(
+            hermes_starts_module,
+            {
+                "kind": "idea",
+                "message": "The inbox channel should thread itself.",
+                "next_move": "Anchor the thread on the opening.",
+            },
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "start"
+        assert result["start_number"] == 1
+        assert result["channel_id"] == "channel-existing"
+        assert result["channel_message_id"] == "msg-1"
+        assert result["channel_message_ids"] == ["msg-1"]
+        assert result["thread_id"] == "thread-1"
+        assert result["thread_name"] == "Start #1 — idea"
+        # Nothing else is posted inside the thread for a short opening.
+        assert result["thread_message_ids"] == []
+        assert "channel_stub_message_id" not in result
+        assert "warning" not in result
+
+        contents = _posted_contents(discord_router)
+        assert len(contents) == 1
+        assert contents[0] == (
+            "The inbox channel should thread itself.\n"
+            "\n"
+            "*Where I'd take this:* Anchor the thread on the opening."
+        )
+
+        # Order matters: the opening must exist before a thread can anchor on it.
+        assert _endpoints(discord_router) == [
+            ("POST", "/channels/channel-existing/messages"),
+            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
+        ]
+
+        thread_body = json.loads(discord_router.calls[1]["body"])
+        assert thread_body["name"] == "Start #1 — idea"
+        assert thread_body["type"] == 11
+
+    def test_start_without_next_move_omits_label(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+
+        result = _call(
+            hermes_starts_module,
+            {
+                "kind": "compliment",
+                "message": "You shipped three things this week.",
+            },
+        )
+        assert result["success"] is True
+
+        contents = _posted_contents(discord_router)
+        assert contents == ["You shipped three things this week."]
+        assert "Where I'd take this" not in contents[0]
+
     def test_start_auto_provisions_when_unprovisioned(
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
@@ -432,58 +584,372 @@ class TestStartAutoProvision:
         assert result["action"] == "start"
         assert result["start_number"] == 1
         assert result["channel_id"] == "channel-1"
-        assert len(result["channel_message_ids"]) == 1
+        assert result["channel_message_ids"] == ["msg-2"]
+        assert result["thread_id"] == "thread-1"
 
-        posted = [
-            json.loads(call["body"])["content"]
-            for call in discord_router.calls
-            if call["method"] == "POST"
-            and "/messages" in call["url"]
-            and call["body"]
-            and '"content"' in call["body"]
+        contents = _posted_contents(discord_router)
+        assert contents == ["Needs a home\n\n*Where I'd take this:* Create the channel"]
+
+        assert _endpoints(discord_router) == [
+            ("GET", "/users/@me/guilds"),
+            ("POST", "/guilds/guild-1/channels"),
+            ("POST", "/channels/channel-1/messages"),
+            ("PUT", "/channels/channel-1/pins/msg-1"),
+            ("POST", "/channels/channel-1/messages"),
+            ("POST", "/channels/channel-1/messages/msg-2/threads"),
         ]
-        assert posted[0].startswith("**💬 Hermes started something #1 — idea [direct]**")
-        assert "*Where I'd take this:* Create the channel" in posted[0]
 
-    def test_start_without_next_move_omits_label(
+    def test_thread_marks_participation_for_gateway_replies(
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
-        state_path = _isolate_env / "hermes_starts" / "state.json"
-        state_path.parent.mkdir(parents=True)
-        state_path.write_text(
-            json.dumps(
-                {
-                    "guild_id": "guild-1",
-                    "channel_id": "channel-existing",
-                    "channel_name": "inbox",
-                    "welcome_message_id": "msg-0",
-                    "counter": 0,
-                }
-            ),
-            encoding="utf-8",
+        _write_state(_isolate_env)
+
+        result = _call(
+            hermes_starts_module, {"kind": "joke", "message": "A thread walks into a bar."}
         )
+
+        assert result["success"] is True
+        tracked = json.loads(
+            (_isolate_env / "discord_threads.json").read_text(encoding="utf-8")
+        )
+        assert result["thread_id"] in tracked
+
+
+class TestStartMention:
+    def test_configured_mention_prefixes_anchor_and_joins_thread(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "question", "message": "Did you see the deploy?", "next_move": "Take a look"},
+        )
+
+        assert result["success"] is True
+        assert result["mentioned_user_id"] == _MENTION_UID
+        assert "warning" not in result
+
+        contents = _posted_contents(discord_router)
+        assert len(contents) == 1
+        assert contents[0].startswith(f"<@{_MENTION_UID}>\n")
+        assert "Did you see the deploy?" in contents[0]
+
+        assert _endpoints(discord_router) == [
+            ("POST", "/channels/channel-existing/messages"),
+            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
+            ("PUT", f"/channels/thread-1/thread-members/{_MENTION_UID}"),
+        ]
+
+    def test_quiet_hours_suppress_mention_and_member_add(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        # A window that is active right now in UTC, whatever "now" is.
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(minutes=5)).strftime("%H:%M")
+        end = (now + timedelta(minutes=5)).strftime("%H:%M")
+        _write_plugin_settings(
+            _isolate_env,
+            {"mention_user_id": _MENTION_UID, "quiet_hours": f"{start}-{end}", "quiet_tz": "UTC"},
+        )
+
+        result = _call(
+            hermes_starts_module, {"kind": "observation", "message": "It is late."}
+        )
+
+        assert result["success"] is True
+        assert "mentioned_user_id" not in result
+
+        contents = _posted_contents(discord_router)
+        assert contents == ["It is late."]
+        assert "<@" not in contents[0]
+
+        assert _endpoints(discord_router) == [
+            ("POST", "/channels/channel-existing/messages"),
+            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
+        ]
+
+    def test_non_numeric_mention_id_is_ignored(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": "not-a-snowflake"})
+
+        result = _call(
+            hermes_starts_module, {"kind": "personal", "message": "Hello there."}
+        )
+
+        assert result["success"] is True
+        assert "mentioned_user_id" not in result
+        assert _posted_contents(discord_router) == ["Hello there."]
+
+
+class TestQuietHoursWindow:
+    @staticmethod
+    def _at(hour: int, minute: int = 0) -> datetime:
+        return datetime(2026, 8, 25, hour, minute, tzinfo=timezone.utc)
+
+    def test_overnight_window_wraps_midnight(self, hermes_starts_module):
+        settings = {"quiet_hours": "23:00-08:00", "quiet_tz": "UTC"}
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(23, 30)) is True
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(3, 0)) is True
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(7, 59)) is True
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(8, 0)) is False
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(12, 0)) is False
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(22, 59)) is False
+
+    def test_daytime_window(self, hermes_starts_module):
+        settings = {"quiet_hours": "09:00-17:00", "quiet_tz": "UTC"}
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(9, 0)) is True
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(16, 59)) is True
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(17, 0)) is False
+        assert hermes_starts_module._quiet_hours_active(settings, self._at(2, 0)) is False
+
+    def test_empty_window_disables_gate_and_misconfig_fails_open(
+        self, hermes_starts_module
+    ):
+        assert hermes_starts_module._quiet_hours_active({"quiet_hours": ""}) is False
+        assert hermes_starts_module._quiet_hours_active({"quiet_hours": "garbage"}) is False
+        assert hermes_starts_module._quiet_hours_active({"quiet_tz": "Not/AZone"}) is False
+
+    def test_unconfigured_window_defaults_to_overnight(
+        self, hermes_starts_module
+    ):
+        assert hermes_starts_module._quiet_hours_active({}, self._at(2, 0)) is True
+        assert hermes_starts_module._quiet_hours_active({}, self._at(12, 0)) is False
+
+
+class TestLongOpeningSplit:
+    _MESSAGE = "A" * 1200 + "\n\n" + "B" * 1200
+    _NEXT_MOVE = "C" * 100
+
+    def _composed(self) -> str:
+        return (
+            self._MESSAGE
+            + "\n\n*Where I'd take this:* "
+            + self._NEXT_MOVE
+        )
+
+    def test_first_part_is_channel_anchor_rest_go_in_thread(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "feedback", "message": self._MESSAGE, "next_move": self._NEXT_MOVE},
+        )
+
+        assert result["success"] is True
+        assert result["channel_message_ids"] == ["msg-1"]
+        assert result["thread_message_ids"] == ["msg-2"]
+        assert result["channel_message_id"] == "msg-1"
+
+        contents = _posted_contents(discord_router)
+        assert len(contents) == 2
+        assert all(
+            len(part) <= hermes_starts_module._MAX_MESSAGE_LEN for part in contents
+        )
+        # The whole opening survives, in order, with exactly one mention.
+        assert contents[0] == f"<@{_MENTION_UID}>\n" + "A" * 1200
+        assert contents[1] == "B" * 1200 + "\n\n*Where I'd take this:* " + "C" * 100
+
+        assert _endpoints(discord_router) == [
+            ("POST", "/channels/channel-existing/messages"),
+            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
+            ("PUT", f"/channels/thread-1/thread-members/{_MENTION_UID}"),
+            ("POST", "/channels/thread-1/messages"),
+        ]
+
+    def test_near_limit_mention_anchor_keeps_opening_text(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        """A mention plus an almost-limit opening must not strand the ping.
+
+        Prefixing the delivery string before splitting used to let the
+        newline after the mention become the only break point, leaving a
+        bare `<@...>` as the channel anchor and pushing the entire opening
+        into the thread.
+        """
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+
+        opening = "x" * 1940
+        result = _call(
+            hermes_starts_module,
+            {"kind": "advice", "message": opening},
+        )
+
+        assert result["success"] is True
+        assert result["mentioned_user_id"] == _MENTION_UID
+
+        contents = _posted_contents(discord_router)
+        prefix = f"<@{_MENTION_UID}>\n"
+        assert len(contents) == 2
+        assert result["channel_message_ids"] == ["msg-1"]
+        assert result["thread_message_ids"] == ["msg-2"]
+
+        anchor = contents[0]
+        assert anchor.startswith(prefix)
+        # Real opening text rides with the ping, packed right up to the limit —
+        # a bare mention must never be the channel anchor.
+        assert set(anchor[len(prefix):]) == {"x"}
+        assert len(anchor) == hermes_starts_module._MAX_MESSAGE_LEN
+        # …and only the leftover tail lands inside the thread.
+        assert set(contents[1]) == {"x"}
+        assert anchor[len(prefix):] + contents[1] == opening
+        assert len(contents[1]) <= hermes_starts_module._MAX_MESSAGE_LEN
+        assert "<@" not in contents[1]
+
+    def test_thread_create_failure_keeps_anchor_and_finishes_in_channel(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        discord_router.fail_thread_create = True
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "feedback", "message": self._MESSAGE, "next_move": self._NEXT_MOVE},
+        )
+
+        # The opening already exists in the channel, so the start still counts.
+        assert result["success"] is True
+        assert "thread creation failed: HTTP 403" in result["warning"]
+        assert "thread_id" not in result
+        assert result["thread_message_ids"] == []
+        assert result["channel_message_ids"] == ["msg-1", "msg-2"]
+
+        contents = _posted_contents(discord_router)
+        assert len(contents) == 2
+        # Anchor kept verbatim, tail delivered, nothing duplicated or lost.
+        assert contents[0] == "A" * 1200
+        assert contents[1] == "B" * 1200 + "\n\n*Where I'd take this:* " + "C" * 100
+
+        assert _endpoints(discord_router) == [
+            ("POST", "/channels/channel-existing/messages"),
+            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
+            ("POST", "/channels/channel-existing/messages"),
+        ]
+
+    def test_short_opening_survives_thread_create_failure(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        discord_router.fail_thread_create = True
+
+        result = _call(
+            hermes_starts_module, {"kind": "idea", "message": "No thread for this one."}
+        )
+
+        assert result["success"] is True
+        assert "thread creation failed" in result["warning"]
+        assert _posted_contents(discord_router) == ["No thread for this one."]
+
+    def test_thread_response_without_id_degrades_to_channel_only(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        discord_router.thread_returns_no_id = True
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "feedback", "message": self._MESSAGE, "next_move": self._NEXT_MOVE},
+        )
+
+        assert result["success"] is True
+        assert "returned no id" in result["warning"]
+        assert "thread_id" not in result
+        assert result["thread_message_ids"] == []
+        assert result["channel_message_ids"] == ["msg-1", "msg-2"]
+        assert len(_posted_contents(discord_router)) == 2
+
+
+class TestMemberAddFailure:
+    def test_member_add_failure_warns_without_duplicating_the_opening(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        discord_router.fail_thread_member = True
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "advice", "message": "Ship the small fix first.", "next_move": "Open the PR"},
+        )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "thread-1"
+        assert result["mentioned_user_id"] == _MENTION_UID
+        assert f"thread member add failed for {_MENTION_UID}: HTTP 403" in result["warning"]
+        assert result["channel_message_ids"] == ["msg-1"]
+        assert result["thread_message_ids"] == []
+
+        # The opening is still exactly one message — the ping failed, the
+        # start did not.
+        contents = _posted_contents(discord_router)
+        assert len(contents) == 1
+        assert contents[0].startswith(f"<@{_MENTION_UID}>\n")
+
+        assert _endpoints(discord_router) == [
+            ("POST", "/channels/channel-existing/messages"),
+            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
+            ("PUT", f"/channels/thread-1/thread-members/{_MENTION_UID}"),
+        ]
+
+
+class TestSessionSeeding:
+    def test_thread_session_seeded_with_unprefixed_opening(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
 
         result = _call(
             hermes_starts_module,
             {
-                "kind": "compliment",
-                "message": "You shipped three things this week.",
+                "kind": "business",
+                "message": "The renewal is due Friday.",
+                "next_move": "Confirm the amount",
             },
         )
-        assert result["success"] is True
 
-        posted = [
-            json.loads(call["body"])["content"]
-            for call in discord_router.calls
-            if call["method"] == "POST"
-            and "/messages" in call["url"]
-            and call["body"]
-            and '"content"' in call["body"]
-        ]
-        assert posted[0].startswith(
-            "**💬 Hermes started something #1 — compliment [direct]**"
+        assert result["success"] is True
+        thread_id = result["thread_id"]
+        assert result["session_seed_key"] == f"agent:main:discord:thread:{thread_id}:{thread_id}"
+
+        from gateway.config import GatewayConfig, Platform
+        from gateway.session import SessionSource, SessionStore
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=thread_id,
+            chat_name=f"Big Steve / {result['thread_name']}",
+            chat_type="thread",
+            user_id="1487993851930214410",
+            user_name="Hermes Starts",
+            thread_id=thread_id,
         )
-        assert "Where I'd take this" not in posted[0]
+        store = SessionStore(_isolate_env / "sessions", GatewayConfig())
+        entry = store.get_or_create_session(source)
+        assert entry.session_key == result["session_seed_key"]
+
+        transcript = store.load_transcript(entry.session_id)
+        openings = [
+            message
+            for message in transcript
+            if message.get("role") == "assistant"
+            and "renewal is due Friday" in str(message.get("content"))
+        ]
+        assert len(openings) == 1
+        # The session gets the conversation, not the delivery-format ping.
+        assert openings[0]["content"] == (
+            "The renewal is due Friday.\n"
+            "\n"
+            "*Where I'd take this:* Confirm the amount"
+        )
 
 
 class TestKindValidation:
@@ -505,20 +971,7 @@ class TestKindValidation:
     def test_all_kinds_accepted(
         self, hermes_starts_module, token_env, discord_router, _isolate_env, kind
     ):
-        state_path = _isolate_env / "hermes_starts" / "state.json"
-        state_path.parent.mkdir(parents=True)
-        state_path.write_text(
-            json.dumps(
-                {
-                    "guild_id": "guild-1",
-                    "channel_id": "channel-existing",
-                    "channel_name": "inbox",
-                    "welcome_message_id": "msg-0",
-                    "counter": 0,
-                }
-            ),
-            encoding="utf-8",
-        )
+        _write_state(_isolate_env)
 
         result = _call(
             hermes_starts_module,
@@ -526,24 +979,12 @@ class TestKindValidation:
         )
         assert result["success"] is True
         assert result["start_number"] == 1
+        assert result["thread_name"] == f"Start #1 — {kind}"
 
     def test_invalid_kind_rejected(
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
-        state_path = _isolate_env / "hermes_starts" / "state.json"
-        state_path.parent.mkdir(parents=True)
-        state_path.write_text(
-            json.dumps(
-                {
-                    "guild_id": "guild-1",
-                    "channel_id": "channel-existing",
-                    "channel_name": "inbox",
-                    "welcome_message_id": "msg-0",
-                    "counter": 0,
-                }
-            ),
-            encoding="utf-8",
-        )
+        _write_state(_isolate_env)
 
         result = _call(
             hermes_starts_module,
@@ -551,6 +992,27 @@ class TestKindValidation:
         )
         assert result["success"] is False
         assert "invalid kind" in result["error"]
+
+    def test_invalid_tone_rejected(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        _write_state(_isolate_env)
+
+        result = _call(
+            hermes_starts_module,
+            {"kind": "idea", "message": "Tone check", "tone": "sarcastic"},
+        )
+        assert result["success"] is False
+        assert "invalid tone" in result["error"]
+
+    def test_missing_fields_rejected(
+        self, hermes_starts_module, token_env, discord_router, _isolate_env
+    ):
+        result = _call(hermes_starts_module, {"kind": "idea"})
+        assert result == {"success": False, "error": "missing required fields"}
+
+        result = _call(hermes_starts_module, {"message": "No kind"})
+        assert result == {"success": False, "error": "missing required fields"}
 
 
 class TestForbiddenWords:

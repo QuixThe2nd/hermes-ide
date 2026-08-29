@@ -28,6 +28,12 @@ Containment contract (MUST hold — reviewers check all three):
 - Everything here is additive. The legacy protocol transports
   (``hermes -p`` / ``hermes peer dm``) keep working for older prompts.
 
+``start_one_way_handoff`` (below) reuses the same local query-file transport
+for SERVER-initiated one-way handoffs: identical delivery, but
+``notify_on_complete`` is hard-coded False and no reply/completion/error is
+ever routed back to the spawning session. It is a Python helper, not a tool —
+no schema, never model-callable.
+
 The transports themselves are unchanged and proven:
 - local teammate  → ``hermes -p <name> chat --in ~ -c "Bot Chat"
   --create-if-missing -Q --query-file <tmp>`` (one turn, reply on stdout)
@@ -52,7 +58,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -527,7 +533,19 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     lock in ``tools.bot_relay``. Peer transports (stdin mode) run on the
     remote gateway; their turn is locked THERE by its own deliver path.
     """
-    if stdin_file or len(argv) < 3 or argv[0] != "hermes" or argv[1] != "-p":
+    # The CLI element is matched by basename: local_delivery_command now
+    # resolves the venv-relative hermes next to this gateway's interpreter
+    # (#93590 — service contexts lack PATH), so argv[0] may be an absolute
+    # path (and on Windows carries the .exe suffix). Split on both
+    # separators so the shape matches regardless of which platform built
+    # the argv.
+    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if (
+        stdin_file
+        or len(argv) < 3
+        or cli not in ("hermes", "hermes.exe")
+        or argv[1] != "-p"
+    ):
         return contextlib.nullcontext()
     from tools.bot_relay import acquire_turn_lock
 
@@ -541,6 +559,14 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     The turn execution window (not the enqueue) holds the target profile's
     cross-process lock, so two deliveries into one profile queue instead of
     racing; a bounded wait ends in a structured 'target_busy' refusal.
+
+    Local (query-file) turns get one policy-gated retry (#93091 item 5):
+    transient failures re-run the same session; a context_overflow re-run
+    lets the retried turn's pre-API compaction pass compact the Bot Chat
+    transcript first (agent/conversation_loop.py) — the sanctioned
+    compression lever; no fresh session is ever minted. Auth/quota/config
+    failures never retry. Peer transports (stdin mode) retry on their own
+    gateway's deliver path, not here.
     """
     try:
         with _delivery_lock(argv, stdin_file=stdin_file):
@@ -549,10 +575,36 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                 # after subprocess.run returns, not merely after stdin reaches EOF.
                 with open(dm_file, "r", encoding="utf-8") as stream:
                     return subprocess.run(argv, stdin=stream, check=False).returncode
-            return subprocess.run(
+            proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
-            ).returncode
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                from tools.bot_failure_reasons import (
+                    RETRY_NONE,
+                    classify_agent_error,
+                    retry_action,
+                )
+
+                detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+                if retry_action(classify_agent_error(detail)) != RETRY_NONE:
+                    proc = subprocess.run(
+                        [*argv, "--query-file", dm_file],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+            # Re-emit the transport's streams: stdout is the reply text the
+            # completion notification carries back to the sending agent.
+            if proc.stdout:
+                sys.stdout.write(proc.stdout)
+                sys.stdout.flush()
+            if proc.stderr:
+                sys.stderr.write(proc.stderr)
+                sys.stderr.flush()
+            return proc.returncode
     finally:
         _unlink_dm_file(dm_file)
 
@@ -567,6 +619,12 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str
         dm_file,
         *argv,
     ]
+    if sys.platform == "win32":
+        # The tracked local backend uses Git Bash on native Windows. Forward
+        # slashes preserve native drive paths while remaining executable by
+        # that shell; backslash-form paths are parsed as command names and die
+        # with exit 127 before this runner starts.
+        runner_argv = [part.replace("\\", "/") for part in runner_argv]
     return shlex.join(runner_argv)
 
 
@@ -578,6 +636,7 @@ def _start_delivery(
     stdin_file: bool,
     task_id: Optional[str],
     agent: Any,
+    notify_on_complete: bool = True,
 ) -> str:
     """Create a DM file and transfer its cleanup ownership to the runner."""
     dm_file = _write_dm_file(content)
@@ -592,6 +651,7 @@ def _start_delivery(
         dm_file=dm_file,
         task_id=task_id,
         agent=agent,
+        notify_on_complete=notify_on_complete,
     )
 
 
@@ -602,12 +662,17 @@ def _spawn_delivery(
     dm_file: Optional[str] = None,
     task_id: Optional[str],
     agent: Any,
+    notify_on_complete: bool = True,
 ) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack.
 
     ``dm_file`` is None for relay deliveries: the waiter command watches a
     reply file, and the envelope artifacts are owned and swept by
     ``tools/bot_relay.py`` — there is no plaintext DM tempfile to reclaim.
+
+    ``notify_on_complete=False`` is the one-way shape: the runner is still
+    tracked as a background process, but NO completion notification is ever
+    queued back to the spawning session (see ``start_one_way_handoff``).
     """
     transferred = False
     try:
@@ -616,8 +681,10 @@ def _spawn_delivery(
         raw = terminal_tool(
             command,
             background=True,
-            notify_on_complete=True,
+            notify_on_complete=notify_on_complete,
             task_id=task_id,
+            workdir=str(Path(__file__).resolve().parent.parent),
+            _host_local=True,
         )
         try:
             parsed = json.loads(raw)
@@ -631,16 +698,23 @@ def _spawn_delivery(
         # From this point the background runner owns the file and removes it
         # only after the local query-file or peer stdin consumer has finished.
         transferred = True
+        detail = (
+            f"Message dispatched to {label}. This is asynchronous — do NOT wait "
+            "or poll. Finish your turn now; when the delivery completes, its "
+            "notification carries the reply — relay it then, attributed to "
+            "that agent."
+            if notify_on_complete
+            else (
+                f"Handoff delivered one-way to {label}. There is no reply "
+                "channel and no completion notification — nothing comes back "
+                "to this session."
+            )
+        )
         return json.dumps(
             {
                 "status": "sent",
                 "to": label,
-                "detail": (
-                    f"Message dispatched to {label}. This is asynchronous — do NOT wait "
-                    "or poll. Finish your turn now; when the delivery completes, its "
-                    "notification carries the reply — relay it then, attributed to "
-                    "that agent."
-                ),
+                "detail": detail,
                 **({"process_id": proc_id} if proc_id else {}),
                 "sent_at": int(time.time()),
             }
@@ -651,6 +725,82 @@ def _spawn_delivery(
     finally:
         if dm_file and not transferred:
             _unlink_dm_file(dm_file)
+
+
+# ── one-way handoff (no reply, no completion route) ──────────────────────────
+
+
+def start_one_way_handoff(
+    content: str,
+    *,
+    profile: str,
+    chat_title: str,
+    toolsets: Sequence[str],
+    task_id: Optional[str] = None,
+) -> dict:
+    """Deliver ONE prepared turn into another profile's chat, silently.
+
+    The notification-free counterpart of the ``message_agent`` local
+    transport, for server-initiated handoffs where the spawning session must
+    NEVER receive anything back (the assistant WhatsApp escalation path):
+
+    - Same proven query-file machinery: the payload rides a 0600 temp file
+      inside a 0700 per-user directory, never argv; the cleanup-owning runner
+      unlinks it after consumption;
+      the target profile's cross-process turn lock serializes concurrent
+      deliveries into the same chat.
+    - ``notify_on_complete`` is hard-coded False — no completion
+      notification, no watch patterns, no reply, no error routed back. The
+      spawned turn's stdout is captured by the process registry and dies
+      there; the caller gets only ``{"ok", "process_id"}``.
+    - No callback/origin routing parameters exist on this helper by design:
+    the two-way wake shape is ``message_agent``'s contract, not this one.
+
+    ``profile`` / ``chat_title`` / ``toolsets`` are SERVER-side constants
+    (callers hard-code them); they are validated anyway so a future caller
+    can't smuggle shell metacharacters through them. Returns a dict, not a
+    model-facing string: the caller composes its own ack.
+    """
+    body = str(content or "")
+    if not body.strip():
+        return {"ok": False, "error": "content is required"}
+    if len(body) > MESSAGE_MAX_CHARS:
+        return {"ok": False, "error": f"content too long ({len(body)} chars)"}
+
+    target_profile = str(profile or "").strip()
+    title = str(chat_title or "").strip()
+    enabled = [str(t or "").strip() for t in toolsets or ()]
+    enabled = [t for t in enabled if t]
+    if not _LOCAL_TARGET_RE.match(target_profile or ""):
+        return {"ok": False, "error": "invalid target profile"}
+    if not title or len(title) > 200:
+        return {"ok": False, "error": "invalid target chat title"}
+    if not enabled or any(not _LOCAL_TARGET_RE.match(t) for t in enabled):
+        return {"ok": False, "error": "invalid toolsets"}
+
+    from tools.bot_relay import local_delivery_base_command
+
+    argv = local_delivery_base_command(
+        target_profile,
+        chat_title=title,
+        toolsets=enabled,
+    )
+    result = _start_delivery(
+        argv,
+        body,
+        f"{target_profile}/{title}",
+        stdin_file=False,
+        task_id=task_id,
+        agent=None,
+        notify_on_complete=False,
+    )
+    try:
+        parsed = json.loads(result)
+    except (ValueError, TypeError):
+        parsed = {}
+    if parsed.get("error") or not parsed.get("process_id"):
+        return {"ok": False, "error": "delivery failed to start"}
+    return {"ok": True, "process_id": str(parsed["process_id"])}
 
 
 def _delivery_main(args: list[str]) -> int:

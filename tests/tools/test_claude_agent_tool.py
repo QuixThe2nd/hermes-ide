@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -63,6 +64,11 @@ for _name in models_str.split(","):
     _name = _name.strip()
     if _name:
         model_usage[_name] = {{"input_tokens": 100, "output_tokens": 50}}
+
+prelude = os.environ.get("FAKE_CLAUDE_PRELUDE")
+if prelude:
+    sys.stdout.write(prelude + "\\n")
+    sys.stdout.flush()
 
 result = {{
     "type": "result",
@@ -127,6 +133,64 @@ def test_schema_registration():
     assert props["allowed_tools"]["default"] == "Read,Write,Edit,Glob,Grep,Bash"
     assert props["permission_mode"]["default"] == "acceptEdits"
     assert set(props["permission_mode"]["enum"]) == {"acceptEdits", "plan"}
+
+
+# ---------------------------------------------------------------------------
+# Lane-rule schema contract (claude / cursor / file tools)
+# ---------------------------------------------------------------------------
+
+def test_claude_schema_description_states_lane_rule():
+    import tools.claude_agent_tool  # noqa: F401
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_claude_agent")
+    assert entry is not None
+    description = entry.schema["description"]
+    assert "MEDIUM TO LARGE" in description
+    assert "delegate_cursor_agent" in description
+    assert "/goal" in description
+
+
+def test_claude_task_description_requires_verifiable_done_condition():
+    import tools.claude_agent_tool  # noqa: F401
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_claude_agent")
+    assert entry is not None
+    task = entry.schema["parameters"]["properties"]["task"]["description"]
+    assert "/goal" in task
+    assert "done condition" in task
+
+
+def test_schema_task_description_mentions_goal_cap():
+    from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
+
+    task = DELEGATE_CLAUDE_AGENT_SCHEMA["parameters"]["properties"]["task"][
+        "description"
+    ]
+    assert "4000" in task
+
+
+def test_cursor_schema_description_states_lane_rule():
+    import tools.cursor_agent_tool  # noqa: F401
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_cursor_agent")
+    assert entry is not None
+    description = entry.schema["description"]
+    assert "SMALL TO MEDIUM" in description
+    assert "delegate_claude_agent" in description
+
+
+def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
+    import tools.file_tools  # noqa: F401
+
+    from tools.file_tools import PATCH_SCHEMA, WRITE_FILE_SCHEMA
+
+    for schema in (WRITE_FILE_SCHEMA, PATCH_SCHEMA):
+        description = schema["description"]
+        assert "delegate_cursor_agent" in description, schema["name"]
+        assert "delegate_claude_agent" in description, schema["name"]
 
 
 # ---------------------------------------------------------------------------
@@ -646,3 +710,503 @@ def test_child_env_guarantees_home_and_local_bin(monkeypatch, repo, fake_binary,
     assert captured["HOME"] == str(Path.home())
     # ~/.local/bin is prepended so binary resolution works under minimal PATH.
     assert captured["PATH"].split(os.pathsep)[0] == str(Path.home() / ".local" / "bin")
+
+
+# ---------------------------------------------------------------------------
+# Completion signals: empty-report guard + degraded-run warnings
+# ---------------------------------------------------------------------------
+
+def test_extract_log_warnings_finds_unrecognized_model_line():
+    from tools.claude_agent_tool import extract_log_warnings
+
+    log_text = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init", "session_id": "s"}),
+            'warning: unrecognized_model "glm-5.3", falling back to default model',
+            json.dumps({"type": "result", "subtype": "success", "result": "Done."}),
+        ]
+    )
+    warnings = extract_log_warnings(log_text)
+    assert len(warnings) == 1
+    assert "unrecognized_model" in warnings[0]
+
+
+def test_extract_log_warnings_clean_log_is_empty():
+    from tools.claude_agent_tool import extract_log_warnings
+
+    assert extract_log_warnings("") == []
+    assert extract_log_warnings("not json\n") == []
+    assert extract_log_warnings('{"type": "result", "result": "ok"}\n') == []
+
+
+def test_extract_log_warnings_dedupes_and_caps():
+    from tools.claude_agent_tool import extract_log_warnings
+
+    line = 'warning: unrecognized_model "glm-5.3"'
+    warnings = extract_log_warnings("\n".join([line, line, line]))
+    assert warnings == [line]
+
+    many = [f'warning: unrecognized_model "m{i}"' for i in range(10)]
+    assert len(extract_log_warnings("\n".join(many))) == 5
+
+
+@_REAL_SUBPROC
+def test_success_with_empty_final_report_is_failure(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", "")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is False
+    assert "empty final report" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_success_with_whitespace_final_report_is_failure(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", "   ")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is False
+    assert "empty final report" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_error_subtype_keeps_original_error_for_empty_report(
+    monkeypatch, repo, fake_binary
+):
+    """The empty-report guard must not rewrite genuine failure results."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv("FAKE_CLAUDE_SUBTYPE", "error")
+    monkeypatch.setenv("FAKE_CLAUDE_IS_ERROR", "true")
+    monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", "")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is False
+    assert "subtype" in result["error"]
+
+
+@_REAL_SUBPROC
+def test_goal_refusal_report_reclassified_as_failure(
+    monkeypatch, repo, fake_binary
+):
+    """A goal refusal wearing a success result must not count as success."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_RESULT_TEXT",
+        "Goal condition is limited to 4000 characters (got 7421)",
+    )
+    monkeypatch.setenv("FAKE_CLAUDE_NUM_TURNS", "0")
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal tests are green", workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert "goal refusal" in result["error"]
+    assert result["num_turns"] == 0
+    assert (
+        result["final_report"]
+        == "Goal condition is limited to 4000 characters (got 7421)"
+    )
+
+
+@_REAL_SUBPROC
+def test_normal_success_report_not_flagged(monkeypatch, repo, fake_binary):
+    """The goal-refusal backstop must leave genuine success reports alone."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert result["error"] is None
+    assert result["final_report"] == "Done."
+
+
+@_REAL_SUBPROC
+def test_unrecognized_model_warning_surfaced_in_result(
+    monkeypatch, repo, fake_binary
+):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    monkeypatch.setenv(
+        "FAKE_CLAUDE_PRELUDE",
+        'warning: unrecognized_model "glm-5.3", falling back to default model',
+    )
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert any("unrecognized_model" in w for w in result["warnings"])
+
+
+@_REAL_SUBPROC
+def test_clean_run_has_empty_warnings(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert result["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Live-progress viewer notice (spawn-time status line)
+# ---------------------------------------------------------------------------
+
+# Same run-stem shape the Discord adapter fullmatches before rendering the
+# notice as a branded embed (plugins/platforms/discord/adapter.py).
+_RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
+
+
+def test_viewer_status_line_prefix_and_stem_roundtrip():
+    from tools.claude_agent_tool import (
+        CLAUDE_VIEWER_HOST,
+        CLAUDE_VIEWER_PORT,
+        _claude_viewer_status_line,
+    )
+
+    # The host/port are the fork-deployment constants the adapter allowlists.
+    assert CLAUDE_VIEWER_HOST == "192.168.30.20"
+    assert CLAUDE_VIEWER_PORT == 8787
+
+    stem = "20260829-115024-2006506"
+    line = _claude_viewer_status_line(stem)
+    assert line == "Claude Code Agent: http://192.168.30.20:8787/#" + stem
+    assert line.startswith("Claude Code Agent: http://192.168.30.20:8787/#")
+    # The stem comes back out unchanged, in the adapter's run-stem format.
+    assert line.rsplit("#", 1)[1] == stem
+    assert _RUN_STEM_RE.fullmatch(line.rsplit("#", 1)[1])
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_invokes_on_spawn_once_with_resolved_log_path(tmp_path):
+    from tools.agent_cli_runner import run_agent_cli
+
+    spawned: list = []
+
+    error_code, log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "print('hi')"],
+        workdir=str(tmp_path),
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260829-115024",
+        on_spawn=spawned.append,
+    )
+
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == "hi\n"
+    # Exactly one call, carrying the very log path the run streams into.
+    assert spawned == [Path(log_path)]
+    assert Path(log_path).is_file()
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_on_spawn_raising_leaves_run_unaffected(tmp_path):
+    from tools.agent_cli_runner import run_agent_cli
+
+    def _boom(log_path: Path) -> None:
+        raise RuntimeError("callback exploded")
+
+    error_code, log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "print('hi')"],
+        workdir=str(tmp_path),
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260829-115024",
+        on_spawn=_boom,
+    )
+
+    # A broken callback is swallowed: the run itself still completes intact.
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == "hi\n"
+    assert Path(log_path).is_file()
+
+
+@_REAL_SUBPROC
+def test_delegate_emits_viewer_notice_once_at_spawn(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+    from tools.tool_status import tool_status_scope
+
+    _patch_binary(monkeypatch, fake_binary)
+    emitted: list = []
+
+    with tool_status_scope(emitted.append):
+        result = json.loads(
+            claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+        )
+
+    assert result["success"] is True
+    assert len(emitted) == 1
+    # The notice names exactly the run's own log stem in adapter-stem format.
+    stem = Path(result["log_path"]).stem
+    assert emitted[0] == claude_agent_tool._claude_viewer_status_line(stem)
+    assert _RUN_STEM_RE.fullmatch(emitted[0].rsplit("#", 1)[1])
+
+
+@_REAL_SUBPROC
+def test_delegate_run_unaffected_when_no_status_callback_bound(
+    monkeypatch, repo, fake_binary
+):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    # No tool_status_scope bound: the emit is a no-op and the run succeeds.
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task="x", workdir=str(repo))
+    )
+    assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# /goal condition 4000-char pre-flight spill
+# ---------------------------------------------------------------------------
+
+GOAL_BRIEF_NAME = ".hermes-claude-goal-brief.md"
+
+
+def _patch_spawn(monkeypatch, captured: dict) -> None:
+    """Mock the spawn layer, capturing argv; no real CLI is invoked."""
+    from tools import claude_agent_tool
+
+    def _fake_run_and_stream(
+        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp, on_spawn=None
+    ):
+        captured["cmd"] = list(cmd)
+        captured["workdir"] = workdir
+        log_text = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "Done.",
+            }
+        )
+        return None, str(log_dir / "fake-log.jsonl"), log_text, 0.5, 0
+
+    monkeypatch.setattr(claude_agent_tool, "_run_and_stream", _fake_run_and_stream)
+
+
+def _p_value(cmd: list) -> str:
+    # The task prompt is the trailing positional argument after the flags.
+    return cmd[-1]
+
+
+def _goal_condition(cmd: list) -> str:
+    return _p_value(cmd)[len("/goal "):]
+
+
+def test_goal_condition_exactly_at_limit_passes_through(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    condition = "x" * 4000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + condition, workdir=str(repo)
+        )
+    )
+    assert result["success"] is True
+    # At exactly 4000 chars the task is handed to the CLI untouched.
+    assert _p_value(captured["cmd"]) == "/goal " + condition
+    assert not (repo / GOAL_BRIEF_NAME).exists()
+    assert result["goal_brief_path"] is None
+
+
+def test_goal_condition_4001_spills_to_brief(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+
+    brief = repo / GOAL_BRIEF_NAME
+    assert brief.is_file()
+    assert brief.read_text(encoding="utf-8") == task
+    assert (brief.stat().st_mode & 0o777) == 0o644
+
+    p_value = _p_value(captured["cmd"])
+    assert p_value.startswith("/goal ")
+    condition = _goal_condition(captured["cmd"])
+    assert len(condition) <= 4000
+    assert GOAL_BRIEF_NAME in condition
+    assert result["goal_brief_path"] == str(brief)
+
+
+def test_goal_spill_preserves_first_line_and_keeps_full_brief(
+    monkeypatch, repo, fake_binary
+):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal tests are green\n" + "y" * 5000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+
+    condition = _goal_condition(captured["cmd"])
+    assert condition.startswith("tests are green ")
+    assert len(condition) <= 4000
+    assert GOAL_BRIEF_NAME in condition
+
+    # The file is the source of truth: full original task, long remainder
+    # included.
+    brief = repo / GOAL_BRIEF_NAME
+    assert brief.read_text(encoding="utf-8") == task
+
+
+def test_goal_detection_ignores_leading_whitespace(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "\n   /goal " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert _p_value(captured["cmd"]).startswith("/goal ")
+    assert len(_goal_condition(captured["cmd"])) <= 4000
+    brief = repo / GOAL_BRIEF_NAME
+    assert brief.is_file()
+    # The brief holds the original task unmodified, leading whitespace and all.
+    assert brief.read_text(encoding="utf-8") == task
+
+
+def test_goal_detection_is_case_insensitive(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/GOAL " + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    assert (repo / GOAL_BRIEF_NAME).is_file()
+    assert _p_value(captured["cmd"]).startswith("/goal ")
+    assert len(_goal_condition(captured["cmd"])) <= 4000
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", " "])
+def test_goal_spills_with_unicode_whitespace_separator(
+    monkeypatch, repo, fake_binary, separator
+):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goal" + separator + "x" * 4001
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    # Any str.isspace() character separates /goal from its condition, so the
+    # overlong condition spills to the brief like a plain space would.
+    assert (repo / GOAL_BRIEF_NAME).is_file()
+    assert (repo / GOAL_BRIEF_NAME).read_text(encoding="utf-8") == task
+    assert _p_value(captured["cmd"]).startswith("/goal ")
+    assert len(_goal_condition(captured["cmd"])) <= 4000
+    assert result["goal_brief_path"] == str(repo / GOAL_BRIEF_NAME)
+
+
+def test_goalkeeper_task_not_treated_as_goal(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "/goalkeeper " + "x" * 5000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    # "/goal" must be a whole token: "/goalkeeper" is a different command,
+    # so the long task passes through with no spill or rewrite.
+    assert _p_value(captured["cmd"]) == task
+    assert not (repo / GOAL_BRIEF_NAME).exists()
+    assert result["goal_brief_path"] is None
+
+
+def test_non_goal_long_task_untouched(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    task = "z" * 10_000
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(task=task, workdir=str(repo))
+    )
+    assert result["success"] is True
+    # One-shot tasks get no length check, no file, no rewrite.
+    assert _p_value(captured["cmd"]) == task
+    assert not (repo / GOAL_BRIEF_NAME).exists()
+    assert result["goal_brief_path"] is None
+
+
+def test_goal_spill_write_failure_aborts_before_spawn(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    def _raise(self, *args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(Path, "write_text", _raise)
+
+    result = json.loads(
+        claude_agent_tool.delegate_claude_agent(
+            task="/goal " + "x" * 4001, workdir=str(repo)
+        )
+    )
+    assert result["success"] is False
+    assert str(repo / GOAL_BRIEF_NAME) in result["error"]
+    assert "read-only filesystem" in result["error"]
+    # The write failure must abort before anything is spawned.
+    assert captured == {}

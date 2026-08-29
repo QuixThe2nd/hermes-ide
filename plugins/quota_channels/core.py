@@ -14,7 +14,22 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
+
+# The voice-channel ordering policy is owned by fallback_quota_reorder; this
+# module reuses its score math, thresholds, and reliability ledger instead of
+# copying divergent formulas. The import is acyclic — fallback_quota_reorder
+# only touches quota_channels lazily inside its precise-state loaders.
+from plugins.fallback_quota_reorder.core import (
+    CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+    QuotaReading,
+    is_low_quota,
+    score_provider,
+)
+from plugins.fallback_quota_reorder.reliability import (
+    ReliabilityRates,
+    rates_for_providers,
+)
 
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
 SleepFn = Callable[[float], None]
@@ -26,6 +41,7 @@ PROVIDER_SPECS: Tuple[Tuple[str, str], ...] = (
     ("zai", "z.ai"),
     ("cursor", "Cursor"),
     ("grok", "Grok"),
+    ("openrouter", "OpenRouter"),
 )
 
 DEFAULT_QUOTA_INTERVAL_SECONDS = 1800
@@ -40,6 +56,9 @@ CURSOR_USAGE_URL = (
 GROK_USAGE_URL = (
     "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 )
+GROK_RESETS_URL = (
+    "https://grok.com/prod_mc_billing.ConsumerUiSvc/GetRemainingResets"
+)
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -53,6 +72,33 @@ CURSOR_AGG_USAGE_URL = (
 TOKEN_WINDOW_DAYS = 7
 
 STATE_FILENAME = "quota_channels_state.json"
+
+# Dynamic category label prefix: "Models • <ts> • Next: <time>".
+CATEGORY_PREFIX = "Models"
+
+# Quota key -> routing provider slug, used to load per-provider reliability
+# from the fallback ledger. Mirrors fallback_quota_reorder's channel map plus
+# the virtual OpenRouter row.
+QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
+    **_FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+    "openrouter": "openrouter",
+}
+
+# The OpenRouter voice channel is a virtual row for the unlimited Ox Alpha
+# model (openrouter/stealth/ox-alpha): there is no quota API to call, so the
+# channel carries a managed label with a synthetic full wallet — 100% against
+# exactly 168h, the score's reference horizon (same numbers as
+# fallback_quota_reorder.unlimited_reading()).
+OPENROUTER_PCT = 100
+OPENROUTER_RESET_SECONDS = 7 * 86400  # 604800s = 168h
+OPENROUTER_LABEL = "OpenRouter"
+
+# Display ranks are `bucket * stride - score`; the stride must exceed any
+# possible score so the low-quota bucket always sorts after every healthy
+# entry. Max score is 10080 per wallet (100% at the one-minute hours floor);
+# pending usage-limit resets stack one full wallet each, so the stride only
+# breaks past ~99k simultaneous resets — far off any real account.
+_RANK_BUCKET_STRIDE = 1e9
 
 
 class QuotaChannelsError(Exception):
@@ -132,8 +178,34 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(now_fn: NowFn = time.time) -> int:
-    state = {"last_quota_success": int(now_fn())}
+def _state_reading_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
+    persisted: Dict[str, Any] = {
+        "pct": entry["pct"],
+        "reset_seconds": entry["reset_seconds"],
+        "label": entry["label"],
+    }
+    # pending usage-limit resets (Codex/Grok rows) feed the shared
+    # spendability score; rows without the fields stay in the legacy shape
+    if "reset_count" in entry:
+        persisted["reset_count"] = entry["reset_count"]
+    if "reset_expiry_seconds" in entry:
+        persisted["reset_expiry_seconds"] = entry["reset_expiry_seconds"]
+    return persisted
+
+
+def save_state(
+    readings: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    now_fn: NowFn = time.time,
+) -> int:
+    # readings: per-provider slug -> {'pct', 'reset_seconds', 'label',
+    # optionally 'reset_count'/'reset_expiry_seconds'} from the tick that
+    # just succeeded; failed providers stay absent (no stale merge).
+    state: Dict[str, Any] = {"last_quota_success": int(now_fn())}
+    if readings is not None:
+        state["readings"] = {
+            str(key): _state_reading_entry(entry)
+            for key, entry in readings.items()
+        }
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -182,6 +254,14 @@ def http_bin(
     return status, body
 
 
+def _window_span_seconds(window: Mapping[str, Any]) -> Optional[float]:
+    """Numeric limit_window_seconds of a rate-limit window, else None."""
+    value = window.get("limit_window_seconds")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def parse_codex_usage(text: str) -> Tuple[int, float]:
     try:
         usage = json.loads(text)
@@ -189,13 +269,27 @@ def parse_codex_usage(text: str) -> Tuple[int, float]:
         raise QuotaChannelsError("codex: invalid usage payload JSON") from exc
     if not isinstance(usage, dict):
         raise QuotaChannelsError("codex: invalid usage payload JSON")
-    primary = (usage.get("rate_limit") or {}).get("primary_window")
+    rate_limit = usage.get("rate_limit") or {}
+    primary = rate_limit.get("primary_window")
     if not primary:
         raise QuotaChannelsError(
             f"no primary_window in codex usage payload: {text[:200]}"
         )
     if not isinstance(primary, dict):
         raise QuotaChannelsError("codex: invalid primary_window in usage payload")
+    # ChatGPT can return a 5h primary alongside a 7d secondary; the channel
+    # must count down against the longer window. A non-dict secondary counts
+    # as absent, and without two numeric spans the primary is used as-is.
+    secondary = rate_limit.get("secondary_window")
+    if isinstance(secondary, dict):
+        primary_span = _window_span_seconds(primary)
+        secondary_span = _window_span_seconds(secondary)
+        if (
+            primary_span is not None
+            and secondary_span is not None
+            and secondary_span > primary_span
+        ):
+            primary = secondary
     try:
         used = round(float(primary.get("used_percent", 0)))
         reset_after = float(primary.get("reset_after_seconds", 0))
@@ -208,14 +302,33 @@ def parse_codex_usage(text: str) -> Tuple[int, float]:
     return remaining, reset_secs
 
 
-def format_reset_left(seconds: float) -> str:
-    # granular reset countdown: days at 2+ days out, then hours, then minutes
+class ResetCredits(NamedTuple):
+    """Pending manual usage-limit resets, rendered as the trailing name segment."""
+
+    count: int
+    expiry_secs: Optional[float] = None
+
+
+def _reset_countdown(seconds: float) -> str:
+    # granular countdown: days at 2+ days out, then hours, then minutes
     secs = max(0, seconds)
     if secs >= 172800:
-        return f"{math.ceil(secs / 86400)}d left"
+        return f"{math.ceil(secs / 86400)}d"
     if secs >= 3600:
-        return f"{math.ceil(secs / 3600)}h left"
-    return f"{max(1, math.ceil(secs / 60))}m left"
+        return f"{math.ceil(secs / 3600)}h"
+    return f"{max(1, math.ceil(secs / 60))}m"
+
+
+def format_reset_left(seconds: float) -> str:
+    return f"{_reset_countdown(seconds)} left"
+
+
+def format_resets_segment(resets: ResetCredits) -> str:
+    # pending manual usage-limit resets, e.g. "1 reset in 2d" / "2 resets"
+    part = f"{resets.count} reset" if resets.count == 1 else f"{resets.count} resets"
+    if resets.count and resets.expiry_secs is not None:
+        part += f" in {_reset_countdown(resets.expiry_secs)}"
+    return part
 
 
 def format_compact_tokens(count: int) -> str:
@@ -237,21 +350,45 @@ def parse_token_segment_from_name(channel_name: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def parse_codex_reset_credits(text: str) -> Optional[ResetCredits]:
+    """Pending usage-limit resets from the same wham/usage payload.
+
+    Returns None when the `rate_limit_reset_credits` block is absent or
+    unreadable, so the resets segment is dropped rather than the tick failed.
+    """
+    try:
+        usage = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(usage, dict):
+        return None
+    credits = usage.get("rate_limit_reset_credits")
+    if not isinstance(credits, Mapping):
+        return None
+    try:
+        count = int(credits.get("available_count") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return ResetCredits(max(0, count))
+
+
 def format_codex_name(
     remaining: int,
     reset_secs: float,
     *,
     tokens_7d: Optional[int] = None,
     preserved_token_segment: Optional[str] = None,
+    resets: Optional[ResetCredits] = None,
 ) -> str:
-    reset_part = format_reset_left(reset_secs)
+    name = f"Codex: {remaining}%"
     if tokens_7d is not None:
-        mid = f"{format_compact_tokens(tokens_7d)} tok/7d"
+        name += f" \u2022 {format_compact_tokens(tokens_7d)} tok/7d"
     elif preserved_token_segment:
-        mid = preserved_token_segment
-    else:
-        return f"Codex: {remaining}% \u2022 {reset_part}"
-    return f"Codex: {remaining}% \u2022 {mid} \u2022 {reset_part}"
+        name += f" \u2022 {preserved_token_segment}"
+    name += f" \u2022 {format_reset_left(reset_secs)}"
+    if resets is not None:
+        name += f" \u2022 {format_resets_segment(resets)}"
+    return name
 
 
 def parse_kimi_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
@@ -266,10 +403,23 @@ def parse_kimi_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
         raise QuotaChannelsError(f"no usage object in kimi payload: {text[:200]}")
     if not isinstance(usage, dict):
         raise QuotaChannelsError("kimi: invalid usage object in payload")
-    try:
-        remaining = int(usage["remaining"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise QuotaChannelsError("kimi: invalid remaining in usage payload") from exc
+    if "remaining" in usage:
+        # legacy shape: a ready-made remaining percentage
+        try:
+            remaining = int(usage["remaining"])
+        except (TypeError, ValueError) as exc:
+            raise QuotaChannelsError("kimi: invalid remaining in usage payload") from exc
+    else:
+        # current shape: no `remaining`, derive it from limit/used (numbers or
+        # numeric strings). used beyond the limit clamps to 0% left.
+        try:
+            limit = float(usage["limit"])
+            used = float(usage["used"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise QuotaChannelsError("kimi: invalid limit/used in usage payload") from exc
+        if not (math.isfinite(limit) and math.isfinite(used)) or limit <= 0:
+            raise QuotaChannelsError("kimi: invalid limit/used in usage payload")
+        remaining = min(100, max(0, round((limit - used) / limit * 100)))
     reset_raw = usage.get("resetTime")
     if not isinstance(reset_raw, str):
         raise QuotaChannelsError("kimi: invalid resetTime in usage payload")
@@ -313,7 +463,20 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
         if not isinstance(entry, Mapping):
             raise QuotaChannelsError("z.ai: invalid limits fields in usage payload")
     try:
-        weekly = max(limits, key=lambda window: window.get("nextResetTime") or 0)
+        # The longest window is the plan's real quota horizon: larger unit
+        # (weeks > days > hours > minutes), then larger number, then the later
+        # reset edge. A 5h rolling window often resets LATER than the weekly
+        # one, so nextResetTime alone would pick the wrong window. Legacy
+        # entries without unit/number rank as (0, 0, ...) and only win when
+        # no window carries them — the old max-nextResetTime behavior.
+        weekly = max(
+            limits,
+            key=lambda window: (
+                window.get("unit") or 0,
+                window.get("number") or 0,
+                window.get("nextResetTime") or 0,
+            ),
+        )
         used = int(weekly.get("percentage", 0))
         reset_ms = float(weekly.get("nextResetTime") or 0)
     except (AttributeError, TypeError, ValueError) as exc:
@@ -494,8 +657,59 @@ def parse_grok_usage(
         raise QuotaChannelsError("grok: invalid billing response protobuf") from exc
 
 
-def format_grok_name(remaining: int, reset_secs: float) -> str:
-    return f"Grok: {remaining}% \u2022 {format_reset_left(reset_secs)}"
+def parse_grok_resets(
+    body_bytes: bytes, now_fn: NowFn = time.time
+) -> ResetCredits:
+    """Pending usage-limit resets from ConsumerUiSvc/GetRemainingResets.
+
+    Top-level field 10 entries are the pending reset tokens; each token's
+    field 30 nested message carries its validity end in field 1 (varint epoch
+    seconds). The soonest expiry is the one displayed.
+    """
+    try:
+        tokens = [
+            val
+            for field, wire, val in pb_fields(grpc_web_unwrap(body_bytes))
+            if field == 10 and wire == 2
+        ]
+        expiry_epoch: Optional[int] = None
+        for token in tokens:
+            for field, wire, val in pb_fields(token):
+                if field == 30 and wire == 2:
+                    for tfield, twire, tval in pb_fields(val):
+                        if tfield == 1 and twire == 0:
+                            if expiry_epoch is None or tval < expiry_epoch:
+                                expiry_epoch = tval
+        expiry_secs = (
+            None if expiry_epoch is None else max(0.0, expiry_epoch - now_fn())
+        )
+        return ResetCredits(len(tokens), expiry_secs)
+    except QuotaChannelsError:
+        raise
+    except (IndexError, struct.error, ValueError, TypeError, KeyError) as exc:
+        raise QuotaChannelsError("grok: invalid resets response protobuf") from exc
+
+
+def format_grok_name(
+    remaining: int,
+    reset_secs: float,
+    *,
+    resets: Optional[ResetCredits] = None,
+) -> str:
+    name = f"Grok: {remaining}% \u2022 {format_reset_left(reset_secs)}"
+    if resets is not None:
+        name += f" \u2022 {format_resets_segment(resets)}"
+    return name
+
+
+def format_openrouter_name() -> str:
+    """Managed label for the virtual unlimited Ox Alpha row.
+
+    Static by design: the wallet is synthetic (100% / Unlimited), so the name
+    never changes between ticks and Discord renames are naturally idempotent.
+    """
+
+    return f"{OPENROUTER_LABEL}: {OPENROUTER_PCT}% \u2022 Unlimited"
 
 
 def _fmt_clock(dt: datetime) -> str:
@@ -519,13 +733,13 @@ def category_name(
     now_fn: NowFn = time.time,
 ) -> str:
     if last_success <= 0:
-        return "Quotas \u2022 never \u2022 Next: Due"
+        return f"{CATEGORY_PREFIX} \u2022 never \u2022 Next: Due"
     now = now_fn()
     next_due = last_success + interval
     ts_part = fmt_ts(last_success)
     if now >= next_due:
-        return f"Quotas \u2022 {ts_part} \u2022 Next: Due"
-    return f"Quotas \u2022 {ts_part} \u2022 Next: {fmt_time(next_due)}"
+        return f"{CATEGORY_PREFIX} \u2022 {ts_part} \u2022 Next: Due"
+    return f"{CATEGORY_PREFIX} \u2022 {ts_part} \u2022 Next: {fmt_time(next_due)}"
 
 
 def normalize_enabled_providers(raw: Any) -> Dict[str, bool]:
@@ -563,7 +777,16 @@ def validate_quota_config(section: Mapping[str, Any]) -> dict:
     if not isinstance(channel_ids, Mapping):
         raise QuotaChannelsError("quota_channels.channel_ids must be a mapping")
 
-    enabled = normalize_enabled_providers(section.get("enabled_providers"))
+    raw_enabled = section.get("enabled_providers")
+    if raw_enabled is None:
+        # An absent enabled_providers means "the wired rows": the original
+        # five providers always, and the newer OpenRouter row only once its
+        # channel ID exists — so a legacy five-ID config keeps validating
+        # unchanged and picks the virtual row up as soon as it is wired.
+        enabled = {key: True for key, _ in PROVIDER_SPECS}
+        enabled["openrouter"] = bool(channel_ids.get("openrouter"))
+    else:
+        enabled = normalize_enabled_providers(raw_enabled)
     active: List[Tuple[str, str, str]] = []
     for key, label in PROVIDER_SPECS:
         if not enabled.get(key, False):
@@ -812,12 +1035,10 @@ def fetch_cursor_usage(
     return http_text(req, http_fn=http_fn)
 
 
-def fetch_grok_usage(
-    access: str,
-    http_fn: HttpFn = default_http,
-) -> Tuple[int, bytes]:
-    req = urllib.request.Request(
-        GROK_USAGE_URL,
+def _grok_grpc_request(url: str, access: str) -> urllib.request.Request:
+    # both billing service methods take an empty protobuf request frame
+    return urllib.request.Request(
+        url,
         data=b"\x00\x00\x00\x00\x00",
         headers={
             "Authorization": f"Bearer {access}",
@@ -830,13 +1051,27 @@ def fetch_grok_usage(
         },
         method="POST",
     )
-    return http_bin(req, http_fn=http_fn)
+
+
+def fetch_grok_usage(
+    access: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, bytes]:
+    return http_bin(_grok_grpc_request(GROK_USAGE_URL, access), http_fn=http_fn)
+
+
+def fetch_grok_resets(
+    access: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, bytes]:
+    # same gRPC-web shape as fetch_grok_usage, different service method
+    return http_bin(_grok_grpc_request(GROK_RESETS_URL, access), http_fn=http_fn)
 
 
 def _codex_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
-) -> Tuple[int, float]:
+) -> Tuple[int, float, Optional[ResetCredits]]:
     store = load_store()
     toks = store.get("providers", {}).get("openai-codex", {}).get("tokens", {})
     access = toks.get("access_token")
@@ -850,15 +1085,18 @@ def _codex_quota_metrics(
         raise QuotaChannelsError(
             f"codex usage endpoint returned {status}: {text[:200]}"
         )
-    return parse_codex_usage(text)
+    remaining, reset_secs = parse_codex_usage(text)
+    return remaining, reset_secs, parse_codex_reset_credits(text)
 
 
 def run_codex_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
-    remaining, reset_secs = _codex_quota_metrics(http_fn=http_fn, now_fn=now_fn)
-    return format_codex_name(remaining, reset_secs), reset_secs, "Codex"
+    remaining, reset_secs, resets = _codex_quota_metrics(
+        http_fn=http_fn, now_fn=now_fn
+    )
+    return format_codex_name(remaining, reset_secs, resets=resets), reset_secs, "Codex"
 
 
 def _kimi_quota_metrics(
@@ -927,15 +1165,20 @@ def run_cursor_provider(
     )
 
 
+def _xai_access_token(store: dict) -> str:
+    toks = store.get("providers", {}).get("xai-oauth", {}).get("tokens", {})
+    access = toks.get("access_token")
+    if not access:
+        raise QuotaChannelsError("no xai-oauth access token in hermes auth store")
+    return access
+
+
 def _grok_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[int, float]:
     store = load_store()
-    toks = store.get("providers", {}).get("xai-oauth", {}).get("tokens", {})
-    access = toks.get("access_token")
-    if not access:
-        raise QuotaChannelsError("no xai-oauth access token in hermes auth store")
+    access = _xai_access_token(store)
     status, body = fetch_grok_usage(access, http_fn=http_fn)
     if status == 401:
         access = refresh_xai_tokens(store, http_fn=http_fn)
@@ -947,12 +1190,45 @@ def _grok_quota_metrics(
     return parse_grok_usage(body, now_fn=now_fn)
 
 
+def fetch_grok_reset_credits(
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> ResetCredits:
+    store = load_store()
+    access = _xai_access_token(store)
+    status, body = fetch_grok_resets(access, http_fn=http_fn)
+    if status == 401:
+        access = refresh_xai_tokens(store, http_fn=http_fn)
+        status, body = fetch_grok_resets(access, http_fn=http_fn)
+    if status != 200:
+        raise QuotaChannelsError(
+            f"grok resets endpoint returned {status}: {body[:200]!r}"
+        )
+    return parse_grok_resets(body, now_fn=now_fn)
+
+
+def grok_reset_credits(
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[ResetCredits, Optional[str]]:
+    """Pending Grok resets plus any fetch error; never raises.
+
+    A failed or unparseable resets fetch degrades to zero pending resets so
+    the quota tick still renames the channel with fresh quota data.
+    """
+    try:
+        return fetch_grok_reset_credits(http_fn=http_fn, now_fn=now_fn), None
+    except Exception as exc:
+        return ResetCredits(0), _error_text(exc)
+
+
 def run_grok_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
     remaining, reset_secs = _grok_quota_metrics(http_fn=http_fn, now_fn=now_fn)
-    return format_grok_name(remaining, reset_secs), reset_secs, "Grok"
+    resets, _ = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
+    return format_grok_name(remaining, reset_secs, resets=resets), reset_secs, "Grok"
 
 
 PROVIDER_RUNNERS = {
@@ -964,6 +1240,8 @@ PROVIDER_RUNNERS = {
 }
 
 QUOTA_METRICS = {
+    # codex alone returns a trailing pending-resets element (same payload);
+    # every entry ends with reset_secs, which is all callers rely on.
     "codex": _codex_quota_metrics,
     "kimi": _kimi_quota_metrics,
     "zai": _zai_quota_metrics,
@@ -979,6 +1257,7 @@ def _format_channel_name(
     *,
     tokens_7d: Optional[int] = None,
     preserved_token_segment: Optional[str] = None,
+    resets: Optional[ResetCredits] = None,
 ) -> str:
     if key == "codex":
         return format_codex_name(
@@ -986,6 +1265,7 @@ def _format_channel_name(
             reset_secs,
             tokens_7d=tokens_7d,
             preserved_token_segment=preserved_token_segment,
+            resets=resets,
         )
     if key == "zai":
         return format_zai_name(
@@ -1006,7 +1286,7 @@ def _format_channel_name(
     if key == "kimi":
         return format_kimi_name(metrics, reset_secs)
     if key == "grok":
-        return format_grok_name(metrics, reset_secs)
+        return format_grok_name(metrics, reset_secs, resets=resets)
     raise QuotaChannelsError(f"unknown provider key: {key}")
 
 
@@ -1249,8 +1529,47 @@ TOKEN_FETCHERS = {
 }
 
 
+def quota_display_ranks(
+    readings: Mapping[str, Mapping[str, Any]],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
+) -> Dict[str, float]:
+    """Display rank per quota key: ascending rank = display order (best first).
+
+    Exactly the fallback_quota_reorder ordering policy, expressed as a single
+    ascending sort key for plan_position_moves: healthy entries by descending
+    score_provider() (quota_frac * 168/hours_remaining, plus one full wallet
+    per pending usage-limit reset on its own expiry clock, all times the
+    uptime factors from the shared reliability ledger), entries the shared
+    is_low_quota() rule sinks behind every healthy entry, and equal ranks
+    keep the caller's insertion order — which is PROVIDER_SPECS order — so
+    ties stay stable.
+    """
+
+    rates = reliability or {}
+    ranks: Dict[str, float] = {}
+    for key, entry in readings.items():
+        provider = QUOTA_KEY_TO_PROVIDER.get(key, key)
+        reading = QuotaReading(
+            channel_key=key,
+            provider=provider,
+            channel_name="",
+            pct=int(entry["pct"]),
+            reset_seconds=float(entry["reset_seconds"]),
+            reset_count=int(entry.get("reset_count") or 0),
+            reset_expiry_seconds=(
+                None
+                if entry.get("reset_expiry_seconds") is None
+                else float(entry["reset_expiry_seconds"])
+            ),
+        )
+        score = score_provider(reading, rates.get(provider))
+        bucket = 1 if is_low_quota(reading) else 0
+        ranks[key] = bucket * _RANK_BUCKET_STRIDE - score
+    return ranks
+
+
 def plan_position_moves(
-    entries: Sequence[Tuple[str, str, int]],
+    entries: Sequence[Tuple[str, str, float]],
     guild_channels: Sequence[Mapping[str, Any]],
 ) -> List[dict]:
     ordered = sorted(entries, key=lambda item: item[2])
@@ -1301,7 +1620,7 @@ def apply_position_moves(
 
 def sort_voice_channels(
     config: dict,
-    entries: Sequence[Tuple[str, str, int]],
+    entries: Sequence[Tuple[str, str, float]],
     headers: dict,
     http_fn: HttpFn = default_http,
 ) -> bool:
@@ -1348,41 +1667,74 @@ def run_provider_quota(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str, str, Dict[str, Any]]:
+    if key == "openrouter":
+        # Virtual Ox Alpha row: no quota API is called — the wallet is
+        # synthetic (100% against 168h). Only the managed Discord label and
+        # the state reading are written.
+        name = format_openrouter_name()
+        rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
+        return OPENROUTER_LABEL, float(OPENROUTER_RESET_SECONDS), name, rename, {}
+
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
+    resets: Optional[ResetCredits] = None
     if key == "cursor":
         auto_remaining, api_remaining, reset_secs = raw
         fmt_metrics: Any = (auto_remaining, api_remaining)
+    elif key == "codex":
+        # Live `_codex_quota_metrics` returns (remaining, reset_secs, ResetCredits).
+        # Existing tests (and any stub) still return the 2-tuple
+        # (remaining, reset_secs); missing credits omit the segment.
+        if len(raw) == 3:
+            remaining, reset_secs, resets = raw
+        else:
+            remaining, reset_secs = raw
+            resets = None
+        fmt_metrics = remaining
     else:
         remaining, reset_secs = raw
         fmt_metrics = remaining
 
     label = next(prov_label for prov_key, prov_label in PROVIDER_SPECS if prov_key == key)
 
-    token_info: Dict[str, Any] = {}
-    name = _format_channel_name(key, fmt_metrics, reset_secs)
+    provider_info: Dict[str, Any] = {}
+    if key == "grok":
+        resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
+        if reset_error:
+            provider_info["reset_error"] = reset_error
+    if resets is not None:
+        # pending usage-limit resets feed the shared spendability score; they
+        # ride provider_info into the state reading and the debug output.
+        # resets=None means the credits block was unreadable (Codex), which
+        # adds no term and persists no fields.
+        provider_info["reset_count"] = resets.count
+        if resets.expiry_secs is not None:
+            provider_info["reset_expiry_seconds"] = resets.expiry_secs
+
+    name = _format_channel_name(key, fmt_metrics, reset_secs, resets=resets)
 
     if key in TOKEN_FETCHERS:
         try:
             tokens_7d = TOKEN_FETCHERS[key](http_fn=http_fn, now_fn=now_fn)
-            token_info["tokens_7d"] = tokens_7d
+            provider_info["tokens_7d"] = tokens_7d
             name = _format_channel_name(
-                key, fmt_metrics, reset_secs, tokens_7d=tokens_7d
+                key, fmt_metrics, reset_secs, tokens_7d=tokens_7d, resets=resets
             )
         except Exception as exc:
-            token_info["token_error"] = _error_text(exc)
+            provider_info["token_error"] = _error_text(exc)
             current_name = fetch_channel_name(channel_id, headers, http_fn=http_fn)
             preserved = parse_token_segment_from_name(current_name or "")
             if preserved:
-                token_info["tokens_7d"] = "preserved"
+                provider_info["tokens_7d"] = "preserved"
                 name = _format_channel_name(
                     key,
                     fmt_metrics,
                     reset_secs,
                     preserved_token_segment=preserved,
+                    resets=resets,
                 )
 
     rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
-    return label, reset_secs, name, rename, token_info
+    return label, reset_secs, name, rename, provider_info
 
 
 def update_category(
@@ -1426,10 +1778,18 @@ def run_tick(
     headers = discord_headers()
 
     if did_quota:
-        entries: List[Tuple[str, str, float]] = []
+        successes: List[Tuple[str, str, str]] = []
+        readings: Dict[str, Dict[str, Any]] = {}
+        # Same reliability ledger and thresholds the fallback reorder uses;
+        # with no samples a provider stays neutral (1.0) and only its quota
+        # and reset horizon move the score.
+        reliability = rates_for_providers(
+            (QUOTA_KEY_TO_PROVIDER.get(key, key) for key, _, _ in config["providers"]),
+            now_fn=now_fn,
+        )
         for key, label, channel_id in config["providers"]:
             try:
-                prov_label, reset_secs, channel_name, rename, token_info = (
+                prov_label, reset_secs, channel_name, rename, provider_info = (
                     run_provider_quota(
                         key, channel_id, headers, http_fn=http_fn, now_fn=now_fn
                     )
@@ -1441,18 +1801,35 @@ def run_tick(
                     msg = f"{type(exc).__name__}: {exc}"
                 provider_results[label] = {"error": msg}
                 continue
+            remaining = _remaining_from_name(channel_name, prov_label)
             provider_results[prov_label] = {
-                "remaining": _remaining_from_name(channel_name, prov_label),
+                "remaining": remaining,
                 "reset_seconds": reset_secs,
                 "rename": rename,
-                **token_info,
+                **provider_info,
             }
-            entries.append((label, channel_id, reset_secs))
-        if entries:
+            reading_entry: Dict[str, Any] = {
+                "pct": _reading_pct(remaining),
+                "reset_seconds": reset_secs,
+                "label": prov_label,
+            }
+            # pending usage-limit resets ride along so the fallback reorder
+            # scores the same spendability from precise state as from names
+            if "reset_count" in provider_info:
+                reading_entry["reset_count"] = provider_info["reset_count"]
+            if "reset_expiry_seconds" in provider_info:
+                reading_entry["reset_expiry_seconds"] = provider_info[
+                    "reset_expiry_seconds"
+                ]
+            readings[key] = reading_entry
+            successes.append((label, channel_id, key))
+        if successes:
+            ranks = quota_display_ranks(readings, reliability)
+            entries = [(label, channel_id, ranks[key]) for label, channel_id, key in successes]
             sorted_channels = sort_voice_channels(
                 config, entries, headers, http_fn=http_fn
             )
-            last = save_state(now_fn=now_fn)
+            last = save_state(readings, now_fn=now_fn)
 
     category_status = update_category(
         config["category_id"],
@@ -1481,3 +1858,10 @@ def _remaining_from_name(channel_name: str, label: str) -> Any:
     body = channel_name.split(":", 1)[1].strip()
     pct = body.split("\u2022", 1)[0].strip().rstrip("%")
     return int(pct)
+
+
+def _reading_pct(remaining: Any) -> int:
+    # cursor carries auto/api remaining; precise state scores the weaker one
+    if isinstance(remaining, Mapping):
+        return min(int(remaining["auto"]), int(remaining["api"]))
+    return int(remaining)

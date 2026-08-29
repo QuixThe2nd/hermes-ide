@@ -32,7 +32,14 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from gateway.config import (
+    HomeChannel,
+    Platform,
+    PlatformConfig,
+    clear_notification_channel,
+    persist_home_channel,
+    persist_notification_channel,
+)
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -1599,9 +1606,144 @@ class GatewaySlashCommandsMixin:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
+    async def begin_user_restart(
+        self,
+        source: Optional[SessionSource] = None,
+        message_id: Optional[str] = None,
+        platform_update_id: Optional[int] = None,
+        write_redelivery_marker: bool = False,
+    ) -> dict:
+        """Begin a user-initiated gateway restart — the shared /restart path.
+
+        Both ``_handle_restart_command`` (the ``/restart`` slash command) and
+        the agent-callable ``restart`` tool (``plugins/gateway_restart``) come
+        through here, so the two can never drift apart. This method owns the
+        requester's comeback routing (``.restart_notify.json`` +
+        ``_restart_command_source``), the supervisor/container restart branch,
+        and the ``request_restart(...)`` call itself. Telegram redelivery dedup
+        *detection* (``_is_stale_restart_redelivery``) deliberately stays in
+        the slash handler — it is a property of the Telegram *update*, and the
+        tool is not a Telegram update. The dedup *marker*
+        (``.restart_last_processed.json``) is written here when the caller
+        passes ``write_redelivery_marker=True`` (the slash path only): it must
+        land before ``request_restart()`` below, because the drain task that
+        call creates can stop the process while a caller-side write is still
+        in flight — re-opening the redelivery restart loop the marker exists
+        to prevent.
+
+        Must run on the gateway event loop: ``request_restart`` schedules its
+        drain task with ``asyncio.create_task``. The tool handler therefore
+        hops here via ``asyncio.run_coroutine_threadsafe`` from its worker
+        thread.
+
+        Returns a status dict:
+
+        * ``status`` — ``"restarting"`` or ``"already_in_progress"`` (a second
+          request while one is draining never re-enters ``request_restart``)
+        * ``active_agents`` — running agents counted *before* the restart was
+          requested (they drain first)
+        * ``via_service`` — whether the service-manager exit path was taken
+          (``None`` when nothing was started this call)
+        """
+        from gateway.run import _hermes_home
+        from gateway.restart import user_restart_via_service
+
+        if getattr(self, "_restart_requested", False) or getattr(self, "_draining", False):
+            return {
+                "status": "already_in_progress",
+                "active_agents": self._running_agent_count(),
+                "via_service": None,
+            }
+
+        # Save the requester's routing info so the new gateway process can
+        # notify them once it comes back online.
+        try:
+            notify_data = {
+                "platform": source.platform.value if source is not None and source.platform else None,
+                "chat_id": source.chat_id if source is not None else None,
+                "chat_type": source.chat_type if source is not None else None,
+            }
+            if source is not None:
+                if source.delivered_via_upstream_relay is True:
+                    notify_data["delivered_via_upstream_relay"] = True
+                    if source.user_id:
+                        notify_data["user_id"] = source.user_id
+                    if source.scope_id:
+                        notify_data["scope_id"] = source.scope_id
+                if source.thread_id:
+                    notify_data["thread_id"] = source.thread_id
+            if message_id:
+                notify_data["message_id"] = message_id
+            if source is not None:
+                try:
+                    self._restart_command_source = dataclasses.replace(
+                        source,
+                        message_id=str(message_id)
+                        if message_id is not None
+                        else source.message_id,
+                    )
+                except Exception:
+                    self._restart_command_source = source
+            await asyncio.to_thread(
+                atomic_json_write,
+                _hermes_home / ".restart_notify.json",
+                notify_data,
+                indent=None,
+            )
+        except Exception as e:
+            logger.debug("Failed to write restart notify file: %s", e)
+
+        # Record the triggering platform + update_id in a dedicated dedup
+        # marker.  Unlike .restart_notify.json (which gets unlinked once the
+        # new gateway sends the "gateway restarted" notification), this
+        # marker persists so the new gateway can still detect a delayed
+        # /restart redelivery from Telegram.  Overwritten on every /restart.
+        # Written here — BEFORE request_restart() below — because the drain
+        # task request_restart creates can enter stop() as soon as this
+        # coroutine awaits, killing the process before a caller-side write
+        # lands and re-opening the redelivery restart loop.
+        if write_redelivery_marker:
+            try:
+                dedup_data = {
+                    "platform": source.platform.value
+                    if source is not None and source.platform
+                    else None,
+                    "requested_at": time.time(),
+                }
+                if platform_update_id is not None:
+                    dedup_data["update_id"] = platform_update_id
+                await asyncio.to_thread(
+                    atomic_json_write,
+                    _hermes_home / ".restart_last_processed.json",
+                    dedup_data,
+                    indent=None,
+                )
+            except Exception as e:
+                logger.debug("Failed to write restart dedup marker: %s", e)
+
+        active_agents = self._running_agent_count()
+        # When running under a service manager (systemd/launchd) or inside a
+        # Docker/Podman container, use the service restart path: exit with
+        # code 75 so the service manager / container restart policy restarts
+        # us.  The detached subprocess approach (setsid + bash) doesn't work
+        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
+        # exits when the gateway dies, taking the detached helper with it).
+        # Native supervisor markers cover direct systemd/launchd starts. The
+        # explicit marker covers wrappers such as ``sudo env -i`` that strip
+        # those markers before execing the foreground gateway.
+        via_service = user_restart_via_service()
+        if via_service:
+            self.request_restart(detached=False, via_service=True)
+        else:
+            self.request_restart(detached=True, via_service=False)
+        return {
+            "status": "restarting",
+            "active_agents": active_agents,
+            "via_service": via_service,
+        }
+
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
-        from gateway.run import _hermes_home
         # Defensive idempotency check: if the previous gateway process
         # recorded this same /restart (same platform + update_id) and the new
         # process is seeing it *again*, this is a re-delivery caused by PTB's
@@ -1622,93 +1764,24 @@ class GatewaySlashCommandsMixin:
             )
             return ""
 
-        if self._restart_requested or self._draining:
-            count = self._running_agent_count()
+        status = await self.begin_user_restart(
+            source=event.source,
+            message_id=event.message_id,
+            platform_update_id=event.platform_update_id,
+            # Telegram redelivery marker: written inside begin_user_restart
+            # BEFORE request_restart(), so the drain can't kill the process
+            # ahead of the marker write.
+            write_redelivery_marker=True,
+        )
+
+        if status["status"] == "already_in_progress":
+            count = status["active_agents"]
             if count:
                 return t("gateway.draining", count=count)
             return EphemeralReply(t("gateway.restart.in_progress"))
 
-        # Save the requester's routing info so the new gateway process can
-        # notify them once it comes back online.
-        try:
-            notify_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "chat_id": event.source.chat_id,
-                "chat_type": event.source.chat_type,
-            }
-            if event.source.delivered_via_upstream_relay is True:
-                notify_data["delivered_via_upstream_relay"] = True
-                if event.source.user_id:
-                    notify_data["user_id"] = event.source.user_id
-                if event.source.scope_id:
-                    notify_data["scope_id"] = event.source.scope_id
-            if event.source.thread_id:
-                notify_data["thread_id"] = event.source.thread_id
-            if event.message_id:
-                notify_data["message_id"] = event.message_id
-            if event.source is not None:
-                try:
-                    self._restart_command_source = dataclasses.replace(
-                        event.source,
-                        message_id=str(event.message_id)
-                        if event.message_id is not None
-                        else event.source.message_id,
-                    )
-                except Exception:
-                    self._restart_command_source = event.source
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_notify.json",
-                notify_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart notify file: %s", e)
-
-        # Record the triggering platform + update_id in a dedicated dedup
-        # marker.  Unlike .restart_notify.json (which gets unlinked once the
-        # new gateway sends the "gateway restarted" notification), this
-        # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from Telegram.  Overwritten on every /restart.
-        try:
-            dedup_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "requested_at": time.time(),
-            }
-            if event.platform_update_id is not None:
-                dedup_data["update_id"] = event.platform_update_id
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_last_processed.json",
-                dedup_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart dedup marker: %s", e)
-
-        active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        # Native supervisor markers cover direct systemd/launchd starts. The
-        # explicit marker covers wrappers such as ``sudo env -i`` that strip
-        # those markers before execing the foreground gateway.
-        from gateway.restart import (
-            is_container_restart_context,
-            is_gateway_supervisor_process,
-        )
-
-        _under_service = is_gateway_supervisor_process()
-        _in_container = is_container_restart_context()
-        if _under_service or _in_container:
-            self.request_restart(detached=False, via_service=True)
-        else:
-            self.request_restart(detached=True, via_service=False)
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
+        if status["active_agents"]:
+            return t("gateway.draining", count=status["active_agents"])
         return EphemeralReply(t("gateway.restart.restarting"))
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
@@ -2644,34 +2717,69 @@ class GatewaySlashCommandsMixin:
         # auto_continue / hidden); clients never count them as user turns.
         # Without this filter /retry rewrote the transcript around a marker
         # and re-sent opaque bookkeeping text (same class as the TUI ordinal).
-        last_user_msg = None
         last_user_idx = None
-        # is_user_originated_turn: excludes display_kind bookkeeping AND
-        # compaction handoffs (durable role=user, sometimes without
-        # display_kind on legacy sessions; #80622) — /retry must never
-        # re-send a reference-only summary as if the user asked it.
-        from agent.context_compressor import is_user_originated_turn
+        # The canonical projection excludes bookkeeping and pure handoffs while
+        # still recognizing a real ask embedded in a compaction carrier.
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            split_user_originated_turn,
+            user_originated_turn_view,
+        )
 
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_msg = msg.get("content", "")
+            if user_originated_turn_view(msg) is not None:
                 last_user_idx = i
                 break
-        
-        if not last_user_msg:
+
+        if last_user_idx is None:
             return t("gateway.retry.no_previous")
-        
-        # Truncate history to before the last user message and persist only the
-        # live view. After in-place compaction the pre-compaction transcript
-        # lives on as active=0/compacted=1 rows under this same session id, and
-        # a bare rewrite (active_only=False) would DELETE them (same class as
-        # #61145). /retry never intends to purge archived history, so avoid a
-        # separate existence probe: it could fail open or race with the write.
-        truncated = history[:last_user_idx]
-        await self.async_session_store.rewrite_transcript(
-            session_entry.session_id, truncated, active_only=True
-        )
+
+        # Resolve the live text and the scaffold-preserving prefix before any
+        # transcript write. Messaging retries cannot reconstruct attachments;
+        # reject media/unknown content without truncating the session.
+        try:
+            truncated, live_view = history_before_user_originated_turn(
+                history, last_user_idx
+            )
+            last_user_msg = retryable_user_text(live_view.get("content"))
+            handoff, _ = split_user_originated_turn(history[last_user_idx])
+        except ValueError as exc:
+            return f"Cannot retry that message safely: {exc}"
+
+        if handoff is not None:
+            # A composite carrier is one physical row containing both the
+            # retained summary and the live ask. Let the carrier-aware rewind
+            # archive that row/tail and insert its pure scaffold atomically.
+            # Plain turns keep the existing rewrite path below; #84078 owns
+            # its separate archive_dropped/prefix-CAS semantics.
+            try:
+                rewind_result = await self.async_session_store.rewind_session(
+                    session_entry.session_id,
+                    1,
+                    require_retryable_composite=True,
+                )
+            except ValueError as exc:
+                return f"Cannot retry that message safely: {exc}"
+            if rewind_result is None:
+                return "Retry failed; transcript was not changed."
+            # The store reselects and validates the latest carrier on the same
+            # snapshot used by the atomic rewind.  A concurrent newer turn can
+            # therefore never be removed while this handler resends stale text.
+            last_user_msg = rewind_result["target_text"]
+        else:
+            # After in-place compaction the pre-compaction transcript lives on
+            # as active=0/compacted=1 rows under this session id. active_only
+            # preserves that archive; a separate existence probe could fail
+            # open or race with the write.
+            if not await self.async_session_store.rewrite_transcript(
+                session_entry.session_id,
+                truncated,
+                active_only=True,
+                reject_active_turn_lease=True,
+            ):
+                return "Retry failed; transcript was not changed."
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
 
@@ -2996,6 +3104,64 @@ class GatewaySlashCommandsMixin:
             f"any memory/skill updates will be reported when done."
         )
 
+    async def _handle_review_command(self, event: "MessageEvent") -> str:
+        """Handle /review — spawn an independent reviewer subagent.
+
+        Snapshots the last 10 chat messages from the session's cached agent,
+        wraps them (plus any argument text) in a reviewer briefing, and
+        dispatches a full-privilege background subagent on the async
+        delegation rail. The completed review re-enters this session as a
+        normal async-delegation completion turn.
+
+        The approval session-key contextvar is only bound during agent
+        turns, so it is bound explicitly here — without it the completion
+        event would carry no gateway route and never re-enter this chat.
+        """
+        args = (event.get_command_args() or "").strip()
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+        if not quick_key:
+            return "Review unavailable (no session)."
+        if quick_key in self._running_agents:
+            return "Agent is running — wait for the turn to finish, then /review."
+
+        agent = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = self._agent_cache.get(quick_key)
+                agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+        if agent is None:
+            return "Nothing to review yet — send a message first."
+
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+
+        from tools.approval import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        loop = asyncio.get_running_loop()
+
+        def _dispatch():
+            token = set_current_session_key(quick_key)
+            try:
+                from agent.review_engine import start_review
+
+                return start_review(agent, snapshot, args)
+            finally:
+                reset_current_session_key(token)
+
+        try:
+            result = await loop.run_in_executor(None, _dispatch)
+        except ValueError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"/review failed to start: {exc}"
+
+        from agent.review_engine import format_dispatch_note
+
+        return format_dispatch_note(result, args)
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 
@@ -3170,15 +3336,22 @@ class GatewaySlashCommandsMixin:
             preview=preview,
         )
 
-    async def _handle_set_home_command(self, event: MessageEvent) -> str:
-        """Handle /sethome command -- set the current chat as the platform's home channel."""
-        from gateway.run import _home_target_env_var, _home_thread_env_var
-        source = event.source
-        platform_name = source.platform.value if source.platform else "unknown"
-        chat_id = source.chat_id
-        chat_name = source.chat_name or chat_id
+    def _logical_channel_from_source(self, source) -> tuple[Optional[HomeChannel], Optional[str]]:
+        """Build the HomeChannel a channel-picking command should persist.
+
+        Shared by /sethome and /setnotify so both targets get identical
+        authentication and durability treatment: a Relay-fronted logical
+        target must carry authenticated provenance (user_id/scope_id from the
+        relay itself — a target the relay cannot vouch for would leave every
+        later bare-platform delivery unroutable), and Slack's synthetic
+        per-message session thread must never pin the target (see
+        ``_home_thread_from_source``).
+
+        Returns ``(channel, None)`` on success or ``(None, error_detail)``
+        when the source cannot name a durable, authenticated target.
+        """
         if source.platform is None:
-            return t("gateway.set_home.save_failed", error="Missing logical platform")
+            return None, "Missing logical platform"
 
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
@@ -3191,16 +3364,13 @@ class GatewaySlashCommandsMixin:
                 or not callable(fronts_platform)
                 or not fronts_platform(source.platform)
             ):
-                return t(
-                    "gateway.set_home.save_failed",
-                    error="Relay does not authenticate this logical home target",
-                )
+                return None, "Relay does not authenticate this logical target"
 
         thread_id = _home_thread_from_source(source)
-        home = HomeChannel(
+        channel = HomeChannel(
             platform=source.platform,
-            chat_id=str(chat_id),
-            name=chat_name,
+            chat_id=str(source.chat_id),
+            name=source.chat_name or source.chat_id,
             thread_id=str(thread_id) if thread_id else None,
             user_id=(
                 str(source.user_id)
@@ -3213,6 +3383,20 @@ class GatewaySlashCommandsMixin:
                 else None
             ),
         )
+        return channel, None
+
+    async def _handle_set_home_command(self, event: MessageEvent) -> str:
+        """Handle /sethome command -- set the current chat as the platform's home channel."""
+        from gateway.run import _home_target_env_var, _home_thread_env_var
+        source = event.source
+        platform_name = source.platform.value if source.platform else "unknown"
+        chat_id = source.chat_id
+        chat_name = source.chat_name or chat_id
+        home, error = self._logical_channel_from_source(source)
+        if error is not None:
+            return t("gateway.set_home.save_failed", error=error)
+
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
 
         # config.yaml is canonical because it can persist the authenticated
         # logical-target provenance required by Relay after a restart.
@@ -3227,7 +3411,7 @@ class GatewaySlashCommandsMixin:
         try:
             from hermes_cli.config import save_env_value
             save_env_value(env_key, str(chat_id))
-            save_env_value(thread_env_key, str(thread_id or ""))
+            save_env_value(thread_env_key, str(home.thread_id or ""))
         except Exception as e:
             logger.warning("Home config saved but legacy env persistence failed: %s", e)
 
@@ -3239,7 +3423,209 @@ class GatewaySlashCommandsMixin:
         )
         platform_config.home_channel = home
 
+        # Discord-only discovery pointer for the full provisioning flow. Kept
+        # out of the shared string so non-Discord platforms' copy is unchanged.
+        if source.platform is Platform.DISCORD:
+            return (
+                t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+                + "\n"
+                + t("gateway.set_home.discord_pointer")
+            )
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+
+    async def _sync_home_server_if_due(self) -> None:
+        """Debounced Discord Home Server reconcile, scheduled at gateway connect.
+
+        Runs the plugin's ``sync_if_due`` entry point off the event loop (it
+        does blocking urllib I/O) and swallows every failure: a provisioning
+        hiccup must never take the gateway down. Only reconciles when the
+        feature is configured AND a state file exists, so it stays inert until
+        the operator has run /sethomeserver once.
+        """
+        try:
+            from plugins.home_server.core import HomeServerError, sync_if_due
+
+            # Brief delay so adapter connects and channel caches settle first.
+            await asyncio.sleep(5)
+            report = await asyncio.to_thread(sync_if_due)
+            if report.get("synced"):
+                logger.info(
+                    "Home server re-synced for guild %s: %d created, %d embeds",
+                    report.get("guild_id"),
+                    len(report.get("created") or []),
+                    len(report.get("embeds_posted") or []),
+                )
+            elif report.get("reason"):
+                logger.debug("Home server sync skipped: %s", report["reason"])
+        except HomeServerError as exc:
+            logger.warning("Home server sync failed: %s", exc)
+        except Exception:
+            logger.debug("Home server sync failed", exc_info=True)
+
+    async def _handle_set_home_server_command(self, event: MessageEvent) -> str:
+        """Handle /sethomeserver -- provision and wire the Discord home server.
+
+        Discord-only: the whole feature (categories, voice-channel walls,
+        memory webhooks) is Discord-shaped, so other platforms get a clear
+        refusal rather than a half-run. Authorization is the same slash gate
+        sethome goes through — the operator allowlists plus
+        ``allow_admin_from`` — and provisioning additionally fails loudly when
+        the bot lacks Manage Channels / Manage Webhooks in the target guild.
+        """
+        source = event.source
+        if source.platform is not Platform.DISCORD:
+            return t("gateway.set_home_server.discord_only")
+
+        # Relay guard, same posture as /sethome: a relay-fronted Discord
+        # message passes the platform check above, but only a relay that
+        # actually fronts Discord and authenticated the sender may drive a
+        # guild-level config write + provisioning.
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        if via_relay:
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
+            if (
+                not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(Platform.DISCORD)
+            ):
+                return t("gateway.set_home_server.relay_blocked")
+
+        raw_args = event.get_command_args().strip()
+        confirmed = raw_args.lower() in {"confirm", "yes", "--confirm"}
+
+        # A guild the user is invoking from, or an explicit one. scope_id is the
+        # canonical guild carrier on SessionSource (the guild_id alias is
+        # legacy); raw_message covers slash interactions that only set guild_id.
+        guild_id = str(getattr(source, "scope_id", None) or "").strip()
+        if not guild_id:
+            raw = getattr(event, "raw_message", None)
+            raw_guild = getattr(raw, "guild_id", None) or getattr(
+                getattr(raw, "guild", None), "id", None
+            )
+            guild_id = str(raw_guild or "").strip()
+        if not guild_id:
+            return t("gateway.set_home_server.no_guild")
+
+        try:
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            section = config.get("discord_home_server")
+            if not isinstance(section, dict):
+                section = {}
+                config["discord_home_server"] = section
+            current = str(section.get("guild_id") or "").strip()
+        except Exception as e:
+            return t("gateway.set_home_server.save_failed", error=e)
+
+        if current and current != guild_id and not confirmed:
+            return t(
+                "gateway.set_home_server.confirm_required",
+                current=current,
+                guild_id=guild_id,
+            )
+
+        if current != guild_id:
+            section["guild_id"] = guild_id
+            try:
+                save_config(config)
+            except Exception as e:
+                return t("gateway.set_home_server.save_failed", error=e)
+
+        # Progress feedback: provisioning makes several REST round-trips, so
+        # tell the user it started before the first one lands.
+        adapter = getattr(self, "_adapter_for_source", None)
+        adapter = adapter(source) if callable(adapter) else None
+        if adapter is not None:
+            try:
+                metadata = self._thread_metadata_for_source(source)
+                await adapter.send(
+                    str(source.chat_id),
+                    t("gateway.set_home_server.progress"),
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.debug("sethomeserver progress send failed", exc_info=True)
+
+        try:
+            from plugins.home_server.core import HomeServerError, reconcile
+            report = await asyncio.to_thread(reconcile)
+        except HomeServerError as e:
+            return t("gateway.set_home_server.provision_failed", error=e)
+        except Exception as e:
+            return t("gateway.set_home_server.provision_failed", error=e)
+
+        if not report.get("enabled"):
+            return t("gateway.set_home_server.save_failed", error="guild_id not set")
+
+        created = report.get("created") or []
+        embeds = report.get("embeds_posted") or []
+        wired = report.get("wired") or {}
+        modules = report.get("modules") or {}
+        home_channel = str(report.get("home_channel") or "skipped")
+
+        return t(
+            "gateway.set_home_server.success",
+            created_count=len(created),
+            created_list=", ".join(c.split(":", 1)[1] for c in created) or "—",
+            embeds_count=len(embeds),
+            wired_count=len(wired),
+            wired_list=", ".join(sorted(wired)) or "—",
+            modules_count=sum(1 for v in modules.values() if v),
+            home_channel_state=home_channel,
+            guild_id=guild_id,
+        )
+    async def _handle_set_notify_command(self, event: MessageEvent) -> str:
+        """Handle /setnotify -- route gateway lifecycle broadcasts to this chat.
+
+        Mirrors /sethome but persists the platform's ``notification_channel``:
+        shutdown/startup broadcasts land here while the home channel stays
+        free for conversation (e.g. a dedicated "#gateway-restarts" channel).
+        """
+        source = event.source
+        chat_name = source.chat_name or source.chat_id
+        channel, error = self._logical_channel_from_source(source)
+        if error is not None:
+            return t("gateway.set_notify.save_failed", error=error)
+
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+
+        try:
+            persist_notification_channel(channel, enabled_if_new=not via_relay)
+        except Exception as e:
+            return t("gateway.set_notify.save_failed", error=e)
+
+        # Keep the running gateway config in sync too. The shutdown
+        # broadcast reads self.config before the process reloads config.yaml.
+        platform_config = getattr(self, "config").platforms.setdefault(
+            source.platform,
+            PlatformConfig(enabled=not via_relay),
+        )
+        platform_config.notification_channel = channel
+
+        return t("gateway.set_notify.success", name=chat_name, chat_id=source.chat_id)
+
+    async def _handle_clear_notify_command(self, event: MessageEvent) -> str:
+        """Handle /clearnotify -- return lifecycle broadcasts to the home channel."""
+        source = event.source
+        if source.platform is None:
+            return t("gateway.clear_notify.failed", error="Missing logical platform")
+
+        try:
+            clear_notification_channel(source.platform)
+        except Exception as e:
+            return t("gateway.clear_notify.failed", error=e)
+
+        # Mirror /setnotify's in-sync update so the very next shutdown
+        # broadcast already routes back to the home channel.
+        platform_config = getattr(self, "config", None)
+        if platform_config is not None:
+            platform_config = platform_config.platforms.get(source.platform)
+        if platform_config is not None:
+            platform_config.notification_channel = None
+
+        return t("gateway.clear_notify.success")
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
@@ -3384,6 +3770,22 @@ class GatewaySlashCommandsMixin:
                 more = f" (+{len(skipped) - 5})" if len(skipped) > 5 else ""
                 msg += "\n" + t(
                     "gateway.rollback.kept_user_edits",
+                    files=shown + more,
+                )
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5})" if len(oversize) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_oversize",
+                    files=shown + more,
+                )
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5})" if len(failed) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.failed_deletes",
                     files=shown + more,
                 )
             return msg
@@ -4299,9 +4701,12 @@ class GatewaySlashCommandsMixin:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
 
-            # The manual compression helper skips memory-provider initialization,
-            # but _compress_context may persist its cached system prompt. Restore
-            # the exact live-session prompt so provider blocks are retained.
+            # The manual compression helper runs outside the live session's
+            # fully initialized prompt environment (it loads the memory
+            # provider only when compression.checkpoint_required demands it),
+            # and _compress_context may persist its cached system prompt.
+            # Restore the exact live-session prompt so provider blocks are
+            # retained.
             session_row = None
             get_session = getattr(self._session_db, "get_session", None)
             if callable(get_session):
@@ -4317,12 +4722,26 @@ class GatewaySlashCommandsMixin:
                         exc_info=True,
                     )
 
+            # This agent performs a lossy rewrite. When the operator enabled
+            # compression.checkpoint_required, the memory provider must be
+            # loaded so _compress_context() can create the required
+            # pre-compression checkpoint; otherwise keep the historical fast
+            # path (no provider init, no best-effort hook) for this helper.
+            from hermes_cli.config import load_config as _load_cfg
+            from utils import is_truthy_value as _is_truthy
+
+            _checkpoint_required = _is_truthy(
+                ((_load_cfg() or {}).get("compression") or {}).get(
+                    "checkpoint_required"
+                ),
+                default=False,
+            )
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
-                skip_memory=True,
+                skip_memory=not _checkpoint_required,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),
@@ -4673,9 +5092,16 @@ class GatewaySlashCommandsMixin:
         temp_dir = tempfile.mkdtemp(prefix="hermes_save_")
         temp_path = os.path.join(temp_dir, filename)
         try:
-            content = render_session_for_save(export_data, fmt)
-            with open(temp_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            # Off-loop: rendering a long session and writing it to disk are
+            # CPU/disk-bound and scale with transcript size (multi-MB for
+            # long sessions). Inline they stall every other chat on the
+            # gateway event loop (Pattern A). One thread hop covers both.
+            def _render_and_write() -> None:
+                rendered = render_session_for_save(export_data, fmt)
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    f.write(rendered)
+
+            await asyncio.to_thread(_render_and_write)
 
             adapter = self.get_adapter(source.platform)
             if adapter:
@@ -5759,7 +6185,35 @@ class GatewaySlashCommandsMixin:
 
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         plural = "plural" if count > 1 else "singular"
-        return t(f"gateway.approve.{choice}_{plural}", count=count)
+        confirmation_text = t(f"gateway.approve.{choice}_{plural}", count=count)
+        # Native-streaming adapters (WeCom msgtype:"stream") need the
+        # confirmation sent directly with control-lane metadata so it lands
+        # via a reliable proactive send instead of the (already-finalized)
+        # reply stream. Every other platform keeps the normal contract:
+        # else: return the text and let the gateway deliver it.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
+        if _adapter:
+            try:
+                await _adapter.send(
+                    source.chat_id,
+                    confirmation_text,
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send /approve confirmation to %s: %s",
+                    source.chat_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        return None
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -5817,11 +6271,40 @@ class GatewaySlashCommandsMixin:
         )
         if reason:
             if count > 1:
-                return t("gateway.deny.denied_reason_plural", count=count, reason=reason)
-            return t("gateway.deny.denied_reason_singular", reason=reason)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
-        return t("gateway.deny.denied_singular")
+                confirmation_text = t("gateway.deny.denied_reason_plural", count=count, reason=reason)
+            else:
+                confirmation_text = t("gateway.deny.denied_reason_singular", reason=reason)
+        elif count > 1:
+            confirmation_text = t("gateway.deny.denied_plural", count=count)
+        else:
+            confirmation_text = t("gateway.deny.denied_singular")
+
+        # Same native-streaming carve-out as /approve above: only WeCom-style
+        # native-stream adapters take the direct control-lane send; everyone
+        # else returns the text for normal gateway delivery.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
+        if _adapter:
+            try:
+                await _adapter.send(
+                    source.chat_id,
+                    confirmation_text,
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send /deny confirmation to %s: %s",
+                    source.chat_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        return None
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.

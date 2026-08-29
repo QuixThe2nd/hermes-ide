@@ -27,7 +27,7 @@ import traceback
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -55,6 +55,187 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
+
+
+_CURSOR_CLOUD_AGENT_STATUS_PREFIX = "Cursor Cloud Agent: "
+_CURSOR_CLOUD_AGENT_ICON_URL = "https://cursor.com/apple-touch-icon.png"
+_CURSOR_CLOUD_AGENT_BRAND_URL = "https://cursor.com"
+_CURSOR_CLOUD_AGENT_ALLOWED_HOSTS = frozenset({"cursor.com", "www.cursor.com"})
+
+
+def _cursor_cloud_agent_status_url(content: str) -> Optional[str]:
+    """Return the watch URL when *content* is exactly a Cursor Cloud Agent status line."""
+    if content is None:
+        return None
+    text = content.strip()
+    if not text.startswith(_CURSOR_CLOUD_AGENT_STATUS_PREFIX):
+        return None
+    url = text[len(_CURSOR_CLOUD_AGENT_STATUS_PREFIX) :].strip()
+    if not url or any(ch.isspace() for ch in url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        return None
+    hostname = parsed.hostname
+    if hostname not in _CURSOR_CLOUD_AGENT_ALLOWED_HOSTS:
+        return None
+    decoded_path = unquote(parsed.path)
+    if ".." in decoded_path:
+        return None
+    if not re.fullmatch(r"/agents/[^/]+", decoded_path):
+        return None
+    return url
+
+
+def _cursor_cloud_agent_embed_spec(url: str) -> Dict[str, Any]:
+    """Pure-data embed fields for a Cursor Cloud Agent live-progress card."""
+    return {
+        "title": "Cursor Cloud Agent",
+        "url": url,
+        "description": _format_discord_markdown_link("Watch live session", url),
+        "author": {
+            "name": "Cursor",
+            "icon_url": _CURSOR_CLOUD_AGENT_ICON_URL,
+            "url": _CURSOR_CLOUD_AGENT_BRAND_URL,
+        },
+        "thumbnail": _CURSOR_CLOUD_AGENT_ICON_URL,
+        "color": 0x000000,
+        "footer": "Cursor · Cloud Agent",
+    }
+
+
+def _build_cursor_cloud_agent_embed(url: str) -> Any:
+    """Build a discord.Embed for a Cursor Cloud Agent live-progress URL."""
+    spec = _cursor_cloud_agent_embed_spec(url)
+    embed = discord.Embed(
+        title=spec["title"],
+        url=spec["url"],
+        description=spec["description"],
+        color=spec["color"],
+    )
+    author = spec["author"]
+    embed.set_author(
+        name=author["name"],
+        icon_url=author["icon_url"],
+        url=author["url"],
+    )
+    embed.set_thumbnail(url=spec["thumbnail"])
+    embed.set_footer(text=spec["footer"])
+    return embed
+
+
+def _cursor_cloud_agent_markdown_progress(url: str) -> str:
+    """Forum/fail-soft markdown form — no raw dumped URL."""
+    return (
+        f"{_CURSOR_CLOUD_AGENT_STATUS_PREFIX}"
+        f"{_format_discord_markdown_link('Watch live session', url)}"
+    )
+
+
+_CLAUDE_AGENT_STATUS_PREFIX = "Claude Code Agent: "
+_CLAUDE_AGENT_ICON_URL = "https://claude.ai/images/claude_app_icon.png"
+_CLAUDE_AGENT_BRAND_URL = "https://claude.ai"
+_CLAUDE_VIEWER_ALLOWED_HOSTS = frozenset({"192.168.30.20", "100.109.12.0"})
+_CLAUDE_AGENT_RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
+
+
+def _claude_agent_status_url(content: str) -> Optional[str]:
+    """Return the watch URL when *content* is exactly a Claude Code Agent status line."""
+    if content is None:
+        return None
+    text = content.strip()
+    if not text.startswith(_CLAUDE_AGENT_STATUS_PREFIX):
+        return None
+    url = text[len(_CLAUDE_AGENT_STATUS_PREFIX) :].strip()
+    if not url or any(ch.isspace() for ch in url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        return None
+    hostname = parsed.hostname
+    if hostname not in _CLAUDE_VIEWER_ALLOWED_HOSTS:
+        return None
+    decoded_path = unquote(parsed.path)
+    if ".." in decoded_path:
+        return None
+    if decoded_path != "/":
+        return None
+    if parsed.query:
+        return None
+    # Test the raw URL for the delimiter: urlparse drops a bare trailing "#",
+    # leaving parsed.fragment empty, so a present-but-empty fragment must be
+    # rejected here rather than slip through the stem regex guard.
+    if "#" in url and not _CLAUDE_AGENT_RUN_STEM_RE.fullmatch(parsed.fragment):
+        return None
+    return url
+
+
+def _claude_agent_embed_spec(url: str) -> Dict[str, Any]:
+    """Pure-data embed fields for a Claude Code Agent live-progress card."""
+    return {
+        "title": "Claude Code Agent",
+        "url": url,
+        "description": _format_discord_markdown_link("Watch live session", url),
+        "author": {
+            "name": "Claude Code",
+            "icon_url": _CLAUDE_AGENT_ICON_URL,
+            "url": _CLAUDE_AGENT_BRAND_URL,
+        },
+        "thumbnail": _CLAUDE_AGENT_ICON_URL,
+        "color": 0xD97757,
+        "footer": "Anthropic · Claude Code",
+    }
+
+
+def _build_claude_agent_embed(url: str) -> Any:
+    """Build a discord.Embed for a Claude Code Agent live-progress URL."""
+    spec = _claude_agent_embed_spec(url)
+    embed = discord.Embed(
+        title=spec["title"],
+        url=spec["url"],
+        description=spec["description"],
+        color=spec["color"],
+    )
+    author = spec["author"]
+    embed.set_author(
+        name=author["name"],
+        icon_url=author["icon_url"],
+        url=author["url"],
+    )
+    embed.set_thumbnail(url=spec["thumbnail"])
+    embed.set_footer(text=spec["footer"])
+    return embed
+
+
+def _claude_agent_markdown_progress(url: str) -> str:
+    """Forum/fail-soft markdown form — no raw dumped URL."""
+    return (
+        f"{_CLAUDE_AGENT_STATUS_PREFIX}"
+        f"{_format_discord_markdown_link('Watch live session', url)}"
+    )
+
+
+def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Callable[[str], Any]]]:
+    """Resolve an agent status line to ``(url, markdown_line, embed_factory)``.
+
+    Matched prefixes are disjoint, so at most one branch applies. Returns
+    ``None`` for ordinary content, which takes the plain-text send path.
+    """
+    claude_url = _claude_agent_status_url(content)
+    if claude_url:
+        return claude_url, _claude_agent_markdown_progress(claude_url), _build_claude_agent_embed
+    cursor_url = _cursor_cloud_agent_status_url(content)
+    if cursor_url:
+        return (
+            cursor_url,
+            _cursor_cloud_agent_markdown_progress(cursor_url),
+            _build_cursor_cloud_agent_embed,
+        )
+    return None
 
 
 class _Snowflake:
@@ -91,8 +272,9 @@ _DISCORD_SELECT_MAX_ROWS = 5
 _DISCORD_MODEL_SELECT_CAPACITY = (
     _DISCORD_SELECT_MAX_ROWS - 2
 ) * _DISCORD_SELECT_MAX_OPTIONS
-_DISCORD_BUTTON_LABEL_LIMIT = 80
-_DISCORD_ELLIPSIS = "\u2026"
+# Embed field values cap at 1024 chars; Discord rejects the whole message on
+# overrun. Used by send_clarify to pack the numbered choice list.
+_DISCORD_EMBED_FIELD_LIMIT = 1024
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
@@ -430,6 +612,7 @@ def _clean_discord_id(entry: str) -> str:
 _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS",
     "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOWED_GUILDS",
     "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS",
     "DISCORD_NO_THREAD_CHANNELS",
@@ -1586,6 +1769,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             self._running = True
             self._start_liveness_probe()
+            # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
+            self._wire_plugin_handlers(self._client)
             return True
 
         except asyncio.TimeoutError:
@@ -3506,6 +3691,46 @@ class DiscordAdapter(BasePlatformAdapter):
             fail_if_not_exists=False,
         )
 
+    def _final_send_wants_ping(
+        self,
+        reply_to,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Shared notify gate for the reply reference and mention fallback.
+
+        Streaming previews, tool progress, status, and interim commentary
+        must never ping; ``reply_to_mode='off'`` means no pings at all, so
+        it suppresses the inline mention exactly like the reference.
+        """
+        if metadata and metadata.get("_interim_send"):
+            return False
+        if not metadata or not metadata.get("notify"):
+            return False
+        return bool(reply_to) and self._reply_to_mode != "off"
+
+    @staticmethod
+    def _root_turn_reference_is_unattachable(reply_to, channel) -> bool:
+        """True when ``reply_to`` is the auto-thread root-turn signature.
+
+        A parent-channel @mention that spawns a thread produces a thread
+        whose id equals the root message id, while the root message itself
+        lives in the PARENT channel — so a reference built against the send
+        channel can never attach, and with ``fail_if_not_exists=False``
+        Discord silently drops the reply ping (no error, no log).  The
+        ``parent_id`` guard keeps a plain channel whose id coincidentally
+        matches from triggering the fallback.
+        """
+        if not reply_to:
+            return False
+        parent_id = getattr(channel, "parent_id", None)
+        channel_id = getattr(channel, "id", None)
+        if parent_id is None or channel_id is None:
+            return False
+        try:
+            return int(reply_to) == int(channel_id) and int(parent_id) != int(channel_id)
+        except (ValueError, TypeError):
+            return False
+
     def _reply_reference_for_send(
         self,
         reply_to,
@@ -3519,18 +3744,72 @@ class DiscordAdapter(BasePlatformAdapter):
         must stay standalone; only notify-worthy turn-final deliveries get a
         reply anchor (``metadata["notify"]`` is set by the gateway final path
         and the stream consumer's fresh-final send).
+
+        Auto-threaded root turns return ``None`` even for finals: the
+        spawned thread's id equals the root message id and the root message
+        lives in the parent channel, so the reference can never attach —
+        ``send`` pings via an inline mention instead
+        (``_final_mention_prefix``).
         """
-        if metadata and metadata.get("_interim_send"):
+        if not self._final_send_wants_ping(reply_to, metadata):
             return None
-        if not metadata or not metadata.get("notify"):
-            return None
-        if not reply_to or self._reply_to_mode == "off":
+        if self._root_turn_reference_is_unattachable(reply_to, channel):
             return None
         try:
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:
             logger.debug("Could not build reply-to reference: %s", e)
             return None
+
+    def _root_turn_author_from_recovery(self, reply_to: str) -> Optional[str]:
+        """Author of the root message, read from the recovery ledger."""
+        def _op(conn):
+            row = conn.execute(
+                "SELECT author_id FROM discord_messages WHERE message_id=?",
+                (str(reply_to),),
+            ).fetchone()
+            return str(row[0]) if row and row[0] else None
+
+        return self._with_discord_recovery_db(_op)
+
+    async def _root_turn_author_from_parent(self, reply_to: str, channel) -> Optional[str]:
+        """Author of the root message, fetched from its parent channel."""
+        if not self._client:
+            return None
+        try:
+            parent = self._client.get_channel(int(channel.parent_id))
+            if parent is None:
+                return None
+            message = await parent.fetch_message(int(reply_to))
+        except Exception as e:
+            logger.debug("[%s] Root-message author lookup failed: %s", self.name, e)
+            return None
+        author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
+        return author_id or None
+
+    async def _final_mention_prefix(
+        self,
+        reply_to,
+        channel,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Inline ``<@id> `` ping for finals whose reply reference can't attach.
+
+        Only the same notify-worthy finals that would otherwise get a
+        ``MessageReference`` are considered.  The root author comes from the
+        local recovery ledger first (no API round trip), falling back to a
+        ``fetch_message`` in the parent channel; when both fail the send
+        proceeds with no mention and no reference — the pre-fallback
+        behavior.
+        """
+        if not self._final_send_wants_ping(reply_to, metadata):
+            return ""
+        if not self._root_turn_reference_is_unattachable(reply_to, channel):
+            return ""
+        author_id = self._root_turn_author_from_recovery(reply_to)
+        if not author_id:
+            author_id = await self._root_turn_author_from_parent(reply_to, channel)
+        return f"<@{author_id}> " if author_id else ""
 
     def prefers_fresh_final_streaming(
         self,
@@ -3632,6 +3911,45 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+            agent_progress = _agent_progress_embed_payload(content)
+            if agent_progress:
+                agent_url, markdown_progress, build_embed = agent_progress
+                if self._is_forum_parent(channel):
+                    content = markdown_progress
+                else:
+                    reference = self._reply_reference_for_send(reply_to, channel, metadata)
+                    try:
+                        msg = await channel.send(
+                            embed=build_embed(agent_url),
+                            reference=reference,
+                        )
+                        message_id = str(msg.id)
+                        _target_id = thread_id or chat_id
+                        if nonconversational:
+                            self._nonconversational_messages.mark_many([message_id])
+                        elif not _looks_like_nonconversational_history_message(content):
+                            self._last_self_message_id[_target_id] = message_id
+                        result = SendResult(
+                            success=True,
+                            message_id=message_id,
+                            raw_response={"message_ids": [message_id]},
+                        )
+                        await asyncio.to_thread(
+                            self._record_discord_response,
+                            reply_to=reply_to,
+                            result=result,
+                            content=content,
+                            final=final_delivery,
+                        )
+                        return result
+                    except Exception as e:
+                        logger.debug(
+                            "[%s] agent progress embed send failed; falling back to markdown link: %s",
+                            self.name,
+                            e,
+                        )
+                        content = markdown_progress
+
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
@@ -3653,6 +3971,22 @@ class DiscordAdapter(BasePlatformAdapter):
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
             reference = self._reply_reference_for_send(reply_to, channel, metadata)
+            if reference is None:
+                # Auto-threaded root turns can never attach a reference —
+                # ping the root author inline instead of losing the reply
+                # notification to fail_if_not_exists=False.
+                mention_prefix = await self._final_mention_prefix(
+                    reply_to, channel, metadata
+                )
+                if mention_prefix and chunks:
+                    # The prefixed first chunk may now exceed the cap —
+                    # re-truncate (dropping a few trailing chars on an
+                    # already-maximal chunk is fine; the full response is
+                    # in the session logs).
+                    chunks[0] = self.truncate_message(
+                        mention_prefix + chunks[0],
+                        self.MAX_MESSAGE_LENGTH,
+                    )[0]
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -5180,6 +5514,11 @@ class DiscordAdapter(BasePlatformAdapter):
         ``channel_ids`` matches ``DISCORD_ALLOWED_CHANNELS`` — but only when the
         caller supplies the validated channel context (on_message, slash). Calls
         without channel context (e.g. voice utterances) do not get this bypass.
+        Guild traffic from a server in ``DISCORD_ALLOWED_GUILDS`` is an
+        independent grant: it authorizes guild messages (and slash/voice) for
+        every member of a listed server without enumerating users, roles, or
+        channels, and it applies whether or not the user/role allowlists are
+        also set. DMs carry no guild, so this gate never touches DM traffic.
 
         Role checks are **scoped to the guild the message originated from**.
         For DMs (no guild context), role-based auth is disabled by default and
@@ -5211,6 +5550,18 @@ class DiscordAdapter(BasePlatformAdapter):
         # gateway layer can see them.
         if self._is_pairing_approved_user(user_id):
             return True
+
+        # Guild allowlist: membership in a DISCORD_ALLOWED_GUILDS server is an
+        # independent grant for guild traffic — valid whether or not the
+        # user/role allowlists below are also configured. DMs carry no guild,
+        # so this can never authorize (or restrict) a DM sender. A "*"
+        # wildcard mirrors the DISCORD_ALLOWED_CHANNELS convention.
+        if not is_dm and guild is not None:
+            allowed_guilds = self._discord_allowed_guild_ids()
+            if allowed_guilds:
+                guild_id = str(getattr(guild, "id", ""))
+                if "*" in allowed_guilds or (guild_id and guild_id in allowed_guilds):
+                    return True
 
         if not has_users and not has_roles:
             if self._discord_allow_all_users():
@@ -5289,6 +5640,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if allowed_users or allowed_roles:
             return
         if self._get_allowed_channels():
+            return
+        if self._discord_allowed_guild_ids():
             return
         if self._discord_allow_all_users():
             return
@@ -6158,6 +6511,13 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_sethome(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/sethome")
 
+        # Discord-only provisioning command; the gateway handler rejects it on
+        # every other platform, and Slack reaches it via /hermes sethomeserver.
+        @tree.command(name="sethomeserver", description="Provision and wire the Discord home server")
+        @discord.app_commands.describe(confirm="Type 'confirm' to move an existing home server to this server")
+        async def slash_set_home_server(interaction: discord.Interaction, confirm: str = ""):
+            await self._run_simple_slash(interaction, f"/sethomeserver {confirm}".strip())
+
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
@@ -6942,6 +7302,10 @@ class DiscordAdapter(BasePlatformAdapter):
             int(str(entry).strip()) for entry in self._gate_csv_set(raw)
             if str(entry).strip().isdigit()
         }
+
+    def _discord_allowed_guild_ids(self) -> set:
+        """This adapter's DISCORD_ALLOWED_GUILDS guild IDs (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("allowed_guilds", "DISCORD_ALLOWED_GUILDS"))
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
@@ -7887,22 +8251,26 @@ class DiscordAdapter(BasePlatformAdapter):
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Render a clarify prompt with one Discord button per choice.
+        """Render a clarify prompt as numbered plain text — no buttons.
 
-        Multi-choice mode (``choices`` non-empty): renders a button per option
-        plus a final "✏️ Other (type answer)" button. Picking "Other" flips
-        the clarify entry into text-capture mode so the next user message in
-        the session becomes the response. Numeric clicks resolve immediately
-        via ``resolve_gateway_clarify(clarify_id, choice_text)``.
+        Discord component views expire with their interaction token
+        (``approvals.discord_prompt_timeout``, default 300s, hard-capped by
+        Discord's 15-minute expiry), which left a dead button row on every
+        prompt the user didn't answer in time. Plain text has no such clock,
+        so both render modes are text-only and the gateway's text-intercept
+        resolves the reply instead:
 
-        Open-ended mode (``choices`` empty/None): renders the question as
-        plain embed text — no buttons. The gateway's text-intercept captures
-        the next message in this session and resolves the clarify.
+          * Multi-choice mode (``choices`` non-empty): the options render as a
+            numbered list and ``mark_awaiting_text(clarify_id)`` flips the
+            entry into text-capture mode, so a number ("2"), the option text,
+            or a free-form answer all resolve.
+          * Open-ended mode (``choices`` empty/None): the question plus a
+            reply hint; the entry already awaits text at registration.
 
         Choice normalisation: ``choices`` may contain bare strings OR dicts
         (LLMs sometimes emit ``[{"description": "..."}]`` instead of bare
-        strings, which would otherwise render as raw Python repr on the
-        button label). Dict choices are unwrapped against the canonical
+        strings, which would otherwise render as raw Python repr in the
+        numbered list). Dict choices are unwrapped against the canonical
         LLM tool-call keys ``label``, ``description``, ``text``, ``title``
         in that order. Dicts with none of those keys are dropped.
         """
@@ -7936,8 +8304,8 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
-            # instead of bare strings, which would render as raw Python repr on
-            # the button label. Unwrap the common shapes, then stringify.
+            # instead of bare strings, which would render as raw Python repr in
+            # the numbered list. Unwrap the common shapes, then stringify.
             def _flatten_choice(c):
                 if c is None:
                     return ""
@@ -7951,10 +8319,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     # dicts that aren't meant to be choices (e.g., a
                     # developer-error wiring that passes a Button-shaped
                     # object). Picking them would leak raw enum values
-                    # or 4-char model identifiers onto user-facing buttons.
+                    # or 4-char model identifiers into the visible list.
                     # If a dict has none of the canonical keys, drop it
                     # rather than picking some random field — a garbage
-                    # button label is worse than no button at all.
+                    # line is worse than a shorter list.
                     for key in ("label", "description", "text", "title"):
                         v = c.get(key)
                         if isinstance(v, str) and v.strip():
@@ -7967,47 +8335,90 @@ class DiscordAdapter(BasePlatformAdapter):
             clean_choices = [
                 s for s in (_flatten_choice(c) for c in (choices or [])) if s
             ]
-            # Discord allows up to 5 buttons per row, 5 rows per view = 25.
-            # We reserve one slot for the "Other" button, so cap at 24 choices.
-            clean_choices = clean_choices[:24]
 
+            reply_hint = "Reply in this channel with your answer."
             if clean_choices:
-                embed.add_field(
-                    name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
-                    inline=False,
+                # Multi-select clarifies register their flag on the pending
+                # entry; look it up by id so the reply hint matches the
+                # coercions the gateway will actually accept.
+                is_multi_select = False
+                try:
+                    from tools import clarify_gateway as _cg
+                    with _cg._lock:
+                        _entry = _cg._entries.get(clarify_id)
+                    is_multi_select = bool(
+                        _entry and getattr(_entry, "multi_select", False)
+                    )
+                except Exception:
+                    is_multi_select = False
+                reply_hint = (
+                    "Multiple selections allowed — reply with the numbers "
+                    "separated by commas or spaces (e.g. \"1, 3\"), the "
+                    "option text, or your own answer."
+                    if is_multi_select
+                    else "Reply with the number, the option text, or your own answer."
                 )
-                view = ClarifyChoiceView(
-                    choices=clean_choices,
-                    clarify_id=clarify_id,
-                    allowed_user_ids=self._allowed_user_ids,
-                    allowed_role_ids=self._allowed_role_ids,
-                )
-            else:
-                embed.add_field(
-                    name="Reply",
-                    value="Reply in this channel with your answer.",
-                    inline=False,
-                )
-                view = None
+                # Text-only prompt: enable text-capture so the gateway
+                # intercept picks up the typed reply (number, option text, or
+                # free text). Mirrors the base-platform plaintext fallback.
+                try:
+                    from tools.clarify_gateway import mark_awaiting_text
+                    mark_awaiting_text(clarify_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] clarify mark_awaiting_text failed (id=%s): %s",
+                        self.name, clarify_id, exc,
+                    )
 
-            # Mirror the question in plain content — embeds are invisible on
-            # some clients (see send_exec_approval).
-            clarify_tail = (
-                "\n\nPick one below, or click ✏️ Other to type a custom answer."
-                if clean_choices
-                else "\n\nReply in this channel with your answer."
+            choice_lines = [
+                f"{i}. {c}" for i, c in enumerate(clean_choices, start=1)
+            ]
+
+            def _pack_choice_field(lines: List[str], hint: str) -> str:
+                """Pack the numbered list + hint into one embed field value.
+
+                Embed field values cap at 1024 chars and Discord rejects the
+                whole message when they overrun, so drop whole trailing lines
+                rather than cutting an option in half — a "+N more" note beats
+                a half-rendered choice, and the full list always lives in the
+                plain ``content`` alongside.
+                """
+                suffix = f"\n\n{hint}"
+                budget = _DISCORD_EMBED_FIELD_LIMIT - utf16_len(suffix)
+                kept: List[str] = []
+                for line in lines:
+                    candidate = "\n".join(kept + [line])
+                    if utf16_len(candidate) > budget:
+                        break
+                    kept.append(line)
+                dropped = len(lines) - len(kept)
+                if dropped:
+                    kept.append(f"… +{dropped} more in the message above")
+                return "\n".join(kept) + suffix
+
+            embed.add_field(
+                name="Choices" if choice_lines else "Reply",
+                value=(
+                    _pack_choice_field(choice_lines, reply_hint)
+                    if choice_lines
+                    else reply_hint
+                ),
+                inline=False,
             )
+
+            # Mirror the question and the numbered choices in plain content —
+            # embeds are invisible on some clients (see send_exec_approval).
+            prompt_body = str(question or "").strip()
+            if choice_lines:
+                prompt_body = "\n".join([prompt_body, ""] + choice_lines)
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(),
-                tail=clarify_tail,
+                "❓ **Hermes needs your input**", prompt_body,
+                tail=f"\n\n{reply_hint}",
             )
             mention = self._clarify_mention_content()
             if mention:
                 content = f"{mention}\n{content}"
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed}
-            if view is not None:
-                send_kwargs["view"] = view
             if mention:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
                 if allowed_mentions_cls is not None:
@@ -8018,8 +8429,6 @@ class DiscordAdapter(BasePlatformAdapter):
                         replied_user=False,
                     )
             msg = await channel.send(**send_kwargs)
-            if view:
-                view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
@@ -8225,6 +8634,36 @@ class DiscordAdapter(BasePlatformAdapter):
         if parent_name:
             return f"{parent_name} / {thread_name}"
         return thread_name
+
+    def get_bot_display_name(
+        self,
+        *,
+        chat_id: Optional[str] = None,
+        guild_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """The bot account's display name as users see it.
+
+        Prefers the per-guild nickname (``guild.me.display_name``) so a
+        server-renamed bot introduces itself by that name; falls back to the
+        account's global display name, then the raw username. All values are
+        cached discord.py attributes, so this stays synchronous and never
+        raises — None when the client isn't connected or identity is unknown.
+        """
+        try:
+            client = self._client
+            if client is None:
+                return None
+            if guild_id:
+                guild = client.get_guild(int(guild_id))
+                me = getattr(guild, "me", None) if guild is not None else None
+                name = getattr(me, "display_name", None)
+                if name:
+                    return str(name)
+            user = getattr(client, "user", None)
+            name = getattr(user, "display_name", None) or getattr(user, "name", None)
+            return str(name) if name else None
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Attachment download helpers
@@ -9080,7 +9519,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ChoicePickerView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -9910,240 +10349,7 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
-    class ClarifyChoiceView(discord.ui.View):
-        """Interactive button view for the clarify tool's multiple-choice prompts.
 
-        Renders one button per choice (max 24) plus a final ``✏️ Other`` button.
-        Picking a numeric choice resolves the gateway clarify entry immediately;
-        picking ``Other`` flips the entry into text-capture mode so the next
-        user message in the session becomes the response (the gateway's
-        text-intercept handles the resolution).
-
-        Auth gating mirrors ``ExecApprovalView`` — only users/roles in the
-        Discord adapter's allowlist may answer. Single-use: after the first
-        valid click all buttons disable and the embed updates to show who
-        answered and what they chose.
-        """
-
-        def __init__(
-            self,
-            choices: List[str],
-            clarify_id: str,
-            allowed_user_ids: set,
-            allowed_role_ids: Optional[set] = None,
-        ):
-            super().__init__(timeout=_read_discord_prompt_timeout())
-            self.choices = list(choices)[:24]
-            self.clarify_id = clarify_id
-            self.allowed_user_ids = allowed_user_ids
-            self.allowed_role_ids = allowed_role_ids or set()
-            self.resolved = False
-
-            for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars. On mobile the
-                # visible width is much narrower (often <40 chars before it
-                # wraps to 2 lines and the second line gets cut off), so we
-                # cap aggressively and cut at a word boundary when possible
-                # to keep the trailing text readable.
-                #
-                # Cut strategy (most-preferred to least-preferred):
-                #   1. Last space in the trailing half of the budget
-                #      (cleanest word boundary)
-                #   2. Last soft boundary in the trailing half of the
-                #      budget (hyphen, comma, period, paren)
-                #   3. Hard cut at the budget limit (last resort)
-                prefix = f"{index + 1}. "
-                budget = _DISCORD_BUTTON_LABEL_LIMIT - utf16_len(prefix)
-                if utf16_len(choice) <= budget:
-                    label_body = choice
-                else:
-                    truncated = _prefix_within_utf16_limit(
-                        choice,
-                        max(0, budget - utf16_len(_DISCORD_ELLIPSIS)),
-                    ).rstrip()
-                    cut_at = -1
-                    # 1. Last space in the trailing half of the budget.
-                    space = truncated.rfind(" ")
-                    if space >= len(truncated) // 2:
-                        cut_at = space
-                    # 2. Soft boundary — only if no word boundary found.
-                    # Find the latest soft boundary in the trailing half
-                    # of the budget; that maximizes preserved text length.
-                    # Cut AT the soft boundary (inclusive) so the label
-                    # ends on the soft char (e.g. "-" or ",") rather than
-                    # on the alpha char that followed it.
-                    if cut_at < 0:
-                        latest_soft = max(
-                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
-                            default=-1,
-                        )
-                        if latest_soft >= len(truncated) // 2:
-                            cut_at = latest_soft + 1
-                    if cut_at > 0:
-                        truncated = truncated[:cut_at]
-                    label_body = truncated.rstrip() + _DISCORD_ELLIPSIS
-                button = discord.ui.Button(
-                    label=f"{prefix}{label_body}",
-                    style=discord.ButtonStyle.primary,
-                    custom_id=f"clarify:{clarify_id}:{index}",
-                )
-                button.callback = self._make_choice_callback(index, choice)
-                self.add_item(button)
-
-            other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)",
-                style=discord.ButtonStyle.secondary,
-                custom_id=f"clarify:{clarify_id}:other",
-            )
-            other_btn.callback = self._on_other
-            self.add_item(other_btn)
-
-        def _check_auth(self, interaction: "discord.Interaction") -> bool:
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
-
-        def _make_choice_callback(self, index: int, choice: str):
-            async def _callback(interaction: "discord.Interaction"):
-                await self._resolve_choice(interaction, index, choice)
-            return _callback
-
-        async def _resolve_choice(
-            self,
-            interaction: "discord.Interaction",
-            index: int,
-            choice: str,
-        ) -> None:
-            """Resolve the clarify with a chosen option."""
-            if self.resolved:
-                await interaction.response.send_message(
-                    "This prompt has already been answered~", ephemeral=True,
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
-                return
-
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-
-            embed = interaction.message.embeds[0] if (
-                interaction.message and interaction.message.embeds
-            ) else None
-            if embed:
-                user = getattr(interaction, "user", None)
-                display_name = getattr(user, "display_name", "user")
-                embed.color = discord.Color.green()
-                embed.set_footer(text=f"Answered by {display_name}: {choice}")
-
-            try:
-                await interaction.response.edit_message(embed=embed, view=self)
-            except Exception:
-                logger.debug(
-                    "Discord clarify edit_message failed for %s",
-                    self.clarify_id,
-                    exc_info=True,
-                )
-                try:
-                    await interaction.response.defer()
-                except Exception:
-                    pass
-
-            # Resolve via the gateway clarify primitive — same mechanism as
-            # Telegram. Look up the canonical choice text from the entry so
-            # we round-trip the original value, not a button-label variant.
-            resolved_text: Optional[str] = None
-            try:
-                from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-                entry = _clarify_entries.get(self.clarify_id)
-                if entry and entry.choices and 0 <= index < len(entry.choices):
-                    resolved_text = entry.choices[index]
-            except Exception:
-                resolved_text = None
-            if resolved_text is None:
-                resolved_text = choice
-
-            try:
-                from tools.clarify_gateway import resolve_gateway_clarify
-                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
-                logger.info(
-                    "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
-                    self.clarify_id, resolved_text,
-                    getattr(getattr(interaction, "user", None), "display_name", "?"),
-                    resolved,
-                )
-            except Exception as exc:
-                logger.error(
-                    "Discord clarify resolve_gateway_clarify failed (id=%s): %s",
-                    self.clarify_id, exc,
-                )
-
-        async def _on_other(self, interaction: "discord.Interaction") -> None:
-            """Flip the clarify entry into text-capture mode."""
-            if self.resolved:
-                await interaction.response.send_message(
-                    "This prompt has already been answered~", ephemeral=True,
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
-                return
-
-            # Don't pop the entry — the gateway's text-intercept needs it
-            # until the user actually types. Just mark it as awaiting text
-            # and disable the buttons so the user can't double-click.
-            try:
-                from tools.clarify_gateway import mark_awaiting_text
-                mark_awaiting_text(self.clarify_id)
-            except Exception as exc:
-                logger.warning(
-                    "Discord clarify mark_awaiting_text failed (id=%s): %s",
-                    self.clarify_id, exc,
-                )
-
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-
-            embed = interaction.message.embeds[0] if (
-                interaction.message and interaction.message.embeds
-            ) else None
-            if embed:
-                user = getattr(interaction, "user", None)
-                display_name = getattr(user, "display_name", "user")
-                embed.color = discord.Color.blue()
-                embed.set_footer(
-                    text=f"Awaiting typed response from {display_name}…",
-                )
-
-            try:
-                await interaction.response.edit_message(embed=embed, view=self)
-            except Exception:
-                try:
-                    await interaction.response.defer()
-                except Exception:
-                    pass
-
-        async def on_timeout(self):
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-            # Visually update the Discord message so buttons appear disabled.
-            msg = getattr(self, '_message', None)
-            if msg:
-                try:
-                    embed = msg.embeds[0] if msg.embeds else None
-                    if embed:
-                        embed.color = discord.Color.greyple()
-                        embed.set_footer(text="⏱ Prompt expired — no action taken")
-                    await msg.edit(embed=embed, view=self)
-                except Exception:
-                    pass
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 
@@ -10725,6 +10931,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["allow_all_users"] = str(allow_all_cfg).lower()
         if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_ALL_USERS"):
             os.environ["DISCORD_ALLOW_ALL_USERS"] = str(allow_all_cfg).lower()
+    # allowed_guilds: guild IDs whose members may all talk to the bot (guild
+    # grant in _is_allowed_user — never applies to DMs).
+    ag = (
+        discord_cfg["allowed_guilds"] if "allowed_guilds" in discord_cfg
+        else platform_extra_cfg.get("allowed_guilds")
+    )
+    if ag is not None:
+        if isinstance(ag, list):
+            ag = ",".join(str(v) for v in ag)
+        seeded_extra["allowed_guilds"] = str(ag)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_GUILDS"):
+            os.environ["DISCORD_ALLOWED_GUILDS"] = str(ag)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")

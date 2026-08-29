@@ -181,10 +181,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
@@ -292,6 +296,8 @@ gateway:
     invalid_number:        "Invalid checkpoint number. Use 1-{max}."
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
     kept_user_edits:       "↷ Kept your hand-edits: {files}\nUse /rollback <N> --all to restore those too."
+    kept_oversize:         "↷ Kept (too large for checkpoints, no stored copy to revert to): {files}"
+    failed_deletes:        "⚠️ Could not remove (left in place): {files}"
     restore_failed:        "❌ {error}"
 
   diff:
@@ -302,6 +308,25 @@ gateway:
   set_home:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
+    discord_pointer:       "💡 Want the full setup? `/sethomeserver` provisions a whole home server — chat, notifications, memory, quotas, and speeds — all wired up."
+
+  set_home_server:
+    discord_only:          "⚠️ `/sethomeserver` only works on Discord — it provisions Discord categories, channels, and webhooks."
+    relay_blocked:         "⚠️ This message arrived through a relay that can't authenticate Discord guild targets. Run `/sethomeserver` from a native Discord message."
+    no_guild:              "⚠️ Couldn't tell which server to use. Run `/sethomeserver` inside your Discord home server."
+    progress:              "🏗️ Provisioning your home server… (creating missing channels and wiring them up — this takes a few seconds)"
+    confirm_required:      "⚠️ Your home server is already set to guild `{current}`.\nRun `/sethomeserver confirm` to move it to guild `{guild_id}`. Nothing is ever deleted, but the new guild will be provisioned from scratch."
+    save_failed:           "Failed to save home server setting: {error}"
+    provision_failed:      "❌ Provisioning failed: {error}"
+    success:               "🏠 Home server provisioned for guild `{guild_id}`.\n**Created {created_count}:** {created_list}\n**Welcome messages posted:** {embeds_count}\n**Wired:** {wired_list} ({wired_count})\n**Modules enabled:** {modules_count}/5\nHome channel: {home_channel_state} — existing home and notification channels are never overwritten.\nRe-syncs run automatically at most once per hour."
+
+  set_notify:
+    save_failed:           "Failed to save notification channel: {error}"
+    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here instead of the home channel."
+
+  clear_notify:
+    failed:                "Failed to clear notification channel: {error}"
+    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts return to the home channel."
 
   context:
     header:                "🧠 **Context Window**"

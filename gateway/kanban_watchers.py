@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import time
 from contextvars import Context
@@ -24,6 +25,28 @@ from agent.i18n import t
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+_LOCAL_PATH_RE = re.compile(
+    r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|"
+    r"[A-Za-z]:\\[^\s,;]+)"
+)
+
+
+def _safe_review_reason(value: Any, limit: int = 160) -> str:
+    """Return a mobile-friendly review reason safe for external delivery."""
+    from agent.redact import redact_sensitive_text
+
+    reason = redact_sensitive_text(
+        "" if value is None else str(value),
+        force=True,
+        redact_url_credentials=True,
+    )
+    reason = _LOCAL_PATH_RE.sub("[local path]", reason)
+    reason = " ".join(reason.split())
+    if len(reason) > limit:
+        reason = reason[: limit - 1].rstrip() + "…"
+    return reason
 
 
 def _resolve_auto_decompose_settings(
@@ -234,6 +257,99 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _agent_wake_enabled_safe() -> bool:
+    """Read ``dev_pipeline.agent_wake_on_block`` without ever raising.
+
+    The gate is re-read every notifier tick so turning it off halts agent
+    wakes immediately; a broken read falls back to the shipped default
+    (on) rather than disabling the owner-requested behaviour.
+    """
+    try:
+        from gateway.kanban_agent_wake import agent_wake_enabled
+
+        return agent_wake_enabled()
+    except Exception:
+        return True
+
+
+def _plan_agent_wake(
+    conn: Any,
+    board: str,
+    sub: dict,
+    task: Any,
+    events: Sequence[Any],
+    enabled: bool,
+) -> Optional[dict]:
+    """Decide whether this claim owes the subscribing agent a wake turn.
+
+    Returns ``None`` (and logs at most a warning) for every reason not to
+    wake: the gate is off, the claim carries no ``dev_blocked`` event, the
+    newest block is a deliberate human/safety stop, or this destination was
+    already woken for this exact block signature — the ledger check that
+    makes an agent-recovery re-block a human-only signal instead of a
+    self-sustaining loop.
+    """
+    if not enabled:
+        return None
+    task_id = sub["task_id"]
+    try:
+        from gateway import kanban_agent_wake as _aw
+
+        payload = _aw.actionable_dev_block(events)
+        if payload is None:
+            return None
+        signature = _aw.block_signature(payload)
+        destination = "/".join(
+            str(part or "")
+            for part in (sub.get("platform"), sub.get("chat_id"), sub.get("thread_id"))
+        )
+        ledger = _aw.wake_ledger_path()
+        if _aw.already_woke(ledger, board, task_id, signature, destination):
+            logger.debug(
+                "kanban notifier: agent wake for %s on board %s already "
+                "delivered to %s for signature %s; human ping only",
+                task_id, board, destination, signature,
+            )
+            return None
+        return {
+            "brief": _aw.build_dev_block_brief(
+                conn,
+                board=board,
+                task_id=task_id,
+                task=task,
+                payload=payload,
+                triage=any(
+                    getattr(ev, "kind", None) == "block_loop_detected"
+                    for ev in events
+                ),
+            ),
+            "board": board,
+            "task_id": task_id,
+            "signature": signature,
+            "destination": destination,
+            "ledger": ledger,
+        }
+    except Exception as exc:
+        logger.warning(
+            "kanban notifier: agent wake planning failed for %s on board %s: %s",
+            task_id, board, exc,
+        )
+        return None
+
+
+def _record_agent_wake(wake: dict) -> None:
+    """Persist a delivered agent wake. Sync; runs via to_thread."""
+    try:
+        from gateway import kanban_agent_wake as _aw
+
+        _aw.record_wake(
+            wake["ledger"], wake["board"], wake["task_id"],
+            wake["signature"], wake["destination"],
+        )
+    except Exception as exc:
+        logger.warning("kanban notifier: agent wake ledger update failed: %s", exc)
+
+
 def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     """Return the tenant scope (Slack workspace) a subscription's wake keys to.
 
@@ -291,7 +407,8 @@ class GatewayKanbanWatchersMixin:
         For each subscription row, fetches ``task_events`` newer than the
         stored cursor with kind in the terminal set (``completed``,
         ``blocked``, ``gave_up``, ``crashed``, ``timed_out``,
-        ``review_requested``, ``block_loop_detected``). Sends one
+        ``review_requested``, ``changes_requested``,
+        ``block_loop_detected``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
         then advances the cursor. The subscription is removed only when the
         task is ``archived``. A ``done`` task can be reopened for review or
@@ -326,7 +443,13 @@ class GatewayKanbanWatchersMixin:
         # but is not a block (see kanban_db.request_review); the task is not
         # archived, so the subscription stays alive and later review
         # cycles keep notifying.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+        # ``dev_blocked`` is claimed but never texted: the paired ``blocked`` /
+        # ``block_loop_detected`` event already carries the human message, and
+        # the dev-pipeline block taxonomy (block_kind) lives only in this
+        # event's payload. Claiming it lets the cursor advance past it and lets
+        # the agent-wake path below read the taxonomy.
+        AGENT_WAKE_KIND = "dev_blocked"
         # Subscriptions are removed only when the task reaches the irreversible
         # archived status. ``done`` is reversible in review/controller flows,
         # so removing its subscription would silence a later reopen. We used
@@ -395,6 +518,10 @@ class GatewayKanbanWatchersMixin:
 
                 def _collect():
                     deliveries: list[dict] = []
+                    # Read the agent-wake gate once per tick (not per sub) —
+                    # same posture as progress_notifications above/below: a
+                    # config flip applies on the next tick, no restart.
+                    agent_wake_on = _agent_wake_enabled_safe()
                     include_unowned = self._owns_kanban_dispatcher_lock()
                     notifier_profiles = {notifier_profile}
                     notifier_profiles.update(
@@ -547,7 +674,7 @@ class GatewayKanbanWatchersMixin:
                                         platform=sub["platform"],
                                         chat_id=sub["chat_id"],
                                         thread_id=sub.get("thread_id") or "",
-                                        kinds=TERMINAL_KINDS + ("dev_phase",),
+                                        kinds=TERMINAL_KINDS + ("dev_phase", AGENT_WAKE_KIND),
                                     )
                                     if not events:
                                         continue
@@ -572,6 +699,15 @@ class GatewayKanbanWatchersMixin:
                                             except Exception:
                                                 pass
                                     task = _kb.get_task(conn, sub["task_id"])
+                                    # Plan the agent-wake turn here, on the
+                                    # board connection this claim already
+                                    # holds, so the delivery phase below only
+                                    # has to inject text. Failure here must
+                                    # cost the wake, never the tick.
+                                    agent_wake = _plan_agent_wake(
+                                        conn, slug, sub, task, events,
+                                        agent_wake_on,
+                                    )
                                     logger.debug(
                                         "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                         len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -584,6 +720,7 @@ class GatewayKanbanWatchersMixin:
                                         "task": task,
                                         "board": slug,
                                         "prev_phase": prev_phase,
+                                        "agent_wake": agent_wake,
                                     })
                                 except Exception as sub_exc:
                                     # Isolate per-subscription failures so one
@@ -662,6 +799,7 @@ class GatewayKanbanWatchersMixin:
                     # "Task X completed" and re-decomposes work that already
                     # exists on the board.
                     wake_handoff = ""
+                    wake_review_detail = ""
                     # Pre-render every dev_phase event in this claim: silent
                     # same-phase heartbeats drop out here, and a same-phase
                     # burst collapses to one message.
@@ -735,11 +873,36 @@ class GatewayKanbanWatchersMixin:
                             # first-class review lane. Wake the origin thread.
                             handoff = ""
                             if ev.payload and ev.payload.get("summary"):
-                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                                summary = str(ev.payload["summary"])
+                                handoff = f"\n{summary[:200]}"
+                                # Carry the worker's handoff into the wake turn
+                                # like ``completed`` does: a reviewer woken with
+                                # a bare "ready for review" has to re-read the
+                                # board to learn what was implemented.
+                                lines = summary.strip().splitlines()
+                                wake_handoff = (
+                                    lines[0][:200] if lines else summary[:200]
+                                )
                             msg = (
                                 f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
                                 f" — {title}{handoff}"
                             )
+                        elif kind == "changes_requested":
+                            payload = ev.payload or {}
+                            reason = _safe_review_reason(payload.get("reason"))
+                            reviewer = _safe_review_reason(payload.get("reviewer"), 48)
+                            implementer = _safe_review_reason(payload.get("implementer"), 48)
+                            reason_text = reason or "reviewer feedback requires changes"
+                            provenance = ""
+                            if reviewer:
+                                provenance += f" — reviewer @{reviewer}"
+                            if implementer:
+                                provenance += f" → implementer @{implementer}"
+                            msg = (
+                                f"🛑 {board_tag}Kanban {sub['task_id']} review requested "
+                                f"changes/BLOCK: {reason_text}{provenance}"
+                            )
+                            wake_review_detail = reason_text
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
                             # recurrence limit and was routed to `triage` for a
@@ -769,6 +932,12 @@ class GatewayKanbanWatchersMixin:
                                 continue
                             if not _progress_enabled:
                                 continue
+                        elif kind == "dev_blocked":
+                            # Dev-pipeline block taxonomy (block_kind). The
+                            # paired ``blocked`` / ``block_loop_detected``
+                            # event in this same claim already texted the
+                            # human; this one exists for the agent wake below.
+                            continue
                         else:
                             # archived / unblocked are claimed by TERMINAL_KINDS
                             # (so the cursor advances past them and they can't
@@ -915,18 +1084,40 @@ class GatewayKanbanWatchersMixin:
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
                         task_terminal = task and task.status == "archived"
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        # Kinds that hand a decision back to the origin, so the
+                        # origin has to take a turn. ``review_requested`` (the
+                        # implementation is done and waits for a reviewer),
+                        # ``changes_requested`` (a reviewer BLOCKed and work
+                        # returns to the implementer) and ``block_loop_detected``
+                        # (routed to triage) belong here for the same reason
+                        # ``blocked`` does. ``status`` / ``archived`` /
+                        # ``unblocked`` stay out: bookkeeping.
+                        _WAKE_KINDS = (
+                            "completed", "gave_up", "crashed", "timed_out",
+                            "blocked", "review_requested", "changes_requested",
+                            "block_loop_detected",
+                        )
                         _wake_kinds = (
                             {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                             if wake_agent
                             else set()
                         )
+                        # Dev-pipeline agent wake: independent of
+                        # ``delivery_mode`` because the submitting agent's
+                        # subscription is registered by delegate_development
+                        # with the plain "notify" default — there is no way for
+                        # it to opt into a wake mode at submit time. Gated by
+                        # dev_pipeline.agent_wake_on_block and deduped per
+                        # (task, block signature, destination) upstream in
+                        # _plan_agent_wake.
+                        _agent_wake = d.get("agent_wake")
+                        _needs_turn = bool(_wake_kinds) or _agent_wake is not None
                         from gateway.wake import adapter_supports_push as _adapter_push_ok
 
                         _is_push_adapter = _adapter_push_ok(adapter)
                         _session_key = ""
                         _synth = ""
-                        if _wake_kinds:
+                        if _needs_turn:
                             if _is_push_adapter:
                                 _session_key = getattr(task, "session_id", None) or ""
                             else:
@@ -943,7 +1134,15 @@ class GatewayKanbanWatchersMixin:
                                     or getattr(task, "session_id", None)
                                     or ""
                                 )
-                        if _wake_kinds:
+                        if _agent_wake is not None:
+                            # A blocked dev-pipeline job: the generic
+                            # one-line status wake is replaced by the
+                            # self-contained brief (block kind + reason, run
+                            # history, workspace/logs, standing instruction),
+                            # so the woken agent can act instead of asking the
+                            # human which job broke and where the logs are.
+                            _synth = _agent_wake["brief"]
+                        elif _wake_kinds:
                             _title = (task.title if task else sub["task_id"])[:120]
                             _assignee = task.assignee if task else ""
                             _parts = []
@@ -952,6 +1151,9 @@ class GatewayKanbanWatchersMixin:
                             if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                             if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
                             if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                            if "review_requested" in _wake_kinds: _parts.append(t("gateway.kanban.wake.review_requested"))
+                            if "changes_requested" in _wake_kinds: _parts.append(t("gateway.kanban.wake.changes_requested"))
+                            if "block_loop_detected" in _wake_kinds: _parts.append(t("gateway.kanban.wake.block_loop_detected"))
                             _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                             _synth = t(
                                 "gateway.kanban.wake.message",
@@ -971,11 +1173,16 @@ class GatewayKanbanWatchersMixin:
                                     "gateway.kanban.wake.handoff",
                                     summary=wake_handoff,
                                 )
+                            if wake_review_detail:
+                                _synth += "\n" + t(
+                                    "gateway.kanban.wake.review_detail",
+                                    reason=wake_review_detail,
+                                )
                             _synth += "\n\n" + t(
                                 "gateway.kanban.wake.guidance"
                             )
 
-                        if not _is_push_adapter and _wake_kinds and _session_key:
+                        if not _is_push_adapter and _needs_turn and _session_key:
                             # Wake self-post IS the delivery on this path —
                             # it must succeed BEFORE the cursor advances.
                             from gateway.wake import deliver_wake
@@ -990,6 +1197,10 @@ class GatewayKanbanWatchersMixin:
                                     "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                                     sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
                                 )
+                                if _agent_wake is not None:
+                                    await _to_thread_process_service(
+                                        _record_agent_wake, _agent_wake,
+                                    )
                                 sub_fail_counts.pop(sub_key, None)
                             except Exception as _wk_err:
                                 fails = sub_fail_counts.get(sub_key, 0) + 1
@@ -1078,8 +1289,12 @@ class GatewayKanbanWatchersMixin:
                                 "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                                 sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
                             )
+                            if _agent_wake is not None:
+                                await _to_thread_process_service(
+                                    _record_agent_wake, _agent_wake,
+                                )
 
-                        if _is_push_adapter and not send_passive and _wake_kinds:
+                        if _is_push_adapter and not send_passive and _needs_turn:
                             # Wake-only (delivery_mode='wake') push sub: the
                             # text ping was intentionally skipped above, so
                             # the wake IS the sole delivery. It must succeed
@@ -1138,10 +1353,11 @@ class GatewayKanbanWatchersMixin:
                         # work for review corrections and continuation. The
                         # retained cursor prevents replay while preserving the
                         # original delivery and wake ownership for that cycle.
-                        if _is_push_adapter and send_passive and _wake_kinds:
-                            # notify+wake: the text ping above was the
-                            # delivery and the cursor has advanced; the wake
-                            # injection stays best-effort.
+                        if _is_push_adapter and send_passive and _needs_turn:
+                            # notify+wake (and a notify-mode dev-pipeline agent
+                            # wake): the text ping above was the delivery and
+                            # the cursor has advanced; the wake injection stays
+                            # best-effort.
                             try:
                                 await _push_wake()
                             except Exception as _wk_err:

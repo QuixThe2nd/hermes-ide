@@ -782,10 +782,7 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert adapter.sent == [
-        "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
-    ]
+    assert adapter.sent == ["⚠️ Gateway shutting down"]
 
 
 @pytest.mark.asyncio
@@ -845,7 +842,9 @@ class TestStuckLoopEscalation:
         # Simulate counter already at threshold (3 consecutive interrupted
         # restarts).  _suspend_stuck_loop_sessions will flip suspended=True.
         counts_file = tmp_path / ".restart_failure_counts"
-        counts_file.write_text(json.dumps({entry.session_key: 3}))
+        counts_file.write_text(
+            json.dumps({entry.session_key: 3}), encoding="utf-8"
+        )
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
         runner = object.__new__(GatewayRunner)

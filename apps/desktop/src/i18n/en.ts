@@ -81,6 +81,8 @@ export const en: Translations = {
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
       gatewayConnectionLost: 'Lost connection to the gateway',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
@@ -249,6 +251,7 @@ export const en: Translations = {
     openStarmap: 'Open memory graph',
     enterHud: 'HUD mode',
     exitHud: 'Exit HUD mode',
+    resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
   },
@@ -317,7 +320,7 @@ export const en: Translations = {
       'view.nextTerminal': 'Next terminal',
       'view.prevTerminal': 'Previous terminal',
       'view.closeTerminal': 'Close terminal',
-      'view.terminalSelection': 'Send terminal selection to composer',
+      'view.selectionToComposer': 'Send selection to composer',
       'view.terminalCopy': 'Copy terminal selection',
       'view.terminalPaste': 'Paste into terminal',
       'view.closeTab': 'Close tab',
@@ -585,8 +588,17 @@ export const en: Translations = {
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
+      tipsTitle: 'In-App Tips',
+      tipsDesc:
+        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Closing one retires it for good.',
+      tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
+      toursTitle: 'Guided Tours',
+      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
+      vibeHeartsTitle: 'Vibe Hearts',
+      vibeHeartsDesc:
+        'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -807,6 +819,24 @@ export const en: Translations = {
       cancel: 'Cancel',
       empty: 'No connections registered yet.'
     },
+    managedUpdates: {
+      title: 'Managed updates',
+      intro:
+        'Update Desktop-managed SSH installs transactionally: sessions drain, the remote checkout updates, and every profile is restored with a correlated receipt.',
+      sshConnection: 'Desktop-managed SSH install',
+      update: 'Update',
+      updating: 'Updating…',
+      progress: 'Draining sessions, updating the remote install, and restoring profiles…',
+      updated: 'Updated',
+      partial: 'Updated — restore failed',
+      refused: 'Refused',
+      failed: 'Update failed',
+      alreadyRunning: 'Update already in progress',
+      receipt: (id: string, outcome: string) => `Receipt ${id} · ${outcome}`,
+      receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
+      scopesRestored: (profiles: string) => `Restored profiles: ${profiles}`,
+      scopeNotRestored: (profile: string, error: string) => `Profile “${profile}” not restored: ${error}`
+    },
     gateway: {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',
@@ -881,6 +911,10 @@ export const en: Translations = {
       plainTextStoredTitle: 'Token stored in plain text',
       plainTextStoredDesc:
         'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable GNOME Keyring or KWallet to encrypt it.',
+      keychainEncryptionTitle: 'Encrypt saved secrets with the OS keychain',
+      keychainEncryptionDesc:
+        'Off by default. When on, gateway tokens and sign-in credentials are encrypted with your system keychain (Keychain Access, GNOME Keyring, or Windows DPAPI) — your system may ask for permission or a password. When off, they are stored as plain files readable only by your user account.',
+      keychainEncryptionFailed: 'Could not change secret encryption',
       testRemote: 'Test remote',
       saveForRestart: 'Save for next restart',
       saveAndReconnect: 'Save and reconnect',
@@ -1068,12 +1102,12 @@ export const en: Translations = {
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
-        web_extract: { label: 'Web extract', hint: 'Page summarization' },
         compression: { label: 'Compression', hint: 'Context compaction' },
         skills_hub: { label: 'Skills hub', hint: 'Skill search' },
         approval: { label: 'Approval', hint: 'Smart auto-approve' },
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
+        review: { label: 'Review', hint: '/review reviewer subagent' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
     },
@@ -1815,6 +1849,14 @@ export const en: Translations = {
     switchConnectionFailed: name => `Could not connect to ${name}`,
     manageProfiles: 'Manage profiles…',
     connectGateway: 'Manage gateways…',
+    fleet: {
+      allOnGateway: 'All profiles on this gateway',
+      gateway: gateway => `Profiles on ${gateway}`,
+      gatewayUnreachable: gateway => `${gateway} · unreachable`,
+      onGateway: (name, gateway) => `${name} · ${gateway}`,
+      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
+      deleteOn: gateway => ` on ${gateway}`
+    },
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
@@ -1926,7 +1968,11 @@ export const en: Translations = {
         `${count} scheduled ${count === 1 ? 'job' : 'jobs'} will be skipped until you review their model settings.`,
       detailMore: (names, remaining) => `${names} and ${remaining} more`,
       review: 'Review scheduled jobs',
-      saveFailed: 'Hermes did not save that model change.'
+      saveFailed: 'Hermes did not save that model change.',
+      confirmTitle: 'Model Selection Warning',
+      confirmDetail: 'Confirm only if you accept this trade-off.',
+      confirmAction: 'Confirm',
+      declined: 'Model change cancelled — you declined the data-training tier warning.'
     },
     search: 'Search cron jobs...',
     loading: 'Loading cron jobs...',
@@ -2852,6 +2898,7 @@ export const en: Translations = {
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
+      gatewayUnavailable: 'inference unavailable',
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
@@ -2959,6 +3006,9 @@ export const en: Translations = {
     hide: 'Hide',
     openPreview: 'Open preview',
     openInBrowser: 'Open in browser',
+    openInExternal: 'Open in external',
+    popIn: 'Pop in',
+    popOut: 'Pop out',
     linkHint: '⌘/Ctrl-click for preview pane',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',
@@ -3067,6 +3117,7 @@ export const en: Translations = {
     closeToRight: 'Close to the right',
     closeAll: 'Close all',
     newSessionTab: 'New session tab',
+    newTab: 'New tab',
     pluginDisabled: pluginId => `Plugin "${pluginId}" disabled`,
     pluginDisabledBody: 'Re-enable it in Settings → Plugins to bring the pane back.',
     missingPane: paneId => `missing pane: ${paneId}`,
@@ -3363,6 +3414,10 @@ export const en: Translations = {
     editFailed: 'Edit failed',
     editTurnUnavailable: 'This turn is no longer in server history (it may have been compressed away).',
     resumeFailed: 'Resume failed',
+    readOnlyTranscriptTitle: 'Opened read-only',
+    readOnlyTranscriptBody:
+      'No connected backend claims this older chat yet, so it opened as a read-only transcript. Its history is intact; sending is disabled until a backend claims it.',
+    readOnlyTranscriptSendBlocked: 'This chat is open as a read-only transcript — sending is disabled.',
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
@@ -3381,6 +3436,7 @@ export const en: Translations = {
     cwdStagedTitle: 'Working directory staged',
     cwdStagedMessage: 'Restart the desktop backend to apply cwd changes to this active session.',
     modelSwitchFailed: 'Model switch failed',
+    hydrationSyncing: (profile: string) => `Syncing ${profile}\u2026`,
     sessionExported: 'Session exported',
     sessionExportFailed: 'Could not export session',
     imageSaved: 'Image saved',
@@ -3406,6 +3462,52 @@ export const en: Translations = {
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
       timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
+  },
+
+  tips: {
+    close: "Don't show this tip again",
+    items: {
+      'new-session': {
+        title: 'Start fresh',
+        text: 'A new chat gets its own context, terminal and working directory.'
+      },
+      skills: {
+        title: 'Teach it once',
+        text: 'Skills are folders of instructions Hermes loads when the work calls for them.'
+      },
+      messaging: {
+        title: 'Hermes away from your desk',
+        text: 'Connect Telegram, Discord, Slack and more — same agent, same memory.'
+      },
+      artifacts: {
+        title: 'Everything Hermes made',
+        text: 'Images, files and links from every session, indexed in one place.'
+      },
+      cron: {
+        title: 'Work that runs itself',
+        text: 'Schedule a prompt hourly, nightly, or on a cron expression.'
+      },
+      'command-palette': {
+        title: 'One box for everything',
+        text: 'Sessions, settings, skills and commands all answer to the palette.'
+      },
+      profiles: {
+        title: 'Profiles are separate',
+        text: 'Each one is its own Hermes — own keys, own memory, own sessions.'
+      },
+      'composer-mentions': {
+        title: 'Attach and command',
+        text: 'Type @ to bring a file into the conversation, / to run a command.'
+      },
+      'model-switch': {
+        title: 'Switch models mid-thread',
+        text: 'The model name is a button. Change it whenever the work changes shape.'
+      },
+      'right-pane': {
+        title: 'The working pane',
+        text: 'Files, terminal, review and the in-app browser share the right side.'
+      }
     }
   },
 

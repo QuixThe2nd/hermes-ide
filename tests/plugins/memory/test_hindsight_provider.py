@@ -11,9 +11,11 @@ import re
 import stat
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -23,6 +25,8 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _DEFAULT_BANK_DIRECTIVES,
+    _DEFAULT_BANK_RETAIN_MISSION,
     _load_config,
     _load_simple_env,
     _build_embedded_profile_env,
@@ -370,6 +374,153 @@ class TestConfig:
         assert captured["llm_provider"] == "openai"
 
 
+# ---------------------------------------------------------------------------
+# Bank defaults (retain mission + seeded directives) tests
+# ---------------------------------------------------------------------------
+
+
+def _make_bank_defaults_client(existing_names=()):
+    """Mock Hindsight client with the Banks-API surface _apply_bank_defaults uses."""
+    client = _make_mock_client()
+    client.update_bank_config = AsyncMock(return_value={})
+    client.list_directives = AsyncMock(
+        return_value=SimpleNamespace(
+            items=[SimpleNamespace(name=name) for name in existing_names]
+        )
+    )
+    client.create_directive = AsyncMock(return_value=SimpleNamespace(ok=True))
+    return client
+
+
+class TestBankDefaults:
+    def test_default_retain_mission_and_directives_seeded(self, provider_with_config):
+        """Unset bank missions -> default retain mission pushed, both
+        directives created when the bank has none."""
+        p = provider_with_config()  # no bank_mission / bank_retain_mission
+        client = _make_bank_defaults_client(existing_names=())
+        p._client = client
+
+        p._apply_bank_defaults()
+
+        client.update_bank_config.assert_called_once_with(
+            bank_id="test-bank",
+            retain_mission=_DEFAULT_BANK_RETAIN_MISSION,
+            reflect_mission=None,
+        )
+        created = [c.kwargs for c in client.create_directive.call_args_list]
+        assert [c["name"] for c in created] == ["prefer-newer-facts", "ignore-session-dumps"]
+        by_name = {c["name"]: c for c in created}
+        for directive in _DEFAULT_BANK_DIRECTIVES:
+            assert by_name[directive["name"]]["content"] == directive["content"]
+            assert by_name[directive["name"]]["priority"] == directive["priority"]
+            assert by_name[directive["name"]]["bank_id"] == "test-bank"
+
+    def test_shipped_default_mission_text(self):
+        # Guard the shipped default against accidental drift.
+        assert _DEFAULT_BANK_RETAIN_MISSION.startswith(
+            "Preserve durable knowledge about infrastructure, services, projects, tools,"
+        )
+        assert _DEFAULT_BANK_RETAIN_MISSION.endswith(
+            "Compress verbose operational detail into concise declarative facts."
+        )
+        assert [d["name"] for d in _DEFAULT_BANK_DIRECTIVES] == [
+            "prefer-newer-facts", "ignore-session-dumps",
+        ]
+
+    def test_existing_directives_are_not_recreated(self, provider_with_config):
+        p = provider_with_config()
+        client = _make_bank_defaults_client(
+            existing_names=("prefer-newer-facts", "ignore-session-dumps")
+        )
+        p._client = client
+
+        p._apply_bank_defaults()
+
+        client.create_directive.assert_not_called()
+        # The retain mission is still applied.
+        client.update_bank_config.assert_called_once()
+
+    def test_explicit_bank_missions_pass_through(self, provider_with_config):
+        p = provider_with_config(
+            bank_mission="Fake agent mission",
+            bank_retain_mission="Extract key facts",
+        )
+        client = _make_bank_defaults_client()
+        p._client = client
+
+        p._apply_bank_defaults()
+
+        client.update_bank_config.assert_called_once_with(
+            bank_id="test-bank",
+            retain_mission="Extract key facts",
+            reflect_mission="Fake agent mission",
+        )
+
+    def test_api_errors_never_raise(self, provider_with_config):
+        # All three calls fail.
+        p = provider_with_config()
+        client = _make_bank_defaults_client()
+        client.update_bank_config = AsyncMock(side_effect=RuntimeError("boom"))
+        client.list_directives = AsyncMock(side_effect=RuntimeError("boom"))
+        client.create_directive = AsyncMock(side_effect=RuntimeError("boom"))
+        p._client = client
+
+        p._apply_bank_defaults()  # must not raise
+        client.create_directive.assert_not_called()
+
+        # update fails, list succeeds, create fails.
+        p2 = provider_with_config()
+        client2 = _make_bank_defaults_client()
+        client2.update_bank_config = AsyncMock(side_effect=RuntimeError("boom"))
+        client2.create_directive = AsyncMock(side_effect=RuntimeError("boom"))
+        p2._client = client2
+
+        p2._apply_bank_defaults()  # must not raise
+        assert client2.create_directive.call_count == 2
+
+    def test_disabled_mode_skips_bank_defaults(self, provider):
+        client = _make_bank_defaults_client()
+        provider._mode = "disabled"
+        provider._client = client
+
+        provider._apply_bank_defaults()
+
+        client.update_bank_config.assert_not_called()
+        client.list_directives.assert_not_called()
+
+    def test_defaults_apply_on_first_client_creation(self, tmp_path, monkeypatch):
+        """The trigger lives in _get_client()'s creation branch — initialize()
+        stays lazy — and later calls don't re-apply."""
+        import builtins
+
+        provider = _provider_for_mode(tmp_path, monkeypatch, "cloud")
+        bank_client = _make_bank_defaults_client()
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **kw: None)
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "hindsight_client":
+                return SimpleNamespace(Hindsight=lambda **kw: bank_client)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+        client = provider._get_client()
+
+        assert client is bank_client
+        bank_client.update_bank_config.assert_called_once_with(
+            bank_id="test-bank",
+            retain_mission=_DEFAULT_BANK_RETAIN_MISSION,
+            reflect_mission=None,
+        )
+        assert bank_client.create_directive.call_count == 2
+
+        # Cached client on later calls -> defaults not re-applied.
+        assert provider._get_client() is bank_client
+        assert bank_client.update_bank_config.call_count == 1
+
+
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
@@ -453,6 +604,50 @@ class TestToolHandlers:
         # bank_id/retain_async are call-level args, never item keys.
         assert "bank_id" not in item
         assert "retain_async" not in item
+
+    def test_retain_defaults_item_timestamp_when_no_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        # Non-temporal retains still carry a defaulted event timestamp so the
+        # server can resolve any relative time phrases (#93568).
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_threads_explicit_occurred_at_into_item_timestamp(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "user visited Paris", "occurred_at": "2026-03-03"},
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == "2026-03-03"
+
+    def test_retain_ignores_blank_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "hello", "occurred_at": "   "}
+        ))
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_build_retain_kwargs_accepts_explicit_occurred_at(self, provider):
+        item = provider._build_retain_kwargs("dinner with Sam", occurred_at="2026-08-20T19:00:00+02:00")
+        assert item["timestamp"] == "2026-08-20T19:00:00+02:00"
+
+    def test_retain_schema_exposes_occurred_at(self):
+        from plugins.memory.hindsight import RETAIN_SCHEMA
+
+        props = RETAIN_SCHEMA["parameters"]["properties"]
+        assert "occurred_at" in props
+        assert props["occurred_at"]["type"] == "string"
+        # The description must steer the model to pass event times.
+        assert "event" in props["occurred_at"]["description"].lower()
+        assert "occurred_at" not in RETAIN_SCHEMA["parameters"]["required"]
 
 
     def test_recall_success(self, provider):
@@ -844,7 +1039,9 @@ class TestRecallStatus:
 
 
 class TestSyncTurn:
-    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
+    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
         p = provider_with_config(
             retain_tags=["conv", "session1"],
             retain_source="hermes",
@@ -894,8 +1091,42 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
+        assert content[0][0]["timestamp"] == event_time.isoformat(timespec="seconds")
+        assert content[0][1]["timestamp"] == event_time.isoformat(timespec="seconds")
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_timestamp_normalizes_a_naive_clock(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9)
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+
+        timestamp = provider._build_retain_kwargs("hello")["timestamp"]
+        parsed = datetime.fromisoformat(timestamp)
+
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() is not None
+
+    @pytest.mark.asyncio
+    async def test_retain_timestamp_is_serialized_by_pinned_client(self, provider):
+        hindsight_client = pytest.importorskip(
+            "hindsight_client", reason="pinned hindsight-client SDK not installed"
+        )
+        Hindsight = hindsight_client.Hindsight
+
+        item = provider._build_retain_kwargs("hello")
+        item.pop("bank_id", None)
+        item.pop("retain_async", None)
+
+        client = Hindsight(base_url="http://localhost:9999", api_key="test-key")
+        client._memory_api.retain_memories = AsyncMock(return_value=SimpleNamespace(ok=True))
+        try:
+            await client.aretain_batch(bank_id="test-bank", items=[item])
+            call = client._memory_api.retain_memories.await_args
+            assert call is not None
+            request = call.args[1]
+            assert request.to_dict()["items"][0]["timestamp"] == item["timestamp"]
+        finally:
+            await client.aclose()
 
 
     def test_resume_creates_new_document(self, tmp_path, monkeypatch):
@@ -1298,6 +1529,73 @@ class TestBankIdTemplate:
         )
         assert p._bank_id == "hermes-coder"
         assert p._bank_id_template == "hermes-{profile}"
+
+    def test_resolve_chat_placeholder_sanitizes_jid(self):
+        result = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            profile="winnie",
+            workspace="",
+            platform="whatsapp",
+            user="",
+            session="",
+            chat="120363429264251361@g.us",
+        )
+        assert result == "winnie-whatsapp-120363429264251361-g-us"
+
+    def test_resolve_empty_chat_collapses_to_platform(self):
+        result = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            profile="winnie",
+            workspace="",
+            platform="cli",
+            user="",
+            session="",
+            chat="",
+        )
+        assert result == "winnie-cli"
+
+    def test_different_chats_resolve_to_different_banks(self):
+        a = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            platform="whatsapp",
+            chat="111@g.us",
+        )
+        b = _resolve_bank_id_template(
+            "winnie-{platform}-{chat}",
+            fallback="quix-assistant",
+            platform="whatsapp",
+            chat="222@g.us",
+        )
+        assert a != b
+        assert a.startswith("winnie-whatsapp-")
+        assert b.startswith("winnie-whatsapp-")
+
+    def test_provider_uses_chat_in_bank_id_template(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id": "quix-assistant",
+            "bank_id_template": "winnie-{platform}-{chat}",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(
+            session_id="s1",
+            hermes_home=str(tmp_path),
+            platform="whatsapp",
+            chat_id="120363429264251361@g.us",
+            agent_identity="winnie",
+            agent_workspace="hermes",
+        )
+        assert p._bank_id == "winnie-whatsapp-120363429264251361-g-us"
 
 
 # ---------------------------------------------------------------------------

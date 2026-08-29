@@ -166,10 +166,14 @@ gateway:
       crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
       timed_out:           "超时，dispatcher 将重试"
       blocked:             "被阻塞，需要处理"
+      review_requested:    "已交付评审；实现已完成"
+      changes_requested:   "评审要求修改（BLOCK)，实现未获批准"
+      block_loop_detected: "反复阻塞后被转入待分诊，需要做出决定"
       status_default:      "状态变化"
       status_joiner:       "，"
       message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
       handoff:             "结果：{summary}"
+      review_detail:       "评审反馈: {reason}\n请检查现有卡片及其当前评审运行；将工作返回同一实现任务。不要把此 BLOCK 视为批准，也不要创建重复任务。"
       guidance:            "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
 
   personality:
@@ -280,6 +284,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "无效的检查点编号。请使用 1-{max}。"
     restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
     kept_user_edits:       "↷ 已保留您的手动编辑：{files}\n如需一并恢复这些文件，请使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（文件过大无法纳入检查点，没有可恢复的存储副本）：{files}"
+    failed_deletes:        "⚠️ 无法移除（保留原文件）：{files}"
     restore_failed:        "❌ {error}"
 
   diff:
@@ -290,6 +296,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "无法保存主频道：{error}"
     success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
+    discord_pointer:       "💡 想要完整配置？`/sethomeserver` 一键部署整个主服务器——聊天、记忆、配额、速率，全部接好。"
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` 仅在 Discord 上可用——它创建 Discord 分类、频道和 Webhook。"
+    relay_blocked:        "⚠️ 这条消息经由无法认证 Discord 服务器目标的中转送达。请在原生 Discord 消息中运行 `/sethomeserver`。"
+    no_guild:             "⚠️ 无法确定要使用的服务器。请在你的 Discord 主服务器内运行 `/sethomeserver`。"
+    progress:             "🏗️ 正在部署主服务器…（创建缺失的频道并接线——需要几秒钟）"
+    confirm_required:     "⚠️ 你的主服务器已设置为服务器 `{current}`。
+运行 `/sethomeserver confirm` 可将其移至服务器 `{guild_id}`。绝不会删除任何内容，但新服务器将从头部署。"
+    save_failed:          "保存主服务器设置失败：{error}"
+    provision_failed:     "❌ 部署失败：{error}"
+    success:              "🏠 已为服务器 `{guild_id}` 部署主服务器。
+**已创建（{created_count} 个）：** {created_list}
+**已发送欢迎消息：** {embeds_count}
+**已接线：** {wired_list}（{wired_count}）
+**已启用模块：** {modules_count}/5
+主频道：{home_channel_state}——绝不会覆盖现有主频道。
+重新同步最多每小时自动运行一次。"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

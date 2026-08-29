@@ -284,7 +284,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, whatsapp_session_is_paired
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -532,18 +532,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
 
         # Pre-flight: skip the 30s bridge bootstrap entirely if the user
-        # never finished pairing.  Without creds.json the bridge prints
-        # QR codes to its log file and never reaches status:connected,
-        # so every gateway restart paid the 30s timeout + queued WhatsApp
-        # for indefinite retries.  Mark non-retryable so the user gets a
-        # clear pairing message instead of the watcher
-        # silently hammering an unconfigured platform.
+        # never finished pairing.  Without a registered creds.json the
+        # bridge prints QR codes to its log file and never reaches
+        # status:connected, so every gateway restart paid the 30s timeout
+        # + queued WhatsApp for indefinite retries.  A leftover file with
+        # registered=false / pairingCode is still unpaired.  Mark
+        # non-retryable so the user gets a clear pairing message instead
+        # of the watcher silently hammering an unconfigured platform.
         creds_path = self._session_path / "creds.json"
-        if not creds_path.exists():
+        if not whatsapp_session_is_paired(self._session_path):
             logger.warning(
-                "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Pair from the dashboard or run `hermes whatsapp`; remove "
-                "WHATSAPP_ENABLED from your .env to disable.",
+                "[%s] WhatsApp is enabled but not paired (no registered "
+                "session at %s). Pair from the dashboard or run `hermes "
+                "whatsapp`; remove WHATSAPP_ENABLED from your .env to disable.",
                 self.name, creds_path,
             )
             self._set_fatal_error(
@@ -660,6 +661,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
+                                    # Plugin-registered native handlers.
+                                    self._wire_plugin_handlers(None)
                                     return True
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
@@ -820,6 +823,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
+            # Plugin-registered native handlers.
+            self._wire_plugin_handlers(None)
             return True
             
         except Exception as e:
@@ -1453,6 +1458,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
             if not self._should_process_message(data):
+                # Observe-unmentioned mode: store allowlisted group chatter
+                # that the require_mention gate just dropped as shared-session
+                # context, then keep it out of the dispatcher (no reply).
+                if self._should_observe_unmentioned_group_message(data):
+                    self._observe_unmentioned_group_message(data)
                 return None
 
             # Determine message type
@@ -1633,7 +1643,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
 
-            return MessageEvent(
+            event = MessageEvent(
                 text=body,
                 message_type=msg_type,
                 source=source,
@@ -1647,6 +1657,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_author_id=reply_to_author_id,
                 reply_to_is_own_message=reply_to_is_own_message,
             )
+            # In observe-unmentioned mode, triggered group turns share the
+            # same anonymised source as the observed history so both land in
+            # one session, and carry the observed-context channel prompt.
+            return self._apply_whatsapp_group_observe_attribution(event)
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
@@ -1853,6 +1867,8 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
     import json as _json
     if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
         os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
+    if "observe_unmentioned_group_messages" in whatsapp_cfg and not os.getenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+        os.environ["WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(whatsapp_cfg["observe_unmentioned_group_messages"]).lower()
     if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
         os.environ["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(whatsapp_cfg["mention_patterns"])
     frc = whatsapp_cfg.get("free_response_chats")

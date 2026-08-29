@@ -81,7 +81,15 @@ def _timer_mutation_calls(calls: list[list[str]]) -> list[list[str]]:
 def _gateway_start_hook_from_manager(mgr: PluginManager):
     hooks = mgr.iter_hook_callbacks("on_gateway_start")
     assert hooks, "expected on_gateway_start hook from auto_update disabled-management"
-    return hooks[-1]
+    # Other bundled plugins register on_gateway_start too (dev_pipeline's
+    # executor self-install) — select auto_update's callback, not just the
+    # last-registered one. Module match covers both load shapes: the enabled
+    # path (hermes_plugins.auto_update / plugins.auto_update) and the
+    # disabled-management shim (hermes_disabled_mgmt.hermes_plugins_auto_update.*).
+    for callback in hooks:
+        if "auto_update" in (getattr(callback, "__module__", "") or ""):
+            return callback
+    raise AssertionError("no auto_update on_gateway_start hook registered")
 
 
 def test_disabled_bundled_plugin_registers_management_cli_and_hook(

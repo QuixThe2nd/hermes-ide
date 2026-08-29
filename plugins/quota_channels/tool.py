@@ -16,7 +16,7 @@ QUOTA_CHANNELS_TICK_SCHEMA = {
     "name": "quota_channels_tick",
     "description": (
         "Run one Discord quota-channel tick: optionally refresh provider usage "
-        "and voice-channel names (self-gated), always refresh the Quotas "
+        "and voice-channel names (self-gated), always refresh the Models "
         "category label."
     ),
     "parameters": {

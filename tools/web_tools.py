@@ -1166,53 +1166,101 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            try:
-                response_data = provider.search(query, limit)
-            except Exception as exc:  # noqa: BLE001 — candidate for fallback/rescue
-                if _get_fallback_backends("search", primary=provider.name):
-                    logger.warning("Web search provider %s raised: %s", provider.name, exc)
-                    response_data = {"success": False, "error": f"{provider.name} failed: {exc}"}
-                    response_data = _run_search_fallbacks(
-                        query, limit, response_data,
-                        primary=provider.name,
-                        _wsp_get_provider=_wsp_get_provider,
-                    )
-                    if (
-                        not response_data.get("success")
-                        and _should_search_rescue_after_failure(provider)
-                    ):
-                        response_data = _rescue_search(
-                            provider.name,
-                            str(response_data.get("error", "")),
-                            query,
-                            limit,
-                        )
-                elif _should_search_rescue_after_failure(provider):
-                    response_data = _rescue_search(
-                        provider.name, str(exc), query, limit
-                    )
-                else:
-                    raise
-            else:
-                if not response_data.get("success"):
+            # ── TTL memo + single-flight (tools/web_result_cache.py) ──
+            # Sits after every safety/config check and directly around the
+            # paid vendor call. Identical queries within the TTL (subagent
+            # fan-outs, repeat lookups) are served from memory; concurrent
+            # identical queries share one request via the flight lock. The
+            # provider is asked for the BUCKETED count (10/20/50/100) so
+            # near-identical limits share an entry; the caller's requested
+            # count is sliced out below. Only successful responses cache.
+            # Fork addition: web.search_fallbacks runs before any keyless
+            # rescue, and a response served by a FALLBACK backend is never
+            # cached under the primary's name (wrong-key stickiness).
+            from tools.web_result_cache import (
+                bucket_limit as _bucket_limit,
+                search_memo as _search_memo,
+                slice_search_response as _slice_search_response,
+            )
+
+            def _paid_search() -> tuple[dict, bool]:
+                _fetch_limit = _bucket_limit(limit)
+                _rescued = False
+                _from_fallback = False
+                try:
+                    _resp = provider.search(query, _fetch_limit)
+                except Exception as exc:  # noqa: BLE001 — candidate for fallback/rescue
                     if _get_fallback_backends("search", primary=provider.name):
-                        response_data = _run_search_fallbacks(
-                            query, limit, response_data,
+                        logger.warning("Web search provider %s raised: %s", provider.name, exc)
+                        _resp = {"success": False, "error": f"{provider.name} failed: {exc}"}
+                        _from_fallback = True
+                        _resp = _run_search_fallbacks(
+                            query, limit, _resp,
                             primary=provider.name,
                             _wsp_get_provider=_wsp_get_provider,
                         )
-                    if (
-                        not response_data.get("success")
-                        and _should_search_rescue_after_failure(provider)
-                    ):
-                        # One-shot keyless rescue: THIS call rides the free-tier
-                        # ring; the next call attempts the chosen backend again.
-                        response_data = _rescue_search(
-                            provider.name,
-                            str(response_data.get("error", "")),
-                            query,
-                            limit,
+                        if (
+                            not _resp.get("success")
+                            and _should_search_rescue_after_failure(provider)
+                        ):
+                            _rescued = True
+                            _resp = _rescue_search(
+                                provider.name,
+                                str(_resp.get("error", "")),
+                                query,
+                                limit,
+                            )
+                    elif _should_search_rescue_after_failure(provider):
+                        _rescued = True
+                        _resp = _rescue_search(
+                            provider.name, str(exc), query, _fetch_limit
                         )
+                    else:
+                        raise
+                else:
+                    if not _resp.get("success"):
+                        if _get_fallback_backends("search", primary=provider.name):
+                            _from_fallback = True
+                            _resp = _run_search_fallbacks(
+                                query, limit, _resp,
+                                primary=provider.name,
+                                _wsp_get_provider=_wsp_get_provider,
+                            )
+                        if (
+                            not _resp.get("success")
+                            and _should_search_rescue_after_failure(provider)
+                        ):
+                            # One-shot keyless rescue: THIS call rides the
+                            # free-tier ring; the next call attempts the
+                            # chosen backend again.
+                            _rescued = True
+                            _resp = _rescue_search(
+                                provider.name,
+                                str(_resp.get("error", "")),
+                                query,
+                                limit,
+                            )
+                # True when the response must NOT enter the memo.
+                return _resp, (_rescued or _from_fallback)
+
+            response_data = _search_memo.lookup(provider.name, query, limit)
+            if response_data is None:
+                with _search_memo.flight_lock(provider.name, query, limit):
+                    # Re-check inside the lock: a concurrent identical call
+                    # may have stored while this one waited.
+                    response_data = _search_memo.lookup(
+                        provider.name, query, limit
+                    )
+                    if response_data is None:
+                        # Skip-flag is True unless the chosen backend itself
+                        # produced the answer; rescue- and fallback-served
+                        # responses must not go sticky in the memo.
+                        response_data, _skip_cache = _paid_search()
+                        if not _skip_cache:
+                            _search_memo.store(
+                                provider.name, query, limit, response_data
+                            )
+            response_data = _slice_search_response(response_data, limit)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1448,55 +1496,145 @@ async def web_extract_tool(
                         ensure_ascii=False,
                     )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
 
-            # Async-or-sync dispatch with fallback chain: parallel + firecrawl
-            # have async extract(); exa + tavily are sync. When the primary
-            # raises (hard failure), walk web.extract_fallbacks in order.
-            try:
-                results = await _dispatch_extract(provider, safe_urls, format)
-            except Exception as extract_exc:  # noqa: BLE001 — try fallbacks/rescue
-                if _get_fallback_backends("extract", primary=provider.name):
-                    try:
-                        results = await _run_extract_fallbacks(
-                            safe_urls, format, provider, extract_exc,
-                            _wsp_get_provider=_wsp_get_provider,
-                        )
-                    except Exception:
-                        if _rescue_eligible(provider):
-                            failed = [
-                                {"url": u, "title": "", "content": "", "error": str(extract_exc)}
-                                for u in safe_urls
-                            ]
-                            results = await asyncio.to_thread(
-                                _rescue_extract, provider.name, safe_urls, failed
-                            )
-                        else:
-                            raise
-                elif _rescue_eligible(provider):
-                    failed = [
-                        {"url": u, "title": "", "content": "", "error": str(extract_exc)}
-                        for u in safe_urls
-                    ]
-                    results = await asyncio.to_thread(
-                        _rescue_extract, provider.name, safe_urls, failed
+            # ── Extract cache (tools/web_result_cache.py) ─────────────────
+            # Disk-backed via cache/web: a URL extracted within the TTL is
+            # served from disk instead of re-scraped. Deliberately placed
+            # AFTER the secret-URL gate, SSRF gate, provider resolution, and
+            # strict-selection validation, and gated per-URL on the website
+            # blocklist policy — a hit skips only the vendor call, never a
+            # control. Policy-blocked URLs are treated as cache misses so
+            # dispatch handles them exactly as it would without a cache.
+            # Keys include the provider and format, so switching backends or
+            # formats within the TTL never serves the other's content.
+            from tools.web_result_cache import (
+                extract_cache_get as _extract_cache_get,
+                extract_cache_put as _extract_cache_put,
+            )
+            from tools.website_policy import check_website_access as _check_site
+            cached_results: Dict[int, Dict[str, Any]] = {}
+            fetch_urls: List[str] = []
+            fetch_positions: List[int] = []
+            for position, url in enumerate(safe_urls):
+                hit = None
+                try:
+                    _policy_block = _check_site(url)
+                except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
+                    _policy_block = None
+                if _policy_block is None:
+                    hit = _extract_cache_get(
+                        url, format=format, provider=provider.name
                     )
+                if hit is not None:
+                    cached_results[position] = hit
                 else:
-                    raise
+                    fetch_urls.append(url)
+                    fetch_positions.append(position)
+
+            if not fetch_urls:
+                results = [cached_results[i] for i in range(len(safe_urls))]
             else:
-                # One-shot keyless rescue when the WHOLE batch failed
-                # (backend-level outage, not per-page problems). Stateless:
-                # the next web_extract call uses the chosen backend again.
-                if (
-                    results
-                    and all(r.get("error") for r in results)
-                    and _rescue_eligible(provider)
-                ):
-                    results = await asyncio.to_thread(
-                        _rescue_extract, provider.name, safe_urls, results
-                    )
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(fetch_urls)
+                )
+
+                # Async-or-sync dispatch with fallback chain: parallel +
+                # firecrawl have async extract(); exa + tavily are sync.
+                # Fork addition: when the primary raises (hard failure),
+                # walk web.extract_fallbacks in order before any keyless
+                # rescue; a fallback-served batch is never cached under the
+                # primary's name (see the cache guard below).
+                _extract_rescued = False
+                _extract_from_fallback = False
+                try:
+                    results = await _dispatch_extract(provider, fetch_urls, format)
+                except Exception as exc:  # noqa: BLE001 — candidate for fallback/rescue
+                    if _get_fallback_backends("extract", primary=provider.name):
+                        _extract_from_fallback = True
+                        try:
+                            results = await _run_extract_fallbacks(
+                                fetch_urls, format, provider, exc,
+                                _wsp_get_provider=_wsp_get_provider,
+                            )
+                        except Exception:
+                            if _rescue_eligible(provider):
+                                _extract_rescued = True
+                                failed = [
+                                    {"url": u, "title": "", "content": "", "error": str(exc)}
+                                    for u in fetch_urls
+                                ]
+                                results = await asyncio.to_thread(
+                                    _rescue_extract, provider.name, fetch_urls, failed
+                                )
+                            else:
+                                raise
+                    elif _rescue_eligible(provider):
+                        _extract_rescued = True
+                        failed = [
+                            {"url": u, "title": "", "content": "", "error": str(exc)}
+                            for u in fetch_urls
+                        ]
+                        results = await asyncio.to_thread(
+                            _rescue_extract, provider.name, fetch_urls, failed
+                        )
+                    else:
+                        raise
+                else:
+                    # One-shot keyless rescue when the WHOLE batch failed
+                    # (backend-level outage, not per-page problems). Stateless:
+                    # the next web_extract call uses the chosen backend again.
+                    if (
+                        results
+                        and all(r.get("error") for r in results)
+                        and _rescue_eligible(provider)
+                    ):
+                        _extract_rescued = True
+                        results = await asyncio.to_thread(
+                            _rescue_extract, provider.name, fetch_urls, results
+                        )
+
+                # Cache each successful fetch's full clean text for TTL reuse
+                # (best-effort; oversized pages are skipped by the cache).
+                # NEVER cache a rescue-served batch: it came from a ring
+                # vendor, not the chosen backend, and caching it would make
+                # the one-shot rescue sticky for a whole TTL — the next call
+                # must attempt the chosen backend again.
+                if not (_extract_rescued or _extract_from_fallback):
+                    for fetched_pos, fetched in enumerate(results):
+                        if fetched_pos >= len(fetch_urls):
+                            break
+                        if fetched.get("error"):
+                            continue
+                        _content = (
+                            fetched.get("raw_content", "") or fetched.get("content", "")
+                        )
+                        if _content:
+                            _extract_cache_put(
+                                fetch_urls[fetched_pos],
+                                _content,
+                                title=fetched.get("title", ""),
+                                format=format,
+                                provider=provider.name,
+                            )
+
+                # Merge fetched results back with cache hits, restoring the
+                # safe_urls order the downstream reconstruction expects.
+                if cached_results:
+                    merged: List[Dict[str, Any]] = [None] * len(safe_urls)  # type: ignore[list-item]
+                    for position, hit in cached_results.items():
+                        merged[position] = hit
+                    for fetched_pos, position in enumerate(fetch_positions):
+                        merged[position] = (
+                            results[fetched_pos]
+                            if fetched_pos < len(results)
+                            else {
+                                "url": safe_urls[position],
+                                "title": "",
+                                "content": "",
+                                "error": "Extract backend returned no result for this URL",
+                            }
+                        )
+                    results = merged
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the

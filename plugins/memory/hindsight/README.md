@@ -60,9 +60,16 @@ Config file: `~/.hermes/hindsight/config.json`
 | Key | Default | Description |
 |-----|---------|-------------|
 | `bank_id` | `hermes` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
-| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
+| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`, `{chat}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. `winnie-{platform}-{chat}` isolates per messaging chat. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
-| `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
+| `bank_retain_mission` | built-in default | Retain mission (steers what gets extracted). Applied via Banks API. Unset/empty falls back to a built-in default that preserves durable knowledge (infrastructure, services, projects, tools, user preferences and decisions) and skips transient task state (PR/issue numbers, commit SHAs, in-progress work, session chatter, bot greetings, model fallback events, availability messages), compressing verbose operational detail into concise facts. Set your own to replace it. |
+
+Bank settings are pushed once per session, best-effort, on first client use (client creation is lazy — `initialize()` never builds one). On the same first-use trigger, two recall directives are seeded if the bank doesn't already have them (matched by `name`, so existing banks are never duplicated or overwritten):
+
+- `prefer-newer-facts` — when facts conflict, prefer the most recently observed one; old IPs, old ports, and superseded configs must not override newer facts.
+- `ignore-session-dumps` — treat one-off session events (bot small talk, waiting/standby states, model fallbacks, test sessions, transient task status) as noise, not durable knowledge.
+
+Failures log a warning and never surface in chat.
 
 ### Recall
 

@@ -8,6 +8,7 @@ deliver from anywhere else even if a schema leaks.
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import textwrap
@@ -238,6 +239,8 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     call = calls[0]
     assert call["background"] is True
     assert call["notify_on_complete"] is True
+    assert call["_host_local"] is True
+    assert Path(call["workdir"]) == Path(bot_mode_dm.__file__).resolve().parent.parent
     command = call["command"]
     mode, dm_file, transport_argv = _runner_parts(command)
     assert mode == "query-file"
@@ -469,6 +472,38 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     assert not dm_file.exists()
 
 
+@pytest.mark.windows_only
+def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
+    """Native runner paths must survive the Git Bash process boundary."""
+    from tools.environments.local import _find_shell
+
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    observed = tmp_path / "observed with spaces.txt"
+    child = tmp_path / "child with spaces.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text('started', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = bot_mode_dm._delivery_command(
+        [sys.executable, str(child), str(observed)],
+        str(dm_file),
+        stdin_file=False,
+    )
+
+    result = subprocess.run(
+        [_find_shell(), "-lic", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert observed.read_text(encoding="utf-8") == "started"
+    assert not dm_file.exists()
+
+
 @pytest.mark.parametrize(
     ("terminal_result", "raises"),
     [
@@ -604,3 +639,130 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+# ── one-way handoff (server-initiated, notification-free) ────────────────────
+#
+# ``start_one_way_handoff`` reuses the local query-file transport for
+# handoffs where NOTHING may route back to the spawning session (the
+# assistant WhatsApp escalation path). Contrast with the two-way
+# ``message_agent`` tests above, which pin notify_on_complete=True.
+
+
+def test_one_way_handoff_is_silent_and_query_file(monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    secret = 'escalate "now" $(rm -rf /) with `backticks`'
+    result = bot_mode_dm.start_one_way_handoff(
+        secret,
+        profile="default",
+        chat_title="Assistant Escalation Inbox",
+        toolsets=["hermes_starts"],
+    )
+    assert result == {"ok": True, "process_id": "proc_test1234"}
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["background"] is True
+    # The one-way contract: no completion notification, no watch patterns —
+    # nothing can ever be routed back to the spawning session.
+    assert call["notify_on_complete"] is False
+    assert "watch_patterns" not in call
+
+    command = call["command"]
+    mode, dm_file, transport_argv = _runner_parts(command)
+    assert mode == "query-file"
+    # Fixed routing: service-safe CLI, target profile, dedicated inbox title,
+    # and hermes_starts only.
+    assert Path(transport_argv[0]).name in ("hermes", "hermes.exe")
+    assert transport_argv[1:] == [
+        "-p",
+        "default",
+        "chat",
+        "--in",
+        "~",
+        "-c",
+        "Assistant Escalation Inbox",
+        "--create-if-missing",
+        "-Q",
+        "-t",
+        "hermes_starts",
+    ]
+    # External text never enters argv.
+    assert "rm -rf" not in command
+    assert "$(" not in command
+    # The payload rides a private temp file verbatim.
+    assert Path(dm_file).read_text(encoding="utf-8") == secret
+    if os.name != "nt":
+        assert stat.S_IMODE(Path(dm_file).stat().st_mode) == 0o600
+
+
+def test_one_way_handoff_has_no_routing_parameters(monkeypatch):
+    """The helper's signature accepts no callback/origin routing — the spawn
+    kwargs it forwards are exactly background/notify_on_complete/task_id."""
+    calls = _capture_spawn(monkeypatch)
+    bot_mode_dm.start_one_way_handoff(
+        "content",
+        profile="default",
+        chat_title="Assistant Escalation Inbox",
+        toolsets=["hermes_starts"],
+        task_id="task-7",
+    )
+    assert set(calls[0]) == {"command", "background", "notify_on_complete", "task_id"}
+    assert calls[0]["task_id"] == "task-7"
+
+
+def test_one_way_handoff_start_failure_returns_not_ok(monkeypatch):
+    import tools.terminal_tool as terminal_tool_module
+
+    def error(command, **kwargs):
+        return json.dumps({"error": "no process id returned"})
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", error)
+    result = bot_mode_dm.start_one_way_handoff(
+        "content", profile="default", chat_title="T", toolsets=["hermes_starts"]
+    )
+    assert result["ok"] is False
+
+
+def test_one_way_handoff_spawn_exception_returns_not_ok(monkeypatch):
+    import tools.terminal_tool as terminal_tool_module
+
+    def boom(command, **kwargs):
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", boom)
+    result = bot_mode_dm.start_one_way_handoff(
+        "content", profile="default", chat_title="T", toolsets=["hermes_starts"]
+    )
+    assert result["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "content,kwargs",
+    [
+        ("  ", {"profile": "default", "chat_title": "T", "toolsets": ["hermes_starts"]}),
+        ("x" * (bot_mode_dm.MESSAGE_MAX_CHARS + 1), {"profile": "default", "chat_title": "T", "toolsets": ["hermes_starts"]}),
+        ("content", {"profile": "default; rm -rf /", "chat_title": "T", "toolsets": ["hermes_starts"]}),
+        ("content", {"profile": "default", "chat_title": "", "toolsets": ["hermes_starts"]}),
+        ("content", {"profile": "default", "chat_title": "T", "toolsets": []}),
+        ("content", {"profile": "default", "chat_title": "T", "toolsets": ["terminal,file"]}),
+    ],
+)
+def test_one_way_handoff_validates_server_side_params(content, kwargs, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    result = bot_mode_dm.start_one_way_handoff(content, **kwargs)
+    assert result["ok"] is False
+    assert calls == []
+
+
+def test_two_way_message_agent_still_notifies(tmp_path, monkeypatch):
+    """Control for the one-way tests: message_agent keeps its completion
+    notification (the reply-wake contract is unchanged)."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
+    )
+    assert result["status"] == "sent"
+    assert calls[0]["notify_on_complete"] is True

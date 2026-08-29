@@ -216,6 +216,21 @@ def test_event_from_wire_reply_to_absent_and_partial():
 # ── hello command manifest ───────────────────────────────────────────────
 
 
+def test_manifest_declares_discord_only_sethomeserver():
+    """/sethomeserver must be declared on the relay manifest too — it mirrors
+    the native tree, and a hosted/relay deployment provisions the home server
+    through the same reconciled application-command registration."""
+    row = next(
+        c for c in build_relay_command_manifest() if c["name"] == "sethomeserver"
+    )
+    # Same CHAT_INPUT rules every other manifest row must satisfy.
+    assert re.fullmatch(r"[a-z0-9_-]{1,32}", row["name"])
+    assert row["description"]
+    # The confirm arg is what lets an operator move an existing home server.
+    assert [o["name"] for o in row.get("options", [])] == ["confirm"]
+
+
+
 
 
 # ── auto-thread routing feedback (send-result thread_id) ─────────────────

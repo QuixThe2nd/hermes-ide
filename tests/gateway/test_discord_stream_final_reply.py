@@ -470,3 +470,259 @@ class TestDiscordStreamConsumerFreshFinal:
         assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
         assert len(notify_send_attempts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Root-turn mention fallback — auto-threaded finals can't attach a reference
+# ---------------------------------------------------------------------------
+
+
+_ROOT_MESSAGE_ID = 9001  # auto-thread signature: thread id == root message id
+_PARENT_CHANNEL_ID = 777
+
+
+def _seed_recovery_author(adapter, message_id, author_id):
+    """Insert a root-message row so the recovery-ledger read path hits."""
+
+    def _op(conn):
+        conn.execute(
+            "INSERT OR REPLACE INTO discord_messages "
+            "(message_id, author_id, status, replied, updated_at) "
+            "VALUES (?, ?, 'processing', 0, '2026-08-28T00:00:00+00:00')",
+            (str(message_id), str(author_id)),
+        )
+
+    adapter._with_discord_recovery_db(_op)
+
+
+def _make_root_turn_harness(
+    monkeypatch,
+    tmp_path,
+    *,
+    reply_to_mode="first",
+    db_author_id=None,
+    fetch_message=None,
+):
+    """Adapter + fakes for root-turn mention-fallback tests.
+
+    The parent-channel @mention spawned a thread whose id equals the root
+    message id, and the root message itself lives in the parent channel —
+    the exact shape that makes a MessageReference unattachable.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
+    )
+    sent_messages = []
+
+    async def _send(content, reference=None):
+        msg = SimpleNamespace(id=len(sent_messages) + 100, content=content, reference=reference)
+        sent_messages.append({"content": content, "reference": reference, "id": msg.id})
+        return msg
+
+    if fetch_message is None:
+        fetch_message = AsyncMock(
+            return_value=SimpleNamespace(
+                id=_ROOT_MESSAGE_ID, author=SimpleNamespace(id=5150)
+            )
+        )
+    parent = SimpleNamespace(id=_PARENT_CHANNEL_ID, fetch_message=fetch_message)
+    thread = SimpleNamespace(
+        id=_ROOT_MESSAGE_ID,
+        parent_id=_PARENT_CHANNEL_ID,
+        send=AsyncMock(side_effect=_send),
+    )
+
+    def get_channel(channel_id):
+        channel_id = int(channel_id)
+        if channel_id == _PARENT_CHANNEL_ID:
+            return parent
+        if channel_id == _ROOT_MESSAGE_ID:
+            return thread
+        return None
+
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(side_effect=get_channel),
+        fetch_channel=AsyncMock(),
+    )
+    adapter.format_message = lambda content: content
+    if db_author_id is not None:
+        _seed_recovery_author(adapter, _ROOT_MESSAGE_ID, db_author_id)
+    return (
+        adapter,
+        thread,
+        parent,
+        sent_messages,
+        str(_ROOT_MESSAGE_ID),
+        str(_PARENT_CHANNEL_ID),
+    )
+
+
+class TestDiscordRootTurnMentionFallback:
+    @pytest.mark.asyncio
+    async def test_root_turn_final_mentions_once_with_no_reference(
+        self, monkeypatch, tmp_path
+    ):
+        """Root-turn final: reference can't attach → inline mention, chunk 0 only."""
+        adapter, _thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+        )
+        long_answer = ("answer sentence. " * 300).strip()
+
+        result = await adapter.send(
+            parent_id,
+            long_answer,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        assert all(msg["reference"] is None for msg in sent_messages)
+        assert sent_messages[0]["content"].startswith("<@4242> ")
+        assert sum(msg["content"].count("<@4242>") for msg in sent_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_author_from_recovery_db_skips_fetch_message(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert parent.fetch_message.await_count == 0
+        assert sent_messages[0]["content"].startswith("<@4242> ")
+
+    @pytest.mark.asyncio
+    async def test_author_missing_from_db_falls_back_to_fetch_message(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path)
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        parent.fetch_message.assert_awaited_once_with(_ROOT_MESSAGE_ID)
+        assert sent_messages[0]["content"].startswith("<@5150> ")
+
+    @pytest.mark.asyncio
+    async def test_both_author_lookups_fail_sends_clean(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch,
+                tmp_path,
+                fetch_message=AsyncMock(side_effect=RuntimeError("404 Unknown Message")),
+            )
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert parent.fetch_message.await_count == 1
+        assert sent_messages[0]["reference"] is None
+        assert sent_messages[0]["content"] == "Final answer"
+
+    @pytest.mark.asyncio
+    async def test_in_thread_final_keeps_reference_and_no_mention(
+        self, monkeypatch, tmp_path
+    ):
+        """A normal in-thread reply_to (≠ channel id) still reply-references."""
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path)
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to="8888",
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is not None
+        assert sent_messages[0]["reference"].message_id == 8888
+        assert "<@" not in sent_messages[0]["content"]
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_reply_to_mode_off_means_no_reference_and_no_mention(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, reply_to_mode="off", db_author_id="4242"
+            )
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is None
+        assert sent_messages[0]["content"] == "Final answer"
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_interim_send_never_mentions(self, monkeypatch, tmp_path):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Working on it...",
+            reply_to=root_id,
+            metadata={"notify": True, "_interim_send": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is None
+        assert sent_messages[0]["content"] == "Working on it..."
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_at_cap_chunk_stays_within_max_length_after_prefix(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+        )
+        at_cap = "x" * adapter.MAX_MESSAGE_LENGTH
+
+        result = await adapter.send(
+            parent_id,
+            at_cap,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) == 1
+        assert len(sent_messages[0]["content"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert sent_messages[0]["content"].startswith("<@4242> ")

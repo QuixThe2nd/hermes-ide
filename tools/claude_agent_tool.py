@@ -27,6 +27,17 @@ environments (it runs with ``set -u`` and dies on an unbound ``$HOME``).
 ``--dangerously-skip-permissions`` is deliberately NOT passed: it is refused
 when the process runs as root.
 
+Goal-condition spill
+--------------------
+Claude Code caps ``/goal`` conditions at ``GOAL_CONDITION_MAX_CHARS``
+(4000) and refuses to start a run whose condition is longer — and in ``-p``
+mode the ENTIRE remainder after ``/goal`` is the condition, not just the
+first line. Callers stay free to pass one long ``task`` string: an
+over-limit ``/goal`` task is rewritten before spawn, writing the original
+task to ``<workdir>/.hermes-claude-goal-brief.md`` and replacing the ``-p``
+argument with a short ``/goal`` condition (first line plus a pointer to
+that file). Non-goal tasks are never rewritten.
+
 Log format
 ----------
 Stdout is streamed to ``<HERMES_HOME>/claude-runs/<timestamp>-<pid>.jsonl``.
@@ -37,6 +48,18 @@ The final line is a ``"type": "result"`` event; the handler scans for the
 last such line and extracts session metadata, cost, model usage, and
 permission denials from it (same contract as the old batch ``json``
 format).
+
+Completion signals
+------------------
+A ``"type": "result"`` event with ``subtype == "success"`` and
+``is_error`` false is treated as success only when it carries a non-empty
+final report; a "successful" run with an empty report is surfaced as a
+failure so the caller can retry instead of acting on nothing. Lines in the
+log containing known degraded-run markers (currently
+``unrecognized_model`` — the provider rejected the pinned model and the
+CLI silently fell back) are collected into the payload's ``warnings``
+list, so a technically-OK exit that burned the run on the wrong model is
+visible to the caller.
 """
 
 from __future__ import annotations
@@ -44,16 +67,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.agent_cli_runner import run_agent_cli
 from tools.registry import registry
+from tools.tool_status import emit_tool_status
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +90,23 @@ STALL_WATCHDOG_SECONDS = 600
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep,Bash"
 DEFAULT_PERMISSION_MODE = "acceptEdits"
 _ALLOWED_PERMISSION_MODES = ("acceptEdits", "plan")
+
+# Claude Code refuses /goal conditions longer than this many characters, so
+# an over-limit task is spilled to a brief file in workdir before spawn.
+GOAL_CONDITION_MAX_CHARS = 4000
+GOAL_BRIEF_FILENAME = ".hermes-claude-goal-brief.md"
+_GOAL_BRIEF_SUFFIX = f" Full brief (must follow): {GOAL_BRIEF_FILENAME}"
+_GOAL_BRIEF_FALLBACK_CONDITION = "the task described in the brief file is complete"
+
+# The child CLI can still refuse a goal after spawn: the run exits 0 with
+# subtype=success, 0 turns, and the rejection text (observed live: "Goal
+# condition is limited to 4000 characters (got 7421)") as the result field.
+# A success-shaped final report matching this phrasing is reclassified as a
+# failure in delegate_claude_agent.
+_GOAL_REFUSAL_RE = re.compile(
+    r"^goal (condition|set)[:\s]|goal condition is limited to|^no goal set",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +262,76 @@ def parse_claude_agent_log(log_text: str) -> Dict[str, Any]:
     }
 
 
+# Markers that mean the run degraded silently even when the exit code and
+# result event look fine. ``unrecognized_model``: the wrapper pinned a
+# model the provider does not know, and the CLI fell back to another model
+# while still exiting 0 — the run then burns turns on the wrong model.
+_LOG_WARNING_MARKERS = ("unrecognized_model",)
+_MAX_LOG_WARNINGS = 5
+_MAX_WARNING_CHARS = 300
+
+
+def extract_log_warnings(log_text: str) -> List[str]:
+    """Collect degraded-run warning lines from a Claude Code log.
+
+    Scans every line (JSON event or plain text) for
+    ``_LOG_WARNING_MARKERS`` and returns one deduplicated, length-capped
+    entry per distinct matching line, oldest first, capped at
+    ``_MAX_LOG_WARNINGS``. Returns an empty list for clean logs.
+    """
+    warnings: List[str] = []
+    seen = set()
+    for raw_line in (log_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not any(marker in line for marker in _LOG_WARNING_MARKERS):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        if len(line) > _MAX_WARNING_CHARS:
+            line = line[:_MAX_WARNING_CHARS] + "..."
+        warnings.append(line)
+        if len(warnings) >= _MAX_LOG_WARNINGS:
+            break
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # Subprocess helpers
 # ---------------------------------------------------------------------------
+
+# Live-progress viewer that tails <HERMES_HOME>/claude-runs/<stem>.jsonl.
+# The Discord adapter renders a spawned-run notice as a branded embed only
+# when the URL's host is on its allowlist (_CLAUDE_VIEWER_ALLOWED_HOSTS in
+# plugins/platforms/discord/adapter.py) and the fragment fullmatches
+# ``[0-9]{8}-[0-9]{6}-[0-9]+`` — the delegate scheme guarantees the stem, so
+# the host is the one thing that must be kept in sync with that allowlist.
+# Constants for this fork's deployment; no env vars, no config keys.
+CLAUDE_VIEWER_HOST = "192.168.30.20"
+CLAUDE_VIEWER_PORT = 8787
+
+
+def _claude_viewer_status_line(stem: str) -> str:
+    """Return the mid-tool status line pointing at a run's live viewer page."""
+    return f"Claude Code Agent: http://{CLAUDE_VIEWER_HOST}:{CLAUDE_VIEWER_PORT}/#{stem}"
+
+
+def _emit_viewer_progress_notice(log_path: Path) -> None:
+    """Announce a freshly spawned run's viewer page via ``emit_tool_status``.
+
+    Emitted the moment the log path is known, so the user gets a
+    watch-live link while the run is still going rather than only in the
+    final tool result. Unbound dispatch is a no-op (the exact URL lands in
+    the result payload anyway); the emit is still defensive — a broken
+    callback context must never take the delegation down with it.
+    """
+    try:
+        emit_tool_status(_claude_viewer_status_line(Path(log_path).stem))
+    except Exception:
+        logger.debug("claude viewer progress notice failed", exc_info=True)
+
 
 def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     try:
@@ -246,6 +355,7 @@ def _make_result(
     models_used: Optional[List[str]] = None,
     permission_denials: Optional[List[Any]] = None,
     log_path: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
     **extra: Any,
 ) -> str:
     payload: Dict[str, Any] = {
@@ -259,6 +369,7 @@ def _make_result(
         "models_used": models_used or [],
         "permission_denials": permission_denials,
         "log_path": log_path,
+        "warnings": list(warnings or []),
     }
     payload.update(extra)
     return json.dumps(payload, ensure_ascii=False)
@@ -271,8 +382,12 @@ def _run_and_stream(
     timeout_seconds: int,
     log_dir: Path,
     run_timestamp: str,
+    on_spawn: Optional[Callable[[Path], None]] = None,
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
+
+    ``on_spawn`` is handed straight to ``run_agent_cli`` — invoked once with
+    the resolved log path, right after spawn.
 
     Returns ``(error_code, log_path, log_text, duration_seconds, returncode)``.
     """
@@ -283,7 +398,48 @@ def _run_and_stream(
         stall_watchdog_seconds=STALL_WATCHDOG_SECONDS,
         log_dir=log_dir,
         run_timestamp=run_timestamp,
+        on_spawn=on_spawn,
     )
+
+
+# ---------------------------------------------------------------------------
+# /goal condition spill
+# ---------------------------------------------------------------------------
+
+def _extract_goal_condition(prompt: str) -> Optional[str]:
+    """Return the ``/goal`` condition inside ``prompt``, or None.
+
+    Detection is case-insensitive on the ``/goal`` token after leading
+    whitespace, and only when the token ends there: the next character must
+    be whitespace or nothing at all, so ``/goalkeeper`` or ``/goal-foo`` is
+    an ordinary task, not a goal. Any Unicode whitespace counts as the
+    separator, not just ASCII spaces and newlines. The condition is
+    everything after that one separator — in ``-p`` mode the whole remainder
+    is the condition, not just the first line; a bare ``/goal`` yields an
+    empty condition.
+    """
+    body = prompt.lstrip()
+    if not body.lower().startswith("/goal"):
+        return None
+    remainder = body[len("/goal"):]
+    if not remainder:
+        return ""
+    if not remainder[0].isspace():
+        return None
+    return remainder[1:]
+
+
+def _shorten_goal_condition(condition: str) -> str:
+    """Build a condition within ``GOAL_CONDITION_MAX_CHARS`` pointing at the brief.
+
+    Keeps the first line of the original condition when it fits alongside
+    the follow-file suffix; otherwise falls back to a generic completion
+    phrase (fallback + suffix is always far under the limit).
+    """
+    first_line = condition.split("\n", 1)[0].strip()
+    if len(first_line) + len(_GOAL_BRIEF_SUFFIX) > GOAL_CONDITION_MAX_CHARS:
+        first_line = _GOAL_BRIEF_FALLBACK_CONDITION
+    return first_line + _GOAL_BRIEF_SUFFIX
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +485,27 @@ def delegate_claude_agent(
             ),
         )
 
+    # Pre-flight /goal rewrite: the child CLI caps /goal conditions at
+    # GOAL_CONDITION_MAX_CHARS and never starts an over-limit run, so spill
+    # the full task to a brief file in workdir and hand the child a short
+    # condition pointing at it. Runs before binary resolution/spawn so a
+    # failed write never leaves a half-started child.
+    prompt = str(task).strip()
+    goal_brief_path: Optional[str] = None
+    goal_condition = _extract_goal_condition(prompt)
+    if goal_condition is not None and len(goal_condition) > GOAL_CONDITION_MAX_CHARS:
+        brief_path = workdir_path / GOAL_BRIEF_FILENAME
+        try:
+            brief_path.write_text(str(task), encoding="utf-8")
+            os.chmod(brief_path, 0o644)
+        except OSError as exc:
+            return _make_result(
+                success=False,
+                error=f"failed to write /goal brief file {brief_path}: {exc}",
+            )
+        prompt = "/goal " + _shorten_goal_condition(goal_condition)
+        goal_brief_path = str(brief_path)
+
     model_name = str(model or "").strip()
     binary = resolve_claude_binary(model_name)
     if not binary:
@@ -373,7 +550,7 @@ def delegate_claude_agent(
             "--output-format",
             "stream-json",
             "--verbose",
-            str(task).strip(),
+            prompt,
         ]
     )
 
@@ -384,6 +561,7 @@ def delegate_claude_agent(
             timeout_seconds=clamped_timeout,
             log_dir=log_dir,
             run_timestamp=run_timestamp,
+            on_spawn=_emit_viewer_progress_notice,
         )
     except Exception as exc:
         logger.error("delegate_claude_agent spawn failed: %s", exc, exc_info=True)
@@ -403,6 +581,8 @@ def delegate_claude_agent(
         "models_used": parsed.get("models_used") or [],
         "permission_denials": parsed.get("permission_denials") or [],
         "log_path": log_path,
+        "warnings": extract_log_warnings(log_text),
+        "goal_brief_path": goal_brief_path,
     }
 
     if watchdog_error:
@@ -430,12 +610,35 @@ def delegate_claude_agent(
     is_error = parsed.get("is_error")
     subtype = parsed.get("subtype")
     success = is_error is False and subtype == "success"
+    error = None if success else (
+        f"Claude Code result subtype={subtype!r} is_error={is_error!r}"
+    )
+
+    if success and not base_fields["final_report"].strip():
+        # A "successful" run with an empty final report hands the caller no
+        # usable outcome (observed with GLM-pinned delegations that stalled
+        # or fell back after an unrecognized_model warning). Surface it as
+        # a failure so the caller can retry or investigate instead of
+        # treating silence as a completed delegation.
+        success = False
+        error = "Claude Code reported success but returned an empty final report"
+
+    if success and _GOAL_REFUSAL_RE.search(base_fields["final_report"]):
+        # A goal-mode refusal surfaces as subtype=success with the rejection
+        # text in `result` and 0 turns (observed live with "Goal condition
+        # is limited to 4000 characters (got 7421)") — the run never
+        # started, so classifying it as success hands the caller a
+        # completed-looking no-op. Reclassify as failure so the dispatch
+        # can be retried instead of trusted.
+        success = False
+        error = (
+            "Claude Code reported success but the final report is a goal "
+            f"refusal: {base_fields['final_report'][:200]}"
+        )
 
     return _make_result(
         success=success,
-        error=None if success else (
-            f"Claude Code result subtype={subtype!r} is_error={is_error!r}"
-        ),
+        error=error,
         **base_fields,
     )
 
@@ -454,6 +657,10 @@ def _coerce_str(value: Any) -> str:
 DELEGATE_CLAUDE_AGENT_SCHEMA = {
     "name": "delegate_claude_agent",
     "description": (
+        "Lane rule: use for MEDIUM TO LARGE jobs; small to medium goes to "
+        "delegate_cursor_agent. Default the task to /goal <observable done "
+        "condition> — goal mode auto-continues until done; a one-shot prompt "
+        "is the exception. "
         "Delegate a software development task to the Claude Code CLI running "
         "against a coding-model wrapper: GLM (z.ai coding plan) via the local "
         "claude-glm wrapper for general long-running tasks, or Kimi K3 via "
@@ -471,9 +678,15 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                 "type": "string",
                 "description": (
                     "The coding task brief for Claude Code to perform. "
-                    "May start with '/goal <condition>' to run goal mode "
-                    "headless: the run auto-continues across turns until a "
-                    "model judge confirms the condition is met or impossible."
+                    "Start it with '/goal <condition>' to run goal mode "
+                    "headless — the default: the run auto-continues across "
+                    "turns until a model judge confirms the condition is "
+                    "met or impossible. A task not starting with /goal "
+                    "should still be phrased as a verifiable done condition. "
+                    "The /goal condition is capped at 4000 characters; "
+                    "longer tasks are auto-spilled to "
+                    "<workdir>/.hermes-claude-goal-brief.md with a short "
+                    "condition pointing at it."
                 ),
             },
             "workdir": {

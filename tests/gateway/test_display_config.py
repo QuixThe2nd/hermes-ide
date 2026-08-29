@@ -225,6 +225,31 @@ class TestStreamingPerPlatform:
         }
         assert resolve_display_setting(config, "telegram", "streaming") is False
 
+    def test_wecom_default_is_streaming_enabled(self):
+        """WeCom has a native streaming transport (msgtype: stream) so its
+        built-in default opts into streaming even though it sits in the
+        non-editable tier."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "wecom", "streaming") is True
+
+    def test_wecom_callback_default_remains_off(self):
+        """The legacy callback adapter has no stream protocol — keep off."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "wecom_callback", "streaming") is False
+
+    def test_wecom_user_can_still_disable_streaming(self):
+        """Per-platform override beats the built-in default."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"wecom": {"streaming": False}},
+            }
+        }
+        assert resolve_display_setting(config, "wecom", "streaming") is False
+
 
 # ---------------------------------------------------------------------------
 # cleanup_progress — opt-in deletion of temporary progress bubbles
@@ -277,7 +302,7 @@ class TestToolProgressGrouping:
 
 
 class TestReasoningStyle:
-    """Per-platform reasoning render style (code | blockquote | subtext)."""
+    """Per-platform reasoning render style (code | blockquote | subtext | compact)."""
 
     def test_discord_defaults_to_subtext(self):
         from gateway.display_config import resolve_display_setting
@@ -291,6 +316,18 @@ class TestReasoningStyle:
             assert (
                 resolve_display_setting({}, plat, "reasoning_style") == "code"
             ), plat
+
+    def test_compact_is_a_valid_style(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "compact"}}
+        assert resolve_display_setting(config, "discord", "reasoning_style") == "compact"
+
+    def test_unknown_style_still_coerces_to_code(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "summary"}}
+        assert resolve_display_setting(config, "discord", "reasoning_style") == "code"
 
 
 class TestLiveStatusSetting:

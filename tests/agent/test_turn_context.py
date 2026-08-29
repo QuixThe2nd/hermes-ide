@@ -8,6 +8,7 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 
 from __future__ import annotations
 
+import json
 import threading
 import types
 from unittest.mock import MagicMock, patch
@@ -452,3 +453,135 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+# ── missions assistant-handoff gating (per-turn seam) ────────────────────────
+#
+# The prologue calls plugins.missions.apply_assistant_handoff_tools on every
+# user turn: an assistant WhatsApp session that opted into the
+# assistant_handoff toolset keeps exactly ONE of end_session (active mission)
+# / escalate_task (no mission), decided from the trusted gateway session key
+# — never cached per session.
+
+
+class _HandoffAgent(_FakeAgent):
+    """_FakeAgent plus the gateway identity the handoff gate reads."""
+
+    def __init__(self, session_key=""):
+        super().__init__()
+        self.platform = "whatsapp"
+        self._gateway_session_key = session_key
+        import plugins.missions as pm
+
+        self.tools = [
+            {"type": "function", "function": {"name": "read_file", "parameters": {}}},
+            {"type": "function", "function": dict(pm.END_SESSION_SCHEMA)},
+            {"type": "function", "function": dict(pm.ESCALATE_TASK_SCHEMA)},
+        ]
+        self.valid_tool_names = {t["function"]["name"] for t in self.tools}
+
+
+def _handoff_tool_names(agent):
+    return [t["function"]["name"] for t in agent.tools]
+
+
+@pytest.fixture()
+def handoff_home(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME so the mission store never touches the real one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    import plugins.missions as pm
+
+    pm._ESCALATE_SEEN.clear()
+    pm._ESCALATE_RATE.clear()
+    yield pm
+    pm._ESCALATE_SEEN.clear()
+    pm._ESCALATE_RATE.clear()
+
+
+def _start_mission(pm, chat_id="61400000000@s.whatsapp.net"):
+    return json.loads(
+        pm.handle_dispatch_agent({"action": "start", "chat_id": chat_id, "goal": "g"})
+    )
+
+
+def test_prologue_gates_handoff_tools_each_turn(handoff_home):
+    """No mission → the prologue leaves exactly escalate_task exposed."""
+    pm = handoff_home
+    agent = _HandoffAgent("agent:assistant:whatsapp:dm:61400000000")
+    _build(agent)
+    assert _handoff_tool_names(agent) == ["read_file", "escalate_task"]
+    assert agent.valid_tool_names == {"read_file", "escalate_task"}
+
+
+def test_prologue_flips_to_end_session_while_mission_active(handoff_home):
+    pm = handoff_home
+    _start_mission(pm)
+    agent = _HandoffAgent("agent:assistant:whatsapp:dm:61400000000")
+    _build(agent)
+    assert _handoff_tool_names(agent) == ["read_file", "end_session"]
+
+
+def test_prologue_flips_back_when_mission_closes(handoff_home):
+    """Mission transitions are picked up on the very next turn (no caching)."""
+    pm = handoff_home
+    agent = _HandoffAgent("agent:assistant:whatsapp:dm:61400000000")
+    _build(agent)
+    assert _handoff_tool_names(agent) == ["read_file", "escalate_task"]
+
+    mid = _start_mission(pm)["mission_id"]
+    _build(agent)
+    assert _handoff_tool_names(agent) == ["read_file", "end_session"]
+
+    json.loads(
+        pm.handle_dispatch_agent(
+            {"action": "complete", "mission_id": mid, "outcome": "done"}
+        )
+    )
+    _build(agent)
+    assert _handoff_tool_names(agent) == ["read_file", "escalate_task"]
+
+
+def test_prologue_prunes_both_outside_assistant_whatsapp(handoff_home):
+    pm = handoff_home
+    _start_mission(pm)  # mission exists; the session namespace still gates
+    for key in (
+        "agent:main:whatsapp:dm:61400000000",
+        "agent:assistant:telegram:dm:61400000000",
+        "",
+    ):
+        agent = _HandoffAgent(key)
+        _build(agent)
+        assert _handoff_tool_names(agent) == ["read_file"]
+        assert agent.valid_tool_names == {"read_file"}
+
+
+def test_prologue_leaves_opt_out_sessions_untouched(handoff_home):
+    """Without the assistant_handoff toolset the prologue adds nothing."""
+    pm = handoff_home
+    agent = _HandoffAgent("agent:assistant:whatsapp:dm:61400000000")
+    agent.tools = [
+        {"type": "function", "function": {"name": "read_file", "parameters": {}}}
+    ]
+    agent.valid_tool_names = {"read_file"}
+    _build(agent)
+    assert _handoff_tool_names(agent) == ["read_file"]
+    assert agent.valid_tool_names == {"read_file"}
+
+
+def test_prologue_survives_missing_missions_plugin(handoff_home, monkeypatch):
+    """A missions import/lookup failure must never break the turn."""
+    import builtins
+
+    agent = _HandoffAgent("agent:assistant:whatsapp:dm:61400000000")
+    real_import = builtins.__import__
+
+    def _no_missions(name, *a, **k):
+        if name == "plugins.missions":
+            raise ImportError("plugin missing")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_missions)
+    ctx = _build(agent)  # must not raise
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert ctx.user_message == "hello"

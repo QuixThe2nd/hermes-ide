@@ -49,6 +49,7 @@ from agent.secret_scope import get_secret
 
 from agent.memory_provider import MemoryProvider, RecallStatus
 from hermes_constants import get_hermes_home
+from hermes_time import now as _hermes_now
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 
@@ -100,6 +101,39 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+# Bank defaults pushed once per provider lifetime, best-effort, on first
+# client creation (initialize() deliberately never builds a client). The
+# retain mission steers extraction toward durable knowledge and away from
+# transient session state; the directives below steer recall the same way.
+_DEFAULT_BANK_RETAIN_MISSION = (
+    "Preserve durable knowledge about infrastructure, services, projects, tools, "
+    "and user preferences and decisions. Skip transient task state: PR/issue "
+    "numbers, commit SHAs, in-progress work, session chatter, bot greetings, "
+    "model fallback events, and availability messages. Compress verbose "
+    "operational detail into concise declarative facts."
+)
+_DEFAULT_BANK_DIRECTIVES: tuple[Dict[str, Any], ...] = (
+    {
+        "name": "prefer-newer-facts",
+        "priority": 10,
+        "content": (
+            "When multiple facts cover the same topic and conflict, prefer the "
+            "most recently observed/occurred fact. Older facts about the same "
+            "entity (old IPs, old ports, superseded configs) must not override "
+            "newer ones."
+        ),
+    },
+    {
+        "name": "ignore-session-dumps",
+        "priority": 10,
+        "content": (
+            "Ignore facts that describe one-off session events: bot small talk, "
+            "waiting/standby states, model fallbacks during a single chat, test "
+            "sessions, transient task status. They are noise, not durable "
+            "knowledge, unless they record a durable decision or fix."
+        ),
+    },
+)
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -366,6 +400,16 @@ RETAIN_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional per-call tags to merge with configured default retain tags.",
             },
+            "occurred_at": {
+                "type": "string",
+                "description": (
+                    "When the remembered event actually happened, as an ISO-8601 date "
+                    "or datetime (e.g. '2026-08-20' or '2026-08-20T14:30:00+02:00'). "
+                    "Pass this whenever the memory references a specific event time "
+                    "('yesterday', 'last Tuesday', 'on March 3rd') so Hindsight can "
+                    "anchor it on the timeline. Omit for timeless facts/preferences."
+                ),
+            },
         },
         "required": ["content"],
     },
@@ -540,8 +584,18 @@ def _normalize_observation_scopes(value: Any) -> Any:
 
 
 def _utc_timestamp() -> str:
-    """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
+    """Return the UTC write/audit time for retain metadata."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _event_timestamp() -> str:
+    """Return the configured Hermes event time with an explicit UTC offset."""
+    event_time = _hermes_now()
+    # hermes_time.now() guarantees an aware datetime. Keep this fallback so a
+    # replacement clock cannot silently emit an offset-less Hindsight Event Date.
+    if event_time.tzinfo is None or event_time.utcoffset() is None:
+        event_time = event_time.astimezone()
+    return event_time.isoformat(timespec="seconds")
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
@@ -698,6 +752,7 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
       {platform}  — "cli", "telegram", "discord", etc.
       {user}      — platform user id (gateway sessions)
       {session}   — current session id
+      {chat}      — platform chat id (group JID, channel/thread id, DM chat)
 
     Missing/empty placeholders are rendered as the empty string and then
     collapsed — e.g. ``hermes-{user}`` with no user becomes ``hermes``.
@@ -764,6 +819,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        # Bank defaults (retain mission + seeded directives) apply once, on
+        # first client creation — see _apply_bank_defaults().
+        self._bank_defaults_applied = False
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -1177,7 +1235,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
-            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
+            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}, {chat}. Example: hermes-{profile} or winnie-{platform}-{chat}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -1260,7 +1318,82 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
                              self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
+        # First client creation is also where bank defaults go out —
+        # initialize() stays lazy (it never builds a client), so this is the
+        # earliest point the Banks API is actually reachable. No-op on every
+        # later call via the _bank_defaults_applied flag.
+        self._apply_bank_defaults()
         return self._client
+
+    def _apply_bank_defaults(self) -> None:
+        """Apply bank missions and seed the default recall directives.
+
+        Pushes ``bank_mission`` / ``bank_retain_mission`` (README: "Applied
+        via Banks API") with one ``update_bank_config`` call, defaulting the
+        retain mission to _DEFAULT_BANK_RETAIN_MISSION when the config key is
+        unset/empty, then creates each _DEFAULT_BANK_DIRECTIVES entry that the
+        bank doesn't already have (matched by ``name``), so existing banks are
+        never duplicated or overwritten.
+
+        Once per provider lifetime, best-effort: every failure is logged and
+        skipped — bank tuning must never raise into chat or block memory I/O.
+        """
+        if self._bank_defaults_applied or self._mode == "disabled":
+            return
+        # Set before any I/O so a concurrent first-use caller (embedded daemon
+        # start racing the first recall) can't double-apply.
+        self._bank_defaults_applied = True
+        try:
+            self._get_client()
+        except Exception as exc:
+            logger.debug("Hindsight bank defaults skipped (no client): %s", exc)
+            return
+
+        retain_mission = self._bank_retain_mission or _DEFAULT_BANK_RETAIN_MISSION
+        reflect_mission = self._bank_mission or None
+        try:
+            self._run_hindsight_operation(
+                lambda c: c.update_bank_config(
+                    bank_id=self._bank_id,
+                    retain_mission=retain_mission,
+                    reflect_mission=reflect_mission,
+                )
+            )
+            logger.debug("Hindsight bank config applied: bank=%s, retain_mission=%s, reflect_mission=%s",
+                         self._bank_id,
+                         "default" if not self._bank_retain_mission else "custom",
+                         "set" if reflect_mission else "unset")
+        except Exception as exc:
+            logger.warning("Hindsight update_bank_config failed for bank %s: %s",
+                           self._bank_id, exc)
+
+        try:
+            response = self._run_hindsight_operation(
+                lambda c: c.list_directives(bank_id=self._bank_id)
+            )
+            existing = {
+                str(getattr(item, "name", "") or "")
+                for item in (getattr(response, "items", None) or [])
+            }
+        except Exception as exc:
+            logger.warning("Hindsight list_directives failed for bank %s: %s",
+                           self._bank_id, exc)
+            return
+        for directive in _DEFAULT_BANK_DIRECTIVES:
+            if directive["name"] in existing:
+                continue
+            try:
+                self._run_hindsight_operation(
+                    lambda c, d=directive: c.create_directive(
+                        bank_id=self._bank_id,
+                        name=d["name"],
+                        content=d["content"],
+                        priority=d["priority"],
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Hindsight create_directive(%s) failed for bank %s: %s",
+                               directive["name"], self._bank_id, exc)
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
@@ -1657,6 +1790,7 @@ class HindsightMemoryProvider(MemoryProvider):
             platform=self._platform,
             user=self._user_id,
             session=self._session_id,
+            chat=self._chat_id,
         )
         budget = self._config.get("recall_budget") or self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
@@ -1738,9 +1872,9 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
                      self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, _client_version)
         if self._bank_id_template:
-            logger.debug("Hindsight bank resolved from template %r: profile=%s workspace=%s platform=%s user=%s -> bank=%s",
+            logger.debug("Hindsight bank resolved from template %r: profile=%s workspace=%s platform=%s user=%s chat=%s -> bank=%s",
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
-                         self._platform, self._user_id, self._bank_id)
+                         self._platform, self._user_id, self._chat_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
                      "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
@@ -1975,7 +2109,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = datetime.now(timezone.utc).isoformat()
+        # Hindsight receives this pair as one conversation turn, so both
+        # messages intentionally share the same turn-level event timestamp.
+        now = _event_timestamp()
         return [
             {
                 "role": "user",
@@ -2026,11 +2162,17 @@ class HindsightMemoryProvider(MemoryProvider):
         metadata: Dict[str, str] | None = None,
         tags: List[str] | None = None,
         retain_async: bool | None = None,
+        occurred_at: str | None = None,
     ) -> Dict[str, Any]:
+        # The item-level timestamp is what the Hindsight server uses to resolve
+        # occurred_start/occurred_end (including relative phrases in content).
+        # An explicit occurred_at (from the retain tool) wins; otherwise default
+        # to the configured event clock so relative times still resolve (#93568).
         kwargs: Dict[str, Any] = {
             "bank_id": self._bank_id,
             "content": content,
             "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
+            "timestamp": occurred_at.strip() if occurred_at and occurred_at.strip() else _event_timestamp(),
         }
         if context is not None:
             kwargs["context"] = context
@@ -2183,6 +2325,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     content,
                     context=context,
                     tags=args.get("tags"),
+                    occurred_at=args.get("occurred_at"),
                 )
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
                 item.pop("bank_id", None)

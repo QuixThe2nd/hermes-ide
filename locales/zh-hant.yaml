@@ -166,10 +166,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "結果：{summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "這是自動任務狀態通知，不是再次分解任務的請求。建立後續任務前請先檢查目前看板；不要重複建立已存在的任務或任務圖。"
 
   personality:
@@ -280,6 +284,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "無效的檢查點編號。請使用 1-{max}。"
     restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
     kept_user_edits:       "↷ 已保留您的手動編輯：{files}\n若也要還原這些檔案，請使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
+    failed_deletes:        "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed:        "❌ {error}"
 
   diff:
@@ -290,6 +296,24 @@ Future messages in this room will use that transcript until `/reset` or another 
   set_home:
     save_failed:           "無法儲存主頻道：{error}"
     success:               "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
+    discord_pointer:       "💡 想要完整設定？`/sethomeserver` 一鍵部署整個主伺服器——聊天、記憶、配額、速率，全部接好。"
+
+  set_home_server:
+    discord_only:         "⚠️ `/sethomeserver` 僅在 Discord 上可用——它建立 Discord 分類、頻道和 Webhook。"
+    relay_blocked:        "⚠️ 這條訊息經由無法認證 Discord 伺服器目標的中繼送達。請在原生 Discord 訊息中執行 `/sethomeserver`。"
+    no_guild:             "⚠️ 無法確定要使用的伺服器。請在你的 Discord 主伺服器內執行 `/sethomeserver`。"
+    progress:             "🏗️ 正在部署主伺服器…（建立缺少的頻道並接線——需要幾秒鐘）"
+    confirm_required:     "⚠️ 你的主伺服器已設定為伺服器 `{current}`。
+執行 `/sethomeserver confirm` 可將其移至伺服器 `{guild_id}`。絕不會刪除任何內容，但新伺服器將從頭部署。"
+    save_failed:          "儲存主伺服器設定失敗：{error}"
+    provision_failed:     "❌ 部署失敗：{error}"
+    success:              "🏠 已為伺服器 `{guild_id}` 部署主伺服器。
+**已建立（{created_count} 個）：** {created_list}
+**已傳送歡迎訊息：** {embeds_count}
+**已接線：** {wired_list}（{wired_count}）
+**已啟用模組：** {modules_count}/5
+主頻道：{home_channel_state}——絕不會覆寫現有主頻道。
+重新同步最多每小時自動執行一次。"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

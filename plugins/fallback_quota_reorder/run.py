@@ -60,7 +60,27 @@ def main(argv: list[str] | None = None) -> int:
         readings = result["readings"]
         current_entries = result["current_entries"]
         desired_entries = result["desired_entries"]
-        print(f"READINGS: {format_readings_line(readings)}")
+        print(
+            f"READINGS: {format_readings_line(readings, result.get('reliability'), result.get('scores'))}"
+        )
+        if readings:
+            current_primary = result.get("primary_current")
+            desired_primary = result.get("primary_desired")
+            if desired_primary is not None:
+                old_label = (
+                    f"{current_primary.provider}/{current_primary.model}"
+                    if current_primary is not None
+                    else "unset"
+                )
+                print(
+                    f"PRIMARY: {old_label}"
+                    f" -> {desired_primary.provider}/{desired_primary.model}"
+                )
+            elif current_primary is not None:
+                print(
+                    f"PRIMARY: unchanged "
+                    f"{current_primary.provider}/{current_primary.model}"
+                )
         print(
             "CURRENT: "
             + ", ".join(format_entry_label(entry) for entry in current_entries)

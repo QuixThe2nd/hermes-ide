@@ -10,7 +10,7 @@ import pytest
 from plugins.quota_channels.core import category_name
 
 CATEGORY_SHAPE = re.compile(
-    r"^Quotas \u2022 (?:never|\d+/\d+ \d+:\d{2}(?:am|pm)) \u2022 Next: (?:Due|\d+:\d{2}(?:am|pm))$"
+    r"^Models \u2022 (?:never|\d+/\d+ \d+:\d{2}(?:am|pm)) \u2022 Next: (?:Due|\d+:\d{2}(?:am|pm))$"
 )
 
 
@@ -31,22 +31,22 @@ def _fmt_time(epoch: float) -> str:
 
 def _expected_name(last: float, interval: int, now: float) -> str:
     if last <= 0:
-        return "Quotas \u2022 never \u2022 Next: Due"
+        return "Models \u2022 never \u2022 Next: Due"
     next_due = last + interval
     ts_part = _fmt_ts(last)
     if now >= next_due:
-        return f"Quotas \u2022 {ts_part} \u2022 Next: Due"
-    return f"Quotas \u2022 {ts_part} \u2022 Next: {_fmt_time(next_due)}"
+        return f"Models \u2022 {ts_part} \u2022 Next: Due"
+    return f"Models \u2022 {ts_part} \u2022 Next: {_fmt_time(next_due)}"
 
 
 def test_never_updated():
     assert (
         category_name(0, 1800, now_fn=lambda: 1_000_000.0)
-        == "Quotas \u2022 never \u2022 Next: Due"
+        == "Models \u2022 never \u2022 Next: Due"
     )
     assert (
         category_name(-5, 1800, now_fn=lambda: 1_000_000.0)
-        == "Quotas \u2022 never \u2022 Next: Due"
+        == "Models \u2022 never \u2022 Next: Due"
     )
 
 

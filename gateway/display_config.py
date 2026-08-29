@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from gateway.runtime_footer import _format_duration
+
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
 # ---------------------------------------------------------------------------
@@ -38,6 +40,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
     #   "blockquote"-> each line prefixed with "> "
     #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
+    #   "compact"   -> single "💭 thought for Xs" duration line, no CoT text;
+    #                  appends " (N tokens)" when this turn's count is known
     # Discord defaults to "subtext"; everywhere else defaults to "code".
     "reasoning_style": "code",
     "tool_preview_length": 0,
@@ -180,7 +184,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "photon":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
+    # WeCom is technically non-editable but exposes a native streaming
+    # transport (msgtype: "stream" via aibot_respond_msg) that the gateway
+    # consumer routes mid-stream content through. Enable streaming by default
+    # so the WeCom client renders the typing animation and cumulative content
+    # updates instead of a single one-shot markdown drop.
+    "wecom":           {**_TIER_LOW, "streaming": True},
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
 
@@ -265,6 +274,66 @@ def resolve_display_setting(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def format_reasoning_prefix(
+    style: str,
+    last_reasoning: str | None,
+    turn_seconds: float | None,
+    platform_key: str,
+    thought_tokens: int | None = None,
+) -> str:
+    """Render the reasoning block prepended to a final response.
+
+    Returns ``""`` when there is nothing to show — no reasoning text, or the
+    ``compact`` style with no measurable duration. Callers own the
+    ``show_reasoning`` gate and prepend the result as ``f"{prefix}\\n\\n{response}"``.
+
+    ``compact`` never includes chain-of-thought text: it renders a single
+    💭-marked duration line (``-# 💭 thought for 12s`` on Discord,
+    ``_💭 thought for 12s_`` elsewhere) so users see that the model reasoned
+    without dumping the reasoning itself. When ``thought_tokens`` carries
+    THIS turn's reasoning/output token count, the line gains a
+    ``(N tokens)`` suffix (``-# 💭 thought for 12s (N tokens)``); a
+    missing/zero count leaves the bare duration line. Duration formatting
+    reuses :func:`gateway.runtime_footer._format_duration`.
+    """
+    if not last_reasoning:
+        return ""
+    if style == "compact":
+        duration = _format_duration(turn_seconds)
+        if not duration:
+            return ""
+        if thought_tokens:
+            duration += f" ({thought_tokens} tokens)"
+        if platform_key == "discord":
+            return f"-# 💭 thought for {duration}"
+        return f"_💭 thought for {duration}_"
+    # Collapse long reasoning to keep messages readable
+    lines = last_reasoning.strip().splitlines()
+    if len(lines) > 15:
+        display_reasoning = "\n".join(lines[:15])
+        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+    else:
+        display_reasoning = last_reasoning.strip()
+    if style == "subtext":
+        quoted = "\n".join(
+            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
+        )
+        return f"-# 💭 Reasoning\n{quoted}"
+    if style == "blockquote":
+        quoted = "\n".join(
+            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
+        )
+        return f"> 💭 **Reasoning:**\n{quoted}"
+    # Default "code" style: escape ``` inside reasoning so inner fences don't
+    # break the outer code block used to render it.
+    from gateway.stream_consumer import escape_code_fences_for_display
+
+    return (
+        f"💭 **Reasoning:**\n"
+        f"```\n{escape_code_fences_for_display(display_reasoning)}\n```"
+    )
+
+
 def _normalise(setting: str, value: Any) -> Any:
     """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
     if setting == "tool_progress":
@@ -316,7 +385,7 @@ def _normalise(setting: str, value: Any) -> Any:
         return val if val in ("accumulate", "separate") else "accumulate"
     if setting == "reasoning_style":
         val = str(value).lower()
-        return val if val in ("code", "blockquote", "subtext") else "code"
+        return val if val in ("code", "blockquote", "subtext", "compact") else "code"
     if setting == "tool_preview_length":
         try:
             return int(value)

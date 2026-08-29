@@ -177,8 +177,99 @@ class TestParseCodexUsage:
         assert parsed == 25 * 3600
         assert format_codex_name(remaining, parsed) == "Codex: 87% \u2022 25h left"
 
+    def test_longer_secondary_window_wins(self):
+        payload = json.dumps(
+            {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 80,
+                        "limit_window_seconds": 18000,
+                        "reset_after_seconds": 3600,
+                    },
+                    "secondary_window": {
+                        "used_percent": 40,
+                        "limit_window_seconds": 604800,
+                        "reset_after_seconds": 432000,
+                    },
+                }
+            }
+        )
+        remaining, parsed = parse_codex_usage(payload)
+        assert remaining == 60
+        assert parsed == 432000
+        assert format_codex_name(remaining, parsed) == "Codex: 60% \u2022 5d left"
+
+    def test_null_secondary_window_uses_primary(self):
+        # today's live shape: 7d primary, no secondary
+        payload = json.dumps(
+            {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 4,
+                        "limit_window_seconds": 604800,
+                        "reset_after_seconds": 483997,
+                    },
+                    "secondary_window": None,
+                }
+            }
+        )
+        remaining, parsed = parse_codex_usage(payload)
+        assert remaining == 96
+        assert parsed == 483997
+
+    def test_shorter_secondary_window_keeps_primary(self):
+        payload = json.dumps(
+            {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 30,
+                        "limit_window_seconds": 604800,
+                        "reset_after_seconds": 86400,
+                    },
+                    "secondary_window": {
+                        "used_percent": 90,
+                        "limit_window_seconds": 18000,
+                        "reset_after_seconds": 3600,
+                    },
+                }
+            }
+        )
+        remaining, parsed = parse_codex_usage(payload)
+        assert remaining == 70
+        assert parsed == 86400
+
+    def test_non_dict_secondary_window_is_ignored(self):
+        payload = json.dumps(
+            {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 10,
+                        "limit_window_seconds": 604800,
+                        "reset_after_seconds": 86400,
+                    },
+                    "secondary_window": "bad",
+                }
+            }
+        )
+        remaining, parsed = parse_codex_usage(payload)
+        assert remaining == 90
+        assert parsed == 86400
+
+    def test_non_dict_primary_window_raises(self):
+        payload = json.dumps(
+            {"rate_limit": {"primary_window": "bad", "secondary_window": None}}
+        )
+        with pytest.raises(QuotaChannelsError, match="invalid primary_window"):
+            parse_codex_usage(payload)
+
 
 class TestParseKimiUsage:
+    @staticmethod
+    def _payload(**usage):
+        reset = datetime(2026, 8, 25, 0, 0, 0, tzinfo=timezone.utc)
+        usage.setdefault("resetTime", reset.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        return json.dumps({"usage": usage}), reset.timestamp() - 25 * 3600
+
     def test_string_numbers_and_z_suffix(self):
         reset = datetime(2026, 8, 25, 0, 0, 0, tzinfo=timezone.utc)
         payload = json.dumps(
@@ -195,9 +286,154 @@ class TestParseKimiUsage:
         assert reset_secs == 25 * 3600
         assert format_kimi_name(remaining, reset_secs) == "Kimi: 42% \u2022 25h left"
 
+    def test_legacy_int_remaining(self):
+        payload, now = self._payload(remaining=42)
+        remaining, reset_secs = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 42
+        assert reset_secs == 25 * 3600
+
+    def test_remaining_wins_when_both_shapes_present(self):
+        payload, now = self._payload(remaining="42", limit="100", used="100")
+        remaining, _ = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 42
+
+    def test_current_shape_strings_fully_used(self):
+        payload, now = self._payload(limit="100", used="100")
+        remaining, reset_secs = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 0
+        assert reset_secs == 25 * 3600
+        assert format_kimi_name(remaining, reset_secs) == "Kimi: 0% \u2022 25h left"
+
+    def test_current_shape_strings_one_left(self):
+        payload, now = self._payload(limit="100", used="99")
+        remaining, reset_secs = parse_kimi_usage(payload, now_fn=lambda: now)
+        assert remaining == 1
+        assert reset_secs == 25 * 3600
+        assert format_kimi_name(remaining, reset_secs) == "Kimi: 1% \u2022 25h left"
+
+    def test_current_shape_numeric_and_mixed_values_round(self):
+        payload, now = self._payload(limit=200, used=50)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 75
+        payload, now = self._payload(limit="200", used=50)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 75
+        payload, now = self._payload(limit=3, used=1)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 67
+
+    def test_current_shape_clamps_over_and_under(self):
+        payload, now = self._payload(limit="100", used="150")
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 0
+        payload, now = self._payload(limit=100, used=-20)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 100
+        payload, now = self._payload(limit=100, used=0)
+        assert parse_kimi_usage(payload, now_fn=lambda: now)[0] == 100
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            {"used": "10"},
+            {"limit": "100"},
+            {"limit": "abc", "used": "1"},
+            {"limit": "100", "used": "abc"},
+            {"limit": "NaN", "used": "1"},
+            {"limit": "100", "used": "Infinity"},
+            {"limit": float("nan"), "used": 1},
+            {"limit": float("inf"), "used": 1},
+            {"limit": "0", "used": "1"},
+            {"limit": 0, "used": 1},
+            {"limit": -100, "used": 1},
+            {"limit": "-100", "used": "1"},
+        ],
+        ids=[
+            "missing_limit",
+            "missing_used",
+            "nonnumeric_limit",
+            "nonnumeric_used",
+            "nan_limit_string",
+            "infinite_used_string",
+            "nan_limit_number",
+            "infinite_limit_number",
+            "zero_limit_string",
+            "zero_limit_number",
+            "negative_limit_number",
+            "negative_limit_string",
+        ],
+    )
+    def test_current_shape_invalid_values_raise(self, usage):
+        payload, now = self._payload(**usage)
+        with pytest.raises(QuotaChannelsError, match="invalid limit/used"):
+            parse_kimi_usage(payload, now_fn=lambda: now)
+
 
 class TestParseZaiUsage:
-    def test_picks_largest_next_reset_time(self):
+    @staticmethod
+    def _two_window_payload(*, reversed_order: bool = False) -> str:
+        # live 2026-08-29 Max-plan payload: the 5h window's rolling reset edge
+        # is LATER than the weekly one, so max-nextResetTime picks it wrongly
+        five_hour = {
+            "type": "CREDIT_LIMIT",
+            "unit": 3,
+            "number": 5,
+            "usage": 28000,
+            "currentValue": 1005,
+            "remaining": 26994,
+            "percentage": 3,
+            "nextResetTime": 1_787_977_977_534,
+        }
+        weekly = {
+            "type": "CREDIT_LIMIT",
+            "unit": 6,
+            "number": 1,
+            "usage": 140000,
+            "currentValue": 93997,
+            "remaining": 46002,
+            "percentage": 67,
+            "nextResetTime": 1_787_974_757_998,
+        }
+        limits = [weekly, five_hour] if reversed_order else [five_hour, weekly]
+        return json.dumps({"data": {"limits": limits}, "level": "max"})
+
+    def test_two_credit_limit_windows_pick_the_weekly_one(self):
+        payload = self._two_window_payload()
+        now = 1_787_974_757_998 / 1000 - 86400 * 3
+        remaining, reset_secs = parse_zai_usage(payload, now_fn=lambda: now)
+        assert remaining == 33
+        assert reset_secs == 86400 * 3
+        assert format_zai_name(remaining, reset_secs) == "z.ai: 33% \u2022 3d left"
+
+    def test_two_credit_limit_windows_reversed_order_same_result(self):
+        payload = self._two_window_payload(reversed_order=True)
+        now = 1_787_974_757_998 / 1000 - 86400 * 3
+        remaining, reset_secs = parse_zai_usage(payload, now_fn=lambda: now)
+        assert remaining == 33
+        assert reset_secs == 86400 * 3
+
+    def test_same_unit_larger_number_wins(self):
+        payload = json.dumps(
+            {
+                "data": {
+                    "limits": [
+                        {
+                            "unit": 6,
+                            "number": 1,
+                            "percentage": 40,
+                            "nextResetTime": 3_000_000_000_000,
+                        },
+                        {
+                            "unit": 6,
+                            "number": 2,
+                            "percentage": 80,
+                            "nextResetTime": 2_000_000_000_000,
+                        },
+                    ]
+                }
+            }
+        )
+        now = 2_000_000_000_000 / 1000 - 3600
+        remaining, reset_secs = parse_zai_usage(payload, now_fn=lambda: now)
+        assert remaining == 20
+        assert reset_secs == 3600
+
+    def test_legacy_entries_without_unit_number_pick_latest_reset(self):
         payload = json.dumps(
             {
                 "data": {
@@ -213,6 +449,27 @@ class TestParseZaiUsage:
         assert remaining == 45
         assert reset_secs == 86400 * 2
         assert format_zai_name(remaining, reset_secs) == "z.ai: 45% \u2022 2d left"
+
+    def test_legacy_entry_loses_to_any_unit_carrying_entry(self):
+        payload = json.dumps(
+            {
+                "data": {
+                    "limits": [
+                        {"percentage": 90, "nextResetTime": 9_999_999_999_999},
+                        {
+                            "unit": 3,
+                            "number": 5,
+                            "percentage": 60,
+                            "nextResetTime": 2_000_000_000_000,
+                        },
+                    ]
+                }
+            }
+        )
+        now = 2_000_000_000_000 / 1000 - 3600
+        remaining, reset_secs = parse_zai_usage(payload, now_fn=lambda: now)
+        assert remaining == 40
+        assert reset_secs == 3600
 
 
 class TestParseCursorUsage:
@@ -288,13 +545,15 @@ class TestParseGrokUsage:
         def fake_http(req, timeout=25.0):
             if "GetGrokCreditsConfig" in req.full_url:
                 return 200, body
+            if "GetRemainingResets" in req.full_url:
+                return 200, b"\x00\x00\x00\x00\x00"
             raise AssertionError(req.full_url)
 
         name, reset_secs, label = run_grok_provider(
             http_fn=fake_http, now_fn=lambda: period_end - 86400 * 3
         )
         assert label == "Grok"
-        assert name == "Grok: 100% \u2022 3d left"
+        assert name == "Grok: 100% \u2022 3d left \u2022 0 resets"
         assert reset_secs == 86400 * 3
 
     def test_remaining_from_name_grok_percent(self):
@@ -428,23 +687,40 @@ class TestMockedProviderFetch:
         secrets = tmp_path / "secrets"
         secrets.mkdir()
         (secrets / "zai.env").write_text("ZAI_API_KEY=raw-zai-key\n")
+        weekly_reset_ms = 2_000_000_000_000
 
         def fake_http(req, timeout=25.0):
             assert req.headers.get("Authorization") == "raw-zai-key"
             body = json.dumps(
                 {
                     "data": {
-                        "limits": [{"percentage": 20, "nextResetTime": 2_000_000_000_000}]
+                        "limits": [
+                            {
+                                "type": "CREDIT_LIMIT",
+                                "unit": 3,
+                                "number": 5,
+                                "percentage": 25,
+                                "nextResetTime": 2_000_100_000_000,
+                            },
+                            {
+                                "type": "CREDIT_LIMIT",
+                                "unit": 6,
+                                "number": 1,
+                                "percentage": 60,
+                                "nextResetTime": weekly_reset_ms,
+                            },
+                        ]
                     }
                 }
             ).encode()
             return 200, body
 
         name, reset_secs, label = run_zai_provider(
-            http_fn=fake_http, now_fn=lambda: 2_000_000_000_000 / 1000 - 86400
+            http_fn=fake_http, now_fn=lambda: weekly_reset_ms / 1000 - 86400
         )
         assert label == "z.ai"
-        assert name == "z.ai: 80% \u2022 24h left"
+        assert name == "z.ai: 40% \u2022 24h left"
+        assert reset_secs == 86400
         status, _ = fetch_zai_usage("raw-zai-key", http_fn=fake_http)
         assert status == 200
 
@@ -497,13 +773,15 @@ class TestMockedProviderFetch:
         def fake_http(req, timeout=25.0):
             if "GetGrokCreditsConfig" in req.full_url:
                 return 200, body
+            if "GetRemainingResets" in req.full_url:
+                return 200, b"\x00\x00\x00\x00\x00"
             raise AssertionError(req.full_url)
 
         name, reset_secs, label = run_grok_provider(
             http_fn=fake_http, now_fn=lambda: period_end - 86400 * 3
         )
         assert label == "Grok"
-        assert name == "Grok: 90% \u2022 3d left"
+        assert name == "Grok: 90% \u2022 3d left \u2022 0 resets"
         status, fetched = fetch_grok_usage("grok-tok", http_fn=fake_http)
         assert status == 200
         remaining, parsed_secs = parse_grok_usage(
@@ -734,13 +1012,15 @@ class TestOAuthRefreshRetry:
                 if len(billing_calls) == 1:
                     return 401, b"unauthorized"
                 return 200, body
+            if "GetRemainingResets" in url:
+                return 200, b"\x00\x00\x00\x00\x00"
             raise AssertionError(url)
 
         name, reset_secs, label = run_grok_provider(
             http_fn=fake_http, now_fn=lambda: period_end - 86400
         )
         assert label == "Grok"
-        assert name == "Grok: 85% \u2022 24h left"
+        assert name == "Grok: 85% \u2022 24h left \u2022 0 resets"
         assert reset_secs == 86400
         assert len(refresh_calls) == 1
         assert len(billing_calls) == 2

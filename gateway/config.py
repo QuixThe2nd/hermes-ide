@@ -535,6 +535,100 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
     save_config(config)
 
 
+def persist_notification_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
+    """Persist a lifecycle-notification target for ``home.platform``.
+
+    Same shape as :func:`persist_home_channel`, writing the
+    ``notification_channel`` key instead: gateway lifecycle broadcasts
+    (shutdown/startup) route there while the home channel stays free for
+    conversation.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+    platform_config = platforms.setdefault(home.platform.value, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[home.platform.value] = platform_config
+    if enabled_if_new:
+        platform_config.setdefault("enabled", True)
+    platform_config["notification_channel"] = home.to_dict()
+    save_config(config)
+
+
+def persist_restart_channel_rename(
+    channel_id: str,
+    *,
+    platform: str = "discord",
+    base_name: Optional[str] = None,
+    renamed_template: Optional[str] = None,
+    idle_template: Optional[str] = None,
+) -> None:
+    """Persist ``gateway.restart_channel_rename`` for drain-progress renaming.
+
+    Written as a nested dict under the yaml ``gateway:`` section, the only
+    spelling ``load_gateway_config`` forwards. Invalid ``channel_id`` is a
+    no-op so a bad provisioner call cannot poison config.
+    """
+    from hermes_cli.config import load_config, save_config
+    from gateway.restart_channel_rename import (
+        DEFAULT_BASE_NAME,
+        DEFAULT_IDLE_TEMPLATE,
+        DEFAULT_PLATFORM,
+        DEFAULT_TEMPLATE,
+        parse_restart_channel_rename_config,
+    )
+
+    parsed = parse_restart_channel_rename_config(
+        {
+            "platform": platform or DEFAULT_PLATFORM,
+            "channel_id": channel_id,
+            "base_name": base_name or DEFAULT_BASE_NAME,
+            "renamed_template": renamed_template or DEFAULT_TEMPLATE,
+            "idle_template": idle_template or DEFAULT_IDLE_TEMPLATE,
+        }
+    )
+    if not parsed:
+        return
+    config = load_config()
+    gw = config.setdefault("gateway", {})
+    if not isinstance(gw, dict):
+        gw = {}
+        config["gateway"] = gw
+    gw["restart_channel_rename"] = {
+        "platform": parsed["platform"],
+        "channel_id": parsed["channel_id"],
+        "base_name": parsed["base_name"],
+        "renamed_template": parsed["template"],
+        "idle_template": parsed["idle_template"],
+    }
+    save_config(config)
+
+
+def clear_notification_channel(platform: Platform) -> None:
+    """Remove a platform's persisted lifecycle-notification target.
+
+    Lifecycle broadcasts fall back to the home channel. Missing key or
+    missing platform section is a no-op.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    platforms = config.get("platforms")
+    if not isinstance(platforms, dict):
+        return
+    platform_config = platforms.get(platform.value)
+    if not isinstance(platform_config, dict):
+        return
+    if "notification_channel" in platform_config:
+        del platform_config["notification_channel"]
+        save_config(config)
+
+
 @dataclass
 class SessionResetPolicy:
     """
@@ -650,6 +744,11 @@ class PlatformConfig:
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
+    # Dedicated target for gateway lifecycle broadcasts (shutdown/startup).
+    # When set, those broadcasts route here instead of the home channel so
+    # the home channel stays free for conversation (e.g. a Discord
+    # "#gateway-restarts" channel). Same HomeChannel shape as home_channel.
+    notification_channel: Optional[HomeChannel] = None
 
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
@@ -704,6 +803,8 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.notification_channel:
+            result["notification_channel"] = self.notification_channel.to_dict()
         if self.channel_overrides:
             result["channel_overrides"] = {
                 cid: ov.to_dict() for cid, ov in self.channel_overrides.items()
@@ -716,6 +817,10 @@ class PlatformConfig:
         home_channel = None
         if isinstance(data.get("home_channel"), dict):
             home_channel = HomeChannel.from_dict(data["home_channel"])
+
+        notification_channel = None
+        if isinstance(data.get("notification_channel"), dict):
+            notification_channel = HomeChannel.from_dict(data["notification_channel"])
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
@@ -751,6 +856,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
+            notification_channel=notification_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
@@ -1029,6 +1135,13 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    # Restart-progress channel renaming (opt-in). When configured with a
+    # platform + channel_id, the channel is renamed to
+    # "restarting-<N>-agents" while draining for shutdown/restart and
+    # restored to its base name once the gateway finishes booting. See
+    # gateway/restart_channel_rename.py. None = disabled.
+    restart_channel_rename: Optional[dict] = None
+
     def __post_init__(self) -> None:
         self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(
             self.multiplex_profile_allowlist
@@ -1102,7 +1215,14 @@ class GatewayConfig:
         if config:
             return config.home_channel
         return None
-    
+
+    def get_notification_channel(self, platform: Platform) -> Optional[HomeChannel]:
+        """Get the lifecycle-notification channel for a platform, if any."""
+        config = self.platforms.get(platform)
+        if config:
+            return config.notification_channel
+        return None
+
     def get_reset_policy(
         self, 
         platform: Optional[Platform] = None,
@@ -1338,6 +1458,11 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            restart_channel_rename=(
+                data["restart_channel_rename"]
+                if isinstance(data.get("restart_channel_rename"), dict)
+                else None
+            ),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1551,6 +1676,14 @@ def load_gateway_config() -> GatewayConfig:
                 elif isinstance(gateway_section, dict) and _wd_key in gateway_section:
                     gw_data[_wd_key] = gateway_section[_wd_key]
 
+            # Restart-progress channel rename config: nested
+            # ``gateway.restart_channel_rename`` form only (it is a dict, so
+            # the flat top-level spelling would collide with other sections).
+            if isinstance(gateway_section, dict) and "restart_channel_rename" in gateway_section:
+                _rcr = gateway_section["restart_channel_rename"]
+                if isinstance(_rcr, dict):
+                    gw_data["restart_channel_rename"] = _rcr
+
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
                     "filter_silence_narration"
@@ -1717,7 +1850,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
-                if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
+                if (
+                    plat in {Platform.TELEGRAM, Platform.WHATSAPP}
+                    and "observe_unmentioned_group_messages" in platform_cfg
+                ):
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
