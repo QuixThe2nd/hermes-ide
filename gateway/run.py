@@ -5624,11 +5624,44 @@ class TurnRunner:
             except queue.Empty:
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
-                # Drain remaining queued messages
+                # Drain remaining queued messages.  An interrupted turn keeps
+                # the main loop's suppression here too: late tool rows, dedup
+                # rows and reset markers must never send, edit, overflow-roll
+                # or otherwise alter a visible progress message once the user
+                # stopped the turn.  Only the spawned-run agent-viewer notice
+                # stays durable, and a reset may still clear local
+                # bookkeeping.
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        if _is_agent_status_queue_marker(raw):
+                            # Agent-viewer status during drain: flush the
+                            # pending row, then deliver the notice itself —
+                            # never merge the tuple into the progress text.
+                            # Pending rows stay suppressed when the turn was
+                            # interrupted; the notice is still delivered.
+                            if not _agent_interrupted():
+                                await _flush_progress_before_agent_status()
+                            await self._deliver_agent_status_marker(raw)
+                            progress_msg_id = None
+                            progress_lines = []
+                            _separate_pending_lines.clear()
+                            ctx.last_progress_msg[0] = None
+                            ctx.repeat_count[0] = 0
+                        elif _agent_interrupted():
+                            # Interrupted: discard the row.  A __reset__ still
+                            # clears local bookkeeping (so nothing later edits
+                            # a bubble belonging to the stopped turn) but is
+                            # no longer allowed to roll or edit on its way
+                            # out; ordinary and dedup rows just vanish.
+                            if isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                                progress_msg_id = None
+                                progress_lines = []
+                                _separate_pending_lines.clear()
+                                ctx.last_progress_msg[0] = None
+                                ctx.repeat_count[0] = 0
+                            continue
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
                                 progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -5649,20 +5682,6 @@ class TurnRunner:
                             _separate_pending_lines.clear()
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
-                        elif _is_agent_status_queue_marker(raw):
-                            # Agent-viewer status during drain: flush the
-                            # pending row, then deliver the notice itself —
-                            # never merge the tuple into the progress text.
-                            # Pending rows stay suppressed when the turn was
-                            # interrupted; the notice is still delivered.
-                            if not _agent_interrupted():
-                                await _flush_progress_before_agent_status()
-                            await self._deliver_agent_status_marker(raw)
-                            progress_msg_id = None
-                            progress_lines = []
-                            _separate_pending_lines.clear()
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
                         else:
                             progress_lines.append(raw)
                             if not can_edit:
@@ -5670,15 +5689,18 @@ class TurnRunner:
                             await _roll_progress_overflow_if_needed()
                     except Exception:
                         break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
-                    await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        await _edit_progress_message(progress_msg_id, full_text)
-                    except Exception:
-                        pass
+                # Final edit with all remaining tools (only if editing works).
+                # Suppressed after an interrupt: the stop acknowledgement is
+                # the last progress-flavored bubble the user should see.
+                if not _agent_interrupted():
+                    if can_edit and progress_lines and progress_msg_id:
+                        await _roll_progress_overflow_if_needed()
+                    if can_edit and progress_lines and progress_msg_id:
+                        full_text = _progress_text(progress_lines)
+                        try:
+                            await _edit_progress_message(progress_msg_id, full_text)
+                        except Exception:
+                            pass
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)

@@ -548,6 +548,166 @@ def test_interrupted_agent_cancel_drain_delivers_notice_without_late_rows():
     assert "__agent_status__" not in "\n".join(rendered)
 
 
+async def _run_until_first_row_then_interrupt_and_cancel(
+    runner, adapter, agent, enqueue_late
+):
+    """Drive the consumer into the interrupted cancellation drain.
+
+    One tool row is delivered while the turn is still live (giving the
+    consumer a real ``progress_msg_id`` and a non-empty buffer — the state
+    the false-green regression missed), the agent is then interrupted, the
+    caller's late items are enqueued, and the task is cancelled so the
+    ``CancelledError`` drain owns them.  Everything between the first send
+    and the cancel is synchronous, so the consumer cannot wake and process
+    the queue on its own first.
+    """
+    task = asyncio.get_running_loop().create_task(runner.send_progress_messages())
+    await _await_send_count(adapter, 1)  # live row: the editable bubble exists
+    agent.is_interrupted = True
+    enqueue_late()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+def test_interrupted_cancel_drain_reset_marker_cannot_edit_live_progress():
+    """A queued ``__reset__`` must not edit the live bubble after the stop.
+
+    The drain used to give an interrupted ``__reset__`` the non-interrupted
+    treatment — roll the buffer, then a final ``_edit_progress_message`` on
+    the existing progress message — so a stopped turn still produced one
+    more edit of a bubble the user had already interrupted.  The reset may
+    clear local bookkeeping, and the spawned-run notice is still delivered
+    exactly once with its normal status wiring.
+    """
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    agent = SimpleNamespace(is_interrupted=False)
+    ctx = _status_ctx(
+        progress_queue,
+        adapter=adapter,
+        agent=agent,
+        cleanup_progress=True,
+        status_metadata={"thread_id": "t-9"},
+    )
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback("tool.started", "web_search", "live-row", {})
+
+    def _enqueue_late():
+        # Content bubble landed just as the stop did, then the delegation's
+        # viewer notice from the same worker thread.
+        ctx.progress_queue.put(("__reset__",))
+        runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+
+    asyncio.run(
+        _run_until_first_row_then_interrupt_and_cancel(
+            runner, adapter, agent, _enqueue_late
+        )
+    )
+
+    contents = [call["content"] for call in adapter.sent]
+    # The live row went out before the interrupt; the notice after it.
+    assert len(contents) == 2, contents
+    assert "live-row" in contents[0]
+    assert contents.count(_CLAUDE_NOTICE) == 1, contents
+    # Zero edits anywhere: the pre-interrupt row was sent, never edited, so
+    # any edit recorded here is a post-interrupt edit of the stopped bubble.
+    assert adapter.edits == [], adapter.edits
+    rendered = contents + [edit["content"] for edit in adapter.edits]
+    assert "__agent_status__" not in "\n".join(rendered)
+    # The notice keeps the direct rail's metadata/cleanup wiring…
+    assert adapter.sent[1]["metadata"] == {"thread_id": "t-9"}
+    assert adapter.sent[1]["message_id"] in ctx._cleanup_msg_ids
+    # …and the reset still cleared the dedup bookkeeping on its way out.
+    assert ctx.last_progress_msg[0] is None
+    assert ctx.repeat_count[0] == 0
+
+
+def test_interrupted_cancel_drain_discards_overflow_sized_late_row():
+    """An overflow-sized late row must not roll, send or edit after the stop.
+
+    A late row big enough to split the buffered text across bubbles used to
+    be appended inside the drain and handed to the overflow roll, which
+    edits the existing progress message and sends the overflow remainder as
+    a fresh bubble — visible output for a turn the user had already
+    interrupted.  Only the spawned-run notice may go out.
+    """
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    agent = SimpleNamespace(is_interrupted=False)
+    ctx = _status_ctx(progress_queue, adapter=adapter, agent=agent)
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback("tool.started", "web_search", "live-row", {})
+    # Alone against the buffered live row this exceeds the 3936-char split
+    # limit (MAX_MESSAGE_LENGTH 4000 - 64), so processing it would roll.
+    late_row = "🔍 web_search: " + "overflow-payload " * 400
+
+    def _enqueue_late():
+        ctx.progress_queue.put(late_row)
+        runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+
+    asyncio.run(
+        _run_until_first_row_then_interrupt_and_cancel(
+            runner, adapter, agent, _enqueue_late
+        )
+    )
+
+    contents = [call["content"] for call in adapter.sent]
+    assert len(contents) == 2, contents
+    assert "live-row" in contents[0]
+    assert contents.count(_CLAUDE_NOTICE) == 1, contents
+    # The late row produced no send, no edit and no overflow remainder.
+    rendered = contents + [edit["content"] for edit in adapter.edits]
+    assert all("overflow-payload" not in line for line in rendered), rendered
+    assert adapter.edits == [], adapter.edits
+    assert "__agent_status__" not in "\n".join(rendered)
+
+
+def test_cancel_drain_without_interrupt_still_flushes_pending_rows():
+    """Without an interrupt the cancellation drain keeps flushing as before.
+
+    Regression guard for the suppression above: an ordinary turn cancelled
+    with a throttled row still pending must finalize that row through the
+    drain's final edit, exactly as it did before the interrupted-drain fix.
+    """
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    agent = SimpleNamespace(is_interrupted=False)
+    ctx = _status_ctx(progress_queue, adapter=adapter, agent=agent)
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback("tool.started", "web_search", "first-row", {})
+
+    async def _scenario():
+        task = asyncio.get_running_loop().create_task(
+            runner.send_progress_messages()
+        )
+        await _await_send_count(adapter, 1)  # first row: the bubble exists
+        # A second row lands inside the edit-throttle window and is cancelled
+        # before the consumer can deliver it — the drain owns the flush.
+        runner.progress_callback("tool.started", "web_search", "second-row", {})
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_scenario())
+
+    contents = [call["content"] for call in adapter.sent]
+    assert len(contents) == 1, contents
+    assert "first-row" in contents[0]
+    # The pending row was finalized into the existing bubble via one edit.
+    assert len(adapter.edits) == 1, adapter.edits
+    assert "first-row" in adapter.edits[0]["content"]
+    assert "second-row" in adapter.edits[0]["content"]
+    assert adapter.edits[0]["message_id"] == adapter.sent[0]["message_id"]
+
+
 class TestTurnContext:
     def test_defaults_are_independent_containers(self):
         a, b = TurnContext(), TurnContext()
