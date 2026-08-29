@@ -263,7 +263,7 @@ TOOLSETS = {
             "open_preview", "close_preview", "read_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "tour",
+            "setup_mcp", "tour", "tip",
         ],
         "includes": []
     },
@@ -310,6 +310,19 @@ TOOLSETS = {
     "assistant_handoff": {
         "description": "Mission-aware close or one-way escalation for locked assistant WhatsApp chats",
         "tools": ["end_session", "escalate_task"],
+        "includes": [],
+    },
+
+    # Agent-callable gateway restart — the plugin (plugins/gateway_restart)
+    # registers the tool; this entry makes the toolset resolvable by name.
+    # Deliberately NOT in _HERMES_CORE_TOOLS: restart is gateway-plugin
+    # capability, not a core tool, and its check_fn hides it anywhere without
+    # a live GatewayRunner (CLI, cron subprocesses, ...).
+    "gateway": {
+        "description": (
+            "Agent-callable gateway restart — same drain path as /restart"
+        ),
+        "tools": ["restart"],
         "includes": [],
     },
 

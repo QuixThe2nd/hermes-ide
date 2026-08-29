@@ -566,6 +566,8 @@ display:
 - `all` — show all tool calls (truncated to 40 characters in gateway messages)
 - `verbose` — show full tool call details (can produce long messages)
 
+When `delegate_cursor_agent` reports live progress, Discord posts a Cursor-branded embed with a **Watch live session** hyperlink instead of dumping the raw URL.
+
 #### `display.tool_progress_command`
 
 **Type:** boolean — **Default:** `false`

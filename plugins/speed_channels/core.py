@@ -7,11 +7,17 @@ throughput and queue depth, and refreshes the Speeds category label:
 * ``qBittorrent: 2.4 MB/s ↓ • 5 in queue``
 * ``SABnzbd: 1.1 MB/s ↓ • 12 in queue``
 * ``slskd: 340 KB/s ↓ • 96 KB/s ↑ • 3 in queue``
-* ``Speeds • 21/8 6:29pm • Next: 6:34pm``
+* ``Speeds • 33ms • 21/8 6:29pm • Next: 6:34pm``
 
 Channel renames are rate-limited by Discord (2 per 10 min per channel), so a
 channel is only PATCHed when its name actually changes, and the category label
-— which is touched every tick — skips on 429 rather than raising.
+— which is touched every tick — skips on 429 rather than raising. The label's
+ICMP latency to 1.1.1.1 is measured every tick but only accepted for display
+when it moves by 5ms or more, so jitter keeps the label byte-identical and the
+rename short-circuits as unchanged. Latency redisplay flushes only on polling
+ticks; between polls it is held in ``pending_latency_ms`` so every category
+PATCH carries the scheduled timestamp update and latency never steals the
+2-per-10-min rename budget.
 
 Downloader API shapes, env-file names and label formats follow the reference
 script the live deployment ran; the peer's absolute secret paths are resolved
@@ -22,6 +28,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -39,12 +48,21 @@ HttpFn = Callable[
     [urllib.request.Request, float], Tuple[int, bytes, Dict[str, str]]
 ]
 NowFn = Callable[[], float]
+# Latency probe: one ICMP echo to Cloudflare DNS, milliseconds or None.
+PingFn = Callable[[], Optional[float]]
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 DISCORD_USER_AGENT = "DiscordBot (https://github.com/hermes-agent, 1.0)"
 
 DEFAULT_POLL_INTERVAL_SECONDS = 300
 STATE_FILENAME = "speed_channels_state.json"
+
+# Hardcoded on purpose — a config knob for one host is more surface than the
+# feature needs.
+PING_HOST = "1.1.1.1"
+# Redisplay latency only when it moves this far from the last displayed value,
+# so a jittering RTT cannot eat the category's 2-renames-per-10-min budget.
+LATENCY_HYSTERESIS_MS = 5.0
 
 DOWNLOADERS: Tuple[Tuple[str, str], ...] = (
     ("qbittorrent", "qBittorrent"),
@@ -107,7 +125,13 @@ def load_state() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def save_state(last_poll_success: int) -> int:
+def save_state(
+    last_poll_success: int,
+    last_latency_ms: Optional[float] = None,
+    pending_latency_ms: Optional[float] = None,
+) -> int:
+    """Atomically persist the tick's state; ``pending_latency_ms`` is the
+    latency move accepted between polls and waiting for the next rename."""
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -115,7 +139,15 @@ def save_state(last_poll_success: int) -> int:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"last_poll_success": last_poll_success}, handle, indent=2)
+            json.dump(
+                {
+                    "last_poll_success": last_poll_success,
+                    "last_latency_ms": last_latency_ms,
+                    "pending_latency_ms": pending_latency_ms,
+                },
+                handle,
+                indent=2,
+            )
         os.replace(tmp, path)
     except OSError as exc:
         raise SpeedChannelsError(f"cannot write {path}: {exc}") from exc
@@ -247,6 +279,15 @@ def _fmt_clock(dt: datetime) -> str:
     return f"{hour}:{dt.minute:02d}{suffix}"
 
 
+def fmt_latency(latency_ms: Optional[float]) -> str:
+    """``33ms`` / ``<1ms`` / ``timeout`` — None means no answer this tick."""
+    if latency_ms is None:
+        return "timeout"
+    if 0 <= latency_ms < 1:
+        return "<1ms"
+    return f"{int(latency_ms)}ms"
+
+
 def fmt_ts(epoch: float) -> str:
     dt = datetime.fromtimestamp(epoch)  # local time, like the reference script
     return f"{dt.day}/{dt.month} {_fmt_clock(dt)}"
@@ -277,17 +318,100 @@ def channel_names(
 
 
 def category_name(
-    last_success: float, interval: int, now_fn: NowFn = time.time
+    last_success: float,
+    interval: int,
+    latency_ms: Optional[float] = None,
+    now_fn: NowFn = time.time,
 ) -> str:
-    """``Speeds • <last-success ts | never> • Next: <time | Due>``."""
+    """``Speeds • <latency> • <last-success ts | never> • Next: <time | Due>``.
+
+    ``latency_ms`` is the value already accepted by hysteresis — the caller
+    decides what to display; this function never pings.
+    """
+    lat = fmt_latency(latency_ms)
     if last_success <= 0:
-        return "Speeds • never • Next: Due"
+        return f"Speeds • {lat} • never • Next: Due"
     now = now_fn()
     next_due = last_success + interval
     ts_part = fmt_ts(last_success)
     if now >= next_due:
-        return f"Speeds • {ts_part} • Next: Due"
-    return f"Speeds • {ts_part} • Next: {fmt_time(next_due)}"
+        return f"Speeds • {lat} • {ts_part} • Next: Due"
+    return f"Speeds • {lat} • {ts_part} • Next: {fmt_time(next_due)}"
+
+
+# ---------------------------------------------------------------------------
+# Latency (best-effort ICMP, independent of the download walls)
+# ---------------------------------------------------------------------------
+
+# iputils: ``time=33.338 ms`` / ``time=33.3ms`` / ``time<1ms`` / ``time<1 ms``;
+# Windows: ``time=33ms`` / ``time<1ms``, localized as ``Zeit=33ms`` on German
+# Windows and other labels elsewhere. So match any short alphabetic label
+# before the ``=``/``<`` — the unit ``ms`` is the stable anchor, and a false
+# positive from one line per reply is not a realistic shape.
+_PING_TIME_RE = re.compile(
+    r"[A-Za-z]+\s*([=<])\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE
+)
+
+
+def _parse_ping_time(stdout: str) -> Optional[float]:
+    """RTT in ms from ping's stdout, or None when no time= is reported."""
+    match = _PING_TIME_RE.search(stdout)
+    if match is None:
+        return None
+    value = float(match.group(2))
+    if match.group(1) == "<":
+        # ``time<1ms`` is a ceiling, not a measurement — pin it inside
+        # [0, 1) so fmt_latency renders ``<1ms`` instead of a bogus exact
+        # ``1ms``.
+        value -= 0.5
+    return value
+
+
+def default_ping() -> Optional[float]:
+    """One ICMP echo to 1.1.1.1; milliseconds, or None on any failure.
+
+    Never raises: a missing ping binary, a timeout, a nonzero exit, or
+    unparseable output all mean "no answer this tick", which renders as
+    ``timeout`` rather than failing the tick.
+    """
+    if sys.platform == "darwin":
+        # macOS ping's -W is milliseconds, not seconds — a literal 2 waits
+        # 2ms and times every probe out. There is no clean fail-wait flag
+        # there, so the outer subprocess timeout does the waiting.
+        argv = ["ping", "-c", "1", PING_HOST]
+    elif os.name == "nt":
+        argv = ["ping", "-n", "1", "-w", "2000", PING_HOST]
+    else:
+        argv = ["ping", "-c", "1", "-W", "2", PING_HOST]
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, timeout=3, text=True,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_ping_time(proc.stdout)
+
+
+def displayed_latency(
+    previous: Optional[float], sample: Optional[float]
+) -> Optional[float]:
+    """Which latency value this tick accepts for display.
+
+    Keep ``previous`` unless there was none, the sample timed out, or the
+    sample moved by ``LATENCY_HYSTERESIS_MS`` or more — a stable number keeps
+    the category name byte-identical, so ``rename_channel`` short-circuits and
+    the timestamp/"Next:" updates keep their share of the rename budget. The
+    accepted value is shown immediately on polling ticks and held in
+    ``pending_latency_ms`` between polls (see ``run_tick``).
+    """
+    if previous is None or sample is None:
+        return sample
+    if abs(sample - previous) < LATENCY_HYSTERESIS_MS:
+        return previous
+    return sample
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +601,22 @@ def run_tick(
     force: bool = False,
     now_fn: NowFn = time.time,
     http_fn: HttpFn = default_http,
+    ping_fn: PingFn = default_ping,
 ) -> dict:
     """One tick: poll the downloaders if due, then always refresh the label.
 
     All three downloaders must succeed for a poll to count — a failing one
     raises before ``save_state``, so the next tick retries instead of silently
-    freezing a wall at a stale speed.
+    freezing a wall at a stale speed. The 1.1.1.1 ping runs after that
+    all-or-nothing block on every tick (polled or not) and is strictly
+    best-effort: it can never raise, block a poll, or advance
+    ``last_poll_success`` — its only effects are the label's latency slot and
+    ``last_latency_ms`` / ``pending_latency_ms`` in the state file.
+
+    Rename-budget rule: latency redisplay flushes only on polling ticks;
+    between polls it is held in ``pending_latency_ms`` so every category PATCH
+    carries the scheduled timestamp update and latency never steals the
+    2-per-10-min rename budget.
     """
     state = load_state()
     interval = config["poll_interval_seconds"]
@@ -504,10 +638,40 @@ def run_tick(
         )
         for key, name in names.items():
             rename_channel(config["channel_ids"][key], name, headers, http_fn=http_fn)
-        last = float(save_state(int(now_fn())))
+        last = float(now_fn())
         did_poll = True
 
-    label = category_name(last, interval, now_fn=now_fn)
+    # Best-effort latency: a raise here would be a helper bug (default_ping
+    # never raises), but the guard keeps a bad ping_fn from failing the tick.
+    try:
+        sample = ping_fn()
+        sample = float(sample) if sample is not None else None
+    except Exception:
+        sample = None
+
+    try:
+        previous = state.get("last_latency_ms")
+        previous = float(previous) if previous is not None else None
+    except (TypeError, ValueError):
+        previous = None
+    accepted = displayed_latency(previous, sample)
+
+    if did_poll:
+        # This tick renames the category anyway (new timestamp), so the
+        # freshest accepted latency rides along in the same PATCH at zero
+        # extra budget cost, and nothing is left held.
+        latency_ms = accepted
+        pending_latency_ms: Optional[float] = None
+    else:
+        # No budget to spend on a latency-only rename: keep the label at the
+        # old value (byte-identical ⇒ rename_channel short-circuits as
+        # "unchanged") and hold the accepted move until the next polling
+        # tick. A held value stays held — it only ever flushes on a poll.
+        latency_ms = previous
+        pending_latency_ms = accepted if accepted != previous else None
+
+    save_state(int(last), latency_ms, pending_latency_ms)
+    label = category_name(last, interval, latency_ms, now_fn=now_fn)
     category_result = rename_channel(
         config["category_id"], label, headers, skip_on_429=True, http_fn=http_fn
     )
@@ -516,5 +680,7 @@ def run_tick(
         "success": True,
         "did_poll": did_poll,
         "category": category_result,
+        "latency_ms": latency_ms,
+        "pending_latency_ms": pending_latency_ms,
         "names": names,
     }

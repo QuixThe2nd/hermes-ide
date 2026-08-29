@@ -1,7 +1,7 @@
 name: code-lane-gate
 default_enabled: true
 version: "0.1.0"
-description: "Blocks write_file/patch/execute_code calls that would edit source code (py/ts/go/rs/sh/...) inside a git repository, steering coding work to the delegate lanes (delegate_cursor_agent, delegate_claude_agent). Off unless CODE_LANE_GATE_E2E=1 — set 0 (or unset) to disable."
+description: "Blocks write_file/patch/execute_code calls that would edit source code (py/ts/go/rs/sh/...) anywhere on disk — no git repository required — steering coding work to the delegate lanes (delegate_cursor_agent, delegate_claude_agent). On by default — opt out with CODE_LANE_GATE_E2E=0."
 author: "Hermes Agent"
 kind: backend
 hooks:

@@ -998,10 +998,69 @@ def _chrome_debug_args(port: int) -> list[str]:
     ]
 
 
-def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
-    """Return True when ``url`` exposes a reachable Chrome DevTools endpoint."""
-    import socket
+# Electron and other Chromium-embedders speak CDP, so HTTP 200 on
+# /json/version is not proof we attached to a browser. Reject those
+# identities and require a Chromium-family Browser/User-Agent plus a
+# websocket debugger URL.
+_ELECTRON_CDP_MARKERS = ("electron",)
+_CHROMIUM_FAMILY_CDP_MARKERS = (
+    "chrome/",
+    "chromium/",
+    "headlesschrome/",
+    "edg/",
+    "brave/",
+    "microsoft edge",
+)
+
+
+def _read_json_http(url: str, timeout: float):
+    """Return parsed JSON from ``url``, or None on any failure."""
+    import json
     import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            if not (200 <= getattr(resp, "status", 200) < 300):
+                return None
+            raw = resp.read()
+    except Exception:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cdp_identity_blob(payload: dict) -> str:
+    return " ".join(
+        str(payload.get(key) or "")
+        for key in ("Browser", "User-Agent", "browser", "userAgent")
+    ).lower()
+
+
+def payload_is_chromium_family_cdp(payload: object) -> bool:
+    """True when a /json/version dict is a Chromium-family browser, not Electron."""
+    if not isinstance(payload, dict):
+        return False
+    ws = str(payload.get("webSocketDebuggerUrl") or "").strip().lower()
+    if not ws.startswith(("ws://", "wss://")):
+        return False
+    identity = _cdp_identity_blob(payload)
+    if any(marker in identity for marker in _ELECTRON_CDP_MARKERS):
+        return False
+    return any(marker in identity for marker in _CHROMIUM_FAMILY_CDP_MARKERS)
+
+
+def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
+    """Return True when ``url`` exposes a Chromium-family Chrome DevTools endpoint.
+
+    A listening port that serves HTTP 200 is not enough: Electron POS apps
+    and other embedders also expose /json/version. Require a websocket
+    debugger URL and a Chromium-family identity, and reject Electron.
+    """
+    import socket
     from urllib.parse import urlparse
 
     parsed = urlparse(url if "://" in url else f"http://{url}")
@@ -1024,13 +1083,11 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
         return False
 
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
-    for probe in (f"{root}/json/version", f"{root}/json"):
-        try:
-            with urllib.request.urlopen(probe, timeout=timeout) as resp:
-                if 200 <= getattr(resp, "status", 200) < 300:
-                    return True
-        except Exception:
-            continue
+    version_payload = _read_json_http(f"{root}/json/version", timeout)
+    if version_payload is not None:
+        # Identity is decided by /json/version. Do not fall through to
+        # /json when the version endpoint answered with a non-browser CDP.
+        return payload_is_chromium_family_cdp(version_payload)
     return False
 
 

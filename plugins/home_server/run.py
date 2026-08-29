@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Headless CLI entry for home_server sync (cron-friendly).
 
-Runs the debounced reconcile — at most once per hour unless ``--force``. Use
+Runs the debounced reconcile — at most once per hour unless ``--force`` (or
+unless the in-code template changed, which re-syncs immediately). Use
 this from cron or systemd exactly like quota_channels' ``run.py``:
 
     hermes cron add \\

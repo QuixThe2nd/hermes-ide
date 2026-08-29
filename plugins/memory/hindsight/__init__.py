@@ -101,6 +101,39 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+# Bank defaults pushed once per provider lifetime, best-effort, on first
+# client creation (initialize() deliberately never builds a client). The
+# retain mission steers extraction toward durable knowledge and away from
+# transient session state; the directives below steer recall the same way.
+_DEFAULT_BANK_RETAIN_MISSION = (
+    "Preserve durable knowledge about infrastructure, services, projects, tools, "
+    "and user preferences and decisions. Skip transient task state: PR/issue "
+    "numbers, commit SHAs, in-progress work, session chatter, bot greetings, "
+    "model fallback events, and availability messages. Compress verbose "
+    "operational detail into concise declarative facts."
+)
+_DEFAULT_BANK_DIRECTIVES: tuple[Dict[str, Any], ...] = (
+    {
+        "name": "prefer-newer-facts",
+        "priority": 10,
+        "content": (
+            "When multiple facts cover the same topic and conflict, prefer the "
+            "most recently observed/occurred fact. Older facts about the same "
+            "entity (old IPs, old ports, superseded configs) must not override "
+            "newer ones."
+        ),
+    },
+    {
+        "name": "ignore-session-dumps",
+        "priority": 10,
+        "content": (
+            "Ignore facts that describe one-off session events: bot small talk, "
+            "waiting/standby states, model fallbacks during a single chat, test "
+            "sessions, transient task status. They are noise, not durable "
+            "knowledge, unless they record a durable decision or fix."
+        ),
+    },
+)
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -786,6 +819,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        # Bank defaults (retain mission + seeded directives) apply once, on
+        # first client creation — see _apply_bank_defaults().
+        self._bank_defaults_applied = False
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -1282,7 +1318,82 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
                              self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
+        # First client creation is also where bank defaults go out —
+        # initialize() stays lazy (it never builds a client), so this is the
+        # earliest point the Banks API is actually reachable. No-op on every
+        # later call via the _bank_defaults_applied flag.
+        self._apply_bank_defaults()
         return self._client
+
+    def _apply_bank_defaults(self) -> None:
+        """Apply bank missions and seed the default recall directives.
+
+        Pushes ``bank_mission`` / ``bank_retain_mission`` (README: "Applied
+        via Banks API") with one ``update_bank_config`` call, defaulting the
+        retain mission to _DEFAULT_BANK_RETAIN_MISSION when the config key is
+        unset/empty, then creates each _DEFAULT_BANK_DIRECTIVES entry that the
+        bank doesn't already have (matched by ``name``), so existing banks are
+        never duplicated or overwritten.
+
+        Once per provider lifetime, best-effort: every failure is logged and
+        skipped — bank tuning must never raise into chat or block memory I/O.
+        """
+        if self._bank_defaults_applied or self._mode == "disabled":
+            return
+        # Set before any I/O so a concurrent first-use caller (embedded daemon
+        # start racing the first recall) can't double-apply.
+        self._bank_defaults_applied = True
+        try:
+            self._get_client()
+        except Exception as exc:
+            logger.debug("Hindsight bank defaults skipped (no client): %s", exc)
+            return
+
+        retain_mission = self._bank_retain_mission or _DEFAULT_BANK_RETAIN_MISSION
+        reflect_mission = self._bank_mission or None
+        try:
+            self._run_hindsight_operation(
+                lambda c: c.update_bank_config(
+                    bank_id=self._bank_id,
+                    retain_mission=retain_mission,
+                    reflect_mission=reflect_mission,
+                )
+            )
+            logger.debug("Hindsight bank config applied: bank=%s, retain_mission=%s, reflect_mission=%s",
+                         self._bank_id,
+                         "default" if not self._bank_retain_mission else "custom",
+                         "set" if reflect_mission else "unset")
+        except Exception as exc:
+            logger.warning("Hindsight update_bank_config failed for bank %s: %s",
+                           self._bank_id, exc)
+
+        try:
+            response = self._run_hindsight_operation(
+                lambda c: c.list_directives(bank_id=self._bank_id)
+            )
+            existing = {
+                str(getattr(item, "name", "") or "")
+                for item in (getattr(response, "items", None) or [])
+            }
+        except Exception as exc:
+            logger.warning("Hindsight list_directives failed for bank %s: %s",
+                           self._bank_id, exc)
+            return
+        for directive in _DEFAULT_BANK_DIRECTIVES:
+            if directive["name"] in existing:
+                continue
+            try:
+                self._run_hindsight_operation(
+                    lambda c, d=directive: c.create_directive(
+                        bank_id=self._bank_id,
+                        name=d["name"],
+                        content=d["content"],
+                        priority=d["priority"],
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Hindsight create_directive(%s) failed for bank %s: %s",
+                               directive["name"], self._bank_id, exc)
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from plugins.home_server.core import reconcile
 
-# 5 categories + 2 chat + 3 notifications + 4 memory + 5 quotas + 3 speeds.
-FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 6 + 3
+# 5 categories + 2 chat + 3 notifications + 4 memory + 5 model voices + 3 speeds.
+FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 5 + 3
 
 
 def test_double_provision_second_run_creates_nothing(hermes, guild, make_discord):

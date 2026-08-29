@@ -40,7 +40,7 @@ def test_category_429_is_a_skip_not_a_failure(hermes, transport):
     transport.patch_status = 429
 
     result = rename_channel(
-        "cat", "Speeds • 24/8 9:07am • Next: 9:12am", discord_headers(),
+        "cat", "Speeds • 33ms • 24/8 9:07am • Next: 9:12am", discord_headers(),
         skip_on_429=True, http_fn=transport,
     )
     assert result == "skipped"

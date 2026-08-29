@@ -3,14 +3,18 @@
 Wires one behaviour:
 
 * ``pre_tool_call`` hook — refuses ``write_file`` / ``patch`` /
-  ``execute_code`` calls that would edit *source code* inside a git
-  repository, so coding work lands in the dedicated delegate lanes
+  ``execute_code`` calls that would edit *source code* — wherever the
+  file lives, git repo or not — so coding work lands in the dedicated
+  delegate lanes
   (``delegate_cursor_agent`` for small/medium tasks, ``delegate_claude_agent``
   with ``/goal`` for medium/large) instead of the in-context file tools.
 
-Off by default: the gate only evaluates when ``CODE_LANE_GATE_E2E=1``.
-With the env unset (or ``0``) the hook returns ``None`` immediately and
-no scan happens.
+On by default: the gate evaluates unless ``CODE_LANE_GATE_E2E`` carries
+an explicit opt-out (``0``, ``false``, ``no``, ``off`` —
+case-insensitive, whitespace-stripped). With an opt-out set the hook
+returns ``None`` immediately and no scan happens; any other value
+(unset, ``1``, ``true``, unrecognized garbage) leaves it enabled —
+fail closed, because blocking is the gate's purpose.
 
 What counts as a gated source edit:
 
@@ -29,23 +33,21 @@ What counts as a gated source edit:
   to a deny-suffixed file. Read-only snippets (``open(..., "r")``,
   ``open(..., "rb")``, ``Path(...).read_text()``, ``eval("1+1")``) pass.
   No path is available for this tool, so a heuristic match blocks
-  without the repo/suffix scoping below.
+  without the suffix scoping below.
 
 Each collected path is resolved BEFORE the checks, the same way the
 tool layer resolves it: relative paths anchor to the TASK workspace
 (live terminal cwd, registered cwd override, ``$TERMINAL_CWD``, else
 process cwd — see ``tools.file_tools._resolve_path_for_task``), and
-symlinks are resolved (``realpath``) so a link into a repo can't dodge
-the walk. The hook receives ``task_id`` from the dispatch layer and
-uses it for that resolution.
+symlinks are resolved (``realpath``) so the gate judges the real file
+the tools would touch, not the link spelling. The hook receives
+``task_id`` from the dispatch layer and uses it for that resolution.
 
-A collected path is blocked only when BOTH hold:
-
-* it sits inside a git repository — the gate walks upward from the path
-  looking for a ``.git`` directory; no ``git`` CLI is spawned — and
-* its suffix (after the final dot, lowercased) is a source-code suffix
-  in the deny set (py/ts/tsx/js/jsx/go/rs/java/rb/sh/bash/sql/c/cpp/
-  h/hpp/cs/php/swift/kt/scala).
+A collected path is blocked when its suffix (after the final dot,
+lowercased) is a source-code suffix in the deny set (py/ts/tsx/js/jsx/
+go/rs/java/rb/sh/bash/sql/c/cpp/h/hpp/cs/php/swift/kt/scala). Nothing
+else is consulted — no location check, no git repository required —
+the denial is suffix-only, everywhere.
 
 No suffix, or a docs/config suffix (md, yaml, json, ...), is allowed:
 the gate steers *code* to the delegate lanes, it does not police prose.
@@ -68,8 +70,10 @@ from typing import Any, Dict, List, Optional
 # Configuration
 # ---------------------------------------------------------------------------
 
-# The gate is dark until this env var is set. E2E rollout switch — flip to
-# "0" (or unset) to go back to pass-through with no scan at all.
+# The gate is ON unless this env var carries an explicit opt-out. Set it
+# to "0" (also "false"/"no"/"off", case-insensitive) to go back to
+# pass-through with no scan at all; any other value — including the
+# deployment host's "1" — keeps it enabled.
 _ENV_GATE_ENABLED = "CODE_LANE_GATE_E2E"
 
 # Source-code suffixes (after the final dot, lowercased) that route through
@@ -83,7 +87,7 @@ _DENY_SUFFIXES = frozenset(
     }
 )
 
-# execute_code exposes no path, so the repo/suffix scoping can't apply —
+# execute_code exposes no path, so the suffix scoping can't apply —
 # evidence of a WRITE in the snippet is the whole signal. Best-effort:
 # match write-mode opens and write-shaped calls only, so read-only code
 # (open(..., "r"), read_text(), eval("1+1")) passes while real writes
@@ -142,8 +146,14 @@ _BLOCK_STEER = (
 
 
 def _gate_enabled() -> bool:
-    return os.environ.get(_ENV_GATE_ENABLED, "").strip().lower() in {
-        "1", "true", "yes", "on",
+    """True unless the env var carries an explicit opt-out.
+
+    Unset, ``1``, and any unrecognized value all enable the gate — it
+    fails closed, because blocking is its purpose. Only ``0``/``false``/
+    ``no``/``off`` (case-insensitive, stripped) disable it.
+    """
+    return os.environ.get(_ENV_GATE_ENABLED, "").strip().lower() not in {
+        "0", "false", "no", "off",
     }
 
 
@@ -185,22 +195,6 @@ def _resolve_for_task(path: str, task_id: str = "") -> str:
 def _deny_suffix(path: str) -> str:
     """Suffix after the final dot, lowercased. Empty when there is none."""
     return Path(path).suffix.lstrip(".").lower()
-
-
-def _is_inside_git_repo(path: str) -> bool:
-    """True when some ancestor of ``path`` holds a ``.git`` directory.
-
-    Pure filesystem walk — no ``git`` CLI, so it stays cheap and works on
-    checkouts the git binary can't see. A not-yet-existing file path is
-    fine: the walk still climbs its (real) ancestor directories.
-    """
-    current = Path(path)
-    if (current / ".git").is_dir():
-        return True
-    for parent in current.parents:
-        if (parent / ".git").is_dir():
-            return True
-    return False
 
 
 def _clean_patch_path(raw: str) -> str:
@@ -258,12 +252,14 @@ def _gated_paths(tool_name: str, args: Any) -> List[str]:
 
 
 def _first_denied_path(paths: List[str], task_id: str = "") -> Optional[str]:
-    """First path that is both inside a git repo and source-suffixed."""
+    """First path whose resolved suffix is in the deny set.
+
+    Location plays no part — a source-suffixed write is denied wherever
+    it lands, so no repo/ancestor inspection happens here.
+    """
     for path in paths:
         normalized = _resolve_for_task(path, task_id)
-        if _deny_suffix(normalized) in _DENY_SUFFIXES and _is_inside_git_repo(
-            normalized
-        ):
+        if _deny_suffix(normalized) in _DENY_SUFFIXES:
             return normalized
     return None
 
@@ -301,13 +297,14 @@ def _on_pre_tool_call(
     task_id: str = "",
     **_: Any,
 ) -> Optional[Dict[str, str]]:
-    """Block in-context source edits inside git repos (E2E-gated).
+    """Block in-context source edits, git repo or not (on by default;
+    opt out with ``CODE_LANE_GATE_E2E=0``).
 
     Returns ``None`` — tool proceeds untouched — unless the call would edit
-    a source file in a repo (or execute_code looks like a source write),
-    in which case the delegate-lane steering message blocks it. ``task_id``
-    comes from the hook dispatch layer and drives the same task-workspace
-    path resolution the file tools use.
+    a source-suffixed file anywhere (or execute_code looks like a source
+    write), in which case the delegate-lane steering message blocks it.
+    ``task_id`` comes from the hook dispatch layer and drives the same
+    task-workspace path resolution the file tools use.
     """
     if not _gate_enabled():
         return None
@@ -317,8 +314,8 @@ def _on_pre_tool_call(
         return {
             "action": "block",
             "message": (
-                f"code-lane-gate: {denied} is source code inside a git "
-                f"repository. {_BLOCK_STEER}"
+                f"code-lane-gate: {denied} is a source-file write. "
+                f"{_BLOCK_STEER}"
             ),
         }
 

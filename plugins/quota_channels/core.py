@@ -19,11 +19,11 @@ from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Seq
 # The voice-channel ordering policy is owned by fallback_quota_reorder; this
 # module reuses its score math, thresholds, and reliability ledger instead of
 # copying divergent formulas. The import is acyclic — fallback_quota_reorder
-# only touches quota_channels lazily inside load_precise_readings.
+# only touches quota_channels lazily inside its precise-state loaders.
 from plugins.fallback_quota_reorder.core import (
     CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
-    LOW_QUOTA_PCT,
     QuotaReading,
+    is_low_quota,
     score_provider,
 )
 from plugins.fallback_quota_reorder.reliability import (
@@ -95,7 +95,9 @@ OPENROUTER_LABEL = "OpenRouter"
 
 # Display ranks are `bucket * stride - score`; the stride must exceed any
 # possible score so the low-quota bucket always sorts after every healthy
-# entry. Max score is 10080 (100% at the one-minute hours floor).
+# entry. Max score is 10080 per wallet (100% at the one-minute hours floor);
+# pending usage-limit resets stack one full wallet each, so the stride only
+# breaks past ~99k simultaneous resets — far off any real account.
 _RANK_BUCKET_STRIDE = 1e9
 
 
@@ -176,20 +178,32 @@ def load_state() -> dict:
         return {}
 
 
+def _state_reading_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
+    persisted: Dict[str, Any] = {
+        "pct": entry["pct"],
+        "reset_seconds": entry["reset_seconds"],
+        "label": entry["label"],
+    }
+    # pending usage-limit resets (Codex/Grok rows) feed the shared
+    # spendability score; rows without the fields stay in the legacy shape
+    if "reset_count" in entry:
+        persisted["reset_count"] = entry["reset_count"]
+    if "reset_expiry_seconds" in entry:
+        persisted["reset_expiry_seconds"] = entry["reset_expiry_seconds"]
+    return persisted
+
+
 def save_state(
     readings: Optional[Mapping[str, Mapping[str, Any]]] = None,
     now_fn: NowFn = time.time,
 ) -> int:
-    # readings: per-provider slug -> {'pct', 'reset_seconds', 'label'} from the
-    # tick that just succeeded; failed providers stay absent (no stale merge).
+    # readings: per-provider slug -> {'pct', 'reset_seconds', 'label',
+    # optionally 'reset_count'/'reset_expiry_seconds'} from the tick that
+    # just succeeded; failed providers stay absent (no stale merge).
     state: Dict[str, Any] = {"last_quota_success": int(now_fn())}
     if readings is not None:
         state["readings"] = {
-            str(key): {
-                "pct": entry["pct"],
-                "reset_seconds": entry["reset_seconds"],
-                "label": entry["label"],
-            }
+            str(key): _state_reading_entry(entry)
             for key, entry in readings.items()
         }
     path = state_path()
@@ -240,6 +254,14 @@ def http_bin(
     return status, body
 
 
+def _window_span_seconds(window: Mapping[str, Any]) -> Optional[float]:
+    """Numeric limit_window_seconds of a rate-limit window, else None."""
+    value = window.get("limit_window_seconds")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def parse_codex_usage(text: str) -> Tuple[int, float]:
     try:
         usage = json.loads(text)
@@ -247,13 +269,27 @@ def parse_codex_usage(text: str) -> Tuple[int, float]:
         raise QuotaChannelsError("codex: invalid usage payload JSON") from exc
     if not isinstance(usage, dict):
         raise QuotaChannelsError("codex: invalid usage payload JSON")
-    primary = (usage.get("rate_limit") or {}).get("primary_window")
+    rate_limit = usage.get("rate_limit") or {}
+    primary = rate_limit.get("primary_window")
     if not primary:
         raise QuotaChannelsError(
             f"no primary_window in codex usage payload: {text[:200]}"
         )
     if not isinstance(primary, dict):
         raise QuotaChannelsError("codex: invalid primary_window in usage payload")
+    # ChatGPT can return a 5h primary alongside a 7d secondary; the channel
+    # must count down against the longer window. A non-dict secondary counts
+    # as absent, and without two numeric spans the primary is used as-is.
+    secondary = rate_limit.get("secondary_window")
+    if isinstance(secondary, dict):
+        primary_span = _window_span_seconds(primary)
+        secondary_span = _window_span_seconds(secondary)
+        if (
+            primary_span is not None
+            and secondary_span is not None
+            and secondary_span > primary_span
+        ):
+            primary = secondary
     try:
         used = round(float(primary.get("used_percent", 0)))
         reset_after = float(primary.get("reset_after_seconds", 0))
@@ -427,7 +463,20 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
         if not isinstance(entry, Mapping):
             raise QuotaChannelsError("z.ai: invalid limits fields in usage payload")
     try:
-        weekly = max(limits, key=lambda window: window.get("nextResetTime") or 0)
+        # The longest window is the plan's real quota horizon: larger unit
+        # (weeks > days > hours > minutes), then larger number, then the later
+        # reset edge. A 5h rolling window often resets LATER than the weekly
+        # one, so nextResetTime alone would pick the wrong window. Legacy
+        # entries without unit/number rank as (0, 0, ...) and only win when
+        # no window carries them — the old max-nextResetTime behavior.
+        weekly = max(
+            limits,
+            key=lambda window: (
+                window.get("unit") or 0,
+                window.get("number") or 0,
+                window.get("nextResetTime") or 0,
+            ),
+        )
         used = int(weekly.get("percentage", 0))
         reset_ms = float(weekly.get("nextResetTime") or 0)
     except (AttributeError, TypeError, ValueError) as exc:
@@ -1488,10 +1537,12 @@ def quota_display_ranks(
 
     Exactly the fallback_quota_reorder ordering policy, expressed as a single
     ascending sort key for plan_position_moves: healthy entries by descending
-    score_provider() (quota_frac * 168/hours_remaining * uptime factors from
-    the shared reliability ledger), entries below LOW_QUOTA_PCT sink behind
-    every healthy entry, and equal ranks keep the caller's insertion order —
-    which is PROVIDER_SPECS order — so ties stay stable.
+    score_provider() (quota_frac * 168/hours_remaining, plus one full wallet
+    per pending usage-limit reset on its own expiry clock, all times the
+    uptime factors from the shared reliability ledger), entries the shared
+    is_low_quota() rule sinks behind every healthy entry, and equal ranks
+    keep the caller's insertion order — which is PROVIDER_SPECS order — so
+    ties stay stable.
     """
 
     rates = reliability or {}
@@ -1504,9 +1555,15 @@ def quota_display_ranks(
             channel_name="",
             pct=int(entry["pct"]),
             reset_seconds=float(entry["reset_seconds"]),
+            reset_count=int(entry.get("reset_count") or 0),
+            reset_expiry_seconds=(
+                None
+                if entry.get("reset_expiry_seconds") is None
+                else float(entry["reset_expiry_seconds"])
+            ),
         )
         score = score_provider(reading, rates.get(provider))
-        bucket = 1 if reading.pct < LOW_QUOTA_PCT else 0
+        bucket = 1 if is_low_quota(reading) else 0
         ranks[key] = bucket * _RANK_BUCKET_STRIDE - score
     return ranks
 
@@ -1644,6 +1701,14 @@ def run_provider_quota(
         resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
         if reset_error:
             provider_info["reset_error"] = reset_error
+    if resets is not None:
+        # pending usage-limit resets feed the shared spendability score; they
+        # ride provider_info into the state reading and the debug output.
+        # resets=None means the credits block was unreadable (Codex), which
+        # adds no term and persists no fields.
+        provider_info["reset_count"] = resets.count
+        if resets.expiry_secs is not None:
+            provider_info["reset_expiry_seconds"] = resets.expiry_secs
 
     name = _format_channel_name(key, fmt_metrics, reset_secs, resets=resets)
 
@@ -1743,11 +1808,20 @@ def run_tick(
                 "rename": rename,
                 **provider_info,
             }
-            readings[key] = {
+            reading_entry: Dict[str, Any] = {
                 "pct": _reading_pct(remaining),
                 "reset_seconds": reset_secs,
                 "label": prov_label,
             }
+            # pending usage-limit resets ride along so the fallback reorder
+            # scores the same spendability from precise state as from names
+            if "reset_count" in provider_info:
+                reading_entry["reset_count"] = provider_info["reset_count"]
+            if "reset_expiry_seconds" in provider_info:
+                reading_entry["reset_expiry_seconds"] = provider_info[
+                    "reset_expiry_seconds"
+                ]
+            readings[key] = reading_entry
             successes.append((label, channel_id, key))
         if successes:
             ranks = quota_display_ranks(readings, reliability)

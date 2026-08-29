@@ -124,6 +124,7 @@ CONFIGURABLE_TOOLSETS = [
     ("dev-pipeline",    "🏗️ Dev Pipeline",              "durable automated development jobs"),
     ("quota_channels",  "📊 Quota Channels",            "quota_channels_tick (Discord voice-channel quota display)"),
     ("assistant_handoff", "📤 Assistant Handoff",        "mission close or one-way escalation"),
+    ("gateway",         "♻️ Gateway",                   "restart (same drain path as /restart)"),
 ]
 
 
@@ -2874,6 +2875,35 @@ def _get_platform_tools(
     if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
         enabled_toolsets.add("context_engine")
 
+    # MCP servers are expected to be available on all platforms by default.
+    # If the platform explicitly lists one or more MCP server names, treat that
+    # as an allowlist. Otherwise include every globally enabled MCP server.
+    # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
+    enabled_mcp_servers = enabled_mcp_server_names(config)
+
+    # #38798: names on the explicit list that resolve to zero tools. Computed
+    # once here so the passthrough exclusion below and the runtime warning at
+    # the end of this function agree on the same set. Enabled MCP server names
+    # and the "no_mcp" sentinel are not toolsets, but they DO resolve to tools,
+    # so they never enter this set and keep flowing through unchanged.
+    _named = []
+    _unknown_toolset_names = []
+    _any_valid_named = True
+    _explicit = platform_toolsets.get(platform)
+    if isinstance(_explicit, list) and _explicit:
+        from toolsets import validate_toolset
+
+        _named = [str(t) for t in _explicit if isinstance(t, str) and t]
+        if _named:
+            _unknown_toolset_names = [
+                n
+                for n in _named
+                if n != "no_mcp"
+                and n not in enabled_mcp_servers
+                and not validate_toolset(n)
+            ]
+            _any_valid_named = any(validate_toolset(n) for n in _named)
+
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
     explicit_passthrough = {
@@ -2883,12 +2913,13 @@ def _get_platform_tools(
         and ts not in plugin_ts_keys
         and ts not in platform_default_keys
     }
+    # An unresolvable name must never be echoed back as an "enabled" toolset:
+    # the caller would believe the platform has it while get_toolset()
+    # resolves zero tools (#38798). Resolvable entries (custom toolsets, MCP
+    # server names) are absent from _unknown_toolset_names and flow through
+    # unchanged.
+    explicit_passthrough -= set(_unknown_toolset_names)
 
-    # MCP servers are expected to be available on all platforms by default.
-    # If the platform explicitly lists one or more MCP server names, treat that
-    # as an allowlist. Otherwise include every globally enabled MCP server.
-    # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    enabled_mcp_servers = enabled_mcp_server_names(config)
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
@@ -2920,23 +2951,31 @@ def _get_platform_tools(
         }
         enabled_toolsets -= disabled_set
 
-    # #38798: if this platform was explicitly configured but every toolset name
-    # is invalid (e.g. a migration or hand-edit left `hermes` instead of
-    # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends
-    # up with no native tools — silently, with no error. Surface it at the point
-    # tools are resolved for a session so an already-corrupted config is caught
-    # at runtime, not only during the next `hermes update`/`hermes doctor`.
-    _explicit = platform_toolsets.get(platform)
-    if isinstance(_explicit, list) and _explicit:
-        from toolsets import validate_toolset
-
-        _named = [str(t) for t in _explicit if isinstance(t, str) and t]
-        if (
-            _named
-            and not any(validate_toolset(t) for t in _named)
-            and platform not in _warned_invalid_platform_toolsets
-        ):
-            _warned_invalid_platform_toolsets.add(platform)
+    # #38798: if this platform was explicitly configured with toolset names
+    # that resolve to nothing (e.g. a migration or hand-edit left `hermes`
+    # instead of `hermes-cli`), resolve_toolset() returns [] for each and the
+    # platform ends up with no native tools — silently, with no error.
+    # Surface the bad names at the point tools are resolved for a session so
+    # an already-corrupted config is caught at runtime, not only during the
+    # next `hermes update`/`hermes doctor`. Partially-valid configs used to
+    # pass through completely silently; name the bad entries so the user can
+    # fix them without diffing against `hermes tools`.
+    if (
+        isinstance(_explicit, list)
+        and _explicit
+        and (_unknown_toolset_names or not _any_valid_named)
+        and platform not in _warned_invalid_platform_toolsets
+    ):
+        _warned_invalid_platform_toolsets.add(platform)
+        if _unknown_toolset_names:
+            logger.warning(
+                "platform '%s' references unknown toolset name(s): %s — these "
+                "resolve to zero tools. Valid names: run `hermes tools`. "
+                "See #38798.",
+                platform,
+                ", ".join(_unknown_toolset_names),
+            )
+        if not _any_valid_named:
             logger.warning(
                 "platform '%s' has no valid toolsets configured (unknown "
                 "name(s): %s) - tools will be unavailable. Run `hermes tools` "

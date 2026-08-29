@@ -137,7 +137,10 @@ def resolve_python_executable() -> str:
             # producing units that die with ModuleNotFoundError. The symlink
             # path itself is the correct interpreter for systemd units.
             return str(candidate)
-    return shutil.which("python3") or sys.executable
+    # Prefer the interpreter running enable/reconcile. shutil.which("python3")
+    # is often /usr/bin/python3 with no hermes_cli, so units die immediately
+    # when VIRTUAL_ENV is unset (interactive shells, systemd without the var).
+    return sys.executable or shutil.which("python3") or "python3"
 
 
 def build_hermes_argv(*extra: str) -> list[str]:

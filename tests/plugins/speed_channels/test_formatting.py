@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from plugins.speed_channels.core import (
     category_name,
     channel_names,
+    fmt_latency,
     fmt_speed,
     fmt_time,
     fmt_ts,
@@ -62,12 +65,33 @@ def test_fmt_ts_is_day_month_clock():
     assert fmt_ts(epoch) == "24/8 9:07am"
 
 
+@pytest.mark.parametrize(
+    "latency_ms, expected",
+    [
+        (None, "timeout"),
+        (0.4, "<1ms"),
+        (0.0, "<1ms"),
+        (33.3, "33ms"),
+        (1500, "1500ms"),
+    ],
+)
+def test_fmt_latency(latency_ms, expected):
+    assert fmt_latency(latency_ms) == expected
+
+
 def test_category_label_states():
-    assert category_name(0, 300, now_fn=lambda: 1000.0) == "Speeds • never • Next: Due"
+    assert (
+        category_name(0, 300, 33.3, now_fn=lambda: 1000.0)
+        == "Speeds • 33ms • never • Next: Due"
+    )
+    assert (
+        category_name(0, 300, None, now_fn=lambda: 1000.0)
+        == "Speeds • timeout • never • Next: Due"
+    )
 
     last = 1000.0
-    scheduled = category_name(last, 300, now_fn=lambda: last + 100)
-    assert scheduled == f"Speeds • {fmt_ts(last)} • Next: {fmt_time(last + 300)}"
+    scheduled = category_name(last, 300, 33.3, now_fn=lambda: last + 100)
+    assert scheduled == f"Speeds • 33ms • {fmt_ts(last)} • Next: {fmt_time(last + 300)}"
 
-    overdue = category_name(last, 300, now_fn=lambda: last + 300)
-    assert overdue == f"Speeds • {fmt_ts(last)} • Next: Due"
+    overdue = category_name(last, 300, 0.4, now_fn=lambda: last + 300)
+    assert overdue == f"Speeds • <1ms • {fmt_ts(last)} • Next: Due"

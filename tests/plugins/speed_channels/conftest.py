@@ -1,4 +1,5 @@
-"""Shared fixtures: an in-memory transport for downloader APIs and Discord.
+"""Shared fixtures: an in-memory transport for downloader APIs and Discord,
+plus a scripted stand-in for the 1.1.1.1 ping.
 
 Follows the ``http_fn`` DI style of tests/plugins/quota_channels — no respx, no
 real network. The transport returns ``(status, body, headers)`` because the
@@ -179,9 +180,27 @@ def config(hermes):
     return load_speed_config()  # reads HERMES_HOME/config.yaml from `hermes`
 
 
+class FakePing:
+    """Stand-in for ``default_ping``: scripted RTT in ms, counts calls, and
+    never touches the network or a real ping binary."""
+
+    def __init__(self, value=33.3):
+        self.value = value
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.value
+
+
 @pytest.fixture
 def transport():
     return FakeTransport()
+
+
+@pytest.fixture
+def ping():
+    return FakePing()
 
 
 @pytest.fixture
