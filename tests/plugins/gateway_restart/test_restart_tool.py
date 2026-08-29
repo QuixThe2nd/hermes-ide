@@ -124,8 +124,8 @@ def _mock_confirm(monkeypatch, reply):
     """Stub the confirm gate: record the registration, return ``reply``.
 
     ``reply`` is what ``wait_for_response`` would hand the tool — the exact
-    word, a wrong reply, or ``None`` for a timeout. Registering is stubbed
-    too so mocked waits don't leave real entries armed.
+    word, a wrong reply, or ``None`` when no entry exists. Registering is
+    stubbed too so mocked waits don't leave real entries armed.
     """
     import tools.clarify_gateway as cg
 
@@ -134,6 +134,15 @@ def _mock_confirm(monkeypatch, reply):
     monkeypatch.setattr(cg, "register", register)
     monkeypatch.setattr(cg, "wait_for_response", wait)
     return register, wait
+
+
+def _assert_unlimited_wait(wait: MagicMock) -> None:
+    """``wait_for_response`` must be called with timeout <= 0 (unlimited)."""
+    wait.assert_called_once()
+    call = wait.call_args
+    timeout = call.args[1] if len(call.args) > 1 else call.kwargs.get("timeout")
+    assert timeout is not None
+    assert float(timeout) <= 0.0
 
 
 # A confirmable session: platform + chat + session key all bound.
@@ -257,6 +266,7 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     # The bounce only happened because the requester typed the exact word.
     register.assert_called_once()
     wait.assert_called_once()
+    _assert_unlimited_wait(wait)
 
 
 def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatch):
@@ -276,6 +286,7 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
     assert result["via_service"] is False
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
     wait.assert_called_once()
+    _assert_unlimited_wait(wait)
 
 
 def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
@@ -391,13 +402,15 @@ def test_confirm_rejects_anything_but_the_exact_word(gateway_loop, monkeypatch, 
     runner.request_restart.assert_not_called()
     register.assert_called_once()
     wait.assert_called_once()
+    _assert_unlimited_wait(wait)
 
 
-def test_confirm_timeout_cancels(gateway_loop, monkeypatch):
+def test_confirm_none_reply_cancels_as_non_matching(gateway_loop, monkeypatch):
+    """Missing clarify entry (``None``) cancels like any non-matching reply."""
     from plugins.gateway_restart.tool import handle_restart
 
     runner = _live_runner(monkeypatch, gateway_loop)
-    _mock_confirm(monkeypatch, None)  # wait_for_response timeout
+    _register, wait = _mock_confirm(monkeypatch, None)
 
     _bind_session(**_TELEGRAM_SESSION)
     try:
@@ -407,8 +420,10 @@ def test_confirm_timeout_cancels(gateway_loop, monkeypatch):
 
     assert result["success"] is False
     assert result["status"] == "cancelled"
-    assert "no confirmation" in result["error"]
+    assert "not the exact word" in result["error"]
+    assert "no confirmation" not in result["error"]
     runner.request_restart.assert_not_called()
+    _assert_unlimited_wait(wait)
 
 
 def test_confirm_prompt_mentions_the_discord_requester(gateway_loop, monkeypatch):

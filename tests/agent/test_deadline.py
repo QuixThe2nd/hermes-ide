@@ -582,7 +582,7 @@ class TestResolveNameList:
 
 
 class TestUnboundedToolsResolver:
-    """_resolve_unbounded_tools: fork default covers both delegate tools."""
+    """_resolve_unbounded_tools: fork default covers delegate and restart tools."""
 
     def test_default_contains_delegate_tools(self, monkeypatch):
         from agent import tool_executor
@@ -591,6 +591,7 @@ class TestUnboundedToolsResolver:
         names = tool_executor._resolve_unbounded_tools()
         assert "delegate_cursor_agent" in names
         assert "delegate_claude_agent" in names
+        assert "restart" in names
 
     def test_config_override_replaces_default(self, monkeypatch):
         from agent import tool_executor

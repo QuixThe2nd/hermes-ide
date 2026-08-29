@@ -128,12 +128,13 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Tools exempt from the batch/sequential execution deadline. The deadline
 # exists to catch wedged tool threads, not to kill healthy long-running
-# external coding agents — those carry their own stall watchdogs as the
-# dead-man switch. Override with ``timeouts.tools.unbounded_tools`` in
-# config.yaml (a list of tool names; an explicit empty list disables the
-# exemption entirely).
+# external coding agents (their own stall watchdogs are the dead-man switch)
+# or human-confirmation tools such as ``restart`` (they wait for a human
+# reply; clarify heartbeats keep activity alive). Override with
+# ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
+# explicit empty list disables the exemption entirely).
 _DEFAULT_UNBOUNDED_TOOLS = frozenset(
-    {"delegate_cursor_agent", "delegate_claude_agent"}
+    {"delegate_cursor_agent", "delegate_claude_agent", "restart"}
 )
 
 def _resolve_unbounded_tools() -> frozenset[str]:
@@ -851,9 +852,9 @@ def _run_sequential_tool_execution_middleware(
     """
     timeout_s = _resolve_sequential_tool_timeout()
     if function_name in _resolve_unbounded_tools():
-        # Long-running external agents (delegate_cursor_agent /
-        # delegate_claude_agent): the generic deadline would kill healthy
-        # multi-hour runs; their own stall watchdog is the dead-man switch.
+        # Long-running external agents carry their own stall watchdog; human-
+        # confirmation tools (e.g. restart) wait for a human reply and rely on
+        # clarify heartbeats — the generic deadline must not fire for either.
         timeout_s = None
     kwargs = {
         "function_name": function_name,
@@ -1626,10 +1627,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         and time.monotonic()
                         >= deadline + authorization_gate.excluded_seconds()
                     ):
-                        # Exempt tools (long-running external agents) keep
-                        # running past the batch deadline; the deadline only
-                        # abandons bounded stragglers. When every straggler is
-                        # exempt the deadline simply goes away.
+                        # Exempt tools (long-running external agents and human-
+                        # confirmation tools such as restart) keep running past
+                        # the batch deadline; the deadline only abandons
+                        # bounded stragglers. When every straggler is exempt
+                        # the deadline simply goes away.
                         _exempt_names = _resolve_unbounded_tools()
                         exempt_futures = {
                             f

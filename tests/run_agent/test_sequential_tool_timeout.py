@@ -268,6 +268,54 @@ def test_sequential_timeout_skips_unbounded_delegate_tools(tmp_path, monkeypatch
     assert messages[1]["content"] == "second result"
     assert not any(event.get("error_type") == "tool_timeout" for event in terminal_events)
 
+
+def _restart_call(call_id: str = "restart-1"):
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(name="restart", arguments="{}"),
+    )
+
+
+def test_sequential_timeout_skips_unbounded_restart_tool(tmp_path, monkeypatch):
+    """Restart waits for human confirmation and must outrun the generic deadline."""
+    agent = _make_agent(tmp_path)
+    terminal_events: list[dict] = []
+
+    def _dispatch(_name, _args, _task_id, *, tool_call_id, **_kwargs):
+        if tool_call_id == "restart-1":
+            # Outlasts the 1.0s generic deadline; must still return normally.
+            time.sleep(1.3)
+            return "restart confirmed"
+        return "second result"
+
+    def _capture_terminal_event(*_args, **kwargs):
+        terminal_events.append(kwargs)
+
+    calls = [_restart_call(), _tool_call("next")]
+    messages: list[dict] = []
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
+    monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+
+    started = time.monotonic()
+    with (
+        patch("run_agent.handle_function_call", side_effect=_dispatch),
+        patch(
+            "agent.tool_executor._emit_terminal_post_tool_call",
+            side_effect=_capture_terminal_event,
+        ),
+    ):
+        execute_tool_calls_sequential(
+            agent, SimpleNamespace(tool_calls=calls), messages, "task"
+        )
+
+    assert time.monotonic() - started < 10.0
+    assert [message["tool_call_id"] for message in messages] == ["restart-1", "next"]
+    assert messages[0]["content"] == "restart confirmed"
+    assert messages[1]["content"] == "second result"
+    assert not any(event.get("error_type") == "tool_timeout" for event in terminal_events)
+
+
 def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monkeypatch):
     from agent.subagent_lifecycle import (
         SubagentLaunchRequest,
