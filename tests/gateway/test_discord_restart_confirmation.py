@@ -15,7 +15,9 @@ delivery as ambiguous and sends no fallback.
 
 import asyncio
 import json
+import logging
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -396,3 +398,453 @@ def test_fast_reply_racing_the_lost_response_send_still_reaps_the_entry(
         clear_session_vars(None)
         cg.clear_session("discord-55")
     runner.request_restart.assert_not_called()
+
+
+# ── the temporary Restart Pending thread title ───────────────────────────────
+#
+# While the restart confirm gate waits, the calling Discord thread itself is
+# the pending indicator: retitled exactly "Restart Pending" before the prompt
+# lands, restored to its exact original name the moment the gate resolves.
+# The rename state is per invocation (a token handed back to the tool), never
+# module-global, and every failure is cosmetic — logged, never fatal.
+
+
+def _make_thread_channel(name: str):
+    """A channel object that passes the adapter's ``discord.Thread`` check."""
+    from plugins.platforms.discord import adapter as discord_adapter
+
+    thread = discord_adapter.discord.Thread()
+    thread.name = name
+    thread.edit = AsyncMock(return_value=None)
+    return thread
+
+
+@pytest.mark.asyncio
+async def test_pending_title_captures_before_the_rename_edits_the_exact_thread():
+    """Phase one is read-only: the exact original name is held before the edit.
+
+    The capture resolves the exact calling thread and hands back its exact
+    name WITHOUT mutating anything — only then does phase two's renaming
+    edit run. That ordering is what lets a rename whose response is lost
+    after Discord applied it still be undone: the name to restore never
+    lived inside the edit's round trip.
+    """
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    restore = await adapter.capture_restart_pending_thread_title("999")
+
+    # The exact calling thread — resolved by its own id — and its exact
+    # name captured with no edit issued yet.
+    assert adapter._client.get_channel.call_args.args == (999,)
+    assert restore is not None
+    assert restore.thread_id == 999
+    assert restore.original_name == "Deploy check"
+    thread.edit.assert_not_awaited()
+
+    await adapter.begin_restart_pending_thread_title(restore)
+
+    thread.edit.assert_awaited_once()
+    assert thread.edit.call_args.kwargs["name"] == "Restart Pending"
+
+
+@pytest.mark.asyncio
+async def test_pending_title_resolves_the_thread_via_fetch_when_uncached():
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    adapter._client.get_channel = MagicMock(return_value=None)
+    adapter._client.fetch_channel = AsyncMock(return_value=thread)
+
+    restore = await adapter.capture_restart_pending_thread_title("999")
+    await adapter.begin_restart_pending_thread_title(restore)
+
+    assert restore is not None
+    assert restore.original_name == "Deploy check"
+    assert thread.edit.call_args.kwargs["name"] == "Restart Pending"
+
+
+@pytest.mark.asyncio
+async def test_pending_title_leaves_an_already_pending_thread_alone():
+    """Already titled Restart Pending → no edit, and no invented restore name."""
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Restart Pending")
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    restore = await adapter.capture_restart_pending_thread_title("999")
+    await adapter.begin_restart_pending_thread_title(restore)
+
+    assert restore is None
+    thread.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_title_ignores_non_thread_channels():
+    adapter = _make_adapter()
+    channel = AsyncMock()  # a plain channel object, not a discord.Thread
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    restore = await adapter.capture_restart_pending_thread_title("9001")
+
+    assert restore is None
+    channel.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_title_rename_failure_is_cosmetic():
+    """A failed renaming edit never raises, and the capture survives it.
+
+    The state was captured before the edit ran, so the caller still holds
+    what a restore needs — the exit-time restore stays possible (it is
+    idempotent if the edit never landed) instead of the name being lost
+    with the failed edit.
+    """
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    thread.edit = AsyncMock(side_effect=RuntimeError("missing permissions"))
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    restore = await adapter.capture_restart_pending_thread_title("999")
+    assert restore is not None
+
+    # Must not raise — the title is cosmetic and cannot gate the restart.
+    await adapter.begin_restart_pending_thread_title(restore)
+
+
+@pytest.mark.asyncio
+async def test_pending_title_without_a_client_is_logged_not_silent(caplog):
+    """No client is a rename failure too — the one that used to vanish.
+
+    The contract is that every rename failure is logged clearly while
+    staying cosmetic, and a missing client (adapter alive, gateway closing)
+    is exactly the failure a live reproduction hits.
+    """
+    adapter = _make_adapter()
+    adapter._client = None
+
+    with caplog.at_level(
+        logging.WARNING, logger="plugins.platforms.discord.adapter"
+    ):
+        restore = await adapter.capture_restart_pending_thread_title("999")
+
+    assert restore is None
+    assert any(
+        r.levelno >= logging.WARNING
+        and "No Discord client" in r.getMessage()
+        and "999" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_title_restore_puts_the_exact_original_back():
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    adapter._client.get_channel = MagicMock(return_value=thread)
+    restore = await adapter.capture_restart_pending_thread_title("999")
+    await adapter.begin_restart_pending_thread_title(restore)
+    thread.edit.reset_mock()
+    adapter._client.get_channel.reset_mock()
+
+    await adapter.end_restart_pending_thread_title(restore)
+
+    # Re-resolves the same thread, then restores the exact original name.
+    assert adapter._client.get_channel.call_args.args == (999,)
+    thread.edit.assert_awaited_once()
+    assert thread.edit.call_args.kwargs["name"] == "Deploy check"
+
+
+@pytest.mark.asyncio
+async def test_pending_title_restore_failure_is_swallowed():
+    """A failed restore is logged inside the adapter, never raised."""
+    from plugins.platforms.discord.adapter import RestartPendingThreadTitle
+
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    thread.edit = AsyncMock(side_effect=RuntimeError("rate limited"))
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    # Must not raise — restoration is cosmetic and cannot gate the restart.
+    await adapter.end_restart_pending_thread_title(
+        RestartPendingThreadTitle(thread_id=999, original_name="Deploy check")
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_title_restore_without_state_is_a_noop():
+    adapter = _make_adapter()
+    adapter._client.get_channel = MagicMock()
+
+    await adapter.end_restart_pending_thread_title(None)
+
+    adapter._client.get_channel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pending_title_restore_without_a_client_is_logged_not_silent(caplog):
+    """A restore token with no client would strand the thread — say so.
+
+    This is the sharpest edge of the contract: the rename already landed, so
+    a silently skipped restore leaves the thread titled ``Restart Pending``
+    forever, with nothing in the log to explain it.
+    """
+    from plugins.platforms.discord.adapter import RestartPendingThreadTitle
+
+    adapter = _make_adapter()
+    adapter._client = None
+
+    with caplog.at_level(
+        logging.WARNING, logger="plugins.platforms.discord.adapter"
+    ):
+        await adapter.end_restart_pending_thread_title(
+            RestartPendingThreadTitle(thread_id=999, original_name="Deploy check")
+        )
+
+    assert any(
+        r.levelno >= logging.WARNING
+        and "No Discord client" in r.getMessage()
+        and "999" in r.getMessage()
+        and "Deploy check" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_thread_titled_before_the_confirmation_embed_and_restored_before_restart(
+    gateway_loop, monkeypatch
+):
+    """The real adapter through the tool: rename → embed → reply → restore.
+
+    One shared thread channel records every edit and send in order, so the
+    contract is observable end to end: the thread is retitled ``Restart
+    Pending`` strictly before the confirmation embed lands on it, the
+    requester's reply resolves the gate, the exact original name is back
+    before the restart itself is queued, and nothing else is renamed.
+    """
+    from plugins.gateway_restart.tool import handle_restart
+
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    calls: list[tuple] = []
+
+    async def _edit(**kwargs):
+        calls.append(("edit", kwargs.get("name")))
+
+    async def _send(**kwargs):
+        calls.append(("send", "embed" if kwargs.get("embed") else "plain"))
+        # The requester answers from the gateway loop thread while the gate
+        # is open — exactly as the text-intercept would.
+        assert (
+            cg.attempt_text_response_for_session("discord-55", "restart")
+            == cg.TEXT_RESOLVED
+        )
+        return SimpleNamespace(id=777)
+
+    thread.edit = _edit
+    thread.send = _send
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    runner, _telegram_adapter = make_restart_runner()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._gateway_loop = gateway_loop
+    request_restart = MagicMock(return_value=True)
+
+    def _request_restart_spy(**kwargs):
+        calls.append(("request_restart",))
+        return request_restart(**kwargs)
+
+    runner.request_restart = MagicMock(side_effect=_request_restart_spy)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    set_session_vars(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    # Retitled before the embed landed; the exact original name restored
+    # after the reply but BEFORE the restart was queued.
+    assert calls == [
+        ("edit", "Restart Pending"),
+        ("send", "embed"),
+        ("edit", "Deploy check"),
+        ("request_restart",),
+    ]
+
+
+def test_rename_response_lost_after_discord_applied_it_still_restores(
+    gateway_loop, monkeypatch
+):
+    """The post-apply timeout repro: the edit landed, the response stalled.
+
+    Discord applied the ``Restart Pending`` rename and then the edit's
+    response stalled past the tool's gateway-loop round-trip bound, so from
+    the tool's side the rename timed out with an unknowable outcome. The
+    exact original name must have been captured BEFORE that edit ran, so the
+    restore still fires on the way out — and the restart is only queued once
+    the thread carries its exact original name again. Dropping the captured
+    name on the stalled edit is the bug this pins: the exact-word
+    confirmation would queue ``begin_user_restart`` over a thread still
+    titled ``Restart Pending``, which then never comes back.
+
+    The round-trip bound is scaled down (not the waits up) so the stalled
+    edit crosses it deterministically without sleeping production timeouts.
+    """
+    import plugins.gateway_restart.tool as restart_tool
+    from plugins.gateway_restart.tool import handle_restart
+
+    scaled_timeout = 0.5
+    monkeypatch.setattr(restart_tool, "_BEGIN_RESTART_TIMEOUT_S", scaled_timeout)
+
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    calls: list[tuple] = []
+
+    async def _edit(**kwargs):
+        name = kwargs.get("name")
+        calls.append(("edit", name))
+        # Discord applies the rename first; only the response stalls. The
+        # pending edit is the one that stalls — the restore must not.
+        thread.name = name
+        if name == "Restart Pending":
+            await asyncio.sleep(scaled_timeout * 4)
+
+    async def _send(**kwargs):
+        calls.append(("send", "embed" if kwargs.get("embed") else "plain"))
+        # The requester answers from the gateway loop thread while the gate
+        # is open — exactly as the text-intercept would.
+        assert (
+            cg.attempt_text_response_for_session("discord-55", "restart")
+            == cg.TEXT_RESOLVED
+        )
+        return SimpleNamespace(id=777)
+
+    thread.edit = _edit
+    thread.send = _send
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    runner, _telegram_adapter = make_restart_runner()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._gateway_loop = gateway_loop
+    real_begin = runner.begin_user_restart
+    observed: list[str] = []
+
+    async def _begin_spy(**kwargs):
+        observed.append(thread.name)
+        calls.append(("begin_user_restart", thread.name))
+        return await real_begin(**kwargs)
+
+    runner.begin_user_restart = _begin_spy
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    set_session_vars(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    # The repro premise held: the pending edit DID reach Discord (and the
+    # tool saw it time out), the embed landed, the reply was the exact word.
+    assert calls == [
+        ("edit", "Restart Pending"),
+        ("send", "embed"),
+        ("edit", "Deploy check"),
+        ("begin_user_restart", "Deploy check"),
+    ]
+    # The restart was queued over the exact original name, and the thread
+    # keeps it — the pending title never outlived the confirm wait.
+    assert observed == ["Deploy check"]
+    assert thread.name == "Deploy check"
+
+
+def test_rename_submit_race_never_bypasses_the_confirm_cleanup(
+    gateway_loop, monkeypatch, caplog
+):
+    """The gateway loop closed between the liveness check and the rename hop.
+
+    ``asyncio.run_coroutine_threadsafe`` raises instead of returning a failed
+    future when the submission itself cannot be scheduled, and the mutating
+    rename used to be submitted OUTSIDE the confirm gate's guarded region —
+    so this race escaped past the gate entirely: the registration stayed
+    armed to eat the requester's next message, the captured title was never
+    restored, and the restart was never queued. The submit failure is now a
+    logged cosmetic outcome that retains the captured state, and the flow
+    runs to completion — prompt delivered, exact original name restored
+    before the restart is queued, entry reaped by the wait, and the
+    never-scheduled coroutine disposed instead of leaking un-awaited.
+    """
+    import inspect
+
+    from plugins.gateway_restart.tool import handle_restart
+
+    real_submit = asyncio.run_coroutine_threadsafe
+    submitted: list = []
+
+    def _rename_submit_fails(coro, loop):
+        submitted.append(coro)
+        if len(submitted) == 2:  # capture → RENAME → prompt send → restore
+            raise RuntimeError("Event loop is closed")
+        return real_submit(coro, loop)
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", _rename_submit_fails)
+
+    adapter = _make_adapter()
+    thread = _make_thread_channel("Deploy check")
+    calls: list[tuple] = []
+
+    async def _edit(**kwargs):
+        calls.append(("edit", kwargs.get("name")))
+
+    async def _send(**kwargs):
+        calls.append(("send", "embed" if kwargs.get("embed") else "plain"))
+        # The requester answers from the gateway loop thread while the gate
+        # is open — exactly as the text-intercept would.
+        assert (
+            cg.attempt_text_response_for_session("discord-55", "restart")
+            == cg.TEXT_RESOLVED
+        )
+        return SimpleNamespace(id=777)
+
+    thread.edit = _edit
+    thread.send = _send
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    runner, _telegram_adapter = make_restart_runner()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._gateway_loop = gateway_loop
+    request_restart = MagicMock(return_value=True)
+
+    def _request_restart_spy(**kwargs):
+        calls.append(("request_restart",))
+        return request_restart(**kwargs)
+
+    runner.request_restart = MagicMock(side_effect=_request_restart_spy)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    with caplog.at_level(logging.WARNING, logger="plugins.gateway_restart.tool"):
+        set_session_vars(**_DISCORD_SESSION)
+        try:
+            result = json.loads(handle_restart({}))
+        finally:
+            clear_session_vars(None)
+            cg.clear_session("discord-55")
+
+    assert result["success"] is True
+    # The pending-title edit never ran (its submission failed before it could
+    # be scheduled); the idempotent restore still put the exact original name
+    # back BEFORE the restart was queued.
+    assert calls == [
+        ("send", "embed"),
+        ("edit", "Deploy check"),
+        ("request_restart",),
+    ]
+    assert thread.name == "Deploy check"
+    # The confirm registration was reaped by the wait — the race used to
+    # escape before the gate could ever resolve it.
+    assert cg.has_pending("discord-55") is False
+    assert any(
+        "rename could not be submitted" in r.getMessage() for r in caplog.records
+    )
+    # The never-scheduled rename coroutine was disposed, not leaked.
+    assert inspect.getcoroutinestate(submitted[1]) is inspect.CORO_CLOSED

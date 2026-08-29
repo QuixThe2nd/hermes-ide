@@ -27237,6 +27237,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            # Relay provenance must survive the context bridge: the source's
+            # flag is what makes adapter resolution pick the relay adapter
+            # over the underlying platform's native one, and a source rebuilt
+            # from session context (the restart tool) reads it back here.
+            delivered_via_upstream_relay=(
+                getattr(context.source, "delivered_via_upstream_relay", False) is True
+            ),
         )
 
     def _clear_session_env(self, tokens: list) -> None:

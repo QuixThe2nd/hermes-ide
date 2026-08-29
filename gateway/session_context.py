@@ -135,6 +135,20 @@ _CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
 # propagates that into this contextvar at session-bind time.
 _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
+# Relay-delivery provenance for this session's inbound events: True when they
+# arrived over the per-instance-authenticated relay WebSocket (the Team
+# Gateway connector), which stamps ``SessionSource.delivered_via_upstream_
+# relay`` on the source at intake. The gateway bridges that flag here so code
+# that RECONSTRUCTS a SessionSource from session context keeps the provenance
+# alive — without it the rebuilt source defaults the flag to False and adapter
+# resolution keys off the underlying platform (e.g. ``discord``) instead of
+# ``relay``, silently reaching the wrong adapter. Like the source flag it
+# mirrors, this is a trust signal, so it is a plain bool with NO
+# ``os.environ`` fallback: the process environment can never forge it.
+_SESSION_DELIVERED_VIA_RELAY: ContextVar = ContextVar(
+    "HERMES_SESSION_DELIVERED_VIA_RELAY", default=_UNSET
+)
+
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -242,6 +256,7 @@ def set_session_vars(
     async_delivery: bool = True,
     ui_session_id: str = "",
     cron_session: Any = _UNSET,
+    delivered_via_upstream_relay: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -261,6 +276,11 @@ def set_session_vars(
     ``cron_session`` is tri-state: ``_UNSET`` preserves legacy
     ``os.environ["HERMES_CRON_SESSION"]`` fallback, ``"1"`` marks a cron job,
     and ``""`` explicitly marks a non-cron session while masking leaked env.
+
+    ``delivered_via_upstream_relay`` mirrors the inbound source's
+    relay-provenance flag so a source rebuilt from session context resolves
+    the relay adapter, not the underlying platform's native adapter (see
+    ``_SESSION_DELIVERED_VIA_RELAY``).
     """
     # Mark the session-context machinery engaged for this process. The
     # subprocess-env bridge uses this to switch from "os.environ fallback" to
@@ -287,6 +307,7 @@ def set_session_vars(
         _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
         _CRON_SESSION.set(cron_session),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        _SESSION_DELIVERED_VIA_RELAY.set(bool(delivered_via_upstream_relay)),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -334,6 +355,9 @@ def clear_session_vars(tokens: list) -> None:
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
     # stateless adapter.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    # A cleared context claims no relay provenance either — only a fresh
+    # relay-session bind may assert it.
+    _SESSION_DELIVERED_VIA_RELAY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -382,12 +406,32 @@ def reset_session_vars() -> None:
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    # …and relay provenance with it: a task spawned from a relay session's
+    # context must not carry that upstream-trust signal through its own
+    # pre-bind window.
+    _SESSION_DELIVERED_VIA_RELAY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
         clear_session_cwd()
     except Exception:
         pass
+
+
+def delivered_via_upstream_relay() -> bool:
+    """Whether this session's inbound events arrived over the relay WebSocket.
+
+    Mirrors ``SessionSource.delivered_via_upstream_relay`` into the session
+    context so a source REBUILT from that context (the ``restart`` tool)
+    resolves the relay adapter instead of the underlying platform's native
+    adapter. False for every host that never binds it (CLI, cron, TUI,
+    one-shot runs) — relay provenance is only ever asserted positively by the
+    gateway's session bind, and never via ``os.environ``.
+    """
+    value = _SESSION_DELIVERED_VIA_RELAY.get()
+    if value is _UNSET:
+        return False
+    return bool(value)
 
 
 def get_session_env(name: str, default: str = "") -> str:
