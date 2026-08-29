@@ -974,6 +974,21 @@ def _is_agent_status_queue_marker(raw: Any) -> bool:
     )
 
 
+def _adapter_can_edit_progress(adapter: Any) -> bool:
+    """True when *adapter* renders progress by editing one bubble.
+
+    ``getattr`` on the type, not the instance: duck-typed adapters (test
+    fakes, minimal plugin adapters) may not define ``edit_message`` at all
+    — "missing" means the same thing as "base no-op": can't edit, so each
+    progress update would have to become a separate message bubble.
+    """
+    _adapter_edit = getattr(type(adapter), "edit_message", None)
+    return (
+        _adapter_edit is not None
+        and _adapter_edit is not BasePlatformAdapter.edit_message
+    )
+
+
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
@@ -5211,20 +5226,22 @@ class TurnRunner:
 
         # Skip tool progress for platforms that don't support message
         # editing (e.g. iMessage/BlueBubbles) — each progress update
-        # would become a separate message bubble, which is noisy.
-        # getattr, not attribute access: duck-typed adapters (test fakes,
-        # minimal plugin adapters) may not define edit_message at all —
-        # "missing" means the same thing as "base no-op": can't edit.
-        _adapter_edit = getattr(type(adapter), "edit_message", None)
-        if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
+        # would become a separate message bubble, which is noisy.  This
+        # drain runs ONCE and returns: there is no long-lived consumer on
+        # these adapters, so the producer side (_status_callback_sync)
+        # keeps branded agent-viewer notices on the direct status rail
+        # instead of enqueueing them here.  The marker delivery below is
+        # the backstop if one ever arrives anyway.
+        if not _adapter_can_edit_progress(adapter):
             while not ctx.progress_queue.empty():
                 try:
                     raw = ctx.progress_queue.get_nowait()
                 except Exception:
                     break
-                # Tool rows are discarded here by design (every edit would be
-                # a new bubble), but a queued agent-viewer status marker is a
-                # standalone send, not an edit — deliver it, don't drop it.
+                # Tool rows are discarded here by design (every edit would
+                # be a new bubble), but a queued agent-viewer status marker
+                # is a standalone send, not an edit — deliver it, don't
+                # strand it.
                 if _is_agent_status_queue_marker(raw):
                     await self._deliver_agent_status_marker(raw)
             return
@@ -5232,8 +5249,19 @@ class TurnRunner:
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        _separate_pending_lines = []  # "separate" mode rows appended but not yet sent
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+        def _agent_interrupted() -> bool:
+            """True once the user interrupted this turn (late rows suppress)."""
+            try:
+                _agent = ctx.agent_holder[0] if ctx.agent_holder else None
+                return _agent is not None and bool(
+                    getattr(_agent, "is_interrupted", False)
+                )
+            except Exception:
+                return False
 
         _progress_len_fn = (
             adapter.message_len_fn
@@ -5371,19 +5399,34 @@ class TurnRunner:
             return True
 
         async def _flush_progress_before_agent_status() -> None:
-            """Deliver the pending tool-progress row before a standalone status.
+            """Deliver pending tool-progress rows before a standalone status.
 
             Runs when an agent-viewer status marker reaches the head of the
-            queue. The row may still be undelivered because the edit throttle
-            deferred it, so force the send/edit here (bypassing the throttle)
-            — the tool row must land ABOVE the viewer notice. Best-effort: a
-            failure is logged and swallowed rather than allowed to lose the
-            notice queued behind it.
+            queue. A row may still be undelivered — grouped mode defers rows
+            through the edit throttle, and in "separate" mode the same
+            throttle can leave the newest row buffered without its own
+            message yet — so force the delivery here (bypassing the
+            throttle): the tool row must land ABOVE the viewer notice.
+            Best-effort: a failure is logged and swallowed rather than
+            allowed to lose the notice queued behind it.
             """
             nonlocal progress_msg_id, progress_lines, _last_edit_ts
-            if not progress_lines or not can_edit:
-                # Non-editable mode sends each line on its own tick, so no
-                # row is ever pending here.
+            if not progress_lines:
+                return
+            if not can_edit:
+                # "separate" mode: one message per pending row, oldest first,
+                # then forget them so a later row or a second marker can
+                # never re-send (or drop) them.
+                for _line in list(_separate_pending_lines):
+                    try:
+                        await _send_progress_text(str(_line))
+                    except Exception:
+                        logger.debug(
+                            "progress flush before agent status failed",
+                            exc_info=True,
+                        )
+                _separate_pending_lines.clear()
+                _last_edit_ts = time.monotonic()
                 return
             rolled = False
             try:
@@ -5421,16 +5464,13 @@ class TurnRunner:
                 # should not render as bubbles.  The "⚡ Interrupting
                 # current task" message is sent separately and is the
                 # last progress-flavored bubble the user should see.
-                try:
-                    _agent_for_interrupt = ctx.agent_holder[0] if ctx.agent_holder else None
-                    if _agent_for_interrupt is not None and getattr(
-                        _agent_for_interrupt, "is_interrupted", False
-                    ):
-                        # Drop this event and continue draining.
-                        await asyncio.sleep(0)
-                        continue
-                except Exception:
-                    pass
+                # Agent-viewer markers are exempt: one denotes a
+                # subprocess/cloud run that already spawned and keeps
+                # running after the interrupt — its link stays visible.
+                if _agent_interrupted() and not _is_agent_status_queue_marker(raw):
+                    # Drop this event and continue draining.
+                    await asyncio.sleep(0)
+                    continue
 
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
@@ -5449,6 +5489,7 @@ class TurnRunner:
                     # linearization regression after PR #7885.)
                     progress_msg_id = None
                     progress_lines = []
+                    _separate_pending_lines.clear()
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
@@ -5461,17 +5502,26 @@ class TurnRunner:
                     # the notice instead of the one above it. Handled before
                     # the edit throttle — the throttle batching a tool row
                     # behind the notice is precisely the ordering bug this
-                    # marker exists to fix.
-                    await _flush_progress_before_agent_status()
+                    # marker exists to fix.  Once interrupted the pending rows
+                    # stay suppressed; only the spawned-run notice goes out.
+                    if not _agent_interrupted():
+                        await _flush_progress_before_agent_status()
                     await self._deliver_agent_status_marker(raw)
                     progress_msg_id = None
                     progress_lines = []
+                    _separate_pending_lines.clear()
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
                 else:
                     msg = raw
                     progress_lines.append(msg)
+                    if not can_edit:
+                        # "separate" mode: this row becomes its own message
+                        # later on this tick — remember it until that send
+                        # actually happens (the throttle may defer it past
+                        # several later rows).
+                        _separate_pending_lines.append(msg)
 
                 if await _roll_progress_overflow_if_needed():
                     _last_edit_ts = time.monotonic()
@@ -5557,6 +5607,12 @@ class TurnRunner:
                         progress_msg_id = result.message_id
                         if ctx._cleanup_progress:
                             ctx._cleanup_msg_ids.append(str(result.message_id))
+                        if not can_edit:
+                            # The newest row just went out as its own message;
+                            # older pending rows were either already sent or
+                            # skipped by the throttle (pre-v0.9 "separate"
+                            # behavior: one message per row, no catch-up).
+                            _separate_pending_lines.clear()
 
                 _last_edit_ts = time.monotonic()
 
@@ -5590,20 +5646,27 @@ class TurnRunner:
                                     pass
                             progress_msg_id = None
                             progress_lines = []
+                            _separate_pending_lines.clear()
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         elif _is_agent_status_queue_marker(raw):
                             # Agent-viewer status during drain: flush the
                             # pending row, then deliver the notice itself —
                             # never merge the tuple into the progress text.
-                            await _flush_progress_before_agent_status()
+                            # Pending rows stay suppressed when the turn was
+                            # interrupted; the notice is still delivered.
+                            if not _agent_interrupted():
+                                await _flush_progress_before_agent_status()
                             await self._deliver_agent_status_marker(raw)
                             progress_msg_id = None
                             progress_lines = []
+                            _separate_pending_lines.clear()
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:
                             progress_lines.append(raw)
+                            if not can_edit:
+                                _separate_pending_lines.append(raw)
                             await _roll_progress_overflow_if_needed()
                     except Exception:
                         break
@@ -6216,12 +6279,16 @@ class TurnRunner:
         # marker carries the exact line the direct rail below would have sent,
         # so platform rendering is unchanged — only the ordering does. Falls
         # through to the direct rail whenever the ordered queue isn't usable:
-        # no queue (tool progress off / log mode), or a native-task-card
-        # consumer that would silently drop a non-dict marker.
+        # no queue (tool progress off / log mode), a native-task-card consumer
+        # that would silently drop a non-dict marker, or an adapter that
+        # cannot edit — its consumer drains the queue once and returns long
+        # before the tool spawns the run, so a queued marker would be stranded
+        # with nobody left to deliver it.
         if (
             ctx.tool_progress_enabled
             and ctx.progress_queue is not None
             and not ctx._native_slack_task_cards
+            and _adapter_can_edit_progress(ctx._status_adapter)
         ):
             from tools.tool_status import is_agent_viewer_status_line
 

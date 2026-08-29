@@ -105,19 +105,33 @@ class _NoEditCaptureAdapter(_CaptureCore):
     """Duck-typed adapter with no ``edit_message`` at all (can't edit)."""
 
 
-def _status_ctx(progress_queue, *, tool_progress=True, adapter=None):
-    return TurnContext(
+def _status_ctx(
+    progress_queue,
+    *,
+    tool_progress=True,
+    adapter=None,
+    grouping="grouped",
+    agent=None,
+    loop=None,
+    status_metadata=None,
+    cleanup_progress=False,
+):
+    ctx = TurnContext(
         source=SessionSource(platform=Platform.DISCORD, chat_id="c1", user_id="u1"),
         _run_still_current=lambda: True,
         progress_mode="all",
-        progress_grouping="grouped",
+        progress_grouping=grouping,
         tool_progress_enabled=tool_progress,
         progress_queue=progress_queue,
         _status_adapter=adapter,
         _status_chat_id="c1",
-        _status_thread_metadata=None,
-        _loop_for_step=None,
+        _status_thread_metadata=status_metadata,
+        _loop_for_step=loop,
+        _cleanup_progress=cleanup_progress,
     )
+    if agent is not None:
+        ctx.agent_holder[0] = agent
+    return ctx
 
 
 async def _await_send_count(adapter, count, timeout=5.0):
@@ -183,7 +197,12 @@ def test_agent_viewer_notice_rides_queue_behind_tool_row(notice, monkeypatch):
 
 @pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
 def test_agent_viewer_notice_falls_back_to_direct_rail(notice, monkeypatch):
-    """Without a usable ordered queue the notice keeps the direct status path."""
+    """Without a usable ordered queue the notice keeps the direct status path.
+
+    That includes a non-editable adapter with tool progress on: its consumer
+    drains the queue once and returns before the tool ever spawns the run, so
+    a queued marker would be stranded.
+    """
     import gateway.run as gateway_run
 
     scheduled = []
@@ -195,18 +214,20 @@ def test_agent_viewer_notice_falls_back_to_direct_rail(notice, monkeypatch):
 
     monkeypatch.setattr(gateway_run, "safe_schedule_threadsafe", _capture)
 
-    for tool_progress, progress_queue in (
-        (False, None),  # tool progress off: no queue exists at all
-        (False, queue_mod.Queue()),  # queue exists (thinking bubbles), rows off
+    for tool_progress, progress_queue, adapter in (
+        (False, None, _OrderCaptureAdapter()),  # tool progress off: no queue at all
+        (False, queue_mod.Queue(), _OrderCaptureAdapter()),  # queue exists, rows off
+        (True, queue_mod.Queue(), _NoEditCaptureAdapter()),  # drain-once consumer
     ):
         scheduled.clear()
-        adapter = _OrderCaptureAdapter()
-        ctx = _status_ctx(progress_queue, tool_progress=tool_progress, adapter=adapter)
+        ctx = _status_ctx(
+            progress_queue, tool_progress=tool_progress, adapter=adapter
+        )
         runner = _make_runner(ctx, adapter)
 
         runner._status_callback_sync("lifecycle", notice)
 
-        assert len(scheduled) == 1, (tool_progress, progress_queue)
+        assert len(scheduled) == 1, (tool_progress, progress_queue, adapter)
         if progress_queue is not None:
             assert progress_queue.empty()
 
@@ -347,19 +368,184 @@ def test_cancelled_consumer_drains_agent_notice_without_merging():
     assert "__agent_status__" not in joined
 
 
-def test_non_editable_adapter_still_delivers_agent_notice():
-    """On platforms that cannot edit, tool rows are dropped but the notice is not."""
+def test_non_editable_adapter_notice_keeps_direct_rail_after_consumer_returns():
+    """Non-editable adapters: the notice keeps the direct status rail.
+
+    Production starts ``send_progress_messages`` BEFORE tool execution. On an
+    adapter that cannot edit, the consumer drains the (still empty) queue once
+    and returns — so a notice enqueued later, when the delegation tool finally
+    spawns its run, would sit on the queue with no consumer left to deliver
+    it. The real production order is reproduced here: the consumer runs to
+    completion on an empty queue first, and only then does the status callback
+    fire. The notice must still be sent, exactly once, and not be stranded.
+    """
+    progress_queue = queue_mod.Queue()
+    adapter = _NoEditCaptureAdapter()
+
+    async def _scenario():
+        ctx = _status_ctx(
+            progress_queue, adapter=adapter, loop=asyncio.get_running_loop()
+        )
+        runner = _make_runner(ctx, adapter)
+        # A tool row queued before the consumer starts: dropped by design on
+        # this adapter (every edit would be a separate bubble).
+        runner.progress_callback("tool.started", "web_search", "suppressed-row", {})
+
+        consumer = asyncio.get_running_loop().create_task(
+            runner.send_progress_messages()
+        )
+        await consumer  # returns on its own: drain-once, nothing left running
+
+        # The tool runs now and its spawn callback emits the viewer notice —
+        # there is no progress consumer alive to drain a queued marker.
+        runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+        await _await_send_count(adapter, 1)
+
+    asyncio.run(_scenario())
+
+    assert [call["content"] for call in adapter.sent] == [_CLAUDE_NOTICE]
+    assert progress_queue.empty(), "notice must not be left stranded on the queue"
+
+
+def test_non_editable_adapter_backstop_delivers_stray_queued_marker():
+    """Defense in depth: a marker that reaches this queue is still delivered.
+
+    The producer keeps branded notices off this queue (see the test above);
+    if one ever arrives anyway, the drain-once loop must send it rather than
+    discard it alongside the suppressed tool rows.
+    """
+    import gateway.run as gateway_run
+
     progress_queue = queue_mod.Queue()
     adapter = _NoEditCaptureAdapter()
     ctx = _status_ctx(progress_queue, adapter=adapter)
     runner = _make_runner(ctx, adapter)
 
-    runner.progress_callback("tool.started", "web_search", "first", {})
+    ctx.progress_queue.put("🔍 web_search: suppressed-row")
+    ctx.progress_queue.put(
+        gateway_run._agent_status_queue_marker("lifecycle", _CLAUDE_NOTICE)
+    )
+
+    asyncio.run(_run_consumer_until_sends(runner, adapter, 1))
+
+    assert [call["content"] for call in adapter.sent] == [_CLAUDE_NOTICE]
+    assert progress_queue.empty()
+
+
+def test_separate_grouping_pending_row_lands_before_agent_notice():
+    """``separate`` grouping: a throttled pending row is sent, never dropped.
+
+    Reproduces the verifier sequence: the first row's send opens the edit
+    throttle window, the second row is buffered inside that window (it has no
+    message of its own yet), and the delegation's viewer notice dequeues right
+    behind it. The pending row must land first — once, and unmerged — because
+    the spawned run's link would otherwise point at a tool row the user never
+    saw.
+    """
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter, grouping="separate")
+    runner = _make_runner(ctx, adapter)
+
+    async def _scenario():
+        runner.progress_callback("tool.started", "web_search", "first-row", {})
+        task = asyncio.get_running_loop().create_task(
+            runner.send_progress_messages()
+        )
+        try:
+            await _await_send_count(adapter, 1)  # first row: its own message
+            # Second row lands inside the throttle window opened by the first
+            # send — buffered, not yet sent — immediately followed by the
+            # viewer notice from inside the tool call.
+            runner.progress_callback("tool.started", "web_search", "second-row", {})
+            runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+            await _await_send_count(adapter, 3)  # deferred row, then notice
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(_scenario())
+
+    contents = [call["content"] for call in adapter.sent]
+    assert len(contents) == 3, contents
+    assert "first-row" in contents[0]
+    assert "second-row" in contents[1], contents
+    assert contents[2] == _CLAUDE_NOTICE
+    # Exactly once each: no dropped row, no duplicate row, no raw marker text.
+    rendered = contents + [edit["content"] for edit in adapter.edits]
+    assert sum("second-row" in line for line in rendered) == 1, rendered
+    assert sum(line == _CLAUDE_NOTICE for line in rendered) == 1, rendered
+    assert "__agent_status__" not in "\n".join(rendered)
+
+
+def test_interrupted_agent_delivers_viewer_notice_and_suppresses_late_row():
+    """Under interrupt the spawned-run notice survives; late tool rows do not.
+
+    ``agent.is_interrupted`` used to discard every dequeued event, including
+    the marker for a subprocess/cloud run that already spawned and keeps
+    running after the stop. The marker is a durable status notice, so it is
+    delivered exactly once — while an ordinary queued tool row stays
+    suppressed, with no progress edit and no post-cancel edit at all.
+    """
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    agent = SimpleNamespace(is_interrupted=True)
+    ctx = _status_ctx(
+        progress_queue,
+        adapter=adapter,
+        agent=agent,
+        cleanup_progress=True,
+        status_metadata={"thread_id": "t-9"},
+    )
+    runner = _make_runner(ctx, adapter)
+
+    # A row queued in the window between tool parse and interrupt processing
+    # (progress_callback itself refuses to enqueue it this late).
+    ctx.progress_queue.put("🔍 web_search: queued before stop landed")
     runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
 
     asyncio.run(_run_consumer_until_sends(runner, adapter, 1))
 
     assert [call["content"] for call in adapter.sent] == [_CLAUDE_NOTICE]
+    assert adapter.edits == [], "interrupted turns must not edit progress rows"
+    # Same status wiring as the direct rail: thread metadata preserved and the
+    # notice tracked for cleanup like any other status bubble.
+    assert adapter.sent[0]["metadata"] == {"thread_id": "t-9"}
+    assert ctx._cleanup_msg_ids == [adapter.sent[0]["message_id"]]
+
+
+def test_interrupted_agent_cancel_drain_delivers_notice_without_late_rows():
+    """Cancellation during an interrupted turn still delivers the marker once."""
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    agent = SimpleNamespace(is_interrupted=True)
+    ctx = _status_ctx(progress_queue, adapter=adapter, agent=agent)
+    runner = _make_runner(ctx, adapter)
+
+    ctx.progress_queue.put("🔍 web_search: queued before stop landed")
+    runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+
+    async def _scenario():
+        task = asyncio.get_running_loop().create_task(
+            runner.send_progress_messages()
+        )
+        await asyncio.sleep(0)  # let the consumer enter its loop
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_scenario())
+
+    contents = [call["content"] for call in adapter.sent]
+    assert contents.count(_CLAUDE_NOTICE) == 1, contents
+    assert all("queued before stop" not in line for line in contents), contents
+    rendered = contents + [edit["content"] for edit in adapter.edits]
+    assert "__agent_status__" not in "\n".join(rendered)
 
 
 class TestTurnContext:
