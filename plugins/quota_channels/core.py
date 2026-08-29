@@ -254,6 +254,14 @@ def http_bin(
     return status, body
 
 
+def _window_span_seconds(window: Mapping[str, Any]) -> Optional[float]:
+    """Numeric limit_window_seconds of a rate-limit window, else None."""
+    value = window.get("limit_window_seconds")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def parse_codex_usage(text: str) -> Tuple[int, float]:
     try:
         usage = json.loads(text)
@@ -261,13 +269,27 @@ def parse_codex_usage(text: str) -> Tuple[int, float]:
         raise QuotaChannelsError("codex: invalid usage payload JSON") from exc
     if not isinstance(usage, dict):
         raise QuotaChannelsError("codex: invalid usage payload JSON")
-    primary = (usage.get("rate_limit") or {}).get("primary_window")
+    rate_limit = usage.get("rate_limit") or {}
+    primary = rate_limit.get("primary_window")
     if not primary:
         raise QuotaChannelsError(
             f"no primary_window in codex usage payload: {text[:200]}"
         )
     if not isinstance(primary, dict):
         raise QuotaChannelsError("codex: invalid primary_window in usage payload")
+    # ChatGPT can return a 5h primary alongside a 7d secondary; the channel
+    # must count down against the longer window. A non-dict secondary counts
+    # as absent, and without two numeric spans the primary is used as-is.
+    secondary = rate_limit.get("secondary_window")
+    if isinstance(secondary, dict):
+        primary_span = _window_span_seconds(primary)
+        secondary_span = _window_span_seconds(secondary)
+        if (
+            primary_span is not None
+            and secondary_span is not None
+            and secondary_span > primary_span
+        ):
+            primary = secondary
     try:
         used = round(float(primary.get("used_percent", 0)))
         reset_after = float(primary.get("reset_after_seconds", 0))
@@ -441,7 +463,20 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
         if not isinstance(entry, Mapping):
             raise QuotaChannelsError("z.ai: invalid limits fields in usage payload")
     try:
-        weekly = max(limits, key=lambda window: window.get("nextResetTime") or 0)
+        # The longest window is the plan's real quota horizon: larger unit
+        # (weeks > days > hours > minutes), then larger number, then the later
+        # reset edge. A 5h rolling window often resets LATER than the weekly
+        # one, so nextResetTime alone would pick the wrong window. Legacy
+        # entries without unit/number rank as (0, 0, ...) and only win when
+        # no window carries them — the old max-nextResetTime behavior.
+        weekly = max(
+            limits,
+            key=lambda window: (
+                window.get("unit") or 0,
+                window.get("number") or 0,
+                window.get("nextResetTime") or 0,
+            ),
+        )
         used = int(weekly.get("percentage", 0))
         reset_ms = float(weekly.get("nextResetTime") or 0)
     except (AttributeError, TypeError, ValueError) as exc:
