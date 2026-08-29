@@ -1,16 +1,19 @@
 """Tests for gateway.restart_channel_rename — restart-progress channel renaming."""
 import asyncio
+import time
 
 import pytest
 
 from gateway.restart_channel_rename import (
     DEFAULT_IDLE_TEMPLATE,
+    DEFAULT_MIN_INTERVAL_SECONDS,
     DEFAULT_TEMPLATE,
     _render_label,
     parse_restart_channel_rename_config,
     refresh_idle_name,
     rename_on_shutdown,
     restore_on_startup,
+    schedule_idle_refresh,
 )
 
 
@@ -63,6 +66,7 @@ def test_parse_config_full():
         "base_name": "gateway-restarts",
         "template": "restarting-{agents}-agents",
         "idle_template": DEFAULT_IDLE_TEMPLATE,
+        "min_interval_seconds": DEFAULT_MIN_INTERVAL_SECONDS,
     }
 
 
@@ -72,6 +76,8 @@ def test_parse_config_defaults():
     assert parsed["base_name"] == "gateway-restarts"
     assert parsed["template"] == DEFAULT_TEMPLATE
     assert parsed["idle_template"] == DEFAULT_IDLE_TEMPLATE
+    assert parsed["min_interval_seconds"] == DEFAULT_MIN_INTERVAL_SECONDS
+    assert DEFAULT_MIN_INTERVAL_SECONDS == 600.0
 
 
 @pytest.mark.parametrize(
@@ -189,6 +195,196 @@ def test_idle_refresh_skips_unchanged_label():
     asyncio.run(refresh_idle_name(runner))
     asyncio.run(refresh_idle_name(runner))
     assert adapter.calls == [("555", "agents-3")]
+
+
+# ── min-interval cooldown ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw_value,expected",
+    [
+        (30, 30.0),
+        (30.5, 30.5),
+        ("120", 120.0),
+        (0, 0.0),
+        (-5, 0.0),
+    ],
+)
+def test_parse_config_min_interval_coercion(raw_value, expected):
+    parsed = parse_restart_channel_rename_config(
+        {"channel_id": "42", "min_interval_seconds": raw_value}
+    )
+    assert parsed["min_interval_seconds"] == expected
+
+
+def test_parse_config_min_interval_non_numeric_falls_back_to_default():
+    parsed = parse_restart_channel_rename_config(
+        {"channel_id": "42", "min_interval_seconds": "soon"}
+    )
+    assert parsed["min_interval_seconds"] == DEFAULT_MIN_INTERVAL_SECONDS
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [float("inf"), "inf", ".inf", float("-inf"), "nan"],
+)
+def test_parse_config_min_interval_non_finite_falls_back_to_default(raw_value):
+    # YAML .inf loads as float("inf"); an infinite interval would park
+    # the deferred rename task in an endless cooldown wait.
+    parsed = parse_restart_channel_rename_config(
+        {"channel_id": "42", "min_interval_seconds": raw_value}
+    )
+    assert parsed["min_interval_seconds"] == DEFAULT_MIN_INTERVAL_SECONDS
+
+
+def test_idle_refresh_throttled_within_min_interval():
+    # Default 600s cooldown: a second, different label must not reach the
+    # adapter until the window reopens.
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter)
+    asyncio.run(refresh_idle_name(runner))
+    runner._agents = 4
+    asyncio.run(refresh_idle_name(runner))
+    assert adapter.calls == [("555", "agents-3")]
+
+
+def test_idle_refresh_applies_once_interval_elapses():
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(
+        config=_config({"channel_id": "555", "min_interval_seconds": 0.05}),
+        adapter=adapter,
+    )
+
+    async def scenario():
+        await refresh_idle_name(runner)
+        runner._agents = 4
+        await refresh_idle_name(runner)  # still inside the cooldown
+        await asyncio.sleep(0.06)  # cooldown expires
+        await refresh_idle_name(runner)
+
+    asyncio.run(scenario())
+    assert adapter.calls == [("555", "agents-3"), ("555", "agents-4")]
+
+
+def test_zero_min_interval_disables_cooldown():
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(
+        config=_config({"channel_id": "555", "min_interval_seconds": 0}),
+        adapter=adapter,
+    )
+    asyncio.run(refresh_idle_name(runner))
+    runner._agents = 4
+    asyncio.run(refresh_idle_name(runner))
+    assert adapter.calls == [("555", "agents-3"), ("555", "agents-4")]
+
+
+def test_shutdown_rename_bypasses_cooldown():
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter, agents=2)
+    runner._restart_channel_rename_last_ts = time.monotonic()  # edited just now
+    asyncio.run(rename_on_shutdown(runner))
+    assert adapter.calls == [("555", "restarting-2-agents")]
+
+
+def test_startup_restore_bypasses_cooldown():
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter)
+    runner._restart_channel_rename_last_ts = time.monotonic()  # edited just now
+    asyncio.run(restore_on_startup(runner))
+    assert adapter.calls == [("555", "agents-3")]
+
+
+def test_shutdown_rename_stamps_shared_cooldown_clock():
+    # The exempt drain edit must still update the shared last-edit
+    # timestamp, throttling the next idle refresh.
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter, agents=2)
+    asyncio.run(rename_on_shutdown(runner))
+    assert adapter.calls == [("555", "restarting-2-agents")]
+    asyncio.run(refresh_idle_name(runner))  # different label, inside cooldown
+    assert adapter.calls == [("555", "restarting-2-agents")]
+
+
+def test_startup_restore_stamps_shared_cooldown_clock():
+    # The exempt boot edit must still update the shared last-edit
+    # timestamp, throttling the next idle refresh.
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(config=_config({"channel_id": "555"}), adapter=adapter)
+    asyncio.run(restore_on_startup(runner))
+    assert adapter.calls == [("555", "agents-3")]
+    runner._agents = 4
+    asyncio.run(refresh_idle_name(runner))  # different label, inside cooldown
+    assert adapter.calls == [("555", "agents-3")]
+
+
+def test_scheduled_refresh_applies_immediately_without_prior_edit():
+    # No last-edit timestamp yet (fresh boot, never renamed): the
+    # scheduled task must apply right away, not wait out the interval.
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(
+        config=_config({"channel_id": "555", "min_interval_seconds": 600}),
+        adapter=adapter,
+    )
+
+    async def scenario():
+        schedule_idle_refresh(runner)
+        await asyncio.wait_for(runner._idle_channel_rename_task, timeout=1)
+
+    asyncio.run(scenario())
+    assert adapter.calls == [("555", "agents-3")]
+
+
+def test_scheduled_refresh_defers_cooldown_refresh_and_applies_newest():
+    # A refresh requested during the cooldown is queued, not dropped: the
+    # task waits for the window and then applies the newest count without
+    # needing a third external trigger.
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(
+        config=_config({"channel_id": "555", "min_interval_seconds": 0.25}),
+        adapter=adapter,
+    )
+
+    async def scenario():
+        schedule_idle_refresh(runner)
+        await runner._idle_channel_rename_task
+        assert adapter.calls == [("555", "agents-3")]
+        runner._agents = 4
+        schedule_idle_refresh(runner)  # inside cooldown: deferred, not dropped
+        await asyncio.sleep(0.02)  # task is now parked in the cooldown wait
+        runner._agents = 5
+        schedule_idle_refresh(runner)  # marks dirty while it waits
+        await asyncio.wait_for(runner._idle_channel_rename_task, timeout=5)
+
+    asyncio.run(scenario())
+    assert adapter.calls == [("555", "agents-3"), ("555", "agents-5")]
+
+
+def test_scheduled_refresh_dirty_during_wait_needs_no_second_cooldown_lap():
+    # A dirty mark set while the task waits out the cooldown must be
+    # satisfied by the edit that follows; the task then exits instead of
+    # idling through one more full interval for a post-apply no-op lap.
+    # With a 0.5s interval one window is enough (task done ~0.5s); a
+    # lingering second lap would need ~1.0s and blow the 0.9s bound.
+    adapter = _FakeAdapter()
+    runner = _FakeRunner(
+        config=_config({"channel_id": "555", "min_interval_seconds": 0.5}),
+        adapter=adapter,
+    )
+
+    async def scenario():
+        schedule_idle_refresh(runner)
+        await runner._idle_channel_rename_task
+        assert adapter.calls == [("555", "agents-3")]
+        runner._agents = 4
+        schedule_idle_refresh(runner)  # inside cooldown: deferred, not dropped
+        await asyncio.sleep(0.05)  # task is now parked in the cooldown wait
+        runner._agents = 5
+        schedule_idle_refresh(runner)  # marks dirty while it waits
+        await asyncio.wait_for(runner._idle_channel_rename_task, timeout=0.9)
+        assert runner._idle_channel_rename_task.done()
+
+    asyncio.run(scenario())
+    assert adapter.calls == [("555", "agents-3"), ("555", "agents-5")]
 
 
 def test_startup_missing_adapter_is_noop():
