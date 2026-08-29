@@ -258,6 +258,21 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Auto-thread creation waits out Discord 429 rate limits instead of dropping
+# the user's message (#20243 follow-up): total wall-clock budget for all
+# rate-limit waits inside a single _auto_create_thread() call. Discord
+# retry_after values of 30-590s are common, so individual waits are clamped
+# to this too, bounding the worst case per message.
+AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS = 900.0
+# When Discord signals 429 without a parseable delay on a later retry, probe
+# again after this long instead of guessing a longer window.
+_AUTO_THREAD_RATE_LIMIT_PROBE_SECONDS = 10.0
+# Hard cap on direct+fallback attempts per _auto_create_thread() call so
+# pathological loops (e.g. sub-second retry_after storms) still terminate.
+_AUTO_THREAD_MAX_CREATE_ATTEMPTS = 8
+_AUTO_THREAD_RETRY_IN_SECONDS_RE = re.compile(
+    r"retry\s+(?:in|after)\s+([\d.]+)\s*(?:seconds?|s)?\b", re.IGNORECASE
+)
 # Discord enforces a hard cap of 100 global application (slash) commands per
 # app. Registering more makes the ENTIRE sync fail with error 30032
 # ("Maximum number of application commands reached"), which silently breaks
@@ -7839,14 +7854,85 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_name = thread_name[:77] + "..."
         return thread_name
 
+    @staticmethod
+    def _extract_rate_limit_delay(exc: BaseException) -> Optional[float]:
+        """Return how long (seconds) Discord asked us to wait out a 429, else None.
+
+        Recognizes discord.RateLimited (``retry_after`` is already in
+        seconds), anything carrying a 429 status or "Too many requests" /
+        "429" text, and — as a last resort — scrapes ``Retry in X seconds``
+        from the string form (discord.py renders RateLimited exactly that
+        way, so mocked or re-wrapped exceptions still work). Returns None
+        when the exception is not a rate limit or exposes no usable delay.
+        Single waits above AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS are
+        clamped to it.
+        """
+        if exc is None:
+            return None
+        text = str(exc)
+        lowered = text.lower()
+        name = type(exc).__name__.lower()
+        retry_after = getattr(exc, "retry_after", None)
+        is_rate_limit = (
+            (retry_after is not None and ("ratelimit" in name or "rate_limit" in name))
+            or "too many requests" in lowered
+            or "429" in text
+            or getattr(exc, "status", None) == 429
+            or getattr(getattr(exc, "response", None), "status", None) == 429
+        )
+        if not is_rate_limit:
+            return None
+
+        delay: Optional[float] = None
+        # discord.RateLimited exposes retry_after directly (seconds).
+        if retry_after is not None:
+            try:
+                delay = float(retry_after)
+            except (TypeError, ValueError):
+                delay = None
+        # HTTPException hides the wait in the underlying response headers.
+        if delay is None:
+            headers = getattr(getattr(exc, "response", None), "headers", None)
+            if headers:
+                for key in ("Retry-After", "X-RateLimit-Reset-After"):
+                    try:
+                        raw = headers.get(key)
+                    except Exception:
+                        continue
+                    if raw is None:
+                        continue
+                    try:
+                        delay = float(raw)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+        # Last resort: discord.py renders "Too many requests. Retry in 1.24 seconds."
+        if delay is None:
+            match = _AUTO_THREAD_RETRY_IN_SECONDS_RE.search(text)
+            if match:
+                try:
+                    delay = float(match.group(1))
+                except (TypeError, ValueError):
+                    delay = None
+        if delay is None or delay < 0:
+            return None
+        return min(delay, AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS)
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
         Returns the created thread object, or ``None`` on failure. Both the
         primary ``message.create_thread`` and the seed-message fallback are
-        retried once after a short backoff so transient connect errors
-        (e.g. ``Cannot connect to host discord.com:443``) don't immediately
-        burn through to the caller's failure path (#20243).
+        retried after a short backoff so transient connect errors (e.g.
+        ``Cannot connect to host discord.com:443``) don't immediately burn
+        through to the caller's failure path (#20243).
+
+        Discord 429 rate limits are waited out instead of dropping the
+        message: a ⏳ reaction flags the message as queued, creation sleeps
+        for the reported ``retry_after`` (bounded in total by
+        AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS), and the reaction is
+        cleared once the thread exists. Non-rate-limit failures keep the
+        original two-attempt contract.
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -7855,13 +7941,20 @@ class DiscordAdapter(BasePlatformAdapter):
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
 
-        for attempt in range(2):
+        rate_limit_budget = AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS
+        rate_limit_waited = False
+        waiting_reaction = False
+
+        attempt = 0
+        while attempt < _AUTO_THREAD_MAX_CREATE_ATTEMPTS:
             try:
                 thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                 try:
                     setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                 except Exception:
                     pass
+                if waiting_reaction:
+                    await self._remove_reaction(message, "⏳")
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -7878,15 +7971,51 @@ class DiscordAdapter(BasePlatformAdapter):
                         setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                     except Exception:
                         pass
+                    if waiting_reaction:
+                        await self._remove_reaction(message, "⏳")
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
-                    if attempt == 0:
+                    attempt += 1
+
+                    delay = self._extract_rate_limit_delay(direct_error)
+                    if delay is None:
+                        delay = self._extract_rate_limit_delay(fallback_error)
+                    if (
+                        delay is None
+                        and rate_limit_waited
+                        and (
+                            self._is_discord_rate_limit(direct_error)
+                            or self._is_discord_rate_limit(fallback_error)
+                        )
+                    ):
+                        # Discord is still rate-limiting but stopped saying
+                        # for how long — probe again after a short wait.
+                        delay = _AUTO_THREAD_RATE_LIMIT_PROBE_SECONDS
+
+                    if delay is not None:
+                        wait = min(delay, rate_limit_budget)
+                        if wait <= 0:
+                            break  # total rate-limit wait budget exhausted
+                        if not waiting_reaction:
+                            # Visible queue indicator: the message is being
+                            # held for thread creation, not dropped. Added
+                            # once, best-effort.
+                            if self._reactions_enabled():
+                                await self._add_reaction(message, "⏳")
+                                waiting_reaction = True
+                        await asyncio.sleep(wait)
+                        rate_limit_budget -= wait
+                        rate_limit_waited = True
+                        continue
+
+                    if attempt == 1:
                         # Brief backoff before the second attempt — most failures
                         # in this path are transient connect errors that recover
                         # within a second or two.
                         await asyncio.sleep(0.75)
                         continue
+                    break
 
         logger.warning(
             "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",
