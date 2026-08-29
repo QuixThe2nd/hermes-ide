@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from plugins.home_server.core import (
     CHANNEL_TYPE_CATEGORY,
+    MODULE_KEYS,
     TEMPLATE,
     reconcile,
+    template_fingerprint,
 )
 
 # 5 categories + 2 chat + 3 notifications + 4 memory + 6 model voices + 3 speeds.
@@ -64,6 +66,119 @@ def test_second_run_is_idempotent(hermes, guild, make_discord):
     assert discord.messages == before_messages
     # The second run issued no mutating call at all.
     assert len(discord.mutations) == mutations_after_first
+
+
+def test_template_order_puts_notifications_first():
+    """The canonical order is a product decision, not an accident: Notifications
+    is the first managed category, so it sits at the top of the guild."""
+    assert MODULE_KEYS[0] == "notifications"
+    assert list(TEMPLATE)[0] == "notifications"
+    assert list(TEMPLATE) == list(MODULE_KEYS)
+    assert TEMPLATE["notifications"].category == "Notifications"
+    assert [c.name for c in TEMPLATE["notifications"].channels] == [
+        "model-fallback",
+        "gateway-restarts",
+        "other",
+    ]
+    # Chat is inbox/outbox only — no home channel in the template.
+    assert [c.name for c in TEMPLATE["chat"].channels] == ["inbox", "outbox"]
+
+
+def test_fresh_provision_seats_notifications_at_the_top(hermes, make_discord, state):
+    discord = make_discord()
+    reconcile(http_fn=discord)
+
+    positions = {
+        key: discord.channels[cid]["position"]
+        for key, cid in state()["categories"].items()
+    }
+    assert positions["notifications"] == 0
+    assert positions["chat"] == 1
+    assert positions["memory"] == 2
+    assert positions["quotas"] == 3
+    assert positions["speeds"] == 4
+
+    # Channels inside a category follow ChannelSpec order.
+    notifications = state()["channels"]["notifications"]
+    for name, wanted in (
+        ("model-fallback", 0),
+        ("gateway-restarts", 1),
+        ("other", 2),
+    ):
+        assert discord.channels[notifications[name]]["position"] == wanted, name
+
+
+def test_existing_guild_is_reordered_notifications_first(
+    hermes, make_discord, state
+):
+    """A guild provisioned before Notifications existed carries it at the
+    bottom: reconcile PATCHes it to position 0 and seats the other managed
+    categories in template order, without touching unmanaged ones."""
+    from plugins.home_server.core import CHANNEL_TYPE_TEXT, CHANNEL_TYPE_VOICE
+
+    discord = make_discord(
+        existing=[
+            # The four old categories, deliberately scrambled.
+            {"id": "10", "name": "Chat", "type": CHANNEL_TYPE_CATEGORY, "position": 3},
+            {"id": "11", "name": "inbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "10", "position": 0},
+            {"id": "12", "name": "outbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "10", "position": 1},
+            {"id": "20", "name": "Honcho Memory", "type": CHANNEL_TYPE_CATEGORY, "position": 0},
+            {"id": "21", "name": "explicit-facts", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 0},
+            {"id": "22", "name": "deductions", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 1},
+            {"id": "23", "name": "patterns", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 2},
+            {"id": "24", "name": "contradictions", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 3},
+            {"id": "30", "name": "Models", "type": CHANNEL_TYPE_CATEGORY, "position": 2},
+            {"id": "31", "name": "Codex", "type": CHANNEL_TYPE_VOICE, "parent_id": "30", "position": 0},
+            {"id": "40", "name": "Speeds", "type": CHANNEL_TYPE_CATEGORY, "position": 1},
+            {"id": "41", "name": "qBittorrent", "type": CHANNEL_TYPE_VOICE, "parent_id": "40", "position": 0},
+            # Notifications landed at the bottom when it was added.
+            {"id": "90", "name": "Notifications", "type": CHANNEL_TYPE_CATEGORY, "position": 9},
+            {"id": "91", "name": "other", "type": CHANNEL_TYPE_TEXT, "parent_id": "90", "position": 2},
+            {"id": "92", "name": "gateway-restarts", "type": CHANNEL_TYPE_TEXT, "parent_id": "90", "position": 0},
+            {"id": "93", "name": "model-fallback", "type": CHANNEL_TYPE_TEXT, "parent_id": "90", "position": 1},
+            # Unmanaged: must survive untouched, never PATCHed by id.
+            {"id": "99", "name": "Gaming", "type": CHANNEL_TYPE_CATEGORY, "position": 8},
+        ]
+    )
+
+    report = reconcile(http_fn=discord)
+
+    # The Notifications category itself was PATCHed to the top.
+    assert discord.channels["90"]["position"] == 0
+    assert discord.count("PATCH", "/channels/90") >= 1
+    assert "category:Notifications" in report["positioned"]
+
+    # Managed categories now follow template order, scrambled start or not.
+    for key, cid in state()["categories"].items():
+        wanted = list(MODULE_KEYS).index(key)
+        assert discord.channels[cid]["position"] == wanted, key
+
+    # Channel order inside Notifications becomes the template order.
+    notifications = state()["channels"]["notifications"]
+    for name, wanted in (
+        ("model-fallback", 0),
+        ("gateway-restarts", 1),
+        ("other", 2),
+    ):
+        assert discord.channels[notifications[name]]["position"] == wanted, name
+
+    # The unmanaged category was neither deleted nor written to.
+    assert discord.channels["99"]["name"] == "Gaming"
+    assert discord.channels["99"]["position"] == 8
+    assert discord.count("PATCH", "/channels/99") == 0
+
+    # Already in order: a second reconcile issues no mutating call at all.
+    mutations = len(discord.mutations)
+    second = reconcile(http_fn=discord)
+    assert second["positioned"] == []
+    assert len(discord.mutations) == mutations
+
+
+def test_state_persists_the_template_fingerprint(hermes, make_discord, state):
+    reconcile(http_fn=make_discord())
+    stored = state()["template_fingerprint"]
+    assert stored == template_fingerprint()
+    assert len(stored) == 64  # sha256 hex digest
 
 
 def test_existing_channels_are_discovered_not_recreated(
