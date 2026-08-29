@@ -49,11 +49,18 @@ def _active_session_ids(conn: sqlite3.Connection) -> list[str]:
     return [str(row["id"]) for row in rows if row["id"]]
 
 
-def _has_active_streaming(conn: sqlite3.Connection, session_ids: Iterable[str]) -> bool:
+def _has_active_streaming(
+    conn: sqlite3.Connection,
+    session_ids: Iterable[str],
+    *,
+    now: float,
+    idle_seconds: float,
+) -> bool:
     ids = list(session_ids)
     if not ids:
         return False
     placeholders = ",".join("?" for _ in ids)
+    cutoff = now - idle_seconds
     row = conn.execute(
         f"""
         SELECT 1
@@ -66,18 +73,26 @@ def _has_active_streaming(conn: sqlite3.Connection, session_ids: Iterable[str]) 
         ) latest ON m.id = latest.max_id
         WHERE m.role = 'assistant'
           AND (m.finish_reason IS NULL OR TRIM(m.finish_reason) = '')
+          AND m.timestamp >= ?
         LIMIT 1
         """,
-        ids,
+        (*ids, cutoff),
     ).fetchone()
     return row is not None
 
 
-def _has_unanswered_user_work(conn: sqlite3.Connection, session_ids: Iterable[str]) -> bool:
+def _has_unanswered_user_work(
+    conn: sqlite3.Connection,
+    session_ids: Iterable[str],
+    *,
+    now: float,
+    idle_seconds: float,
+) -> bool:
     ids = list(session_ids)
     if not ids:
         return False
     placeholders = ",".join("?" for _ in ids)
+    cutoff = now - idle_seconds
     rows = conn.execute(
         f"""
         SELECT m.session_id, m.role,
@@ -90,8 +105,9 @@ def _has_unanswered_user_work(conn: sqlite3.Connection, session_ids: Iterable[st
             WHERE session_id IN ({placeholders})
             GROUP BY session_id
         ) latest ON m.id = latest.max_id
+        WHERE m.timestamp >= ?
         """,
-        ids,
+        (*ids, cutoff),
     ).fetchall()
     for row in rows:
         status = classify_session_status(
@@ -171,16 +187,21 @@ def evaluate_idle(
             )
         with connect_fn(path) as conn:
             session_ids = _active_session_ids(conn)
-            if _has_active_streaming(conn, session_ids):
+            idle_seconds = idle_minutes * 60.0
+            if _has_active_streaming(
+                conn, session_ids, now=now, idle_seconds=idle_seconds
+            ):
                 blockers.append(
                     IdleBlocker("streaming", "assistant response still streaming")
                 )
-            if _has_unanswered_user_work(conn, session_ids):
+            if _has_unanswered_user_work(
+                conn, session_ids, now=now, idle_seconds=idle_seconds
+            ):
                 blockers.append(
                     IdleBlocker("unanswered", "recent unanswered user work")
                 )
             if _has_recent_activity(
-                conn, idle_seconds=idle_minutes * 60.0, now=now
+                conn, idle_seconds=idle_seconds, now=now
             ):
                 blockers.append(
                     IdleBlocker("recent_activity", "message activity within idle window")
