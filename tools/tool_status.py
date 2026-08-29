@@ -25,6 +25,29 @@ _tool_status_callback: ContextVar[Optional[ToolStatusCallback]] = ContextVar(
     default=None,
 )
 
+# Branded agent-viewer status lines. ``delegate_claude_agent`` and
+# ``delegate_cursor_agent`` announce a freshly spawned run's live viewer page
+# through this callback while the run is still going; platform adapters render
+# those exact lines as branded cards (Discord converts them into embeds). The
+# prefixes are the producer/consumer contract: the emitting tools build their
+# line from them, and the gateway uses them to recognize the line so it can be
+# ordered against the tool-progress row. The adapters' own URL validators
+# (``_claude_agent_status_url`` / ``_cursor_cloud_agent_status_url`` in
+# plugins/platforms/discord/adapter.py) keep their copies for validation.
+CLAUDE_AGENT_VIEWER_STATUS_PREFIX = "Claude Code Agent: "
+CURSOR_AGENT_VIEWER_STATUS_PREFIX = "Cursor Cloud Agent: "
+
+AGENT_VIEWER_STATUS_PREFIXES = (
+    CLAUDE_AGENT_VIEWER_STATUS_PREFIX,
+    CURSOR_AGENT_VIEWER_STATUS_PREFIX,
+)
+
+
+def is_agent_viewer_status_line(message: object) -> bool:
+    """True when *message* is a branded agent-viewer status line."""
+    text = str(message or "").strip()
+    return any(text.startswith(prefix) for prefix in AGENT_VIEWER_STATUS_PREFIXES)
+
 
 def get_tool_status_callback() -> Optional[ToolStatusCallback]:
     """Return the callback bound for this task, or ``None``."""

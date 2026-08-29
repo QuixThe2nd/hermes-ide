@@ -952,6 +952,28 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+# FIFO marker for a branded agent-viewer status line (``Claude Code Agent:
+# <url>`` / ``Cursor Cloud Agent: <url>``) routed through the tool-progress
+# queue instead of the independently scheduled status coro. The delegation
+# tools emit the line from inside the tool call, i.e. from the same worker
+# thread that already enqueued the ``tool.started`` row — putting the marker
+# on the same queue makes "tool row first, viewer notice second" a queue
+# ordering fact instead of a race between two scheduling rails.
+_AGENT_STATUS_QUEUE_MARKER = "__agent_status__"
+
+
+def _agent_status_queue_marker(event_type: str, content: str) -> tuple:
+    return (_AGENT_STATUS_QUEUE_MARKER, str(event_type), str(content))
+
+
+def _is_agent_status_queue_marker(raw: Any) -> bool:
+    return (
+        isinstance(raw, tuple)
+        and len(raw) == 3
+        and raw[0] == _AGENT_STATUS_QUEUE_MARKER
+    )
+
+
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
@@ -5197,9 +5219,14 @@ class TurnRunner:
         if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
             while not ctx.progress_queue.empty():
                 try:
-                    ctx.progress_queue.get_nowait()
+                    raw = ctx.progress_queue.get_nowait()
                 except Exception:
                     break
+                # Tool rows are discarded here by design (every edit would be
+                # a new bubble), but a queued agent-viewer status marker is a
+                # standalone send, not an edit — deliver it, don't drop it.
+                if _is_agent_status_queue_marker(raw):
+                    await self._deliver_agent_status_marker(raw)
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
@@ -5343,6 +5370,40 @@ class TurnRunner:
             progress_lines = groups[-1]
             return True
 
+        async def _flush_progress_before_agent_status() -> None:
+            """Deliver the pending tool-progress row before a standalone status.
+
+            Runs when an agent-viewer status marker reaches the head of the
+            queue. The row may still be undelivered because the edit throttle
+            deferred it, so force the send/edit here (bypassing the throttle)
+            — the tool row must land ABOVE the viewer notice. Best-effort: a
+            failure is logged and swallowed rather than allowed to lose the
+            notice queued behind it.
+            """
+            nonlocal progress_msg_id, progress_lines, _last_edit_ts
+            if not progress_lines or not can_edit:
+                # Non-editable mode sends each line on its own tick, so no
+                # row is ever pending here.
+                return
+            rolled = False
+            try:
+                rolled = await _roll_progress_overflow_if_needed()
+            except Exception:
+                logger.debug("progress flush before agent status failed", exc_info=True)
+                rolled = False
+            if not rolled:
+                text = _progress_text(progress_lines)
+                try:
+                    if progress_msg_id is not None:
+                        await _edit_progress_message(progress_msg_id, text)
+                    else:
+                        result = await _send_progress_text(text)
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+                except Exception:
+                    logger.debug("progress flush before agent status failed", exc_info=True)
+            _last_edit_ts = time.monotonic()
+
         while True:
             try:
                 if not ctx._run_still_current():
@@ -5386,6 +5447,23 @@ class TurnRunner:
                     # order. Mirrors GatewayStreamConsumer.on_segment_break
                     # on the content side. (Issue: tool + content
                     # linearization regression after PR #7885.)
+                    progress_msg_id = None
+                    progress_lines = []
+                    ctx.last_progress_msg[0] = None
+                    ctx.repeat_count[0] = 0
+                    continue
+                elif _is_agent_status_queue_marker(raw):
+                    # Branded agent-viewer notice (Claude/Cursor live viewer
+                    # link): deliver the pending tool row FIRST, then the exact
+                    # status line as its own standalone message (Discord
+                    # converts it to a branded embed), then start a fresh
+                    # progress bubble so later tool lines edit a message BELOW
+                    # the notice instead of the one above it. Handled before
+                    # the edit throttle — the throttle batching a tool row
+                    # behind the notice is precisely the ordering bug this
+                    # marker exists to fix.
+                    await _flush_progress_before_agent_status()
+                    await self._deliver_agent_status_marker(raw)
                     progress_msg_id = None
                     progress_lines = []
                     ctx.last_progress_msg[0] = None
@@ -5510,6 +5588,16 @@ class TurnRunner:
                                     await _edit_progress_message(progress_msg_id, _pending_text)
                                 except Exception:
                                     pass
+                            progress_msg_id = None
+                            progress_lines = []
+                            ctx.last_progress_msg[0] = None
+                            ctx.repeat_count[0] = 0
+                        elif _is_agent_status_queue_marker(raw):
+                            # Agent-viewer status during drain: flush the
+                            # pending row, then deliver the notice itself —
+                            # never merge the tuple into the progress text.
+                            await _flush_progress_before_agent_status()
+                            await self._deliver_agent_status_marker(raw)
                             progress_msg_id = None
                             progress_lines = []
                             ctx.last_progress_msg[0] = None
@@ -6122,6 +6210,26 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # Branded agent-viewer notices ride the tool-progress FIFO so the
+        # ``tool.started`` row of the very delegation that spawned the run is
+        # delivered first (see send_progress_messages' marker handling). The
+        # marker carries the exact line the direct rail below would have sent,
+        # so platform rendering is unchanged — only the ordering does. Falls
+        # through to the direct rail whenever the ordered queue isn't usable:
+        # no queue (tool progress off / log mode), or a native-task-card
+        # consumer that would silently drop a non-dict marker.
+        if (
+            ctx.tool_progress_enabled
+            and ctx.progress_queue is not None
+            and not ctx._native_slack_task_cards
+        ):
+            from tools.tool_status import is_agent_viewer_status_line
+
+            if is_agent_viewer_status_line(prepared_message):
+                ctx.progress_queue.put(
+                    _agent_status_queue_marker(event_type, prepared_message)
+                )
+                return
         _fut = safe_schedule_threadsafe(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
             ctx._loop_for_step,
@@ -6140,6 +6248,51 @@ class TurnRunner:
                 if getattr(res, "success", False) and mid:
                     ctx._cleanup_msg_ids.append(str(mid))
             _fut.add_done_callback(_track_status_id)
+
+    async def _deliver_agent_status_marker(self, marker: tuple) -> None:
+        """Send one queued branded agent-viewer status line as its own message.
+
+        The consumer side of the ``_status_callback_sync`` reorder: the exact
+        line the direct rail would have sent goes through the same
+        ``_send_or_update_status_coro`` door with the same status wiring
+        (adapter, chat id, thread metadata, cleanup tracking), so platform
+        rendering — Discord's branded embed conversion, Telegram's
+        status-bubble editing — is byte-identical. Only the scheduling
+        changed: queue-ordered instead of independently scheduled. Never
+        raises on transport failure, so a dead platform call cannot take the
+        progress consumer down with it (and lose every later tool row).
+        """
+        ctx = self._ctx
+        if not _is_agent_status_queue_marker(marker):
+            return
+        # No adapter re-resolution: _status_callback_sync only enqueues a
+        # marker once ctx._status_adapter is set, and the direct rail sends
+        # through that same adapter — the marker rail must not invent one.
+        adapter = ctx._status_adapter
+        if adapter is None:
+            return
+        _kind, event_type, content = marker
+        try:
+            result = await _send_or_update_status_coro(
+                adapter,
+                ctx._status_chat_id,
+                event_type,
+                content,
+                ctx._status_thread_metadata,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "agent-viewer status marker delivery failed", exc_info=True
+            )
+            return
+        if (
+            ctx._cleanup_progress
+            and getattr(result, "success", False)
+            and getattr(result, "message_id", None)
+        ):
+            ctx._cleanup_msg_ids.append(str(result.message_id))
 
     def run_sync(self):
         ctx = self._ctx

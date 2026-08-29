@@ -84,7 +84,7 @@ from tools.cursor_run_receipts import (
 )
 from tools.environments.local import build_subprocess_env
 from tools.registry import registry
-from tools.tool_status import emit_tool_status
+from tools.tool_status import CURSOR_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
 from agent.tool_dispatch_helpers import make_tool_result_message
 
 from utils import is_truthy_value
@@ -1707,7 +1707,9 @@ def _execute_cloud_delegation(
 
         progress_url = extract_progress_url(agent_obj)
         if progress_url:
-            _emit_progress_notice(f"Cursor Cloud Agent: {progress_url}")
+            _emit_progress_notice(
+                f"{CURSOR_AGENT_VIEWER_STATUS_PREFIX}{progress_url}"
+            )
 
         cloud_agent_id = str(agent_obj.get("id") or client_agent_id)
         cloud_run_id = str(run_obj.get("id") or agent_obj.get("latestRunId") or "")

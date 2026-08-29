@@ -30,6 +30,338 @@ def _make_runner(ctx, adapter=None):
     return TurnRunner(_StubGatewayRunner(), ctx)
 
 
+# ---------------------------------------------------------------------------
+# Branded agent-viewer status ordering (delegate_claude_agent /
+# delegate_cursor_agent live-viewer notices).
+#
+# The notice is emitted from inside the tool call, i.e. from the same worker
+# thread that already enqueued the ``tool.started`` row. Routing it through the
+# same FIFO queue makes "tool row first, viewer notice second" an ordering fact
+# instead of a race between the queue consumer and an independently scheduled
+# status coro. These tests pin that contract without any network timing.
+# ---------------------------------------------------------------------------
+
+_CLAUDE_NOTICE = "Claude Code Agent: http://192.168.30.20:8787/#20260829-024525-1532951"
+_CURSOR_NOTICE = "Cursor Cloud Agent: https://cursor.com/agents/bc-abc123"
+
+
+class _CaptureCore:
+    """Records sends in delivery order and wakes per-send waiters.
+
+    Tests await an exact send count instead of sleeping, so nothing here
+    depends on the consumer's poll cadence.
+    """
+
+    def __init__(self):
+        self.sent = []
+        self.edits = []
+        self.typing = []
+        self._waiters = []
+        self.MAX_MESSAGE_LENGTH = 4000
+
+    def _wake(self):
+        waiters, self._waiters = self._waiters, []
+        for event in waiters:
+            event.set()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        message_id = f"msg-{len(self.sent) + 1}"
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+                "message_id": message_id,
+            }
+        )
+        self._wake()
+        return SendResult(success=True, message_id=message_id)
+
+    async def send_typing(self, chat_id, metadata=None):
+        self.typing.append(chat_id)
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+    def format_tool_preview(self, preview, **kwargs):
+        # Same as BasePlatformAdapter's default (plain compact text).
+        return getattr(preview, "text", preview)
+
+
+class _OrderCaptureAdapter(_CaptureCore):
+    """Editable adapter: ``edit_message`` is a real method on the type."""
+
+    async def edit_message(self, chat_id, message_id, content, **kwargs):
+        from gateway.platforms.base import SendResult
+
+        self.edits.append({"message_id": message_id, "content": content})
+        return SendResult(success=True, message_id=message_id)
+
+
+class _NoEditCaptureAdapter(_CaptureCore):
+    """Duck-typed adapter with no ``edit_message`` at all (can't edit)."""
+
+
+def _status_ctx(progress_queue, *, tool_progress=True, adapter=None):
+    return TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="c1", user_id="u1"),
+        _run_still_current=lambda: True,
+        progress_mode="all",
+        progress_grouping="grouped",
+        tool_progress_enabled=tool_progress,
+        progress_queue=progress_queue,
+        _status_adapter=adapter,
+        _status_chat_id="c1",
+        _status_thread_metadata=None,
+        _loop_for_step=None,
+    )
+
+
+async def _await_send_count(adapter, count, timeout=5.0):
+    """Wait until *adapter* has recorded *count* sends (event-based)."""
+
+    async def _wait():
+        while len(adapter.sent) < count:
+            event = asyncio.Event()
+            adapter._waiters.append(event)
+            if len(adapter.sent) >= count:
+                break
+            await event.wait()
+
+    await asyncio.wait_for(_wait(), timeout)
+
+
+async def _run_consumer_until_sends(runner, adapter, count):
+    task = asyncio.get_running_loop().create_task(runner.send_progress_messages())
+    try:
+        await _await_send_count(adapter, count)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
+def test_agent_viewer_notice_rides_queue_behind_tool_row(notice, monkeypatch):
+    """The branded notice is queued after the tool row, not scheduled directly."""
+    import gateway.run as gateway_run
+
+    scheduled = []
+
+    def _capture(coro, loop, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(gateway_run, "safe_schedule_threadsafe", _capture)
+
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter)
+    runner = _make_runner(ctx, adapter)
+
+    # tool_executor fires tool.started before dispatching the tool…
+    runner.progress_callback(
+        "tool.started", "delegate_claude_agent", "refactor the parser", {}
+    )
+    # …and the tool's spawn callback emits the viewer notice from that thread.
+    runner._status_callback_sync("lifecycle", notice)
+
+    items = list(progress_queue.queue)
+    assert len(items) == 2
+    tool_row, marker = items
+    assert isinstance(tool_row, str) and "delegate_claude_agent" in tool_row
+    assert gateway_run._is_agent_status_queue_marker(marker)
+    assert marker[2] == notice
+    assert scheduled == [], "branded notice must not take the direct status rail"
+
+
+@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
+def test_agent_viewer_notice_falls_back_to_direct_rail(notice, monkeypatch):
+    """Without a usable ordered queue the notice keeps the direct status path."""
+    import gateway.run as gateway_run
+
+    scheduled = []
+
+    def _capture(coro, loop, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(gateway_run, "safe_schedule_threadsafe", _capture)
+
+    for tool_progress, progress_queue in (
+        (False, None),  # tool progress off: no queue exists at all
+        (False, queue_mod.Queue()),  # queue exists (thinking bubbles), rows off
+    ):
+        scheduled.clear()
+        adapter = _OrderCaptureAdapter()
+        ctx = _status_ctx(progress_queue, tool_progress=tool_progress, adapter=adapter)
+        runner = _make_runner(ctx, adapter)
+
+        runner._status_callback_sync("lifecycle", notice)
+
+        assert len(scheduled) == 1, (tool_progress, progress_queue)
+        if progress_queue is not None:
+            assert progress_queue.empty()
+
+
+def test_ordinary_lifecycle_status_keeps_direct_rail(monkeypatch):
+    """Non-branded lifecycle statuses never enter the progress queue."""
+    import gateway.run as gateway_run
+
+    scheduled = []
+
+    def _capture(coro, loop, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(gateway_run, "safe_schedule_threadsafe", _capture)
+
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter)
+    runner = _make_runner(ctx, adapter)
+
+    runner._status_callback_sync("lifecycle", "⏳ Compressing context")
+
+    assert len(scheduled) == 1
+    assert progress_queue.empty()
+
+
+@pytest.mark.parametrize(
+    "notice,recognizer_name",
+    [
+        (_CLAUDE_NOTICE, "_claude_agent_status_url"),
+        (_CURSOR_NOTICE, "_cursor_cloud_agent_status_url"),
+    ],
+)
+def test_progress_consumer_delivers_tool_row_before_agent_notice(
+    notice, recognizer_name
+):
+    """The consumer finalizes the tool row, then sends the exact notice line.
+
+    The notice must stay byte-exact so the platform adapter still recognizes
+    it (Discord converts the line into the branded viewer embed).
+    """
+    import plugins.platforms.discord.adapter as discord_adapter
+
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter)
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback(
+        "tool.started", "delegate_claude_agent", "refactor the parser", {}
+    )
+    runner._status_callback_sync("lifecycle", notice)
+
+    asyncio.run(_run_consumer_until_sends(runner, adapter, 2))
+
+    contents = [call["content"] for call in adapter.sent]
+    assert len(contents) == 2, contents
+    assert "delegate_claude_agent" in contents[0]
+    assert notice not in contents[0]
+    assert contents[1] == notice
+    # The exact line still resolves for the adapter's branded rendering.
+    assert getattr(discord_adapter, recognizer_name)(contents[1]) is not None
+    # The pending row was finalized into its own bubble (edited), never merged
+    # with the notice.
+    assert adapter.edits
+    assert all(notice not in edit["content"] for edit in adapter.edits)
+
+
+def test_tool_row_after_agent_notice_starts_new_bubble():
+    """After the notice, later tool rows must not edit the bubble above it."""
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter)
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback("tool.started", "web_search", "alpha-query", {})
+    runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+    runner.progress_callback("tool.started", "web_search", "beta-query", {})
+    # A second post-notice row: the consumer batches the pending row into one
+    # delivery on the next tick, so the fresh bubble below the notice is sent.
+    runner.progress_callback("tool.started", "web_search", "gamma-query", {})
+
+    asyncio.run(_run_consumer_until_sends(runner, adapter, 3))
+
+    contents = [call["content"] for call in adapter.sent]
+    assert len(contents) == 3, contents
+    assert "alpha-query" in contents[0]
+    assert contents[1] == _CLAUDE_NOTICE
+    # The post-notice rows went out as a FRESH bubble below the notice — sent
+    # as a new message that does not replay the pre-notice row. Later edits of
+    # that batch are fine (the consumer keeps editing the new bubble); what is
+    # forbidden is post-notice rows landing in any edit of a message sent
+    # BEFORE the notice, i.e. the bubble sitting above it.
+    assert "beta-query" in contents[2]
+    assert "alpha-query" not in contents[2]
+    post_notice_bubble = adapter.sent[2]["message_id"]
+    assert all(
+        edit["message_id"] == post_notice_bubble
+        for edit in adapter.edits
+        if "beta-query" in edit["content"] or "gamma-query" in edit["content"]
+    ), adapter.edits
+
+
+def test_cancelled_consumer_drains_agent_notice_without_merging():
+    """A cancelled consumer still delivers the queued notice standalone."""
+    progress_queue = queue_mod.Queue()
+    adapter = _OrderCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter)
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback("tool.started", "web_search", "first", {})
+    runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+
+    async def _scenario():
+        task = asyncio.get_running_loop().create_task(
+            runner.send_progress_messages()
+        )
+        # Wait for the tool row to be delivered, then cancel while the notice
+        # is still queued — the cancellation drain owns it from there.
+        await _await_send_count(adapter, 1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_scenario())
+
+    contents = [call["content"] for call in adapter.sent]
+    assert contents, "the tool row must have been delivered before cancellation"
+    assert contents[0] != _CLAUDE_NOTICE
+    assert _CLAUDE_NOTICE in contents
+    # Delivered as its own message: never merged into the editable progress
+    # text nor stringified as the raw marker tuple.
+    joined = "\n".join(contents + [edit["content"] for edit in adapter.edits])
+    assert "__agent_status__" not in joined
+
+
+def test_non_editable_adapter_still_delivers_agent_notice():
+    """On platforms that cannot edit, tool rows are dropped but the notice is not."""
+    progress_queue = queue_mod.Queue()
+    adapter = _NoEditCaptureAdapter()
+    ctx = _status_ctx(progress_queue, adapter=adapter)
+    runner = _make_runner(ctx, adapter)
+
+    runner.progress_callback("tool.started", "web_search", "first", {})
+    runner._status_callback_sync("lifecycle", _CLAUDE_NOTICE)
+
+    asyncio.run(_run_consumer_until_sends(runner, adapter, 1))
+
+    assert [call["content"] for call in adapter.sent] == [_CLAUDE_NOTICE]
+
+
 class TestTurnContext:
     def test_defaults_are_independent_containers(self):
         a, b = TurnContext(), TurnContext()
