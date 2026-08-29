@@ -12,10 +12,12 @@ discord_home_server:
 
   # Module toggles. A disabled module is skipped entirely by reconcile: its
   # category is neither created nor wired, and its existing channels are left
-  # untouched (reconcile never deletes anything).
+  # untouched (reconcile never deletes anything). The listed order is the
+  # canonical template order — enabled categories are seated top-down in it,
+  # so Notifications (when enabled) is the topmost managed category.
   modules:
-    chat: true          # Category "Chat": text channels inbox, outbox
     notifications: true # Category "Notifications": text channels model-fallback, gateway-restarts, other
+    chat: true          # Category "Chat": text channels inbox, outbox
     memory: true        # Category "Honcho Memory": explicit-facts, deductions, patterns, contradictions
-    quotas: true        # Category "Models": voice channels Codex, Kimi, z.ai, Cursor, Grok, OpenRouter
+    quotas: true        # Category "Models": voice channels Codex, Kimi, z.ai, Cursor, Grok
     speeds: true        # Category "Speeds": voice channels qBittorrent, SABnzbd, slskd

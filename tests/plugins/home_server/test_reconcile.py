@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from plugins.home_server.core import (
     CHANNEL_TYPE_CATEGORY,
+    MODULE_KEYS,
     TEMPLATE,
     reconcile,
+    template_fingerprint,
 )
 
-# 5 categories + 2 chat + 3 notifications + 4 memory + 6 model voices + 3 speeds.
-FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 6 + 3
+# 5 categories + 2 chat + 3 notifications + 4 memory + 5 model voices + 3 speeds.
+FIRST_RUN_CREATES = 5 + 2 + 3 + 4 + 5 + 3
 
 
 def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
@@ -64,6 +66,119 @@ def test_second_run_is_idempotent(hermes, guild, make_discord):
     assert discord.messages == before_messages
     # The second run issued no mutating call at all.
     assert len(discord.mutations) == mutations_after_first
+
+
+def test_template_order_puts_notifications_first():
+    """The canonical order is a product decision, not an accident: Notifications
+    is the first managed category, so it sits at the top of the guild."""
+    assert MODULE_KEYS[0] == "notifications"
+    assert list(TEMPLATE)[0] == "notifications"
+    assert list(TEMPLATE) == list(MODULE_KEYS)
+    assert TEMPLATE["notifications"].category == "Notifications"
+    assert [c.name for c in TEMPLATE["notifications"].channels] == [
+        "model-fallback",
+        "gateway-restarts",
+        "other",
+    ]
+    # Chat is inbox/outbox only — no home channel in the template.
+    assert [c.name for c in TEMPLATE["chat"].channels] == ["inbox", "outbox"]
+
+
+def test_fresh_provision_seats_notifications_at_the_top(hermes, make_discord, state):
+    discord = make_discord()
+    reconcile(http_fn=discord)
+
+    positions = {
+        key: discord.channels[cid]["position"]
+        for key, cid in state()["categories"].items()
+    }
+    assert positions["notifications"] == 0
+    assert positions["chat"] == 1
+    assert positions["memory"] == 2
+    assert positions["quotas"] == 3
+    assert positions["speeds"] == 4
+
+    # Channels inside a category follow ChannelSpec order.
+    notifications = state()["channels"]["notifications"]
+    for name, wanted in (
+        ("model-fallback", 0),
+        ("gateway-restarts", 1),
+        ("other", 2),
+    ):
+        assert discord.channels[notifications[name]]["position"] == wanted, name
+
+
+def test_existing_guild_is_reordered_notifications_first(
+    hermes, make_discord, state
+):
+    """A guild provisioned before Notifications existed carries it at the
+    bottom: reconcile PATCHes it to position 0 and seats the other managed
+    categories in template order, without touching unmanaged ones."""
+    from plugins.home_server.core import CHANNEL_TYPE_TEXT, CHANNEL_TYPE_VOICE
+
+    discord = make_discord(
+        existing=[
+            # The four old categories, deliberately scrambled.
+            {"id": "10", "name": "Chat", "type": CHANNEL_TYPE_CATEGORY, "position": 3},
+            {"id": "11", "name": "inbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "10", "position": 0},
+            {"id": "12", "name": "outbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "10", "position": 1},
+            {"id": "20", "name": "Honcho Memory", "type": CHANNEL_TYPE_CATEGORY, "position": 0},
+            {"id": "21", "name": "explicit-facts", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 0},
+            {"id": "22", "name": "deductions", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 1},
+            {"id": "23", "name": "patterns", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 2},
+            {"id": "24", "name": "contradictions", "type": CHANNEL_TYPE_TEXT, "parent_id": "20", "position": 3},
+            {"id": "30", "name": "Models", "type": CHANNEL_TYPE_CATEGORY, "position": 2},
+            {"id": "31", "name": "Codex", "type": CHANNEL_TYPE_VOICE, "parent_id": "30", "position": 0},
+            {"id": "40", "name": "Speeds", "type": CHANNEL_TYPE_CATEGORY, "position": 1},
+            {"id": "41", "name": "qBittorrent", "type": CHANNEL_TYPE_VOICE, "parent_id": "40", "position": 0},
+            # Notifications landed at the bottom when it was added.
+            {"id": "90", "name": "Notifications", "type": CHANNEL_TYPE_CATEGORY, "position": 9},
+            {"id": "91", "name": "other", "type": CHANNEL_TYPE_TEXT, "parent_id": "90", "position": 2},
+            {"id": "92", "name": "gateway-restarts", "type": CHANNEL_TYPE_TEXT, "parent_id": "90", "position": 0},
+            {"id": "93", "name": "model-fallback", "type": CHANNEL_TYPE_TEXT, "parent_id": "90", "position": 1},
+            # Unmanaged: must survive untouched, never PATCHed by id.
+            {"id": "99", "name": "Gaming", "type": CHANNEL_TYPE_CATEGORY, "position": 8},
+        ]
+    )
+
+    report = reconcile(http_fn=discord)
+
+    # The Notifications category itself was PATCHed to the top.
+    assert discord.channels["90"]["position"] == 0
+    assert discord.count("PATCH", "/channels/90") >= 1
+    assert "category:Notifications" in report["positioned"]
+
+    # Managed categories now follow template order, scrambled start or not.
+    for key, cid in state()["categories"].items():
+        wanted = list(MODULE_KEYS).index(key)
+        assert discord.channels[cid]["position"] == wanted, key
+
+    # Channel order inside Notifications becomes the template order.
+    notifications = state()["channels"]["notifications"]
+    for name, wanted in (
+        ("model-fallback", 0),
+        ("gateway-restarts", 1),
+        ("other", 2),
+    ):
+        assert discord.channels[notifications[name]]["position"] == wanted, name
+
+    # The unmanaged category was neither deleted nor written to.
+    assert discord.channels["99"]["name"] == "Gaming"
+    assert discord.channels["99"]["position"] == 8
+    assert discord.count("PATCH", "/channels/99") == 0
+
+    # Already in order: a second reconcile issues no mutating call at all.
+    mutations = len(discord.mutations)
+    second = reconcile(http_fn=discord)
+    assert second["positioned"] == []
+    assert len(discord.mutations) == mutations
+
+
+def test_state_persists_the_template_fingerprint(hermes, make_discord, state):
+    reconcile(http_fn=make_discord())
+    stored = state()["template_fingerprint"]
+    assert stored == template_fingerprint()
+    assert len(stored) == 64  # sha256 hex digest
 
 
 def test_existing_channels_are_discovered_not_recreated(
@@ -343,8 +458,10 @@ def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, 
     """A "Models • <clock>" category from the live poller matches Models."""
     discord = make_discord()
     discord.add_channel(id=7001, name="Models \u2022 25/8 3:30pm", type=4)
-    for i, key in enumerate(("Codex", "Kimi", "z.ai", "Cursor", "Grok", "OpenRouter")):
+    for i, key in enumerate(("Codex", "Kimi", "z.ai", "Cursor", "Grok")):
         discord.add_channel(id=7100 + i, name=key, type=2, parent_id=7001)
+    # Leftover from before OpenRouter left the template: never deleted.
+    discord.add_channel(id=7199, name="OpenRouter", type=2, parent_id=7001)
 
     report = reconcile(http_fn=discord)
 
@@ -352,7 +469,8 @@ def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, 
     assert report["renamed"] == []
     assert report["adopted"] == ["category:Models"]
     assert state()["categories"]["quotas"] == "7001"
-    # No duplicate voice channels were minted.
+    # No duplicate voice channels were minted: the five template rows plus the
+    # OpenRouter leftover, which reconcile leaves where it is.
     voices = [
         c
         for c in discord.channels.values()
@@ -523,7 +641,6 @@ def test_quota_and_speeds_config_are_written_and_unrelated_keys_kept(
         "zai",
         "cursor",
         "grok",
-        "openrouter",
     }
     assert config["speed_channels"]["category_id"] == state()["categories"]["speeds"]
     assert set(config["speed_channels"]["channel_ids"]) == {
@@ -572,8 +689,9 @@ def test_disabled_feature_is_a_noop(hermes, make_discord, write_config):
     assert discord.mutations == []
 
 
-def test_models_template_has_six_voice_channels(hermes, make_discord, state):
-    """The canonical fresh provision creates a Models category with six rows."""
+def test_models_template_has_five_voice_channels(hermes, make_discord, state):
+    """The canonical fresh provision creates a Models category with five rows
+    (OpenRouter left the template — a fresh provision must not mint it)."""
     discord = make_discord()
     reconcile(http_fn=discord)
 
@@ -583,7 +701,7 @@ def test_models_template_has_six_voice_channels(hermes, make_discord, state):
         for c in discord.channels.values()
         if c["type"] == 2 and c["parent_id"] == models_cat
     )
-    assert voices == ["Codex", "Cursor", "Grok", "Kimi", "OpenRouter", "z.ai"]
+    assert voices == ["Codex", "Cursor", "Grok", "Kimi", "z.ai"]
     assert discord.channels[models_cat]["name"] == "Models"
 
 
@@ -591,7 +709,7 @@ def test_legacy_dynamic_quotas_category_is_renamed_in_place(
     hermes, make_discord, state
 ):
     """A pre-Models provision: the dynamic Quotas category is PATCHed to
-    Models, the five child IDs survive, and only OpenRouter is created."""
+    Models, the five child IDs survive, and no extra voice is created."""
     discord = make_discord()
     discord.add_channel(id=7001, name="Quotas • 25/8 3:30pm", type=4)
     legacy = {}
@@ -619,24 +737,24 @@ def test_legacy_dynamic_quotas_category_is_renamed_in_place(
         assert state()["channels"]["quotas"][name] == cid
         assert str(discord.channels[cid]["parent_id"]) == "7001"
         assert f"channel:{name}" not in report["created"]
-    # Exactly one channel is created for this module: OpenRouter.
-    assert report["created"].count("channel:OpenRouter") == 1
+    # OpenRouter left the template: nothing new is created for this module.
+    assert report["created"].count("channel:OpenRouter") == 0
     voices = [
         c
         for c in discord.channels.values()
         if c["type"] == 2 and str(c["parent_id"]) == "7001"
     ]
-    assert len(voices) == 6
+    assert len(voices) == 5
 
     # Idempotent: a second reconcile renames nothing and creates nothing.
-    openrouter_id = state()["channels"]["quotas"]["OpenRouter"]
+    codex_id = state()["channels"]["quotas"]["Codex"]
     mutations = len(discord.mutations)
     second = reconcile(http_fn=discord)
     assert second["created"] == []
     assert second["renamed"] == []
     assert second["adopted"] == []
     assert len(discord.mutations) == mutations
-    assert state()["channels"]["quotas"]["OpenRouter"] == openrouter_id
+    assert state()["channels"]["quotas"]["Codex"] == codex_id
 
 
 def test_legacy_exact_quotas_category_is_renamed_in_place(hermes, make_discord, state):
@@ -656,7 +774,7 @@ def test_legacy_exact_quotas_category_is_renamed_in_place(hermes, make_discord, 
         for c in discord.channels.values()
         if c["type"] == 2 and str(c["parent_id"]) == "7002"
     ]
-    assert len(voices) == 6
+    assert len(voices) == 5
 
 
 def test_legacy_quotas_is_left_alone_when_models_already_exists(
