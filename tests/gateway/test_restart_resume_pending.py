@@ -314,6 +314,22 @@ class TestResumePendingSystemNote:
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
 
+    def test_new_message_note_resumes_where_left_off(self):
+        """A user message arriving while resume was pending points the model
+        at the NEW ask but resumes the interrupted work, not skips it."""
+        note = build_resume_recovery_note("restart_timeout", "please continue")
+        assert "resume where you left off" in note
+        assert "NEW message" in note
+        assert "skip any unfinished work" not in note
+        assert "Do NOT re-execute old tool calls" in note
+
+    def test_interactive_empty_message_note_resumes_where_left_off(self):
+        """The interactive empty-message note (report + ask what next) must
+        no longer tell the model to skip the unfinished work either."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "resume where you left off" in note
+        assert "skip any unfinished work" not in note
+
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
         """The auto-resume note must not leave an empty row in state.db."""
