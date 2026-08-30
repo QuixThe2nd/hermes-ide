@@ -881,24 +881,29 @@ def test_clean_run_has_empty_warnings(monkeypatch, repo, fake_binary):
 _RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
 
 
-def test_viewer_status_line_prefix_and_stem_roundtrip():
-    from tools.claude_agent_tool import (
-        CLAUDE_VIEWER_HOST,
-        CLAUDE_VIEWER_PORT,
-        _claude_viewer_status_line,
-    )
+def test_viewer_status_line_prefix_and_stem_roundtrip(monkeypatch):
+    from tools.claude_agent_tool import _claude_viewer_status_line
 
-    # The host/port are the fork-deployment constants the adapter allowlists.
-    assert CLAUDE_VIEWER_HOST == "192.168.30.20"
-    assert CLAUDE_VIEWER_PORT == 8787
+    # Host auto-detection is pinned so the assertion never depends on the
+    # network the test box happens to sit on.
+    monkeypatch.setattr(
+        "tools.claude_viewer_url._tailscale_ipv4", lambda: None
+    )
+    monkeypatch.setattr(
+        "tools.claude_viewer_url._default_route_ipv4", lambda: "10.20.30.40"
+    )
 
     stem = "20260829-115024-2006506"
     line = _claude_viewer_status_line(stem)
-    assert line == "Claude Code Agent: http://192.168.30.20:8787/#" + stem
-    assert line.startswith("Claude Code Agent: http://192.168.30.20:8787/#")
+    assert line.startswith("Claude Code Agent: http://")
     # The stem comes back out unchanged, in the adapter's run-stem format.
     assert line.rsplit("#", 1)[1] == stem
     assert _RUN_STEM_RE.fullmatch(line.rsplit("#", 1)[1])
+    # The emitted URL must itself pass the Discord adapter's gate, so the
+    # embed it becomes is the same URL the tool announced.
+    from tools.claude_viewer_url import is_allowed_watch_url
+
+    assert is_allowed_watch_url(line.rsplit(" ", 1)[1])
 
 
 @_REAL_SUBPROC

@@ -82,6 +82,8 @@ Discord History is a read-only search over an owner-authorized PostgreSQL archiv
 
 `drift_watch` keeps a default-on eye on the live checkout: a timer inventories uncommitted drift twice hourly, auto-captures a patch plus untracked copies whenever the drift set changes, and attributes writes via auditd where available (`hermes drift_watch reconcile`; read-only toward git state).
 
+`claude_viewer` bundles the Claude run viewer and auto-installs/starts it on Linux/systemd when the gateway comes up, so the "Watch live session" link in a `delegate_claude_agent` embed points at *this machine's* address (LAN or Tailscale, auto-detected — never a hardcoded IP) and works on any install (`hermes claude_viewer status|enable|disable|reconcile`). It is **unauthenticated** — keep it on LAN/tailnet only; if the port is already served by a viewer you started yourself, reconcile stands down rather than racing it.
+
 ### Gateway lifecycle and operator UX
 
 During stalls you can turn on a live provider retry/fallback progress bubble (`display.retry_progress`, off by default). Replies can end with a timing breakdown — total, API, tools, other (off by default upstream).
@@ -139,6 +141,7 @@ Z.AI silent default is GLM-5.3, with GLM-5.3-Flash as fallback. `security.allow_
   - Hermes Starts — your AI can open conversations instead of only replying; it creates and pins its own Discord inbox, and each opening is a single message that anchors its own thread
   - Inbox Sparks — once per 4-hour window the agent must weigh starting a conversation before a turn ends (pairs with Hermes Starts)
   - auto_update — safe unattended Hermes updates on Linux/systemd via an independent timer (`hermes auto_update status|enable|disable|reconcile`; default every 30 minutes all day, idle-gated, no randomized delay)
+  - claude_viewer — bundled Claude run viewer, auto-started on Linux/systemd when the gateway comes up; the Discord "Watch live session" link uses this machine's LAN/Tailscale address, not a hardcoded IP. **Unauthenticated — LAN/tailnet only**
   - quota_channels — Discord model voice channels for six AI providers (one channel each) under a Models category, ordered by the same score as fallback routing (`quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h`; OpenRouter is a virtual unlimited Ox Alpha row), with automatic 7-day token enrichment on Codex, z.ai, and Cursor
   - fallback_quota_reorder — score-based primary/fallback quota rotation: `quota_frac × (168h / hours_to_reset) × uptime_24h × uptime_1h` ranks soonest-reset wallets first (unlimited Ox Alpha scored as a synthetic 100%/168h wallet, derated by uptime) and rotates the primary slot to the top scorer
   - fallback_watch — tails agent.log and alerts a Discord channel whenever the primary model falls back, cooldown-deduped (opt-in, off by default)

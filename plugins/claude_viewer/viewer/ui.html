@@ -1,0 +1,1368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Claude viewer</title>
+<style>
+@font-face {
+  font-family: "DejaVu Sans Mono";
+  src: url("DejaVuSansMono.ttf") format("truetype");
+}
+@font-face {
+  font-family: "InterSidebar";
+  src: url("/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: "InterSidebar";
+  src: url("/Inter-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-display: block;
+}
+:root {
+  --bg: #1a1a19;          /* near-black neutral */
+  --text: #d9d9d4;        /* off-white */
+  --muted: #8f8f88;       /* dim */
+  --subtle: #5a5a55;      /* faint */
+  --brand: #D77757;       /* terracotta */
+  --success: #4e9a4e;     /* terminal green */
+  --error: #c95f5f;       /* terminal red */
+  --warning: #c9a15f;     /* terminal amber */
+  --border: #2b2b28;
+  --sel: rgba(217, 217, 212, 0.055);
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: "DejaVu Sans Mono", monospace;
+}
+body {
+  display: flex;
+  flex-direction: row;
+  font-size: 13.5px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+}
+::selection { background: rgba(215, 119, 87, 0.28); }
+
+/* ── permanent left sidebar: Claude Code desktop GUI Code tab ─────── */
+#sidebar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  height: 100%;
+  flex-shrink: 0;
+  background: #131313;
+  border-right: 1px solid #292929;
+  font-family: InterSidebar, system-ui, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}
+#sidebar::after {
+  content: '';
+  position: absolute;
+  right: 5px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: #595956;
+  border-radius: 3px 3px 0 0;
+  pointer-events: none;
+  z-index: 5;
+}
+#run-list { flex: 1; overflow-y: auto; margin-right: 5px; padding-bottom: 12px; }
+.section-label {
+  padding: 13px 14px 6px;
+  font-size: 12px;
+  line-height: 14px;
+  color: #77766e;
+}
+.run-row {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  box-sizing: border-box;
+  gap: 8px;
+  padding: 0 8px 0 6px;
+  margin: 0 7px 0 8px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.run-row:hover { background: rgba(255, 255, 255, 0.04); }
+.run-row.selected { background: #2a2a2a; }
+.run-status {
+  flex: none;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.run-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px dashed #D77757;
+  box-sizing: border-box;
+  background: transparent;
+  animation: run-spin 0.9s linear infinite;
+}
+.run-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px dashed #4a4a4a;
+  box-sizing: border-box;
+}
+@keyframes run-spin { to { transform: rotate(360deg); } }
+.run-main { flex: 1; min-width: 0; }
+.run-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #d7d7cf;
+  line-height: 16px;
+}
+.run-meta { display: none; }
+
+/* ── main pane: full-width Claude Code REPL ────────────────────────── */
+#main {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-family: "DejaVu Sans Mono", monospace;
+}
+#transcript-wrap { flex: 1; position: relative; overflow: hidden; }
+#transcript {
+  height: 100%;
+  overflow-y: auto;
+  padding: 46px max(24px, calc((100% - 820px) / 2)) 36px;
+}
+.event { margin: 0; }
+.event.hidden-cat { display: none; }
+
+/* welcome box — drawn entirely with box-drawing characters; no CSS border */
+.welcome-box {
+  margin: 6px 0 20px;
+  white-space: pre;
+  overflow: hidden;
+  color: var(--muted);
+}
+.welcome-box .wstar { color: var(--brand); }
+.welcome-box .wtitle { color: var(--text); }
+
+/* assistant text: ● bullet, hanging indent, white on a subtle card so
+   speech reads apart from the cooler tool lines and muted results */
+.text-block {
+  color: #f5f5f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px 12px 8px calc(2ch + 12px);
+  text-indent: -2ch;
+  margin: 10px 0 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-left: 2px solid var(--brand);
+  border-radius: 8px;
+}
+.text-block::before { content: '●  '; color: #f5f5f0; }
+
+/* prompt card: the run's initial -p prompt as the first message of the chat,
+   right after the welcome box and scrolling away with everything else —
+   cool steel-blue dashed rail so it scans as input, not as the
+   terracotta-rail assistant output */
+.prompt-card {
+  margin: 10px 0 14px;
+  padding: 8px 12px;
+  background: rgba(143, 180, 201, 0.06);
+  border-left: 2px dashed #6f8fa1;
+  border-radius: 8px;
+}
+.prompt-card .prompt-label { color: #8fb4c9; }
+.prompt-card .prompt-body {
+  margin-top: 2px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* thinking: ✻ Thinking… collapsed, dim italic */
+.thinking-block { margin: 10px 0; }
+.thinking-block details { color: var(--muted); font-style: italic; }
+.thinking-block summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding-left: 2ch;
+  text-indent: -2ch;
+  list-style: none;
+}
+.thinking-block summary::-webkit-details-marker { display: none; }
+.thinking-block summary::before {
+  content: '✻';
+  display: inline-block;
+  width: 2ch;
+  color: var(--brand);
+  font-style: normal;
+  animation: glyph-cycle 1.4s infinite;
+}
+.thinking-block .think-body {
+  padding: 2px 0 2px 2ch;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* tool calls: Tool(input) + └  result tree — cool steel blue, never white */
+.tool-line {
+  margin-top: 10px;
+  color: #8fb4c9;
+  word-break: break-word;
+}
+.tool-name { font-weight: 600; color: #b3d1e0; }
+.tool-input { color: #6f8fa1; }
+.spinner {
+  display: inline-block;
+  min-width: 1ch;
+  padding-left: 1ch;
+  color: var(--brand);
+}
+.spinner::before { content: '·'; animation: glyph-cycle 0.9s infinite; }
+.tool-result {
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding-left: 3ch;
+  text-indent: -3ch;
+  margin: 1px 0;
+}
+.tool-result:not(:has(details))::before,
+.tool-result details summary::before { content: '└  '; }
+.tool-result:has(details) { padding-left: 0; text-indent: 0; }
+.tool-result details summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding-left: 3ch;
+  text-indent: -3ch;
+  list-style: none;
+}
+.tool-result details summary::-webkit-details-marker { display: none; }
+.tool-result pre {
+  margin: 0;
+  padding: 2px 0 2px 3ch;
+  font: inherit;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow: auto;
+}
+.tool-result.error, .tool-result.error details summary { color: var(--error); }
+
+/* api retry: dim italic └ line */
+.banner-retry {
+  color: var(--muted);
+  font-style: italic;
+  padding-left: 3ch;
+  text-indent: -3ch;
+  margin: 4px 0;
+}
+.banner-retry::before { content: '└  '; }
+
+/* end of run: ✻ Done for Xm Ys · N turns · $Z */
+.banner-result {
+  color: var(--muted);
+  margin: 16px 0 6px;
+}
+.banner-result.err { color: var(--error); }
+
+.hidden-divider {
+  color: var(--subtle);
+  padding: 6px 0;
+}
+.empty-msg { color: var(--muted); padding: 40px 8px; }
+
+/* autoscroll hint line (not a pill) */
+#new-pill {
+  display: none;
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 12px;
+  background: var(--bg);
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  z-index: 10;
+}
+#new-pill.visible { display: block; }
+#new-pill:hover { color: var(--text); }
+
+/* history paging indicator (top of the transcript pane, not a pill) */
+#history-chip {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 12px;
+  background: var(--bg);
+  color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+}
+#history-chip.visible { display: block; }
+
+/* ── bottom of the pane: spinner line, boxed input, status line ────── */
+#input-area {
+  flex: none;
+  padding: 0 max(24px, calc((100% - 820px) / 2)) 12px;
+  user-select: none;
+}
+#spinner-line {
+  height: 1.5em;
+  padding: 3px 0 6px;
+  color: var(--brand);
+  visibility: hidden;
+}
+#spinner-line.on { visibility: visible; }
+#spin-glyph {
+  display: inline-block;
+  width: 2ch;
+}
+#spin-glyph::before { content: '·'; animation: glyph-cycle 0.9s infinite; }
+#input-box {
+  margin: 0;
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: hidden;
+  width: 100%;
+}
+#input-box .bx { color: var(--subtle); }
+#input-box .prompt { color: var(--brand); }
+#input-box .ph { color: var(--muted); }
+#status-bar {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#toggles {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+#pause-btn { color: var(--muted); cursor: pointer; }
+#pause-btn:hover { color: var(--text); }
+#pause-btn.paused { color: var(--warning); }
+.tg-sep { color: var(--subtle); margin: 0 9px; }
+.chip { color: var(--muted); cursor: pointer; }
+.chip:hover { color: var(--text); }
+.chip.on::after { content: ' ✓'; }
+.chip:not(.on) { color: var(--subtle); }
+.chip:not(.on)::after { content: ' ✗'; }
+
+@keyframes glyph-cycle {
+  0%   { content: '·'; }
+  16%  { content: '✢'; }
+  33%  { content: '✳'; }
+  50%  { content: '✶'; }
+  66%  { content: '✻'; }
+  83%  { content: '✽'; }
+  100% { content: '·'; }
+}
+
+#transcript { scrollbar-width: thin; scrollbar-color: #33332f transparent; }
+/* #run-list uses the ::-webkit-scrollbar rules below (thin/color would
+   reserve a 10px gutter and push the 6px thumb 2px left of the reference) */
+#transcript::-webkit-scrollbar { width: 8px; }
+#run-list::-webkit-scrollbar { width: 6px; }
+#transcript::-webkit-scrollbar-thumb { background: #33332f; }
+#run-list::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+#transcript::-webkit-scrollbar-track, #run-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <div id="run-list"><div class="empty-msg">Loading runs…</div></div>
+</aside>
+<main id="main">
+  <div id="transcript-wrap">
+    <div id="transcript"><div class="empty-msg">no run selected — pick one from the sidebar</div></div>
+    <div id="history-chip"></div>
+    <div id="new-pill"></div>
+  </div>
+  <div id="input-area">
+    <div id="spinner-line"><span id="spin-glyph"></span><span id="spin-text">Clauding…</span></div>
+    <div id="input-box" aria-hidden="true"></div>
+    <div id="status-bar">0 events</div>
+    <div id="toggles">
+      <span id="pause-btn">pause</span><span class="tg-sep">·</span><span class="chip on" data-filter="thinking">thinking</span><span class="tg-sep">·</span><span class="chip on" data-filter="tools">tools</span><span class="tg-sep">·</span><span class="chip on" data-filter="output">output</span><span class="tg-sep">·</span><span class="chip on" data-filter="results">results</span>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+
+  const MAX_ROWS = 5000;
+  const HISTORY_LIMIT = 4800;   // stop paging up below the 5,000-row DOM cap
+  const AUTOSCROLL_THRESHOLD = 100;
+  const RENDER_INTERVAL_MS = 100;
+  const RUNS_POLL_MS = 5000;
+
+  const state = {
+    selectedFile: null,
+    tailOffset: 0,
+    paused: false,
+    tailAbort: false,
+    tailGen: 0,
+    runs: [],
+    runActive: false,
+    runMtime: 0,
+    runError: false,
+    model: '',
+    cwd: '',
+    prompt: '',            // initial -p prompt from /api/head, '' when unknown
+    sawResult: false,
+    eventCount: 0,
+    pendingTools: new Map(),
+    hiddenCount: 0,
+    filters: { thinking: true, tools: true, output: true, results: true },
+    buffer: [],              // every loaded event, chronological (head + pages + tail)
+    historyBefore: null,     // next /api/head `before` value; null when exhausted
+    historyLoading: false,
+    totalLines: null,
+    bufferDirty: false,      // a prepend landed: next flush replays the whole buffer
+    renderedCount: 0,        // buffer entries already reflected in the DOM
+    renderScheduled: false,
+    renderTimer: null,
+    newCount: 0,
+    userNearBottom: true,
+  };
+
+  const $ = (sel) => document.querySelector(sel);
+  const runList = $('#run-list');
+  const transcript = $('#transcript');
+  const statusBar = $('#status-bar');
+  const historyChip = $('#history-chip');
+  const newPill = $('#new-pill');
+  const pauseBtn = $('#pause-btn');
+  const spinnerLine = $('#spinner-line');
+  const spinText = $('#spin-text');
+  const inputBox = $('#input-box');
+  const inputArea = $('#input-area');
+  let welcomeEl = null;
+  let welcomeCwd = '';
+  let didAutoSelect = false;
+
+  function basename(p) {
+    if (!p) return '';
+    const parts = String(p).replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1] || p;
+  }
+
+  function formatSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  function relativeTime(epochS, nowMs) {
+    const diff = Math.max(0, nowMs / 1000 - epochS);
+    if (diff < 60) return Math.floor(diff) + 's';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+    return Math.floor(diff / 86400) + 'd';
+  }
+
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  function humanizeRunName(file) {
+    const base = basename(file).replace(/\.jsonl$/, '');
+    const m = base.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+    if (!m) return base;
+    const day = parseInt(m[3], 10);
+    const month = MONTHS[parseInt(m[2], 10) - 1] || m[2];
+    const hh = m[4];
+    const mm = m[5];
+    return day + ' ' + month + ' ' + hh + ':' + mm;
+  }
+
+  /* ── hash routing: #<run-stem> deep-links a run across refreshes ──── */
+  function runStem(file) {
+    return basename(file).replace(/\.jsonl$/, '');
+  }
+
+  function runFromHash() {
+    if (!location.hash || location.hash.length < 2) return null;
+    let q = location.hash.slice(1);
+    try { q = decodeURIComponent(q); } catch (_) { /* keep raw */ }
+    if (!q) return null;
+    const found = state.runs.find((r) =>
+      r.file === q || basename(r.file) === q || runStem(r.file) === q);
+    return found ? found.file : null;
+  }
+
+  function formatDuration(ms) {
+    const total = Math.round(Number(ms) / 1000);
+    if (!isFinite(total) || total < 0) return null;
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h) return h + 'h ' + m + 'm';
+    if (m) return m + 'm ' + s + 's';
+    return s + 's';
+  }
+
+  function formatCost(v) {
+    const n = Number(v);
+    if (!isFinite(n)) return null;
+    return n >= 0.1 ? n.toFixed(2) : n.toFixed(4);
+  }
+
+  function el(tag, cls) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  function setText(node, text) {
+    node.textContent = text == null ? '' : String(text);
+  }
+
+  function toolInputSummary(name, input) {
+    if (input == null) return '';
+    if (typeof input !== 'object' || Array.isArray(input)) {
+      const s = JSON.stringify(input);
+      return s.length > 120 ? s.slice(0, 120) + '…' : s;
+    }
+    if (name === 'Read' || name === 'Write' || name === 'Edit') {
+      return basename(input.file_path || '');
+    }
+    if (name === 'Bash') {
+      const cmd = String(input.command || '');
+      return cmd.length > 100 ? cmd.slice(0, 100) + '…' : cmd;
+    }
+    if (name === 'Grep') {
+      let s = String(input.pattern || '');
+      if (input.path) s += ' ' + basename(input.path);
+      return s;
+    }
+    if (name === 'Glob') {
+      return String(input.pattern || '');
+    }
+    const s = JSON.stringify(input);
+    return s.length > 120 ? s.slice(0, 120) + '…' : s;
+  }
+
+  function toolInputTooltip(name, input) {
+    if (input == null) return '';
+    if ((name === 'Read' || name === 'Write' || name === 'Edit') && typeof input === 'object' && input.file_path) {
+      return String(input.file_path);
+    }
+    if (name === 'Bash' && typeof input === 'object' && input.command) {
+      return String(input.command);
+    }
+    try { return JSON.stringify(input, null, 2); } catch (_) { return String(input); }
+  }
+
+  function extractToolResultContent(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map((b) => (b && b.text != null) ? b.text : '').filter(Boolean).join('\n');
+    }
+    return String(content == null ? '' : content);
+  }
+
+  function preview(text, max) {
+    const t = String(text).replace(/\s+/g, ' ').trim();
+    if (t.length <= max) return t;
+    return t.slice(0, max) + '…';
+  }
+
+  function applyFilter(elm, cat) {
+    if (!state.filters[cat]) elm.classList.add('hidden-cat');
+  }
+
+  function trimRows() {
+    const children = Array.from(transcript.children);
+    let divider = transcript.querySelector('.hidden-divider');
+    // The welcome box and prompt card are lead-in chrome, not events: the row
+    // cap trims from the top, so both must stay out of the count entirely.
+    let visible = children.filter((c) =>
+      !c.classList.contains('hidden-divider') &&
+      !c.classList.contains('welcome-box') &&
+      !c.classList.contains('prompt-card'));
+    if (visible.length <= MAX_ROWS) return;
+
+    const drop = visible.length - MAX_ROWS;
+    state.hiddenCount += drop;
+    for (let i = 0; i < drop; i++) {
+      if (visible[i].parentNode) visible[i].remove();
+    }
+    if (!divider) {
+      divider = el('div', 'hidden-divider');
+      transcript.insertBefore(divider, transcript.firstChild);
+    }
+    setText(divider, '… ' + state.hiddenCount + ' earlier events hidden');
+  }
+
+  function updateStatus() {
+    let tail = '';
+    if (state.paused) tail = ' · paused';
+    else if (state.runActive && !state.sawResult) tail = ' · watching';
+    const total = state.totalLines != null ? ' / ' + state.totalLines : '';
+    const lead = state.model ? state.model + ' · ' : '';
+    setText(statusBar, lead + state.buffer.length + total + ' events' + tail);
+    spinnerLine.classList.toggle('on', state.runActive && !state.sawResult && !state.paused);
+    updateHistoryChip();
+  }
+
+  function updateHistoryChip() {
+    let text = '';
+    if (state.selectedFile && state.buffer.length) {
+      if (state.historyLoading) text = 'loading earlier…';
+      else if (state.historyBefore == null) text = '· beginning of run ·';
+      else if (state.buffer.length >= HISTORY_LIMIT) text = 'history capped at ' + MAX_ROWS + ' events';
+      else if (state.totalLines != null && state.totalLines > state.buffer.length) {
+        text = 'scroll up for earlier events';
+      }
+    }
+    setText(historyChip, text);
+    historyChip.classList.toggle('visible', !!text);
+  }
+
+  /* ── welcome box: a rounded frame made of box-drawing characters ──── */
+  const WELCOME_CWD_HEAD = 'cwd: ';
+
+  function welcomeSub() {
+    return (state.model ? state.model + ' · ' : '') + 'watching ~/.hermes/claude-runs';
+  }
+
+  function wrapLine(text, width) {
+    const lines = [];
+    let cur = '';
+    for (const word of String(text).split(' ')) {
+      const joined = cur ? cur + ' ' + word : word;
+      if (joined.length <= width) { cur = joined; continue; }
+      if (cur) { lines.push(cur); cur = ''; }
+      let rest = word;
+      while (rest.length > width) { lines.push(rest.slice(0, width)); rest = rest.slice(width); }
+      cur = rest;
+    }
+    if (cur || !lines.length) lines.push(cur);
+    return lines;
+  }
+
+  function renderWelcomeBox() {
+    if (!welcomeEl) return;
+    const cw = measureCharWidth();
+    const cs = getComputedStyle(transcript);
+    const availPx = transcript.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const cols = Math.max(32, Math.floor(availPx / cw) - 2);
+    const sub = welcomeSub();
+    const fixed = Math.max(' ✻ Welcome to Claude viewer'.length, 3 + sub.length);
+    const inner = Math.min(Math.max(38, fixed + 1), cols);
+    const pad = (s) => s + ' '.repeat(Math.max(1, inner - s.length));
+    const prefix = '   ';
+    const bodyW = inner - prefix.length - 1;
+
+    welcomeEl.textContent = '';
+    const addText = (t) => welcomeEl.appendChild(document.createTextNode(t));
+    const addLine = (t) => { addText(t); addText('\n'); };
+
+    addLine('╭' + '─'.repeat(inner) + '╮');
+
+    addText('│ ');
+    const star = el('span', 'wstar');
+    setText(star, '✻');
+    welcomeEl.appendChild(star);
+    const title = el('span', 'wtitle');
+    setText(title, ' Welcome to Claude viewer' + ' '.repeat(Math.max(1, inner - 2 - ' Welcome to Claude viewer'.length)));
+    welcomeEl.appendChild(title);
+    addLine('│');
+
+    addLine('│' + ' '.repeat(inner) + '│');
+
+    const groups = [
+      wrapLine(sub, bodyW),
+      wrapLine(WELCOME_CWD_HEAD + (welcomeCwd || '…'), bodyW),
+    ];
+    groups.forEach((g, gi) => {
+      for (const piece of g) addLine('│' + pad(prefix + piece) + '│');
+      if (gi < groups.length - 1) addLine('│' + ' '.repeat(inner) + '│');
+    });
+
+    addText('╰' + '─'.repeat(inner) + '╯');
+  }
+
+  function appendWelcomeBox() {
+    welcomeEl = el('div', 'event welcome-box');
+    transcript.appendChild(welcomeEl);
+    renderWelcomeBox();
+    renderPromptCard();
+  }
+
+  /* ── prompt card: the run's initial -p prompt as a normal first message
+     inside the transcript, right after the welcome box, so it scrolls away
+     with the rest of the events. Rendered from state alone so it is on first
+     paint even when /api/head only returned the tail; textContent (prompt
+     may be HTML). Re-inserted after welcomeEl on every render so it keeps
+     its slot even if called after events have streamed in */
+  function renderPromptCard() {
+    const existing = transcript.querySelector('.prompt-card');
+    if (!state.prompt) {
+      if (existing) existing.remove();
+      return;
+    }
+    const card = existing || el('div', 'event prompt-card');
+    card.textContent = '';
+    const label = el('div', 'prompt-label');
+    setText(label, '❯ Prompt');
+    const body = el('div', 'prompt-body');
+    setText(body, state.prompt);
+    card.appendChild(label);
+    card.appendChild(body);
+    // slot: right after the welcome box (or at the top if it is gone)
+    const anchor = welcomeEl && welcomeEl.parentNode === transcript
+      ? welcomeEl.nextSibling : null;
+    transcript.insertBefore(card, anchor);
+  }
+
+  function renderInit(ev) {
+    state.model = ev.model || '';
+    state.cwd = ev.cwd || '';
+    updateStatus();
+    if (welcomeEl) {
+      welcomeCwd = state.cwd || '';
+      renderWelcomeBox();
+    }
+  }
+
+  function renderRetry(ev) {
+    const div = el('div', 'event banner-retry');
+    setText(div, 'retrying (attempt ' + (ev.attempt || '?') + '/' + (ev.max_retries || '?') +
+      ', ' + (ev.retry_delay_ms || 0) + 'ms)…');
+    transcript.appendChild(div);
+  }
+
+  function renderText(text) {
+    const div = el('div', 'event text-block');
+    applyFilter(div, 'output');
+    setText(div, text);
+    transcript.appendChild(div);
+  }
+
+  function renderThinking(text) {
+    const wrap = el('div', 'event thinking-block');
+    applyFilter(wrap, 'thinking');
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    setText(sum, 'Thinking…');
+    det.appendChild(sum);
+    const body = el('div', 'think-body');
+    setText(body, text);
+    det.appendChild(body);
+    wrap.appendChild(det);
+    transcript.appendChild(wrap);
+  }
+
+  function renderToolUse(id, name, input) {
+    const wrap = el('div', 'event tool-line');
+    wrap.dataset.toolId = id;
+    wrap.dataset.toolName = name;
+    applyFilter(wrap, 'tools');
+    const nameEl = el('span', 'tool-name');
+    setText(nameEl, name);
+    const inputEl = el('span', 'tool-input');
+    setText(inputEl, toolInputSummary(name, input));
+    inputEl.title = toolInputTooltip(name, input);
+    const spin = el('span', 'spinner');
+    spin.dataset.role = 'spinner';
+    wrap.appendChild(nameEl);
+    wrap.appendChild(document.createTextNode('('));
+    wrap.appendChild(inputEl);
+    wrap.appendChild(document.createTextNode(')'));
+    wrap.appendChild(spin);
+    transcript.appendChild(wrap);
+    state.pendingTools.set(id, wrap);
+  }
+
+  function renderToolResult(toolUseId, content, isError) {
+    const pending = state.pendingTools.get(toolUseId);
+    let toolName = '';
+    if (pending) {
+      toolName = pending.dataset.toolName || '';
+      const spin = pending.querySelector('[data-role="spinner"]');
+      if (spin) spin.remove();
+      state.pendingTools.delete(toolUseId);
+    }
+    const full = extractToolResultContent(content);
+    const div = el('div', 'event tool-result' + (isError ? ' error' : ''));
+    applyFilter(div, 'results');
+    const isRead = toolName === 'Read' && !isError && full.length > 0;
+    if (isRead || full.length > 160) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      if (isRead) {
+        const lines = full.replace(/\n+$/, '').split('\n').length;
+        setText(sum, 'Read ' + lines + ' lines');
+      } else {
+        setText(sum, preview(full, 160));
+      }
+      det.appendChild(sum);
+      const pre = document.createElement('pre');
+      setText(pre, full);
+      det.appendChild(pre);
+      div.appendChild(det);
+    } else {
+      setText(div, full);
+    }
+    if (pending && pending.parentNode) {
+      pending.parentNode.insertBefore(div, pending.nextSibling);
+    } else {
+      transcript.appendChild(div);
+    }
+  }
+
+  function renderResult(ev) {
+    state.sawResult = true;
+    state.runError = !!ev.is_error;
+    updateStatus();
+    const div = el('div', 'event banner-result ' + (ev.is_error ? 'err' : 'ok'));
+    applyFilter(div, 'results');
+    const durMs = ev.duration_api_ms != null ? ev.duration_api_ms : ev.duration_ms;
+    const dur = formatDuration(durMs);
+    let line = ev.is_error ? '✻ Failed' : '✻ Done';
+    if (dur) line += (ev.is_error ? ' after ' : ' for ') + dur;
+    if (ev.num_turns != null) line += ' · ' + ev.num_turns + ' turns';
+    const cost = ev.total_cost_usd != null ? formatCost(ev.total_cost_usd) : null;
+    if (cost) line += ' · $' + cost;
+    setText(div, line);
+    transcript.appendChild(div);
+  }
+
+  function processEvent(ev) {
+    if (!ev || typeof ev !== 'object') return;
+
+    if (ev.type === 'system') {
+      if (ev.subtype === 'init') { renderInit(ev); return; }
+      if (ev.subtype === 'thinking_tokens') return;
+      if (ev.subtype === 'api_retry') { renderRetry(ev); return; }
+      return;
+    }
+
+    if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+      // /api/head starts from the tail, so long runs land here before any
+      // init event: pick the model off the assistant message itself.
+      if (ev.message.model && ev.message.model !== state.model) {
+        state.model = ev.message.model;
+        updateStatus();
+        if (welcomeEl) renderWelcomeBox();
+      }
+      for (const block of ev.message.content) {
+        if (!block) continue;
+        if (block.type === 'text' && block.text) renderText(block.text);
+        else if (block.type === 'thinking' && block.thinking) renderThinking(block.thinking);
+        else if (block.type === 'tool_use') renderToolUse(block.id, block.name, block.input);
+      }
+      return;
+    }
+
+    if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {
+      for (const block of ev.message.content) {
+        if (block && block.type === 'tool_result') {
+          renderToolResult(block.tool_use_id, block.content, block.is_error);
+        }
+      }
+      return;
+    }
+
+    if (ev.type === 'result') {
+      renderResult(ev);
+    }
+  }
+
+  function checkNearBottom() {
+    return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < AUTOSCROLL_THRESHOLD;
+  }
+
+  function scrollToBottom() {
+    transcript.scrollTop = transcript.scrollHeight;
+    state.newCount = 0;
+    newPill.classList.remove('visible');
+  }
+
+  function resetDerivedState() {
+    transcript.innerHTML = '';
+    state.pendingTools.clear();
+    state.hiddenCount = 0;
+    state.sawResult = false;
+    state.runError = false;
+    state.model = '';
+    state.cwd = '';
+    state.newCount = 0;
+    welcomeEl = null;
+    welcomeCwd = '';
+    newPill.classList.remove('visible');
+    appendWelcomeBox();
+  }
+
+  function flushRender() {
+    state.renderScheduled = false;
+    if (state.renderTimer) {
+      clearTimeout(state.renderTimer);
+      state.renderTimer = null;
+    }
+
+    if (state.bufferDirty) {
+      // Older events were prepended: replay the whole buffer so tool_use ↔
+      // result pairing and banners re-derive across the page seam.
+      state.bufferDirty = false;
+      const wasNear = state.userNearBottom;
+      resetDerivedState();
+      for (const ev of state.buffer) processEvent(ev);
+      state.renderedCount = state.buffer.length;
+      state.eventCount = state.buffer.length;
+      trimRows();
+      updateStatus();
+      if (wasNear) scrollToBottom();
+      return;
+    }
+
+    if (state.renderedCount >= state.buffer.length) return;
+    const wasNear = state.userNearBottom;
+    const batch = state.buffer.slice(state.renderedCount);
+    state.renderedCount = state.buffer.length;
+    state.eventCount = state.buffer.length;
+    for (const ev of batch) processEvent(ev);
+    trimRows();
+    updateStatus();
+
+    if (wasNear) {
+      scrollToBottom();
+    } else {
+      state.newCount += batch.length;
+      if (state.newCount > 0) {
+        setText(newPill, '↓ ' + state.newCount + ' new lines — press G to jump');
+        newPill.classList.add('visible');
+      }
+    }
+  }
+
+  function scheduleRender(events, opts) {
+    if (!events || !events.length) return;
+    if (opts && opts.prepend) {
+      state.buffer = events.concat(state.buffer);
+      state.bufferDirty = true;
+    } else {
+      state.buffer = state.buffer.concat(events);
+    }
+    if (state.renderScheduled) return;
+    state.renderScheduled = true;
+    requestAnimationFrame(() => {
+      if (!state.renderTimer) {
+        state.renderTimer = setTimeout(flushRender, RENDER_INTERVAL_MS);
+      }
+    });
+  }
+
+  function clearTranscript() {
+    // Full reset, buffer and history paging included: selectRun, the pause
+    // reload, and hashchange re-selection all come through here, so no stale
+    // historyBefore can leak into a freshly loaded run.
+    state.buffer = [];
+    state.historyBefore = null;
+    state.historyLoading = false;
+    state.totalLines = null;
+    state.prompt = '';      // a run switch must not leak the previous prompt
+    state.bufferDirty = false;
+    state.renderedCount = 0;
+    state.eventCount = 0;
+    resetDerivedState();
+    updateStatus();
+  }
+
+  async function fetchRuns() {
+    try {
+      const res = await fetch('/api/runs');
+      const data = await res.json();
+      state.runs = data.runs || [];
+      renderRunList(data.now_ms);
+      if (state.selectedFile) {
+        const cur = state.runs.find((r) => r.file === state.selectedFile);
+        if (cur) {
+          state.runActive = cur.active;
+          state.runMtime = cur.mtime;
+          updateStatus();
+        }
+      }
+      if (!didAutoSelect) {
+        didAutoSelect = true;
+        if (!state.selectedFile && state.runs.length) {
+          // A #<run-stem> deep link wins over the auto-select-newest default;
+          // either way selectRun() writes the hash so the URL is always shareable.
+          const hashed = runFromHash();
+          if (hashed) {
+            selectRun(hashed);
+          } else {
+            const firstActive = state.runs.find((r) => r.active);
+            selectRun((firstActive || state.runs[0]).file);
+          }
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  function groupRunsByProject(runs) {
+    const byProject = new Map();
+    const other = [];
+    for (const run of runs) {
+      if (run.project) {
+        if (!byProject.has(run.project)) byProject.set(run.project, []);
+        byProject.get(run.project).push(run);
+      } else {
+        other.push(run);
+      }
+    }
+    const withActive = [];
+    const withoutActive = [];
+    for (const name of byProject.keys()) {
+      const groupRuns = byProject.get(name);
+      if (groupRuns.some((r) => r.active)) withActive.push(name);
+      else withoutActive.push(name);
+    }
+    withActive.sort();
+    withoutActive.sort();
+    const groups = [];
+    for (const name of withActive) groups.push({ label: name, runs: byProject.get(name) });
+    for (const name of withoutActive) groups.push({ label: name, runs: byProject.get(name) });
+    if (other.length) groups.push({ label: 'Other', runs: other });
+    return groups;
+  }
+
+  function renderRunList(nowMs) {
+    runList.innerHTML = '';
+    if (!state.runs.length) {
+      const msg = el('div', 'empty-msg');
+      setText(msg, 'No runs found');
+      runList.appendChild(msg);
+      return;
+    }
+    const now = nowMs || Date.now();
+    const groups = groupRunsByProject(state.runs);
+    for (const group of groups) {
+      const runs = group.runs;
+      if (!runs.length) continue;
+      const head = el('div', 'section-label');
+      setText(head, group.label);
+      runList.appendChild(head);
+      for (const run of runs) {
+        const row = el('div', 'run-row' + (run.file === state.selectedFile ? ' selected' : ''));
+        row.dataset.file = run.file;
+        row.title = run.file;
+        const status = el('div', 'run-status');
+        if (run.active) {
+          status.appendChild(el('div', 'run-spinner'));
+        } else {
+          status.appendChild(el('div', 'run-dot'));
+        }
+        const main = el('div', 'run-main');
+        const name = el('div', 'run-name');
+        setText(name, run.title || humanizeRunName(run.file));
+        const meta = el('div', 'run-meta');
+        setText(meta, relativeTime(run.mtime, now));
+        main.appendChild(name);
+        main.appendChild(meta);
+        row.appendChild(status);
+        row.appendChild(main);
+        row.addEventListener('click', () => selectRun(run.file));
+        runList.appendChild(row);
+      }
+    }
+  }
+
+  async function selectRun(file) {
+    if (state.selectedFile === file && !state.paused) return;
+    // Invalidate any in-flight tail at once: it bails on its next tick when
+    // it sees the generation changed, so no settle delay is needed before
+    // the head fetch and first paint.
+    state.tailGen++;
+
+    state.selectedFile = file;
+    // Reflect the selection in the URL without adding a history entry, so
+    // the current chat stays selected after a refresh and the URL is shareable.
+    history.replaceState(null, '', '#' + encodeURIComponent(runStem(file)));
+    state.tailOffset = 0;
+    clearTranscript();
+    renderRunList(Date.now());
+
+    const run = state.runs.find((r) => r.file === file);
+    if (run) {
+      state.runActive = run.active;
+      state.runMtime = run.mtime;
+    }
+    updateStatus();
+
+    await loadHead(file);
+  }
+
+  async function loadHead(file) {
+    // First page of a run: also ask for the line total (total=1 is only paid
+    // here — every older page skips it).
+    try {
+      const res = await fetch('/api/head?file=' + encodeURIComponent(file) +
+        '&lines=200&total=1');
+      const data = await res.json();
+      if (state.selectedFile !== file) return;  // superseded by a newer selection
+      state.totalLines = data.total_lines != null ? data.total_lines : null;
+      state.historyBefore = data.has_more ? data.before : null;
+      state.prompt = data.prompt || '';
+      renderPromptCard();
+      scheduleRender(data.lines || []);
+      await new Promise((r) => setTimeout(r, RENDER_INTERVAL_MS + 20));
+      if (state.selectedFile !== file) return;
+      state.tailOffset = await getFileSize(file);
+      if (!state.paused && state.selectedFile === file) tailLoop();
+    } catch (_) {
+      const msg = el('div', 'empty-msg');
+      setText(msg, 'Failed to load run');
+      transcript.appendChild(msg);
+    }
+  }
+
+  async function loadOlder() {
+    const file = state.selectedFile;
+    const before = state.historyBefore;
+    if (!file || before == null || state.historyLoading) return;
+    if (state.buffer.length >= HISTORY_LIMIT) return;
+
+    state.historyLoading = true;
+    updateHistoryChip();
+    try {
+      const res = await fetch('/api/head?file=' + encodeURIComponent(file) +
+        '&lines=200&before=' + before);
+      const data = await res.json();
+      if (state.selectedFile !== file) return;
+      const lines = data.lines || [];
+      if (!lines.length) {
+        state.historyBefore = null;   // nothing older parseable: exhausted
+      } else {
+        const prevHeight = transcript.scrollHeight;
+        state.historyBefore = data.has_more ? data.before : null;
+        scheduleRender(lines, { prepend: true });
+        flushRender();                // synchronous so the viewport math below is exact
+        transcript.scrollTop += transcript.scrollHeight - prevHeight;
+      }
+    } catch (_) { /* keep historyBefore; scrolling up again retries */ }
+    state.historyLoading = false;
+    updateStatus();
+  }
+
+  async function getFileSize(file) {
+    const res = await fetch('/api/tail?file=' + encodeURIComponent(file) + '&offset=0');
+    const data = await res.json();
+    return data.offset || 0;
+  }
+
+  async function tailLoop() {
+    const file = state.selectedFile;
+    const gen = state.tailGen;
+    if (!file || state.paused || state.tailAbort) return;
+
+    try {
+      const url = '/api/tail?file=' + encodeURIComponent(file) +
+        '&offset=' + state.tailOffset + '&wait=1';
+      const res = await fetch(url);
+      const data = await res.json();
+      if (state.tailAbort || gen !== state.tailGen || state.selectedFile !== file || state.paused) return;
+
+      state.tailOffset = data.offset;
+      if (data.lines && data.lines.length) {
+        scheduleRender(data.lines);
+      }
+    } catch (_) { /* retry */ }
+
+    if (!state.tailAbort && gen === state.tailGen && state.selectedFile === file && !state.paused) {
+      tailLoop();
+    }
+  }
+
+  function togglePause() {
+    state.paused = !state.paused;
+    pauseBtn.classList.toggle('paused', state.paused);
+    setText(pauseBtn, state.paused ? 'resume' : 'pause');
+    updateStatus();
+    if (!state.paused && state.selectedFile) {
+      state.tailAbort = true;
+      (async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        state.tailAbort = false;
+        state.tailGen++;
+        state.tailOffset = 0;
+        clearTranscript();      // resets buffer + history paging state too
+        await loadHead(state.selectedFile);
+      })();
+    } else {
+      state.tailAbort = true;
+    }
+  }
+
+  transcript.addEventListener('scroll', () => {
+    state.userNearBottom = checkNearBottom();
+    if (state.userNearBottom) {
+      state.newCount = 0;
+      newPill.classList.remove('visible');
+    }
+    // Scrolling to the very top pages older events in (buffer kept below the
+    // 5,000-row DOM cap); loadOlder preserves the viewport across the prepend.
+    if (transcript.scrollTop < 80 &&
+        state.historyBefore !== null &&
+        !state.historyLoading &&
+        state.buffer.length < HISTORY_LIMIT) {
+      loadOlder();
+    }
+  });
+
+  newPill.addEventListener('click', scrollToBottom);
+
+  pauseBtn.addEventListener('click', togglePause);
+
+  // Manual hash edits (pasting/typing a #<run-stem> URL) select that run.
+  // Our own replaceState never fires hashchange, so this needs no loop guard
+  // beyond skipping a run that is already selected.
+  window.addEventListener('hashchange', () => {
+    const file = runFromHash();
+    if (file && file !== state.selectedFile) selectRun(file);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON')) return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      togglePause();
+    } else if (e.code === 'KeyG') {
+      scrollToBottom();
+    }
+  });
+
+  document.querySelectorAll('.chip').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const f = btn.dataset.filter;
+      state.filters[f] = !state.filters[f];
+      btn.classList.toggle('on', state.filters[f]);
+      transcript.querySelectorAll('.event').forEach((ev) => {
+        const cat = ev.classList.contains('thinking-block') ? 'thinking' :
+          ev.classList.contains('tool-line') ? 'tools' :
+          ev.classList.contains('tool-result') ? 'results' :
+          ev.classList.contains('text-block') ? 'output' :
+          ev.classList.contains('banner-result') ? 'results' : null;
+        if (cat) ev.classList.toggle('hidden-cat', !state.filters[cat]);
+      });
+    });
+  });
+
+  /* ── presentational: decorative boxed input at pane bottom ────────── */
+  const INPUT_PLACEHOLDER = 'Try "pick the newest run"';
+
+  function measureCharWidth() {
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;left:0;top:0';
+    probe.textContent = '────────────────────────────────────────';
+    inputArea.appendChild(probe);
+    const w = probe.getBoundingClientRect().width / 40;
+    probe.remove();
+    return w || 8.1;
+  }
+
+  function buildInputBox() {
+    const cw = measureCharWidth();
+    const avail = Math.floor(inputBox.clientWidth / cw);
+    const inner = Math.max(16, avail - 2);
+    let ph = INPUT_PLACEHOLDER;
+    if (3 + ph.length > inner - 1) ph = ph.slice(0, Math.max(1, inner - 5)) + '…';
+    const pad = Math.max(1, inner - (3 + ph.length));
+
+    inputBox.textContent = '';
+    const top = el('div');
+    setText(top, '╭' + '─'.repeat(inner) + '╮');
+    top.className = 'bx';
+    const mid = el('div');
+    const b1 = el('span', 'bx');
+    setText(b1, '│');
+    const prompt = el('span', 'prompt');
+    setText(prompt, ' ❯ ');
+    const phEl = el('span', 'ph');
+    setText(phEl, ph);
+    const b2 = el('span', 'bx');
+    setText(b2, ' '.repeat(pad) + '│');
+    mid.appendChild(b1);
+    mid.appendChild(prompt);
+    mid.appendChild(phEl);
+    mid.appendChild(b2);
+    const bot = el('div');
+    setText(bot, '╰' + '─'.repeat(inner) + '╯');
+    bot.className = 'bx';
+    inputBox.appendChild(top);
+    inputBox.appendChild(mid);
+    inputBox.appendChild(bot);
+  }
+
+  /* gerund spinner above the input box */
+  const GERUNDS = [
+    'Accomplishing', 'Actioning', 'Actualizing', 'Baking', 'Brewing', 'Calculating',
+    'Canning', 'Channelling', 'Churning', 'Clauding', 'Coalescing', 'Cogitating',
+    'Cooking', 'Crafting', 'Creating', 'Crunching', 'Cultivating', 'Deciphering',
+    'Deliberating', 'Determining', 'Diagnosing', 'Doing', 'Effecting', 'Elucidating',
+    'Enacting', 'Finagling', 'Forging', 'Forming', 'Generating', 'Hatching',
+    'Herding', 'Honking', 'Hustling', 'Ideating', 'Inferring', 'Manifesting',
+    'Marinating', 'Moseying', 'Muscling', 'Noodling', 'Percolating', 'Pondering',
+    'Processing', 'Puttering', 'Reticulating', 'Ruminating', 'Schlepping',
+    'Shucking', 'Simmering', 'Smooshing', 'Spinning', 'Stewing', 'Sussing',
+    'Sweating', 'Teasing', 'Tinkering', 'Transmutating', 'Vibing', 'Working',
+    'Wrangling',
+  ];
+  let lastGerund = '';
+  function cycleGerund() {
+    let word = GERUNDS[Math.floor(Math.random() * GERUNDS.length)];
+    if (word === lastGerund && GERUNDS.length > 1) {
+      word = GERUNDS[(GERUNDS.indexOf(word) + 1) % GERUNDS.length];
+    }
+    lastGerund = word;
+    setText(spinText, word + '…');
+  }
+
+  function rebuildChrome() {
+    buildInputBox();
+    renderWelcomeBox();
+  }
+
+  buildInputBox();
+  cycleGerund();
+  setInterval(cycleGerund, 2600);
+  window.addEventListener('resize', rebuildChrome);
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(rebuildChrome).observe(inputArea);
+  }
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(rebuildChrome);
+  }
+
+  fetchRuns();
+  setInterval(fetchRuns, RUNS_POLL_MS);
+})();
+</script>
+</body>
+</html>
