@@ -5,7 +5,7 @@ and keeps in sync the whole structure:
 
 * ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
   ``other`` (first: pinned to the top of the guild)
-* ``Chat``            — text channels ``inbox``, ``outbox``
+* ``Lounges``         — text channels ``inbox``, ``outbox``
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
 * ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
@@ -146,18 +146,19 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             "agents-N while the gateway is up and restarting-N-agents "
             "while it drains; model-fallback shows when the "
             "primary model was abandoned for a fallback, and other catches "
-            "everything else worth flagging. Conversation belongs in Chat — "
+            "everything else worth flagging. Conversation belongs in Lounges — "
             "nothing here needs a reply."
         ),
     ),
     "chat": ModuleSpec(
         key="chat",
-        category="Chat",
+        category="Lounges",
         channels=(
             ChannelSpec("inbox", CHANNEL_TYPE_TEXT, "inbox"),
             ChannelSpec("outbox", CHANNEL_TYPE_TEXT, "outbox"),
         ),
-        embed_title="💬 Chat",
+        legacy_categories=("Chat",),
+        embed_title="💬 Lounges",
         embed_description=(
             "This inbox is where Hermes starts conversations when it has "
             "something to tell you. The outbox is for messages you hand off "
@@ -1006,8 +1007,9 @@ def _reconcile_module(
     prefix matches against dynamically-labelled channels. Channels that exist
     elsewhere in the guild under the right name/type are ADOPTED (moved under
     the module's category) instead of duplicated. The one rename reconcile
-    performs is the declared legacy-category migration (Quotas -> Models),
-    which patches the category name in place. Nothing is ever deleted.
+    performs is the declared legacy-category migration (Quotas -> Models,
+    Chat -> Lounges), which patches the category name in place. Nothing is
+    ever deleted.
     """
     category_id = _find_channel(
         channels, name=spec.category, kind=CHANNEL_TYPE_CATEGORY, parent_id=None

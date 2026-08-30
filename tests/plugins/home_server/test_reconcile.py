@@ -35,8 +35,8 @@ def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
     )
 
     names = {c["name"] for c in discord.channels.values()}
-    # Chat is inbox/outbox only — the old Chat/home channel is gone from the
-    # template and must not be minted anymore.
+    # Lounges is inbox/outbox only — the old Chat/#home channel is gone from
+    # the template and must not be minted anymore.
     assert "home" not in names
     for name in ("model-fallback", "gateway-restarts", "other"):
         assert name in names
@@ -80,7 +80,10 @@ def test_template_order_puts_notifications_first():
         "gateway-restarts",
         "other",
     ]
-    # Chat is inbox/outbox only — no home channel in the template.
+    # Lounges is inbox/outbox only — no home channel in the template. The
+    # module key stays `chat` (internal slug); "Chat" is its legacy category.
+    assert TEMPLATE["chat"].category == "Lounges"
+    assert TEMPLATE["chat"].legacy_categories == ("Chat",)
     assert [c.name for c in TEMPLATE["chat"].channels] == ["inbox", "outbox"]
 
 
@@ -188,13 +191,13 @@ def test_existing_channels_are_discovered_not_recreated(
 
     discord = make_discord(
         existing=[
-            {"id": "11", "name": "Chat", "type": CHANNEL_TYPE_CATEGORY},
+            {"id": "11", "name": "Lounges", "type": CHANNEL_TYPE_CATEGORY},
             {"id": "12", "name": "inbox", "type": CHANNEL_TYPE_TEXT, "parent_id": "11"},
         ]
     )
     report = reconcile(http_fn=discord)
 
-    assert "category:Chat" not in report["created"]
+    assert "category:Lounges" not in report["created"]
     assert "channel:inbox" not in report["created"]
     assert discord.channels["12"]["id"] == "12"
     assert state()["channels"]["chat"]["inbox"] == "12"
@@ -223,7 +226,7 @@ def test_disabled_modules_are_skipped_entirely(
     assert "Speeds" not in names
     assert "Honcho Memory" not in names
     assert "qBittorrent" not in names
-    assert "Chat" in names and "Models" in names
+    assert "Lounges" in names and "Models" in names
 
     # Disabled modules must not be wired either.
     assert "speed_channels" not in read_config()
@@ -482,7 +485,7 @@ def test_dynamic_category_label_is_adopted_not_duplicated(hermes, make_discord, 
 def test_orphan_channels_are_adopted_into_the_module_category(
     hermes, guild, make_discord, state
 ):
-    """An existing #inbox at guild level moves under Chat instead of a dupe."""
+    """An existing #inbox at guild level moves under Lounges instead of a dupe."""
     discord = make_discord()
     discord.add_channel(id=8001, name="inbox", type=0)
 
@@ -563,8 +566,9 @@ def test_stored_gateway_restarts_id_survives_idle_rename(
 
 
 def test_leftover_chat_home_channel_is_never_deleted(hermes, make_discord):
-    """A Chat/#home left by a previous provision stays exactly where it was:
-    the template no longer references it, and reconcile never deletes."""
+    """A #home left by a previous Chat provision stays exactly where it was —
+    even as its parent category migrates in place to Lounges: the template no
+    longer references the channel, and reconcile never deletes."""
     from plugins.home_server.core import CHANNEL_TYPE_TEXT
 
     discord = make_discord(
@@ -578,6 +582,8 @@ def test_leftover_chat_home_channel_is_never_deleted(hermes, make_discord):
     assert "channel:home" not in report["created"]
     assert discord.channels["22"]["name"] == "home"
     assert discord.channels["22"]["parent_id"] == "21"
+    # The parent category itself migrated in place — same ID, new name.
+    assert discord.channels["21"]["name"] == "Lounges"
 
 
 def test_second_run_after_adoption_is_a_full_no_op(hermes, make_discord, state):
@@ -705,6 +711,26 @@ def test_models_template_has_five_voice_channels(hermes, make_discord, state):
     assert discord.channels[models_cat]["name"] == "Models"
 
 
+def test_fresh_provision_creates_the_lounges_category(hermes, make_discord, state):
+    """The conversation category is Lounges now: a fresh provision mints it
+    with inbox/outbox unchanged, and no Chat category is created."""
+    from plugins.home_server.core import CHANNEL_TYPE_TEXT
+
+    discord = make_discord()
+    reconcile(http_fn=discord)
+
+    lounges_cat = state()["categories"]["chat"]
+    assert discord.channels[lounges_cat]["name"] == "Lounges"
+    children = sorted(
+        c["name"]
+        for c in discord.channels.values()
+        if c["type"] == CHANNEL_TYPE_TEXT and str(c["parent_id"]) == lounges_cat
+    )
+    assert children == ["inbox", "outbox"]
+    names = {c["name"] for c in discord.channels.values()}
+    assert "Chat" not in names
+
+
 def test_legacy_dynamic_quotas_category_is_renamed_in_place(
     hermes, make_discord, state
 ):
@@ -792,3 +818,63 @@ def test_legacy_quotas_is_left_alone_when_models_already_exists(
     assert report["renamed"] == []
     assert state()["categories"]["quotas"] == "7301"
     assert discord.channels["7399"]["name"] == "Quotas"
+
+
+def test_legacy_chat_category_is_renamed_in_place(hermes, make_discord, state):
+    """A pre-Lounges provision: the Chat category is PATCHed to Lounges, the
+    inbox/outbox IDs survive, and no duplicate category is created."""
+    discord = make_discord()
+    discord.add_channel(id=6001, name="Chat", type=4)
+    legacy = {}
+    for i, name in enumerate(("inbox", "outbox")):
+        cid = str(6100 + i)
+        legacy[name] = cid
+        discord.add_channel(id=cid, name=name, type=0, parent_id=6001)
+
+    report = reconcile(http_fn=discord)
+
+    assert report["renamed"] == ["category:Chat->Lounges"]
+    assert "category:Lounges" not in report["created"]
+    # Same Discord ID, new name — one in-place PATCH, no second category.
+    assert discord.channels["6001"]["name"] == "Lounges"
+    assert discord.count("PATCH", "/channels/6001") == 1
+    assert state()["categories"]["chat"] == "6001"
+    chat_categories = [
+        c["name"]
+        for c in discord.channels.values()
+        if c["type"] == 4 and c["name"] in ("Chat", "Lounges")
+    ]
+    assert chat_categories == ["Lounges"]
+    # The legacy children keep their IDs and stay under the category.
+    for name, cid in legacy.items():
+        assert state()["channels"]["chat"][name] == cid
+        assert str(discord.channels[cid]["parent_id"]) == "6001"
+        assert f"channel:{name}" not in report["created"]
+
+    # Idempotent: a second reconcile renames nothing and creates nothing.
+    inbox_id = state()["channels"]["chat"]["inbox"]
+    mutations = len(discord.mutations)
+    second = reconcile(http_fn=discord)
+    assert second["created"] == []
+    assert second["renamed"] == []
+    assert second["adopted"] == []
+    assert len(discord.mutations) == mutations
+    assert state()["categories"]["chat"] == "6001"
+    assert state()["channels"]["chat"]["inbox"] == inbox_id
+
+
+def test_legacy_chat_is_left_alone_when_lounges_already_exists(
+    hermes, make_discord, state
+):
+    """Canonical wins: with a Lounges category present the legacy Chat
+    category is neither renamed nor deleted."""
+    discord = make_discord()
+    discord.add_channel(id=6301, name="Lounges", type=4)
+    discord.add_channel(id=6302, name="inbox", type=0, parent_id=6301)
+    discord.add_channel(id=6399, name="Chat", type=4)
+
+    report = reconcile(http_fn=discord)
+
+    assert report["renamed"] == []
+    assert state()["categories"]["chat"] == "6301"
+    assert discord.channels["6399"]["name"] == "Chat"

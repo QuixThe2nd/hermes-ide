@@ -17,7 +17,7 @@ discord_home_server:
   # so Notifications (when enabled) is the topmost managed category.
   modules:
     notifications: true # Category "Notifications": text channels model-fallback, gateway-restarts, other
-    chat: true          # Category "Chat": text channels inbox, outbox
+    chat: true          # Category "Lounges": text channels inbox, outbox
     memory: true        # Category "Honcho Memory": explicit-facts, deductions, patterns, contradictions
     quotas: true        # Category "Models": voice channels Codex, Kimi, z.ai, Cursor, Grok
     speeds: true        # Category "Speeds": voice channels qBittorrent, SABnzbd, slskd
