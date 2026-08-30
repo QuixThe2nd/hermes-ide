@@ -1407,8 +1407,7 @@ def build_resume_recovery_note(
             "on what the user is asking now."
         )
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
+            "Do NOT re-execute old tool calls — resume where you left off."
         )
     elif reason == "cooperative_restart":
         resume_guidance = (
@@ -1428,8 +1427,7 @@ def build_resume_recovery_note(
             "successfully and ask what they would like to do next."
         )
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
+            "Do NOT re-execute old tool calls — resume where you left off."
         )
     else:
         resume_guidance = (
