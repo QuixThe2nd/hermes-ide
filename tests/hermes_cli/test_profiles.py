@@ -261,6 +261,136 @@ class TestNoSkillsOptOut:
 
 
 # ===================================================================
+
+class TestReadOnlyProfile:
+    """Tests for `hermes profile create --read-only` (file_readonly swap)."""
+
+    def _saved_toolsets(self, profile_dir):
+        config_path = profile_dir / "config.yaml"
+        assert config_path.is_file(), "expected --read-only to write config.yaml"
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("platform_toolsets") or {}
+
+    def test_read_only_swaps_file_for_file_readonly(self, profile_env):
+        profile_dir = create_profile("researcher", no_alias=True, read_only=True)
+
+        pts = self._saved_toolsets(profile_dir)
+        cli = pts.get("cli")
+        assert cli, "expected a cli platform_toolsets list"
+        assert "file_readonly" in cli
+        assert "file" not in cli
+
+    def test_read_only_resolution_has_no_write_tools(self, profile_env):
+        from toolsets import resolve_multiple_toolsets
+        from hermes_cli.tools_config import _get_platform_tools
+
+        profile_dir = create_profile("researcher", no_alias=True, read_only=True)
+        pts = self._saved_toolsets(profile_dir)
+        enabled = _get_platform_tools(
+            {"platform_toolsets": pts}, "cli", include_default_mcp_servers=False
+        )
+        tools = resolve_multiple_toolsets(sorted(enabled))
+        assert {"read_file", "search_files"} <= set(tools)
+        assert "write_file" not in tools
+        assert "patch" not in tools
+
+    def test_read_only_keeps_other_default_toolsets(self, profile_env):
+        """Only the file write surface changes — terminal/web/skills/etc. stay
+        exactly as a default cli resolution would have them."""
+        from hermes_cli.tools_config import _get_platform_tools
+
+        ro = create_profile("ro", no_alias=True, read_only=True)
+        base = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+        enabled = _get_platform_tools(
+            {"platform_toolsets": self._saved_toolsets(ro)},
+            "cli",
+            include_default_mcp_servers=False,
+        )
+        assert enabled - {"file_readonly"} >= base - {"file"}
+        assert "terminal" in enabled and "web" in enabled
+
+    def test_read_only_composes_with_no_skills(self, profile_env):
+        profile_dir = create_profile(
+            "narrow", no_alias=True, no_skills=True, read_only=True
+        )
+        assert has_bundled_skills_opt_out(profile_dir) is True
+        cli = self._saved_toolsets(profile_dir)["cli"]
+        assert "file_readonly" in cli and "file" not in cli
+
+    def test_read_only_clone_swaps_every_configured_platform(self, profile_env):
+        """A cloned config with saved platform lists — including a bare
+        composite name — must come out read-only on each platform."""
+        src = create_profile("src", no_alias=True)
+        (src / "config.yaml").write_text(
+            "model:\n  default: test-model\n"
+            "platform_toolsets:\n"
+            "  cli: [hermes-cli]\n"
+            "  discord: [web, terminal, file]\n",
+            encoding="utf-8",
+        )
+        cloned = create_profile(
+            "cloned", clone_from="src", clone_config=True, no_alias=True, read_only=True
+        )
+
+        pts = self._saved_toolsets(cloned)
+        assert set(pts) >= {"cli", "discord"}
+        for platform, entries in pts.items():
+            assert "file" not in entries, platform
+            assert "file_readonly" in entries, platform
+        # Non-toolset config survives the rewrite.
+        with open(cloned / "config.yaml", "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        assert cfg.get("model", {}).get("default") == "test-model"
+
+    def test_read_only_clone_without_platform_toolsets_writes_cli(self, profile_env):
+        src = create_profile("src2", no_alias=True)
+        (src / "config.yaml").write_text(
+            "model:\n  default: m2\n", encoding="utf-8"
+        )
+        cloned = create_profile(
+            "cloned2", clone_from="src2", clone_config=True, no_alias=True, read_only=True
+        )
+        cli = self._saved_toolsets(cloned)["cli"]
+        assert "file_readonly" in cli and "file" not in cli
+
+    def test_read_only_clone_all_applies_to_the_snapshot(self, profile_env):
+        src = create_profile("src3", no_alias=True)
+        (src / "config.yaml").write_text(
+            "model:\n  default: m3\n"
+            "platform_toolsets:\n"
+            "  cli: [file, web]\n",
+            encoding="utf-8",
+        )
+        cloned = create_profile(
+            "cloned3", clone_from="src3", clone_all=True, no_alias=True, read_only=True
+        )
+        cli = self._saved_toolsets(cloned)["cli"]
+        assert "file_readonly" in cli and "file" not in cli
+
+    def test_read_only_prints_notice(self, profile_env, capsys):
+        create_profile("noticed", no_alias=True, read_only=True)
+        out = capsys.readouterr().out
+        assert "read-only" in out
+        assert "write_file" in out and "patch" in out
+
+    def test_plain_create_leaves_toolsets_untouched(self, profile_env):
+        """Without --read-only nothing is written: no config.yaml toolset
+        section, and the default resolution still carries `file`."""
+        from hermes_cli.tools_config import _get_platform_tools
+
+        profile_dir = create_profile("plain2", no_alias=True)
+        config_path = profile_dir / "config.yaml"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            assert not cfg.get("platform_toolsets"), (
+                "plain create must not write platform_toolsets"
+            )
+        assert "file" in _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+
+# ===================================================================
 # TestBackfillProfileEnvs
 # ===================================================================
 

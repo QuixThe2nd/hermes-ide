@@ -85,6 +85,7 @@ hermes profile create <name> [options]
 | `--no-alias` | 跳过 wrapper 脚本创建。 |
 | `--description "<text>"` | 一到两句话描述该 profile 的用途。供 kanban 编排器根据角色而非仅凭 profile 名称来路由任务。可跳过，稍后通过 `hermes profile describe` 添加。持久化保存在 `<profile_dir>/profile.yaml` 中。 |
 | `--no-skills` | 创建一个**空** profile，不启用任何内置 skill。会在 profile 目录中写入 `.no-bundled-skills` 标记，使后续 `hermes update` 不再重新植入内置 skill 集，且拒绝与 `--clone`、`--clone-from` 或 `--clone-all` 组合使用（因为这些选项会复制 skill）。适用于不应继承完整 skill 目录的窄化编排器 profile 或沙箱 profile。 |
+| `--read-only` | 将该 profile 的**文件工具设为只读**：以 `file_readonly` 工具集（`read_file`、`search_files`）取代 `file`，`write_file` 与 `patch` 不会暴露给模型。会在该 profile 的 `config.yaml` 中写入 `platform_toolsets` 选择 —— 新建时写入 `cli`，克隆时对已保存列表的每个平台生效；`hermes-discord` 这类裸组合名会被展开，避免隐式带回写入工具。可与 `--clone`/`--clone-from`/`--clone-all`、`--no-skills`、`--no-alias` 组合使用。仅影响文件工具 —— `terminal` 与 `code_execution` 保持原样。如需恢复，运行 `hermes -p <name> tools enable file`（会把只读变体换回 `file`）。 |
 
 创建 profile **不会**将该 profile 目录设为终端命令的默认项目/工作目录。如需让某个 profile 从特定项目目录启动，请在该 profile 的 `config.yaml` 中设置 `terminal.cwd`。
 
@@ -105,6 +106,9 @@ hermes profile create work2 --clone-from work
 
 # 从指定 profile 克隆所有内容
 hermes profile create work2-backup --clone-from work --clone-all
+
+# 只读文件：read_file + search_files，无 write_file / patch
+hermes profile create researcher --read-only
 ```
 
 ## `hermes profile describe`

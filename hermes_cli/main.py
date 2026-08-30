@@ -11088,6 +11088,7 @@ def cmd_profile(args):
         clone_all = getattr(args, "clone_all", False)
         no_alias = getattr(args, "no_alias", False)
         no_skills = getattr(args, "no_skills", False)
+        read_only = getattr(args, "read_only", False)
 
         try:
             clone_from = getattr(args, "clone_from", None)
@@ -11100,6 +11101,7 @@ def cmd_profile(args):
                 clone_config=clone_config,
                 no_alias=no_alias,
                 no_skills=no_skills,
+                read_only=read_only,
                 description=getattr(args, "description", None),
             )
             print(f"\nProfile '{name}' created at {profile_dir}")

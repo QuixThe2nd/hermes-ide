@@ -210,7 +210,17 @@ TOOLSETS = {
         "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
     },
-    
+
+    # Read-only mirror of `file` for sandbox/researcher profiles: whitelisting
+    # reads must not also whitelist writes. Opt-in via `hermes tools` or
+    # `hermes profile create --read-only`; deliberately NOT part of
+    # _HERMES_CORE_TOOLS, so default sessions keep the full `file` toolset.
+    "file_readonly": {
+        "description": "Read-only file tools: read and search (no write or patch)",
+        "tools": ["read_file", "search_files"],
+        "includes": []
+    },
+
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
         "tools": ["text_to_speech"],

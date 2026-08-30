@@ -98,6 +98,7 @@ CONFIGURABLE_TOOLSETS = [
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
+    ("file_readonly",   "📁 File Operations (read-only)", "read, search (no write/patch)"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
@@ -168,7 +169,13 @@ def gui_toolset_label(label: str) -> str:
 # session being an assistant WhatsApp chat (see
 # plugins.missions.apply_assistant_handoff_tools). A profile opts in by
 # listing the toolset explicitly in platform_toolsets.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff"}
+# "file_readonly" is default-off for a different reason: its two tools are a
+# subset of the core file tools, so the composite reverse-mapping in
+# _get_platform_tools() would otherwise mark it enabled on every stock
+# install. Enabling it is a deliberate swap of `file` for its read-only
+# mirror (`hermes tools enable file_readonly`, or `hermes profile create
+# --read-only`), never something a default session should drift into.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly"}
 
 
 # Config-only capabilities: they appear in `hermes tools` for provider/API-key
@@ -6132,6 +6139,15 @@ def _configure_mcp_tools_interactive(config: dict):
 
 # ─── Non-interactive disable/enable ──────────────────────────────────────────
 
+# Toolsets that cannot coexist on one platform: enabling either one swaps the
+# other out. `file` and `file_readonly` share read_file/search_files but
+# disagree on write_file/patch, so a plain union would quietly re-grant the
+# write surface the operator just removed by picking the read-only variant.
+_SWAPPED_TOOLSETS: Dict[str, str] = {
+    "file": "file_readonly",
+    "file_readonly": "file",
+}
+
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
     """Add or remove built-in toolsets for a platform."""
@@ -6140,6 +6156,10 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
         updated = enabled - set(toolset_names)
     else:
         updated = enabled | set(toolset_names)
+        for name in toolset_names:
+            swapped = _SWAPPED_TOOLSETS.get(name)
+            if swapped:
+                updated.discard(swapped)
     _save_platform_tools(config, platform, updated)
 
 
