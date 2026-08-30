@@ -3,7 +3,8 @@
 The additive term: each pending manual reset stacks one full wallet
 (quota fraction 1.0) on its own expiry clock, with the invariant that one
 pending reset at 0% remaining equals zero resets at 100% remaining when the
-clocks match.
+clocks match. An expiry the provider never reports adds nothing — the
+usage-reset countdown is never borrowed as a stand-in.
 """
 
 from __future__ import annotations
@@ -51,9 +52,15 @@ def _reading(
 
 class TestOneResetEqualsAFullWallet:
     def test_zero_pct_one_reset_equals_full_wallet_on_equal_clocks(self):
-        # Codex shape: no expiry clock, so the reset term reuses the 7d
-        # usage-reset countdown — exactly the 100% wallet's clock
-        emptied = _reading("openai-codex", 0, WEEK, reset_count=1, channel_key="codex")
+        # the reset's own expiry clock matches the 100% wallet's usage clock
+        emptied = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=1,
+            reset_expiry_seconds=WEEK,
+            channel_key="codex",
+        )
         full = _reading("kimi-coding", 100, WEEK, channel_key="kimi")
         assert score_provider(emptied) == score_provider(full)
         assert score_provider(emptied) == 1.0
@@ -62,27 +69,97 @@ class TestOneResetEqualsAFullWallet:
         # the uptime factors multiply both terms, so they cannot break the
         # equivalence
         rates = ReliabilityRates(rate_24h=0.6, rate_1h=0.5)
-        emptied = _reading("openai-codex", 0, WEEK, reset_count=1, channel_key="codex")
+        emptied = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=1,
+            reset_expiry_seconds=WEEK,
+            channel_key="codex",
+        )
         full = _reading("kimi-coding", 100, WEEK, channel_key="kimi")
         assert score_provider(emptied, rates) == score_provider(full, rates)
         assert score_provider(emptied, rates) == pytest.approx(0.3)
 
     def test_partial_wallet_plus_reset_is_additive_not_max(self):
         # 40% remaining + 1 reset on the same clock = 1.4, not max(0.4, 1.0)
-        reading = _reading("openai-codex", 40, WEEK, reset_count=1, channel_key="codex")
+        reading = _reading(
+            "openai-codex",
+            40,
+            WEEK,
+            reset_count=1,
+            reset_expiry_seconds=WEEK,
+            channel_key="codex",
+        )
         assert score_provider(reading) == pytest.approx(1.4)
+
+
+class TestUnknownExpiryScoresNothing:
+    """An unreadable reset expiry must never borrow the usage-reset clock."""
+
+    def test_unknown_expiry_contributes_no_reset_term(self):
+        # urgency is unmeasurable: 0% + 1 reset with no clock scores 0.0,
+        # not the 1.0 a 7d usage clock would lend it
+        assert score_provider(_reading("openai-codex", 0, WEEK, reset_count=1)) == 0.0
+
+    def test_unknown_expiry_never_substitutes_the_usage_countdown(self):
+        # a short usage countdown must not masquerade as reset urgency
+        assert score_provider(_reading("xai-oauth", 0, 60, reset_count=3)) == 0.0
+
+    def test_unknown_expiry_keeps_the_remaining_term(self):
+        reading = _reading("openai-codex", 40, WEEK, reset_count=2)
+        assert score_provider(reading) == pytest.approx(0.4)
+
+    def test_unknown_expiry_stays_zero_under_uptime_derating(self):
+        rates = ReliabilityRates(rate_24h=0.6, rate_1h=0.5)
+        reading = _reading("xai-oauth", 0, WEEK, reset_count=1)
+        assert score_provider(reading, rates) == 0.0
+
+    def test_unknown_expiry_count_still_escapes_the_low_quota_sink(self):
+        # the credit is real spendable capacity, so it stays healthy — it
+        # just ranks by its (zero) score instead of sinking below everything
+        assert not is_low_quota(_reading("openai-codex", 0, WEEK, reset_count=1))
+
+    def test_unknown_expiry_ranks_last_among_healthy_but_above_the_sink(self):
+        entries = [
+            {"provider": "zai", "model": "zai"},
+            {"provider": "kimi-coding", "model": "kimi"},
+            {"provider": "openai-codex", "model": "codex"},
+        ]
+        readings = {
+            "zai": _reading("zai", 3, 1800),
+            "kimi-coding": _reading("kimi-coding", 80, WEEK, channel_key="kimi"),
+            "openai-codex": _reading(
+                "openai-codex", 0, WEEK, reset_count=1, channel_key="codex"
+            ),
+        }
+        ordered = compute_desired_order(entries, readings)
+        assert [entry["provider"] for entry in ordered] == [
+            "kimi-coding",
+            "openai-codex",
+            "zai",
+        ]
 
 
 class TestStacking:
     def test_each_reset_adds_one_full_wallet(self):
         scores = [
-            score_provider(_reading("xai-oauth", 0, WEEK, reset_count=count))
+            score_provider(
+                _reading(
+                    "xai-oauth", 0, WEEK, reset_count=count, reset_expiry_seconds=WEEK
+                )
+            )
             for count in (0, 1, 2, 3)
         ]
         assert scores == [0.0, 1.0, 2.0, 3.0]
 
     def test_no_cap_on_many_resets(self):
-        assert score_provider(_reading("xai-oauth", 0, WEEK, reset_count=12)) == 12.0
+        assert (
+            score_provider(
+                _reading("xai-oauth", 0, WEEK, reset_count=12, reset_expiry_seconds=WEEK)
+            )
+            == 12.0
+        )
 
     def test_reset_clock_is_independent_of_remaining_clock(self):
         # Grok shape: the reset expires in 1h while the usage window still
@@ -180,13 +257,32 @@ class TestResetGate:
         assert [entry["provider"] for entry in ordered] == [other, provider]
 
     def test_gate_matches_the_provider_slug_case_insensitively(self):
-        assert score_provider(_reading("XAI-OAuth ", 0, WEEK, reset_count=1)) == 1.0
-        assert score_provider(_reading("OpenAI-Codex", 0, WEEK, reset_count=2)) == 2.0
+        assert (
+            score_provider(
+                _reading(
+                    "XAI-OAuth ", 0, WEEK, reset_count=1, reset_expiry_seconds=WEEK
+                )
+            )
+            == 1.0
+        )
+        assert (
+            score_provider(
+                _reading(
+                    "OpenAI-Codex", 0, WEEK, reset_count=2, reset_expiry_seconds=WEEK
+                )
+            )
+            == 2.0
+        )
 
     def test_codex_and_grok_still_score_their_resets(self):
         assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=1))
         assert not is_low_quota(_reading("openai-codex", 0, WEEK, reset_count=3))
-        assert score_provider(_reading("xai-oauth", 0, WEEK, reset_count=1)) == 1.0
+        assert (
+            score_provider(
+                _reading("xai-oauth", 0, WEEK, reset_count=1, reset_expiry_seconds=WEEK)
+            )
+            == 1.0
+        )
 
 
 class TestLowQuotaSinkRule:
@@ -199,8 +295,11 @@ class TestLowQuotaSinkRule:
         readings = {
             "zai": _reading("zai", 3, 1800),
             "kimi-coding": _reading("kimi-coding", 80, WEEK, channel_key="kimi"),
-            # 0% but a pending reset: scores 1.0, and no longer sinks
-            "xai-oauth": _reading("xai-oauth", 0, WEEK, reset_count=1),
+            # 0% but a pending reset expiring within the hour: scores 168.0
+            # and no longer sinks
+            "xai-oauth": _reading(
+                "xai-oauth", 0, WEEK, reset_count=1, reset_expiry_seconds=3600
+            ),
         }
         ordered = compute_desired_order(entries, readings)
         assert [entry["provider"] for entry in ordered] == [
@@ -248,6 +347,21 @@ class TestPreciseStateResets:
         assert reading.reset_seconds == 3 * DAY
         assert reading.reset_count == 1
         assert reading.reset_expiry_seconds == 2 * DAY
+
+    def test_state_reset_expiry_reaches_the_score(self):
+        # the same Codex row earns its extra wallet only when state carries
+        # the real expiry the details endpoint reported
+        names = {"codex": f"Codex: 100% {BULLET} 7d left {BULLET} 1 reset"}
+        unknown = readings_from_names(
+            names, {"codex": (100, WEEK)}, {"codex": (1, None)}
+        )
+        known = readings_from_names(
+            names, {"codex": (100, WEEK)}, {"codex": (1, 2 * DAY)}
+        )
+        assert score_provider(unknown["openai-codex"]) == pytest.approx(1.0)
+        assert score_provider(known["openai-codex"]) == pytest.approx(
+            1.0 + REFERENCE_HOURS / 48.0
+        )
 
     def test_state_without_reset_fields_keeps_the_name_parsed_resets(self):
         # a pre-upgrade state file must not erase resets the name still shows

@@ -95,8 +95,8 @@ class QuotaReading:
     reset_seconds: float
     # pending manual usage-limit resets (Codex/Grok only). ``reset_count`` of
     # 0 means no extra wallets; ``reset_expiry_seconds`` of None means the
-    # provider exposes no reset-expiry clock, so the reset term falls back to
-    # the usage-reset countdown.
+    # expiry is unknown, so the credit stays counted but scores nothing —
+    # the usage-reset countdown is never borrowed as a stand-in.
     reset_count: int = 0
     reset_expiry_seconds: Optional[float] = None
 
@@ -588,10 +588,11 @@ def score_provider(
     (quota fraction 1.0) on the reset-expiry clock — additive and stackable,
     with no cap. The invariant: one pending reset at 0% remaining scores
     exactly like zero resets at 100% remaining when the two clocks match.
-    Providers without a reset-expiry API (Codex) reuse the usage-reset
-    countdown for the reset term, which is what makes that invariant hold
-    for them; a count of 0 adds nothing. Only Codex/Grok have a resets API
-    at all — reset fields on any other provider are inert (see
+    A reset whose expiry is unknown adds nothing: urgency is not measurable,
+    so the usage-reset countdown is never borrowed as a stand-in (the credit
+    stays visible as a count and still lifts the wallet out of the low-quota
+    sink). A count of 0 adds nothing either. Only Codex/Grok have a resets
+    API at all — reset fields on any other provider are inert (see
     ``_reset_credit_count``).
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
@@ -600,15 +601,10 @@ def score_provider(
     remaining_term = quota_frac * (REFERENCE_HOURS / hours)
     reset_count = _reset_credit_count(reading)
     reset_term = 0.0
-    if reset_count:
-        # no separate expiry clock (Codex): the reset wallet spends on the
-        # same countdown as the remaining quota
-        expiry_source = (
-            reading.reset_seconds
-            if reading.reset_expiry_seconds is None
-            else reading.reset_expiry_seconds
+    if reset_count and reading.reset_expiry_seconds is not None:
+        reset_hours = max(
+            float(reading.reset_expiry_seconds) / 3600.0, MIN_HOURS_REMAINING
         )
-        reset_hours = max(float(expiry_source) / 3600.0, MIN_HOURS_REMAINING)
         reset_term = reset_count * (REFERENCE_HOURS / reset_hours)
     return (remaining_term + reset_term) * resolved.rate_24h * resolved.rate_1h
 
@@ -616,11 +612,12 @@ def score_provider(
 def is_low_quota(reading: QuotaReading) -> bool:
     """True when the reading sinks into the low-quota bucket.
 
-    A 0% wallet with at least one pending usage-limit reset is equivalent
-    to a full one (the reset term replaces the remaining term), so it stays
-    in the healthy bucket; only a genuinely empty wallet with zero pending
-    resets sinks. Resets only exist for Codex/Grok — an injected count on
-    any other provider sinks with the wallet it polluted.
+    A 0% wallet with at least one pending usage-limit reset still holds
+    spendable capacity, so it stays in the healthy bucket (even when that
+    reset's expiry is unknown and it therefore scores nothing); only a
+    genuinely empty wallet with zero pending resets sinks. Resets only exist
+    for Codex/Grok — an injected count on any other provider sinks with the
+    wallet it polluted.
     """
     return reading.pct < LOW_QUOTA_PCT and _reset_credit_count(reading) <= 0
 
