@@ -78,7 +78,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home
 from tools.agent_cli_runner import run_agent_cli
 from tools.registry import registry
-from tools.tool_status import emit_tool_status
+from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +315,10 @@ CLAUDE_VIEWER_PORT = 8787
 
 def _claude_viewer_status_line(stem: str) -> str:
     """Return the mid-tool status line pointing at a run's live viewer page."""
-    return f"Claude Code Agent: http://{CLAUDE_VIEWER_HOST}:{CLAUDE_VIEWER_PORT}/#{stem}"
+    return (
+        f"{CLAUDE_AGENT_VIEWER_STATUS_PREFIX}"
+        f"http://{CLAUDE_VIEWER_HOST}:{CLAUDE_VIEWER_PORT}/#{stem}"
+    )
 
 
 def _emit_viewer_progress_notice(log_path: Path) -> None:

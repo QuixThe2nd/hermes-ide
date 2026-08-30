@@ -960,6 +960,43 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+# FIFO marker for a branded agent-viewer status line (``Claude Code Agent:
+# <url>`` / ``Cursor Cloud Agent: <url>``) routed through the tool-progress
+# queue instead of the independently scheduled status coro. The delegation
+# tools emit the line from inside the tool call, i.e. from the same worker
+# thread that already enqueued the ``tool.started`` row — putting the marker
+# on the same queue makes "tool row first, viewer notice second" a queue
+# ordering fact instead of a race between two scheduling rails.
+_AGENT_STATUS_QUEUE_MARKER = "__agent_status__"
+
+
+def _agent_status_queue_marker(event_type: str, content: str) -> tuple:
+    return (_AGENT_STATUS_QUEUE_MARKER, str(event_type), str(content))
+
+
+def _is_agent_status_queue_marker(raw: Any) -> bool:
+    return (
+        isinstance(raw, tuple)
+        and len(raw) == 3
+        and raw[0] == _AGENT_STATUS_QUEUE_MARKER
+    )
+
+
+def _adapter_can_edit_progress(adapter: Any) -> bool:
+    """True when *adapter* renders progress by editing one bubble.
+
+    ``getattr`` on the type, not the instance: duck-typed adapters (test
+    fakes, minimal plugin adapters) may not define ``edit_message`` at all
+    — "missing" means the same thing as "base no-op": can't edit, so each
+    progress update would have to become a separate message bubble.
+    """
+    _adapter_edit = getattr(type(adapter), "edit_message", None)
+    return (
+        _adapter_edit is not None
+        and _adapter_edit is not BasePlatformAdapter.edit_message
+    )
+
+
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
@@ -5231,24 +5268,42 @@ class TurnRunner:
 
         # Skip tool progress for platforms that don't support message
         # editing (e.g. iMessage/BlueBubbles) — each progress update
-        # would become a separate message bubble, which is noisy.
-        # getattr, not attribute access: duck-typed adapters (test fakes,
-        # minimal plugin adapters) may not define edit_message at all —
-        # "missing" means the same thing as "base no-op": can't edit.
-        _adapter_edit = getattr(type(adapter), "edit_message", None)
-        if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
+        # would become a separate message bubble, which is noisy.  This
+        # drain runs ONCE and returns: there is no long-lived consumer on
+        # these adapters, so the producer side (_status_callback_sync)
+        # keeps branded agent-viewer notices on the direct status rail
+        # instead of enqueueing them here.  The marker delivery below is
+        # the backstop if one ever arrives anyway.
+        if not _adapter_can_edit_progress(adapter):
             while not ctx.progress_queue.empty():
                 try:
-                    ctx.progress_queue.get_nowait()
+                    raw = ctx.progress_queue.get_nowait()
                 except Exception:
                     break
+                # Tool rows are discarded here by design (every edit would
+                # be a new bubble), but a queued agent-viewer status marker
+                # is a standalone send, not an edit — deliver it, don't
+                # strand it.
+                if _is_agent_status_queue_marker(raw):
+                    await self._deliver_agent_status_marker(raw)
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        _separate_pending_lines = []  # "separate" mode rows appended but not yet sent
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+        def _agent_interrupted() -> bool:
+            """True once the user interrupted this turn (late rows suppress)."""
+            try:
+                _agent = ctx.agent_holder[0] if ctx.agent_holder else None
+                return _agent is not None and bool(
+                    getattr(_agent, "is_interrupted", False)
+                )
+            except Exception:
+                return False
 
         _progress_len_fn = (
             adapter.message_len_fn
@@ -5385,6 +5440,55 @@ class TurnRunner:
             progress_lines = groups[-1]
             return True
 
+        async def _flush_progress_before_agent_status() -> None:
+            """Deliver pending tool-progress rows before a standalone status.
+
+            Runs when an agent-viewer status marker reaches the head of the
+            queue. A row may still be undelivered — grouped mode defers rows
+            through the edit throttle, and in "separate" mode the same
+            throttle can leave the newest row buffered without its own
+            message yet — so force the delivery here (bypassing the
+            throttle): the tool row must land ABOVE the viewer notice.
+            Best-effort: a failure is logged and swallowed rather than
+            allowed to lose the notice queued behind it.
+            """
+            nonlocal progress_msg_id, progress_lines, _last_edit_ts
+            if not progress_lines:
+                return
+            if not can_edit:
+                # "separate" mode: one message per pending row, oldest first,
+                # then forget them so a later row or a second marker can
+                # never re-send (or drop) them.
+                for _line in list(_separate_pending_lines):
+                    try:
+                        await _send_progress_text(str(_line))
+                    except Exception:
+                        logger.debug(
+                            "progress flush before agent status failed",
+                            exc_info=True,
+                        )
+                _separate_pending_lines.clear()
+                _last_edit_ts = time.monotonic()
+                return
+            rolled = False
+            try:
+                rolled = await _roll_progress_overflow_if_needed()
+            except Exception:
+                logger.debug("progress flush before agent status failed", exc_info=True)
+                rolled = False
+            if not rolled:
+                text = _progress_text(progress_lines)
+                try:
+                    if progress_msg_id is not None:
+                        await _edit_progress_message(progress_msg_id, text)
+                    else:
+                        result = await _send_progress_text(text)
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+                except Exception:
+                    logger.debug("progress flush before agent status failed", exc_info=True)
+            _last_edit_ts = time.monotonic()
+
         while True:
             try:
                 if not ctx._run_still_current():
@@ -5402,16 +5506,13 @@ class TurnRunner:
                 # should not render as bubbles.  The "⚡ Interrupting
                 # current task" message is sent separately and is the
                 # last progress-flavored bubble the user should see.
-                try:
-                    _agent_for_interrupt = ctx.agent_holder[0] if ctx.agent_holder else None
-                    if _agent_for_interrupt is not None and getattr(
-                        _agent_for_interrupt, "is_interrupted", False
-                    ):
-                        # Drop this event and continue draining.
-                        await asyncio.sleep(0)
-                        continue
-                except Exception:
-                    pass
+                # Agent-viewer markers are exempt: one denotes a
+                # subprocess/cloud run that already spawned and keeps
+                # running after the interrupt — its link stays visible.
+                if _agent_interrupted() and not _is_agent_status_queue_marker(raw):
+                    # Drop this event and continue draining.
+                    await asyncio.sleep(0)
+                    continue
 
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
@@ -5430,12 +5531,39 @@ class TurnRunner:
                     # linearization regression after PR #7885.)
                     progress_msg_id = None
                     progress_lines = []
+                    _separate_pending_lines.clear()
+                    ctx.last_progress_msg[0] = None
+                    ctx.repeat_count[0] = 0
+                    continue
+                elif _is_agent_status_queue_marker(raw):
+                    # Branded agent-viewer notice (Claude/Cursor live viewer
+                    # link): deliver the pending tool row FIRST, then the exact
+                    # status line as its own standalone message (Discord
+                    # converts it to a branded embed), then start a fresh
+                    # progress bubble so later tool lines edit a message BELOW
+                    # the notice instead of the one above it. Handled before
+                    # the edit throttle — the throttle batching a tool row
+                    # behind the notice is precisely the ordering bug this
+                    # marker exists to fix.  Once interrupted the pending rows
+                    # stay suppressed; only the spawned-run notice goes out.
+                    if not _agent_interrupted():
+                        await _flush_progress_before_agent_status()
+                    await self._deliver_agent_status_marker(raw)
+                    progress_msg_id = None
+                    progress_lines = []
+                    _separate_pending_lines.clear()
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
                 else:
                     msg = raw
                     progress_lines.append(msg)
+                    if not can_edit:
+                        # "separate" mode: this row becomes its own message
+                        # later on this tick — remember it until that send
+                        # actually happens (the throttle may defer it past
+                        # several later rows).
+                        _separate_pending_lines.append(msg)
 
                 if await _roll_progress_overflow_if_needed():
                     _last_edit_ts = time.monotonic()
@@ -5521,6 +5649,12 @@ class TurnRunner:
                         progress_msg_id = result.message_id
                         if ctx._cleanup_progress:
                             ctx._cleanup_msg_ids.append(str(result.message_id))
+                        if not can_edit:
+                            # The newest row just went out as its own message;
+                            # older pending rows were either already sent or
+                            # skipped by the throttle (pre-v0.9 "separate"
+                            # behavior: one message per row, no catch-up).
+                            _separate_pending_lines.clear()
 
                 _last_edit_ts = time.monotonic()
 
@@ -5532,11 +5666,44 @@ class TurnRunner:
             except queue.Empty:
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
-                # Drain remaining queued messages
+                # Drain remaining queued messages.  An interrupted turn keeps
+                # the main loop's suppression here too: late tool rows, dedup
+                # rows and reset markers must never send, edit, overflow-roll
+                # or otherwise alter a visible progress message once the user
+                # stopped the turn.  Only the spawned-run agent-viewer notice
+                # stays durable, and a reset may still clear local
+                # bookkeeping.
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        if _is_agent_status_queue_marker(raw):
+                            # Agent-viewer status during drain: flush the
+                            # pending row, then deliver the notice itself —
+                            # never merge the tuple into the progress text.
+                            # Pending rows stay suppressed when the turn was
+                            # interrupted; the notice is still delivered.
+                            if not _agent_interrupted():
+                                await _flush_progress_before_agent_status()
+                            await self._deliver_agent_status_marker(raw)
+                            progress_msg_id = None
+                            progress_lines = []
+                            _separate_pending_lines.clear()
+                            ctx.last_progress_msg[0] = None
+                            ctx.repeat_count[0] = 0
+                        elif _agent_interrupted():
+                            # Interrupted: discard the row.  A __reset__ still
+                            # clears local bookkeeping (so nothing later edits
+                            # a bubble belonging to the stopped turn) but is
+                            # no longer allowed to roll or edit on its way
+                            # out; ordinary and dedup rows just vanish.
+                            if isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                                progress_msg_id = None
+                                progress_lines = []
+                                _separate_pending_lines.clear()
+                                ctx.last_progress_msg[0] = None
+                                ctx.repeat_count[0] = 0
+                            continue
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
                                 progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -5554,22 +5721,28 @@ class TurnRunner:
                                     pass
                             progress_msg_id = None
                             progress_lines = []
+                            _separate_pending_lines.clear()
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:
                             progress_lines.append(raw)
+                            if not can_edit:
+                                _separate_pending_lines.append(raw)
                             await _roll_progress_overflow_if_needed()
                     except Exception:
                         break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
-                    await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        await _edit_progress_message(progress_msg_id, full_text)
-                    except Exception:
-                        pass
+                # Final edit with all remaining tools (only if editing works).
+                # Suppressed after an interrupt: the stop acknowledgement is
+                # the last progress-flavored bubble the user should see.
+                if not _agent_interrupted():
+                    if can_edit and progress_lines and progress_msg_id:
+                        await _roll_progress_overflow_if_needed()
+                    if can_edit and progress_lines and progress_msg_id:
+                        full_text = _progress_text(progress_lines)
+                        try:
+                            await _edit_progress_message(progress_msg_id, full_text)
+                        except Exception:
+                            pass
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)
@@ -6164,6 +6337,30 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # Branded agent-viewer notices ride the tool-progress FIFO so the
+        # ``tool.started`` row of the very delegation that spawned the run is
+        # delivered first (see send_progress_messages' marker handling). The
+        # marker carries the exact line the direct rail below would have sent,
+        # so platform rendering is unchanged — only the ordering does. Falls
+        # through to the direct rail whenever the ordered queue isn't usable:
+        # no queue (tool progress off / log mode), a native-task-card consumer
+        # that would silently drop a non-dict marker, or an adapter that
+        # cannot edit — its consumer drains the queue once and returns long
+        # before the tool spawns the run, so a queued marker would be stranded
+        # with nobody left to deliver it.
+        if (
+            ctx.tool_progress_enabled
+            and ctx.progress_queue is not None
+            and not ctx._native_slack_task_cards
+            and _adapter_can_edit_progress(ctx._status_adapter)
+        ):
+            from tools.tool_status import is_agent_viewer_status_line
+
+            if is_agent_viewer_status_line(prepared_message):
+                ctx.progress_queue.put(
+                    _agent_status_queue_marker(event_type, prepared_message)
+                )
+                return
         _fut = safe_schedule_threadsafe(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
             ctx._loop_for_step,
@@ -6182,6 +6379,51 @@ class TurnRunner:
                 if getattr(res, "success", False) and mid:
                     ctx._cleanup_msg_ids.append(str(mid))
             _fut.add_done_callback(_track_status_id)
+
+    async def _deliver_agent_status_marker(self, marker: tuple) -> None:
+        """Send one queued branded agent-viewer status line as its own message.
+
+        The consumer side of the ``_status_callback_sync`` reorder: the exact
+        line the direct rail would have sent goes through the same
+        ``_send_or_update_status_coro`` door with the same status wiring
+        (adapter, chat id, thread metadata, cleanup tracking), so platform
+        rendering — Discord's branded embed conversion, Telegram's
+        status-bubble editing — is byte-identical. Only the scheduling
+        changed: queue-ordered instead of independently scheduled. Never
+        raises on transport failure, so a dead platform call cannot take the
+        progress consumer down with it (and lose every later tool row).
+        """
+        ctx = self._ctx
+        if not _is_agent_status_queue_marker(marker):
+            return
+        # No adapter re-resolution: _status_callback_sync only enqueues a
+        # marker once ctx._status_adapter is set, and the direct rail sends
+        # through that same adapter — the marker rail must not invent one.
+        adapter = ctx._status_adapter
+        if adapter is None:
+            return
+        _kind, event_type, content = marker
+        try:
+            result = await _send_or_update_status_coro(
+                adapter,
+                ctx._status_chat_id,
+                event_type,
+                content,
+                ctx._status_thread_metadata,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "agent-viewer status marker delivery failed", exc_info=True
+            )
+            return
+        if (
+            ctx._cleanup_progress
+            and getattr(result, "success", False)
+            and getattr(result, "message_id", None)
+        ):
+            ctx._cleanup_msg_ids.append(str(result.message_id))
 
     def run_sync(self):
         ctx = self._ctx
