@@ -863,6 +863,61 @@ def test_legacy_chat_category_is_renamed_in_place(hermes, make_discord, state):
     assert state()["channels"]["chat"]["inbox"] == inbox_id
 
 
+def test_unrelated_chat_prefixed_category_is_never_claimed(
+    hermes, make_discord, state
+):
+    """A user-made "Chat Archive" is not the legacy Chat category.
+
+    Chat never carried a dynamic poller suffix, so its migration matches the
+    legacy name exactly — a prefix rule here would claim (and rename, and
+    repopulate) any category that merely starts with "Chat". The archive keeps
+    its name, its children, its position, and is never written to."""
+    from plugins.home_server.core import CHANNEL_TYPE_TEXT
+
+    discord = make_discord(
+        existing=[
+            {
+                "id": "6401",
+                "name": "Chat Archive",
+                "type": CHANNEL_TYPE_CATEGORY,
+                "position": 7,
+            },
+            {
+                "id": "6402",
+                "name": "2024",
+                "type": CHANNEL_TYPE_TEXT,
+                "parent_id": "6401",
+                "position": 0,
+            },
+        ]
+    )
+
+    report = reconcile(http_fn=discord)
+
+    assert report["renamed"] == []
+    assert discord.channels["6401"]["name"] == "Chat Archive"
+    assert discord.channels["6401"]["position"] == 7
+    assert str(discord.channels["6402"]["parent_id"]) == "6401"
+    assert discord.channels["6402"]["name"] == "2024"
+    assert discord.count("PATCH", "/channels/6401") == 0
+    assert discord.count("PATCH", "/channels/6402") == 0
+
+    # A separate Lounges category was minted instead of the archive claimed.
+    lounges_cat = state()["categories"]["chat"]
+    assert lounges_cat != "6401"
+    assert discord.channels[lounges_cat]["name"] == "Lounges"
+    children = sorted(
+        c["name"]
+        for c in discord.channels.values()
+        if c["type"] == CHANNEL_TYPE_TEXT and str(c["parent_id"]) == lounges_cat
+    )
+    assert children == ["inbox", "outbox"]
+    assert {c["name"] for c in discord.channels.values()} >= {
+        "Chat Archive",
+        "Lounges",
+    }
+
+
 def test_legacy_chat_is_left_alone_when_lounges_already_exists(
     hermes, make_discord, state
 ):
