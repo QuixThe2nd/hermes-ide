@@ -155,6 +155,35 @@ def test_file_readonly_resolution_has_no_write_surface():
     assert "patch" not in tools
 
 
+def test_save_platform_tools_never_persists_both_file_variants():
+    """The interactive checklist and dashboard hand _save_platform_tools a
+    plain selection set without applying the swap themselves (only
+    `hermes tools enable` did). The helper must enforce it — read-only side
+    wins, failing closed — or a still-checked `file` quietly keeps
+    write_file/patch alive next to `file_readonly`."""
+    config = {"platform_toolsets": {"cli": []}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "file", "file_readonly"})
+
+    cli_list = config["platform_toolsets"]["cli"]
+    assert "file_readonly" in cli_list
+    assert "file" not in cli_list
+
+
+def test_save_platform_tools_keeps_plain_file_selection():
+    """The swap only fires when both variants arrive together — a normal
+    `file`-only selection (the stock default) must survive a save intact."""
+    config = {"platform_toolsets": {"cli": []}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "file"})
+
+    cli_list = config["platform_toolsets"]["cli"]
+    assert "file" in cli_list
+    assert "file_readonly" not in cli_list
+
+
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
     (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an

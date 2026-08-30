@@ -368,6 +368,32 @@ class TestReadOnlyProfile:
         cli = self._saved_toolsets(cloned)["cli"]
         assert "file_readonly" in cli and "file" not in cli
 
+    def test_read_only_fresh_writes_every_file_platform(self, profile_env):
+        """A fresh --read-only profile has no platform_toolsets to rewrite;
+        every registry platform that resolves `file` (discord, telegram,
+        cron, …) must still get an explicit read-only list — an absent key
+        keeps inheriting its composite, which carries the writable `file`."""
+        from toolsets import resolve_multiple_toolsets
+        from hermes_cli.tools_config import _get_platform_tools
+
+        profile_dir = create_profile("wide", no_alias=True, read_only=True)
+
+        pts = self._saved_toolsets(profile_dir)
+        assert {"cli", "discord", "telegram", "cron"} <= set(pts)
+        for platform, entries in pts.items():
+            assert "file_readonly" in entries, platform
+            assert "file" not in entries, platform
+
+        # The actual contract for a non-CLI session: file reads without the
+        # write surface.
+        enabled = _get_platform_tools(
+            {"platform_toolsets": pts}, "discord", include_default_mcp_servers=False
+        )
+        tools = resolve_multiple_toolsets(sorted(enabled))
+        assert {"read_file", "search_files"} <= set(tools)
+        assert "write_file" not in tools
+        assert "patch" not in tools
+
     def test_read_only_prints_notice(self, profile_env, capsys):
         create_profile("noticed", no_alias=True, read_only=True)
         out = capsys.readouterr().out

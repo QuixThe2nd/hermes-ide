@@ -1415,9 +1415,12 @@ def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
       composite name like ``hermes-discord`` is expanded rather than left to
       re-import the write tools implicitly.
     * no platform lists at all (fresh create, or a clone whose source never
-      touched ``hermes tools``): one list is written for ``cli``, matching the
-      default-on toolsets that platform resolves anyway except for the swap.
-      Other platforms keep inheriting their platform defaults.
+      touched ``hermes tools``): every platform the registry knows that
+      resolves ``file`` gets a list matching its default-on toolsets except
+      for the swap. Writing only ``cli`` would leave discord/telegram/cron
+      and the rest inheriting composites that carry the writable ``file``,
+      so a "read-only" profile kept its write surface on every non-CLI
+      platform.
 
     A platform whose effective toolsets already lack ``file`` is left alone —
     there is no write surface to remove, and forcing reads onto a platform
@@ -1433,11 +1436,15 @@ def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
     token = set_hermes_home_override(str(profile_dir))
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
+        from hermes_cli.tools_config import (
+            PLATFORMS,
+            _get_platform_tools,
+            _save_platform_tools,
+        )
 
         config = load_config()
         saved = config.get("platform_toolsets")
-        platforms = (
+        saved_platforms = (
             [
                 str(platform)
                 for platform, entries in (saved or {}).items()
@@ -1445,7 +1452,12 @@ def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
             ]
             if isinstance(saved, dict)
             else []
-        ) or ["cli"]
+        )
+        # Every platform the registry knows, not just those with a saved
+        # list: absent keys resolve their default composite, which includes
+        # the writable `file`. Custom (hand-added) platform keys keep working
+        # via the union.
+        platforms = list(dict.fromkeys([*PLATFORMS, *saved_platforms]))
 
         rewritten: List[str] = []
         for platform in platforms:

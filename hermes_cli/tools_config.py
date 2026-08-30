@@ -2994,6 +2994,24 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
+# Toolsets that cannot coexist on one platform: enabling either one swaps the
+# other out. `file` and `file_readonly` share read_file/search_files but
+# disagree on write_file/patch, so a plain union would quietly re-grant the
+# write surface the operator just removed by picking the read-only variant.
+_SWAPPED_TOOLSETS: Dict[str, str] = {
+    "file": "file_readonly",
+    "file_readonly": "file",
+}
+
+# Which side of a swapped pair wins when a save hands us both at once and the
+# caller hasn't already applied its intent (checklist with both boxes checked,
+# hand-edited config round-tripping through a writer). The read-only variant
+# is the fail-closed tiebreak: the other direction silently restores
+# write_file/patch. Callers that know what the user just did —
+# _apply_toolset_change, the dashboard toggle — swap explicitly before saving.
+_SWAPPED_TOOLSET_SAVE_WINNERS = {"file_readonly"}
+
+
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 
@@ -3009,6 +3027,19 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         ts for ts in enabled_toolset_keys
         if _toolset_allowed_for_platform(ts, platform)
     }
+
+    # Never persist both sides of a swapped pair. Enforced here so every
+    # writer — CLI enable/disable, the interactive checklist, the dashboard
+    # toggle, `hermes profile create --read-only` — inherits the invariant
+    # instead of each having to remember it.
+    for winner in _SWAPPED_TOOLSET_SAVE_WINNERS:
+        loser = _SWAPPED_TOOLSETS.get(winner)
+        if (
+            loser
+            and winner in enabled_toolset_keys
+            and loser in enabled_toolset_keys
+        ):
+            enabled_toolset_keys.discard(loser)
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -6139,14 +6170,9 @@ def _configure_mcp_tools_interactive(config: dict):
 
 # ─── Non-interactive disable/enable ──────────────────────────────────────────
 
-# Toolsets that cannot coexist on one platform: enabling either one swaps the
-# other out. `file` and `file_readonly` share read_file/search_files but
-# disagree on write_file/patch, so a plain union would quietly re-grant the
-# write surface the operator just removed by picking the read-only variant.
-_SWAPPED_TOOLSETS: Dict[str, str] = {
-    "file": "file_readonly",
-    "file_readonly": "file",
-}
+# _SWAPPED_TOOLSETS lives next to _save_platform_tools, which enforces the
+# swap for every writer; this flow applies it explicitly so the toolset the
+# user just acted on always wins.
 
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
