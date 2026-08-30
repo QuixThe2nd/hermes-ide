@@ -4,33 +4,53 @@
 
 # Hermes IDE ☤
 
-A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behavior, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
+A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behaviour, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
 
-### Why this fork exists
+## Why this fork exists
 
 Stock Hermes needs a lot of config. It does not arrive wheels-included. You spend a long time wiring providers, channels, memory, notifications, a home server, and skills before it feels like a working assistant.
 
-### It starts off stupid
+## Hermes starts off stupid
 
 A fresh Hermes starts off stupid, and it only slowly learns: skills from experience, memory of who you are, your conventions, the shape of your homelab. Learning is the point of Hermes — but day-one is bare.
 
-### Wheels-included
+## Wheels-included
 
 This repo is part of an effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree. The dev pipelines come prebuilt. Capability that makes the out-of-box experience better belongs here, not in a pile of private scripts. Upstream keeps its repo slim and ships capability externally — Debian to this fork's Ubuntu — and this fork is deliberately the opposite.
 
-### Discord-native
+## Discord First
 
-This fork is **Discord-native**. Discord isn't just another gateway adapter here — it's the primary operator surface, where the work gets driven from. Telegram, Slack, WhatsApp, Signal, and the CLI still work; Discord is where the house is.
+This fork is **Discord First**. Discord isn't just another gateway adapter here — it's the primary operator surface, where the work gets driven from. Telegram, Slack, WhatsApp, Signal, and the CLI still work; Discord is where the house is.
 
-The design centers on a **home server**: one Discord guild is the house. `/sethomeserver` makes that guild the home. Everything else hangs off it.
+### Home Servers
 
-So this fork ships its own home-server layout instead of making every operator invent one. Chat lives in `#inbox` and `#outbox`; notifications land in `#model-fallback`, `#gateway-restarts`, and `#other`; the Honcho Memory channels keep memory visible; Models is the quota voice-channel wall; Speeds carries the download walls. One command provisions and wires all of it — the `hermes_starts` inbox, the home and notification channels, `#gateway-restarts` showing `agents-N` while agents are live and `restarting-N-agents` while draining, `quota_channels`, `speed_channels`. It's idempotent, it never deletes, and moving an existing home server requires a confirm.
+Hermes IDE highly encourages to use of a Home Server for just you and your bot. This is done by creating a new Discord server with only you and your bot, then running `/sethomeserver`. You can consider the home server a "mission control".
 
-### The house is the IDE
+### Inbox & Outbox
 
-That home server is the **second brain** and the **IDE**. Tickets, `#inbox` and `#outbox`, the Honcho Memory channels, the Models quota wall, the Speeds download walls, the `#gateway-restarts` drain, and the coding work itself all live as channels in that one server — not behind a separate dashboard or an Electron window. The Discord server IS the workspace.
+Hermes IDE uses an email-inspired conversational structure. Chat lives in `#inbox` and `#outbox`. The outbox is where you start conversations and threads. The inbox however contains conversations initiated by your agent.
 
-None of that stops the learning. Day one just arrives with the house already built — then it still learns.
+Agents can start conversations at any time by using either a tool, a post-run hook, or on a cronjob. Agents also get another cronjob registered that automatically modifies how conversations are started (so your agent can give itself creative freedom). The goal of the inbox is to give your agent an outlet to give unsolicited advice.
+
+### Categorised Notifications
+
+Instead of Hermes' home channel being used for all notifications, we have a notifications category. The category contains `#model-fallback`, `#gateway-restarts`, and `#other`. The gateway restarts channel changes to a count of active sessions when applicable.
+
+### Memory Observability
+
+Memory observability is crucial for a good agent. However stock Hermes provides almost none. This Hermes IDE aims to provide full observability into both reads and writes to/from memory. This is through the memory channels in your home server logging edits, as well as memory injection being displayed in live chats.
+
+### Quota Monitoring
+
+Hermes IDE automatically monitors configured token providers to check for remaining usage, resets available, time till expiry, and uptime. It then automatically orders the list of preferred models. The order, remaining quota/resets, and time till expiry are shown on discord.
+
+### Thread Rate Limit Handling
+
+Power users of Hermes would have noticed that when used too much, Discord rate limits Hermes from creating new threads. Hermes IDE handles this automatically by queuing threads to be auto-created once rate limits pass
+
+### Smart pinging
+
+When using Hermes, you constantly finding yourself jumping between threads checking to see which needs your input. This is because the default Hermes is inconsistent about when it pings you. Hermes IDE avoids pinging you on iterations or mid-run messages. But will reply to you or ping you on the final message. I found that this simple changed improved my productivity a lot as I saved so much mental bandwidth rotating between 20 chats for hours straight waiting for one to complete.
 
 ## What's different here
 
