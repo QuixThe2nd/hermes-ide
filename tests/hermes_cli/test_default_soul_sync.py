@@ -56,7 +56,10 @@ def test_install_sh_soul_seed_matches_default():
 
 def test_install_ps1_soul_seed_matches_default():
     text = (REPO_ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
-    assert _normalize(_extract_here_string_soul(text)) == _normalize(DEFAULT_SOUL_MD)
+    # install.ps1 must stay pure ASCII, so it seeds "--" where the canonical
+    # DEFAULT_SOUL_MD uses an em dash. Runtime upgrades the ASCII seed in place.
+    seeded = _extract_here_string_soul(text).replace("--", "\u2014")
+    assert _normalize(seeded) == _normalize(DEFAULT_SOUL_MD)
 
 
 def test_docker_soul_md_matches_default():
