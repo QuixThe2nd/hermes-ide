@@ -82,10 +82,14 @@ from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_statu
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit; stall watchdog still applies
+DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit
 MIN_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 3600
-STALL_WATCHDOG_SECONDS = 600
+# 0 = stall watchdog off. Long quiet stretches (model thinking, slow tool
+# calls inside the child) are the normal case for coding delegations, so a
+# silent run is never killed; only an explicit positive timeout_seconds
+# bounds the run.
+STALL_WATCHDOG_SECONDS = 0
 
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep,Bash"
 DEFAULT_PERMISSION_MODE = "acceptEdits"
@@ -342,7 +346,7 @@ def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_TIMEOUT_SECONDS
     if value <= 0:
-        return 0  # unbounded; stall watchdog remains the dead-man switch
+        return 0  # unbounded: no wall-clock limit and no stall kill
     return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
 
 
@@ -709,9 +713,8 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                 "type": "integer",
                 "description": (
                     f"Maximum wall-clock seconds before the run is terminated. "
-                    f"0 (default) means no wall-clock limit; the stall watchdog "
-                    f"still terminates runs with no output for "
-                    f"{STALL_WATCHDOG_SECONDS}s. Positive values clamp to "
+                    f"0 (default) means no limit at all — a quiet run is never "
+                    f"killed for silence. Positive values clamp to "
                     f"{MIN_TIMEOUT_SECONDS}–{MAX_TIMEOUT_SECONDS}."
                 ),
                 "default": DEFAULT_TIMEOUT_SECONDS,

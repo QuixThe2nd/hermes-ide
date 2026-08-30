@@ -227,9 +227,10 @@ def test_sequential_timeout_skips_unbounded_delegate_tools(tmp_path, monkeypatch
     """Delegate agent tools outrun the generic deadline by design.
 
     The batch/sequential deadline guards against wedged tool threads; a
-    healthy external coding agent may legitimately run for hours. Its own
-    stall watchdog is the dead-man switch, so the generic deadline must not
-    fire for tools in timeouts.tools.unbounded_tools (fork default includes
+    healthy external coding agent may legitimately run for hours — quietly
+    included, since the delegate coding tools run with no stall watchdog of
+    their own. The generic deadline must not fire for tools in
+    timeouts.tools.unbounded_tools (fork default includes
     delegate_cursor_agent / delegate_claude_agent).
     """
     agent = _make_agent(tmp_path)

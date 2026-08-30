@@ -91,10 +91,12 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit; stall watchdog still applies
+DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit
 MIN_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 1800
-STALL_WATCHDOG_SECONDS = 600
+# 0 = stall watchdog off — long quiet stretches are the normal case for
+# coding delegations; only an explicit positive timeout_seconds bounds a run.
+STALL_WATCHDOG_SECONDS = 0
 
 CURSOR_API_BASE = "https://api.cursor.com"
 CURSOR_CLOUD_ENV_PATH = Path.home() / ".hermes" / "secrets" / "cursor-cloud.env"
@@ -1251,7 +1253,7 @@ def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_TIMEOUT_SECONDS
     if value <= 0:
-        return 0  # unbounded; stall watchdog remains the dead-man switch
+        return 0  # unbounded: no wall-clock limit and no stall kill
     return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
 
 
@@ -2276,9 +2278,8 @@ CURSOR_AGENT_SCHEMA = {
                 "type": "integer",
                 "description": (
                     f"Maximum wall-clock seconds before the run is terminated. "
-                    f"0 (default) means no wall-clock limit; the stall watchdog "
-                    f"still terminates runs with no output for "
-                    f"{STALL_WATCHDOG_SECONDS}s. Positive values clamp to "
+                    f"0 (default) means no limit at all — a quiet run is never "
+                    f"killed for silence. Positive values clamp to "
                     f"{MIN_TIMEOUT_SECONDS}–{MAX_TIMEOUT_SECONDS}."
                 ),
                 "default": DEFAULT_TIMEOUT_SECONDS,

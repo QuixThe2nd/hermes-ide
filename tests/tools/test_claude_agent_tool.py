@@ -981,6 +981,115 @@ def test_delegate_run_unaffected_when_no_status_callback_bound(
 
 
 # ---------------------------------------------------------------------------
+# Stall watchdog contract: quiet runs are never killed
+# ---------------------------------------------------------------------------
+
+
+def test_schema_timeout_description_claims_no_stall_kill():
+    """The schema must not tell the model a stall watchdog exists."""
+    from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
+    from tools.cursor_agent_tool import CURSOR_AGENT_SCHEMA
+
+    for schema in (DELEGATE_CLAUDE_AGENT_SCHEMA, CURSOR_AGENT_SCHEMA):
+        description = schema["parameters"]["properties"]["timeout_seconds"][
+            "description"
+        ]
+        assert "stall" not in description.lower(), schema["name"]
+        # The old text claimed runs "with no output for 600s" get terminated.
+        assert "no output" not in description.lower(), schema["name"]
+        # The opt-in positive wall-clock limit is still advertised.
+        assert "wall-clock" in description.lower(), schema["name"]
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_runner_default_stall_watchdog_is_off(tmp_path, monkeypatch):
+    """The runner's own default must be stall-watchdog-off.
+
+    The delegate tools rely on this default: a silent child that outlives
+    any plausible stall window runs to its natural exit instead of being
+    killed for quietness.
+    """
+    import inspect
+
+    from tools.agent_cli_runner import run_agent_cli
+
+    monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01)
+    assert (
+        inspect.signature(run_agent_cli).parameters["stall_watchdog_seconds"].default
+        == 0
+    )
+
+    error_code, _log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "import time; time.sleep(1.5)"],
+        workdir=str(tmp_path),
+        timeout_seconds=0,
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260830-000000",
+    )
+
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == ""
+    assert duration >= 1.2
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_zero_stall_watchdog_never_reports_stalled(tmp_path, monkeypatch):
+    """``stall_watchdog_seconds <= 0`` must disable the stall check entirely.
+
+    A regression that compares elapsed-quiet-time against the watchdog value
+    unguarded would kill this silent child on the first poll (elapsed >= 0
+    always holds), so this test pins the disable semantics, not just the kill.
+    """
+    from tools.agent_cli_runner import run_agent_cli
+
+    monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01)
+
+    error_code, _log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "import time; time.sleep(1.5)"],
+        workdir=str(tmp_path),
+        timeout_seconds=0,
+        stall_watchdog_seconds=0,
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260830-000000",
+    )
+
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == ""
+    assert duration >= 1.2
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_positive_stall_watchdog_still_kills_silent_child(
+    tmp_path, monkeypatch
+):
+    """An explicit positive stall window stays a working opt-in kill switch.
+
+    The dev-pipeline executor passes ``stall_watchdog_seconds=600`` to bound
+    its own attempt runner; that contract must survive the default change.
+    """
+    from tools.agent_cli_runner import run_agent_cli
+
+    monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01)
+
+    error_code, _log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        workdir=str(tmp_path),
+        timeout_seconds=0,
+        stall_watchdog_seconds=0.5,
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260830-000000",
+    )
+
+    assert error_code == "stalled"
+    assert returncode != 0
+    assert log_text == ""
+    # Killed at the stall window, not after the child's own 30s sleep.
+    assert duration < 30
+
+
+# ---------------------------------------------------------------------------
 # /goal condition 4000-char pre-flight spill
 # ---------------------------------------------------------------------------
 
