@@ -1181,6 +1181,7 @@ def create_profile(
     clone_config: bool = False,
     no_alias: bool = False,
     no_skills: bool = False,
+    read_only: bool = False,
     description: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory.
@@ -1204,6 +1205,14 @@ def create_profile(
         a marker file so ``hermes update`` skips re-seeding this profile's
         skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
         explicitly copy skills from the source).
+    read_only:
+        If True, make the profile's file tools read-only: every configured
+        platform swaps the ``file`` toolset (read + write + patch) for
+        ``file_readonly`` (read + search only), so ``write_file`` and
+        ``patch`` never reach the model. See
+        :func:`apply_read_only_file_toolsets`. Composable with every other
+        flag — it only touches the file toolsets, not terminal or code
+        execution.
 
     Returns
     -------
@@ -1353,6 +1362,17 @@ def create_profile(
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
 
+    # --read-only rewrites the toolset config after any clone/migration, so it
+    # sees the final config.yaml. Announced here (rather than by the caller)
+    # so every entry point — CLI, dashboard, library — reports the constraint
+    # that just took effect.
+    if read_only:
+        apply_read_only_file_toolsets(profile_dir)
+        print(
+            "ℹ File tools are read-only for this profile: "
+            "write_file and patch are disabled (file_readonly enabled)."
+        )
+
     # Persist description if the caller provided one. Done last so a
     # partial-create failure doesn't strand a description file in an
     # incomplete profile.
@@ -1375,6 +1395,84 @@ def create_profile(
     _maybe_register_gateway_service(canon)
 
     return profile_dir
+
+
+# The read-only mirror of the ``file`` toolset: same reads (``read_file``,
+# ``search_files``), no ``write_file``/``patch``. See TOOLSETS in toolsets.py.
+READ_ONLY_FILE_TOOLSET = "file_readonly"
+
+
+def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
+    """Swap ``file`` → ``file_readonly`` in a profile's ``platform_toolsets``.
+
+    Used by ``hermes profile create --read-only`` to give a sandbox/researcher
+    profile file reads without file writes. Two shapes of config land here:
+
+    * the profile has saved per-platform lists (a clone of a profile that ran
+      ``hermes tools``): each configured platform is rewritten with its
+      effective toolsets minus ``file`` plus ``file_readonly`` — materialized
+      the same way ``hermes tools enable`` persists a selection, so a bare
+      composite name like ``hermes-discord`` is expanded rather than left to
+      re-import the write tools implicitly.
+    * no platform lists at all (fresh create, or a clone whose source never
+      touched ``hermes tools``): every platform the registry knows that
+      resolves ``file`` gets a list matching its default-on toolsets except
+      for the swap. Writing only ``cli`` would leave discord/telegram/cron
+      and the rest inheriting composites that carry the writable ``file``,
+      so a "read-only" profile kept its write surface on every non-CLI
+      platform.
+
+    A platform whose effective toolsets already lack ``file`` is left alone —
+    there is no write surface to remove, and forcing reads onto a platform
+    the operator had narrowed (e.g. an explicit ``["web"]`` list) would widen
+    it.
+
+    Returns the platform keys that were rewritten.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    # Scope config load/save to the new profile: load_config()/save_config()
+    # target HERMES_HOME, which is still the *creating* profile here.
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import (
+            PLATFORMS,
+            _get_platform_tools,
+            _save_platform_tools,
+        )
+
+        config = load_config()
+        saved = config.get("platform_toolsets")
+        saved_platforms = (
+            [
+                str(platform)
+                for platform, entries in (saved or {}).items()
+                if isinstance(entries, list)
+            ]
+            if isinstance(saved, dict)
+            else []
+        )
+        # Every platform the registry knows, not just those with a saved
+        # list: absent keys resolve their default composite, which includes
+        # the writable `file`. Custom (hand-added) platform keys keep working
+        # via the union.
+        platforms = list(dict.fromkeys([*PLATFORMS, *saved_platforms]))
+
+        rewritten: List[str] = []
+        for platform in platforms:
+            enabled = _get_platform_tools(
+                config, platform, include_default_mcp_servers=False
+            )
+            if "file" not in enabled:
+                continue
+            enabled.discard("file")
+            enabled.add(READ_ONLY_FILE_TOOLSET)
+            _save_platform_tools(config, platform, enabled)
+            rewritten.append(platform)
+        return rewritten
+    finally:
+        reset_hermes_home_override(token)
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:

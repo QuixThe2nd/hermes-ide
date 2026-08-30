@@ -137,6 +137,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     """
     from hermes_cli.tools_config import (
         _CONFIG_ONLY_TOOLSETS,
+        _SWAPPED_TOOLSETS,
         _get_effective_configurable_toolsets,
         _get_platform_tools,
         _save_platform_tools,
@@ -175,6 +176,14 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
                 )
                 if body.enabled:
                     enabled.add(name)
+                    # Swapped pairs (file/file_readonly) are mutually
+                    # exclusive: enabling one drops the other, same as
+                    # `hermes tools enable`. Applying the intent here keeps
+                    # the toggle effective in both directions — the save
+                    # helper's tiebreak only fails closed (read-only wins).
+                    swapped = _SWAPPED_TOOLSETS.get(name)
+                    if swapped:
+                        enabled.discard(swapped)
                 else:
                     enabled.discard(name)
                 _save_platform_tools(config, target_platform, enabled)

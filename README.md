@@ -64,6 +64,10 @@ Honcho memory tools surface backend failures — dead API keys, auth 401s, timeo
 
 - Memory — Hindsight seeds a retain_mission (skip transient task state) and two recall directives (prefer-newer, ignore session dumps) on first bank init
 
+### Profiles
+
+`hermes profile create NAME --read-only` ships a `file_readonly` toolset (`read_file` + `search_files`, no `write_file`/`patch`) and wires the new profile to it, so a sandbox or researcher profile can be granted file reads without file writes; `hermes tools enable file_readonly` swaps `file` out the same way on any platform.
+
 ### The Discord house and its plugins
 
 Set a Discord home server once and Hermes provisions and keeps in sync the whole structure — Notifications, Chat, Honcho Memory, Models, Speeds — fully wired, with Notifications first at the top of the server. `/sethomeserver` does it from one command (confirm required to move an existing one), wires `#gateway-restarts` as `agents-N` while up and `restarting-N-agents` while draining, then re-syncs at most hourly — and immediately whenever the in-code template changes (a template fingerprint bypasses the hourly debounce, so an update that adds or reorders channels lands without a forced re-provision). The home_server plugin keeps the same layout idempotent and seats categories and channels in template order: never deletes, a legacy Quotas category is renamed in place to Models, and existing home, notification, and rename targets are never clobbered. `#gateway-restarts` shows `agents-N` live and `restarting-N-agents` while draining.

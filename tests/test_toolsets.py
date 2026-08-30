@@ -69,6 +69,13 @@ class TestResolveToolset:
         assert "web_search" in tools
         assert "web_extract" in tools
 
+    def test_file_readonly_resolves_to_reads_only(self):
+        assert resolve_toolset("file_readonly") == ["read_file", "search_files"]
+
+    def test_file_toolset_still_carries_the_write_tools(self):
+        tools = resolve_toolset("file")
+        assert set(tools) == {"read_file", "write_file", "patch", "search_files"}
+
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A
         TOOLSETS["_cycle_a"] = {"description": "test", "tools": ["t1"], "includes": ["_cycle_b"]}

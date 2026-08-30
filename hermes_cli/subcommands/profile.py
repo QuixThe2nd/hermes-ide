@@ -56,6 +56,12 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
     )
     profile_create.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Make the profile's file tools read-only: `file_readonly` (read_file, "
+             "search_files) replaces `file`, so write_file and patch stay off",
+    )
+    profile_create.add_argument(
         "--description",
         default=None,
         help="One- or two-sentence description of what this profile is good at. "

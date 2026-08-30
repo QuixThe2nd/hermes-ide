@@ -86,6 +86,104 @@ def test_assistant_handoff_default_off_outside_mission_profiles():
         )
 
 
+# ─── file_readonly toolset: opt-in mirror of `file` ──────────────────────────
+
+
+def test_file_readonly_is_a_configurable_toolset():
+    """`hermes tools list/enable/disable` and the dashboard tools API must
+    accept file_readonly, and the checklist must offer it next to `file`."""
+    keys = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
+    assert "file_readonly" in keys
+    assert "file_readonly" in _checklist_toolset_keys("cli")
+
+
+def test_file_readonly_default_off_not_inferred_from_core_tools():
+    """file_readonly's two tools are a subset of the core file tools, so the
+    composite reverse-mapping would mark it enabled on every stock install.
+    It must stay opt-in: default-off, with `file` still resolving by default."""
+    assert "file_readonly" in _DEFAULT_OFF_TOOLSETS
+    for platform in ("cli", "discord", "telegram", "cron"):
+        enabled = _get_platform_tools({}, platform, include_default_mcp_servers=False)
+        assert "file_readonly" not in enabled, platform
+        assert "file" in enabled, platform
+
+
+def test_file_readonly_enabling_swaps_file_out():
+    """`hermes tools enable file_readonly` must disable `file` on the same
+    platform — a union would quietly re-grant the write_file/patch surface
+    the operator just removed."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    with patch("hermes_cli.tools_config.load_config", return_value=config), \
+         patch("hermes_cli.tools_config.save_config") as mock_save:
+        tools_disable_enable_command(
+            Namespace(tools_action="enable", names=["file_readonly"], platform="cli")
+        )
+    saved = mock_save.call_args[0][0]
+    cli_list = saved["platform_toolsets"]["cli"]
+    assert "file_readonly" in cli_list
+    assert "file" not in cli_list
+
+
+def test_file_enabling_swaps_file_readonly_out():
+    """The swap is symmetric: re-enabling `file` drops the read-only mirror
+    instead of leaving both listed."""
+    config = {"platform_toolsets": {"cli": ["file_readonly", "web"]}}
+    with patch("hermes_cli.tools_config.load_config", return_value=config), \
+         patch("hermes_cli.tools_config.save_config") as mock_save:
+        tools_disable_enable_command(
+            Namespace(tools_action="enable", names=["file"], platform="cli")
+        )
+    saved = mock_save.call_args[0][0]
+    cli_list = saved["platform_toolsets"]["cli"]
+    assert "file" in cli_list
+    assert "file_readonly" not in cli_list
+
+
+def test_file_readonly_resolution_has_no_write_surface():
+    """The actual contract: a platform saved with file_readonly resolves
+    read/search tools but never write_file or patch."""
+    from toolsets import resolve_multiple_toolsets
+
+    enabled = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["file_readonly", "web", "terminal"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    tools = resolve_multiple_toolsets(sorted(enabled))
+    assert {"read_file", "search_files"} <= set(tools)
+    assert "write_file" not in tools
+    assert "patch" not in tools
+
+
+def test_save_platform_tools_never_persists_both_file_variants():
+    """The interactive checklist and dashboard hand _save_platform_tools a
+    plain selection set without applying the swap themselves (only
+    `hermes tools enable` did). The helper must enforce it — read-only side
+    wins, failing closed — or a still-checked `file` quietly keeps
+    write_file/patch alive next to `file_readonly`."""
+    config = {"platform_toolsets": {"cli": []}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "file", "file_readonly"})
+
+    cli_list = config["platform_toolsets"]["cli"]
+    assert "file_readonly" in cli_list
+    assert "file" not in cli_list
+
+
+def test_save_platform_tools_keeps_plain_file_selection():
+    """The swap only fires when both variants arrive together — a normal
+    `file`-only selection (the stock default) must survive a save intact."""
+    config = {"platform_toolsets": {"cli": []}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "file"})
+
+    cli_list = config["platform_toolsets"]["cli"]
+    assert "file" in cli_list
+    assert "file_readonly" not in cli_list
+
+
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
     (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an

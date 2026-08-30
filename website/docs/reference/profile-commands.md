@@ -86,6 +86,7 @@ Creates a new profile.
 | `--no-alias` | Skip wrapper script creation. |
 | `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
 | `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
+| `--read-only` | Make the profile's **file tools read-only**: the `file_readonly` toolset (`read_file`, `search_files`) replaces `file`, so `write_file` and `patch` never reach the model. Writes a `platform_toolsets` selection into the profile's `config.yaml` — for `cli` on a fresh create, or for every platform the (cloned) config already had a saved list for; a bare composite entry such as `hermes-discord` is expanded so it can't re-import the write tools implicitly. Composes with `--clone`/`--clone-from`/`--clone-all`, `--no-skills`, and `--no-alias`. Only file tools are affected — `terminal` and `code_execution` stay as they were. To go back, run `hermes -p <name> tools enable file` (which swaps the read-only variant back out). |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
@@ -106,6 +107,9 @@ hermes profile create work2 --clone-from work
 
 # Clone everything from a specific profile
 hermes profile create work2-backup --clone-from work --clone-all
+
+# Read-only files: read_file + search_files, no write_file or patch
+hermes profile create researcher --read-only
 ```
 
 ## `hermes profile describe`
