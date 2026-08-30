@@ -320,10 +320,32 @@ class TestCodexResetCreditDetailsParsing:
             ResetCredits(1, 3 * DAY)
         )
 
-    def test_past_expiry_clamps_to_zero(self):
-        body = _details_body([_credit(expires_at=_iso(NOW - DAY))])
+    def test_past_expiry_is_not_counted(self):
+        # a credit already past its expiry cannot be spent, so it is not
+        # genuinely available: no count, and no countdown to floor at zero
+        body = _details_body([_credit(expires_at=_iso(NOW - DAY))], available_count=1)
         assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
-            ResetCredits(1, 0.0)
+            ResetCredits(0, None)
+        )
+
+    def test_expiry_right_now_is_not_counted(self):
+        # `expires_at <= now` is already gone; only a strictly future expiry
+        # leaves the credit spendable
+        body = _details_body([_credit(expires_at=_iso(NOW))])
+        assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
+            ResetCredits(0, None)
+        )
+
+    def test_past_expiry_next_to_a_valid_one_leaves_only_the_valid_one(self):
+        body = _details_body(
+            [
+                _credit(expires_at=_iso(NOW - DAY)),
+                _credit(expires_at=_iso(NOW + 3 * DAY)),
+            ],
+            available_count=2,
+        )
+        assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
+            ResetCredits(1, 3 * DAY)
         )
 
     @pytest.mark.parametrize(

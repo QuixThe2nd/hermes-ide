@@ -408,9 +408,10 @@ def parse_codex_reset_credit_details(
     `credits` carries `reset_type`, `status`, `granted_at`, `expires_at` and
     `title`. Only credits that are genuinely available for Codex rate limits
     are counted, and the expiry shown is the earliest of theirs — the single
-    `ResetCredits.expiry_secs` field stands for the whole stack. A past
-    expiry floors at zero (spend now, like Grok), and a missing or malformed
-    `expires_at` leaves that credit counted but contributing no expiry.
+    `ResetCredits.expiry_secs` field stands for the whole stack. A readable
+    `expires_at` that is already past means the credit cannot be spent, so it
+    is not counted at all; a missing or malformed `expires_at` leaves that
+    credit counted but contributing no expiry.
 
     Returns None when the payload is not the expected shape, so the caller
     keeps the count the usage payload already reported.
@@ -443,14 +444,19 @@ def parse_codex_reset_credit_details(
         status = str(credit.get("status") or "").strip().lower()
         if status != CODEX_RESET_STATUS_AVAILABLE:
             continue
-        count += 1
         expires_at = _parse_iso8601_epoch(credit.get("expires_at"))
         if expires_at is None:
+            # the expiry is unknowable, but the credit itself still counts
+            count += 1
             continue
         remaining = expires_at - now
+        if remaining <= 0:
+            # already past its expiry, so it is not genuinely spendable
+            continue
+        count += 1
         if earliest is None or remaining < earliest:
             earliest = remaining
-    return ResetCredits(count, None if earliest is None else max(0.0, earliest))
+    return ResetCredits(count, earliest)
 
 
 def format_codex_name(
