@@ -8573,6 +8573,99 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_restart_confirmation(
+        self,
+        chat_id: str,
+        prompt: str,
+        requester_user_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the ``restart`` tool's confirmation as one dedicated embed.
+
+        The tool owns the confirm copy (exact word ``restart`` or cancel);
+        this method owns the Discord presentation: a restart-themed embed
+        carrying the full prompt, with plain ``content`` reduced to the
+        requester's mention — a mention inside embed text does not notify.
+        That keeps the prompt visible exactly once (the embed) while the
+        ping still lands; a requester on a client that cannot render embeds
+        gets the full prompt via the tool's plain fallback, which only
+        fires when this rich send definitively fails.
+        ``allowed_mentions`` is pinned to that one user so the ping cannot
+        fan out to roles or ``@everyone``. The ping is mandatory prompt
+        plumbing, not an opt-in nicety, so unlike ``send_clarify`` it is
+        NOT gated on ``discord.clarify_mentions``. No buttons: the reply is
+        the gateway's text-intercept, and component views expire.
+
+        Failure contract: ``SendResult(success=False)`` is returned only
+        for failures known BEFORE ``channel.send`` is attempted (no client,
+        unresolvable channel) — no message can exist yet, so the tool's
+        plain fallback cannot duplicate anything. Any exception from
+        ``channel.send`` itself PROPAGATES instead: Discord can create the
+        message and still raise (timeout / dropped connection after the
+        REST call), so a send-time failure is ambiguous, not definitive.
+        Swallowing it into a failure result would make the tool send the
+        plain fallback next to the embed that did land.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        # This try covers only work that happens BEFORE any message could
+        # exist — a failure here is definitive (nothing was sent), so it is
+        # safe to report as SendResult failure and let the tool fall back to
+        # the plain prompt.
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # Discord embed description limit is 4096; trim conservatively.
+            max_desc = 4088
+            body = str(prompt or "").strip()
+            if len(body) > max_desc:
+                body = body[: max_desc - 3] + "..."
+
+            # Caution orange, not success green — a pending restart is a
+            # confirmation awaiting a reply, same register as the exec
+            # approval and clarify cards (see send_exec_approval).
+            embed = discord.Embed(
+                title="♻️ Gateway restart requested",
+                description=body,
+                color=discord.Color.orange(),
+            )
+
+            # The prompt text lives in the embed only — mirroring it in
+            # plain content would show it twice. Content carries just the
+            # requester's mention so the prompt actually notifies; with no
+            # numeric requester there is nothing to say outside the embed,
+            # so content is omitted entirely.
+            send_kwargs: Dict[str, Any] = {"embed": embed}
+            user_id = str(requester_user_id or "").strip()
+            if user_id.isdigit():
+                send_kwargs["content"] = f"<@{user_id}>"
+                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+                if allowed_mentions_cls is not None:
+                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                        users=[discord.Object(id=int(user_id))],
+                        roles=False,
+                        everyone=False,
+                        replied_user=False,
+                    )
+        except Exception as e:
+            logger.warning("[%s] send_restart_confirmation failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+        # Deliberately outside the try above: an exception from
+        # channel.send means delivery is AMBIGUOUS (Discord may have
+        # created the message before the response was lost), so it must
+        # propagate and let the caller disarm without a plain fallback
+        # rather than be reported as a definitive SendResult failure.
+        msg = await channel.send(**send_kwargs)
+        return SendResult(success=True, message_id=str(msg.id))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",

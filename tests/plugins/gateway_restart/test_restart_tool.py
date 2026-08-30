@@ -568,6 +568,196 @@ def test_handler_survives_runner_without_a_loop(monkeypatch):
     runner.request_restart.assert_not_called()
 
 
+# ── the Discord confirmation embed ──────────────────────────────────────────
+#
+# On Discord the confirm gate renders as ONE dedicated embed owned by the
+# adapter's send_restart_confirmation — the plain prompt stays as the
+# fallback for adapters without the capability (and for a failed embed
+# send), never as a second message beside it.
+
+
+def _discord_runner(gateway_loop, monkeypatch):
+    """A live runner whose DISCORD adapter is the plain RestartTestAdapter."""
+    from gateway.config import Platform
+
+    runner, adapter = make_restart_runner()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._gateway_loop = gateway_loop
+    runner._background_tasks = set()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+    return runner, adapter
+
+
+def _spy_confirm(monkeypatch, order, reply="restart"):
+    """Stub the confirm gate while recording the registration into ``order``."""
+    import tools.clarify_gateway as cg
+
+    register = MagicMock(return_value=None)
+    wait = MagicMock(return_value=reply)
+
+    def _register_spy(**kwargs):
+        order.append("register")
+        return register(**kwargs)
+
+    monkeypatch.setattr(cg, "register", _register_spy)
+    monkeypatch.setattr(cg, "wait_for_response", wait)
+    return register, wait
+
+
+_DISCORD_SESSION = {
+    "platform": "discord",
+    "chat_id": "55",
+    "chat_type": "thread",
+    "thread_id": "999",
+    "user_id": "123456789012345678",
+    "session_key": "discord-55",
+}
+
+
+def test_discord_embed_is_the_single_confirmation_message(gateway_loop, monkeypatch):
+    """Rich path: one embed, no plain prompt, registered before the send."""
+    from gateway.platforms.base import SendResult
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order = []
+    rich_calls = []
+
+    async def _rich(**kwargs):
+        order.append("rich")
+        rich_calls.append(kwargs)
+        return SendResult(success=True, message_id="e1")
+
+    adapter.send_restart_confirmation = _rich
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    # Registration arms the text-intercept BEFORE any prompt can land.
+    assert order == ["register", "rich"]
+    assert len(rich_calls) == 1
+    assert rich_calls[0]["chat_id"] == "55"
+    assert "restart" in rich_calls[0]["prompt"]
+    assert rich_calls[0]["requester_user_id"] == "123456789012345678"
+    assert rich_calls[0]["metadata"] == {"thread_id": "999"}
+    # No plain prompt rode along after the embed.
+    assert adapter.sent_calls == []
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+def test_discord_embed_failure_falls_back_to_exactly_one_plain_prompt(
+    gateway_loop, monkeypatch
+):
+    from gateway.platforms.base import SendResult
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order = []
+
+    async def _rich(**kwargs):
+        order.append("rich")
+        return SendResult(success=False, error="embed blew up")
+
+    adapter.send_restart_confirmation = _rich
+    _plain = adapter.send
+
+    async def _plain_spy(chat_id, content, reply_to=None, metadata=None):
+        order.append("plain")
+        return await _plain(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    adapter.send = _plain_spy
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    # The fallback prompt delivered, so the confirm gate still ran.
+    assert result["success"] is True
+    assert order == ["register", "rich", "plain"]
+    assert len(adapter.sent_calls) == 1
+    chat_id, content, metadata = adapter.sent_calls[0]
+    assert chat_id == "55"
+    assert content.startswith("<@123456789012345678> ")
+    assert "restart" in content
+    assert (metadata or {}).get("thread_id") == "999"
+    runner.request_restart.assert_called_once()
+
+
+def test_discord_embed_ambiguous_failure_does_not_duplicate_the_prompt(
+    gateway_loop, monkeypatch
+):
+    """A timeout-class failure may still land the embed — no plain resend.
+
+    Same boundary rule as clarify: only a definitive failure (no message
+    created) falls back; an exception from the future is ambiguous.
+    """
+    from plugins.gateway_restart.tool import handle_restart
+    from tools import clarify_gateway as cg
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order = []
+
+    async def _rich(**kwargs):
+        order.append("rich")
+        raise asyncio.TimeoutError()
+
+    adapter.send_restart_confirmation = _rich
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert "confirmation prompt" in result["error"]
+    assert order == ["register", "rich"]
+    assert adapter.sent_calls == []
+    runner.request_restart.assert_not_called()
+    # No armed entry left to eat the requester's next message.
+    assert cg.has_pending("discord-55") is False
+
+
+def test_rich_path_is_discord_only(gateway_loop, monkeypatch):
+    """A non-Discord adapter never takes the embed path, capability or not."""
+    from gateway.platforms.base import SendResult
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    adapter = next(iter(runner.adapters.values()))
+    rich_calls = []
+
+    async def _rich(**kwargs):
+        rich_calls.append(kwargs)
+        return SendResult(success=True, message_id="e1")
+
+    adapter.send_restart_confirmation = _rich
+    _mock_confirm(monkeypatch, "restart")
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert rich_calls == []
+    assert len(adapter.sent_calls) == 1
+    _chat_id, content, _metadata = adapter.sent_calls[0]
+    assert content.startswith("Gateway restart requested")
+
+
 # ── /restart keeps using the shared path (and never waits for the word) ─────
 #
 # The user already typed /restart — the slash command stays ungated by the
