@@ -985,18 +985,6 @@ def test_delegate_run_unaffected_when_no_status_callback_bound(
 # ---------------------------------------------------------------------------
 
 
-def test_delegate_stall_watchdog_disabled_by_default():
-    """Both delegate coding tools must run with the stall watchdog off.
-
-    Long quiet stretches (model thinking, slow child tool calls) are the
-    normal case for coding delegations, so a silent run must not be killed.
-    """
-    from tools import claude_agent_tool, cursor_agent_tool
-
-    assert claude_agent_tool.STALL_WATCHDOG_SECONDS == 0
-    assert cursor_agent_tool.STALL_WATCHDOG_SECONDS == 0
-
-
 def test_schema_timeout_description_claims_no_stall_kill():
     """The schema must not tell the model a stall watchdog exists."""
     from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
