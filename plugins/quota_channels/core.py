@@ -48,6 +48,10 @@ DEFAULT_QUOTA_INTERVAL_SECONDS = 1800
 DEFAULT_POST_QUOTA_DELAY_SECONDS = 31
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+# canonical per-credit detail behind the usage payload's available_count
+CODEX_RESET_CREDITS_URL = (
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+)
 KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
 CURSOR_USAGE_URL = (
@@ -70,6 +74,11 @@ CURSOR_AGG_USAGE_URL = (
 )
 
 TOKEN_WINDOW_DAYS = 7
+
+# Only credits of this reset type spend against the Codex quota channel, and
+# only this status means the credit is still genuinely spendable.
+CODEX_RESET_TYPE = "codex_rate_limits"
+CODEX_RESET_STATUS_AVAILABLE = "available"
 
 STATE_FILENAME = "quota_channels_state.json"
 
@@ -370,6 +379,84 @@ def parse_codex_reset_credits(text: str) -> Optional[ResetCredits]:
     except (TypeError, ValueError, OverflowError):
         return None
     return ResetCredits(max(0, count))
+
+
+def _parse_iso8601_epoch(value: Any) -> Optional[float]:
+    """Epoch seconds for an ISO-8601 timestamp, or None when unreadable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        # a naive timestamp is ambiguous, so it counts as unknown
+        return None
+    return parsed.timestamp()
+
+
+def parse_codex_reset_credit_details(
+    text: str,
+    now_fn: NowFn = time.time,
+) -> Optional[ResetCredits]:
+    """Available codex_rate_limits credits plus the real expiry they spend on.
+
+    Reads the canonical `rate-limit-reset-credits` payload: each entry in
+    `credits` carries `reset_type`, `status`, `granted_at`, `expires_at` and
+    `title`. Only credits that are genuinely available for Codex rate limits
+    are counted, and the expiry shown is the earliest of theirs — the single
+    `ResetCredits.expiry_secs` field stands for the whole stack. A readable
+    `expires_at` that is already past means the credit cannot be spent, so it
+    is not counted at all; a missing or malformed `expires_at` leaves that
+    credit counted but contributing no expiry.
+
+    Returns None when the payload is not the expected shape, so the caller
+    keeps the count the usage payload already reported.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    credits = payload.get("credits")
+    if not isinstance(credits, list):
+        # No per-credit detail to read: the root total is all the payload
+        # offers, and its expiry stays unknown — never the quota reset clock.
+        if "available_count" not in payload:
+            return None
+        try:
+            count = int(payload["available_count"] or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return ResetCredits(max(0, count))
+    now = now_fn()
+    count = 0
+    earliest: Optional[float] = None
+    for credit in credits:
+        if not isinstance(credit, Mapping):
+            continue
+        if credit.get("reset_type") != CODEX_RESET_TYPE:
+            continue
+        status = str(credit.get("status") or "").strip().lower()
+        if status != CODEX_RESET_STATUS_AVAILABLE:
+            continue
+        expires_at = _parse_iso8601_epoch(credit.get("expires_at"))
+        if expires_at is None:
+            # the expiry is unknowable, but the credit itself still counts
+            count += 1
+            continue
+        remaining = expires_at - now
+        if remaining <= 0:
+            # already past its expiry, so it is not genuinely spendable
+            continue
+        count += 1
+        if earliest is None or remaining < earliest:
+            earliest = remaining
+    return ResetCredits(count, earliest)
 
 
 def format_codex_name(
@@ -992,6 +1079,52 @@ def fetch_codex_usage(
     return http_text(req, http_fn=http_fn)
 
 
+def fetch_codex_reset_credit_details(
+    access: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, str]:
+    # same authenticated Codex path as wham/usage, so it shares the OAuth
+    # refresh-on-401 handling the caller already applies
+    req = urllib.request.Request(
+        CODEX_RESET_CREDITS_URL,
+        headers={"Authorization": f"Bearer {access}", "User-Agent": "codex-cli"},
+    )
+    return http_text(req, http_fn=http_fn)
+
+
+def codex_reset_credit_details(
+    access: str,
+    store: dict,
+    refresh_token: Optional[str] = None,
+    *,
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[Optional[ResetCredits], Optional[str]]:
+    """Reset-credit details plus any fetch error; never raises.
+
+    Mirrors grok_reset_credits: one OAuth refresh on 401, and any failure or
+    malformed payload degrades to None so the caller keeps what the usage
+    payload already reported instead of failing the tick.
+    """
+    secrets: List[Any] = [access, refresh_token]
+    try:
+        status, text = fetch_codex_reset_credit_details(access, http_fn=http_fn)
+        if status == 401:
+            access = refresh_codex_tokens(store, http_fn=http_fn)
+            secrets.append(access)
+            status, text = fetch_codex_reset_credit_details(access, http_fn=http_fn)
+        if status != 200:
+            raise QuotaChannelsError(
+                f"codex reset-credits endpoint returned {status}: {text[:200]}"
+            )
+        credits = parse_codex_reset_credit_details(text, now_fn=now_fn)
+        if credits is None:
+            raise QuotaChannelsError("codex: invalid reset-credits payload JSON")
+        return credits, None
+    except Exception as exc:
+        return None, redact_secrets(_error_text(exc), secrets)
+
+
 def fetch_kimi_usage(
     api_key: str,
     http_fn: HttpFn = default_http,
@@ -1071,7 +1204,7 @@ def fetch_grok_resets(
 def _codex_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
-) -> Tuple[int, float, Optional[ResetCredits]]:
+) -> Tuple[int, float, Optional[ResetCredits], Optional[str]]:
     store = load_store()
     toks = store.get("providers", {}).get("openai-codex", {}).get("tokens", {})
     access = toks.get("access_token")
@@ -1086,14 +1219,30 @@ def _codex_quota_metrics(
             f"codex usage endpoint returned {status}: {text[:200]}"
         )
     remaining, reset_secs = parse_codex_usage(text)
-    return remaining, reset_secs, parse_codex_reset_credits(text)
+    resets = parse_codex_reset_credits(text)
+    reset_error: Optional[str] = None
+    if resets is not None and resets.count:
+        # The usage payload only totals the credits; the details endpoint
+        # carries the expiry each one really spends on. A failed or malformed
+        # lookup keeps the count and drops the expiry — never the quota
+        # reset clock, which would overstate the credit's urgency.
+        details, reset_error = codex_reset_credit_details(
+            access,
+            store,
+            toks.get("refresh_token"),
+            http_fn=http_fn,
+            now_fn=now_fn,
+        )
+        if details is not None:
+            resets = details
+    return remaining, reset_secs, resets, reset_error
 
 
 def run_codex_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
-    remaining, reset_secs, resets = _codex_quota_metrics(
+    remaining, reset_secs, resets, _ = _codex_quota_metrics(
         http_fn=http_fn, now_fn=now_fn
     )
     return format_codex_name(remaining, reset_secs, resets=resets), reset_secs, "Codex"
@@ -1240,7 +1389,7 @@ PROVIDER_RUNNERS = {
 }
 
 QUOTA_METRICS = {
-    # codex alone returns a trailing pending-resets element (same payload);
+    # codex alone returns trailing pending-resets elements (same payload);
     # every entry ends with reset_secs, which is all callers rely on.
     "codex": _codex_quota_metrics,
     "kimi": _kimi_quota_metrics,
@@ -1677,18 +1826,21 @@ def run_provider_quota(
 
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
     resets: Optional[ResetCredits] = None
+    reset_error: Optional[str] = None
     if key == "cursor":
         auto_remaining, api_remaining, reset_secs = raw
         fmt_metrics: Any = (auto_remaining, api_remaining)
     elif key == "codex":
-        # Live `_codex_quota_metrics` returns (remaining, reset_secs, ResetCredits).
-        # Existing tests (and any stub) still return the 2-tuple
-        # (remaining, reset_secs); missing credits omit the segment.
-        if len(raw) == 3:
+        # Live `_codex_quota_metrics` returns (remaining, reset_secs,
+        # ResetCredits, reset_error). Existing tests (and any stub) still
+        # return the 3-tuple without the error or the 2-tuple without
+        # credits; missing pieces just omit the segment / the note.
+        if len(raw) == 4:
+            remaining, reset_secs, resets, reset_error = raw
+        elif len(raw) == 3:
             remaining, reset_secs, resets = raw
         else:
             remaining, reset_secs = raw
-            resets = None
         fmt_metrics = remaining
     else:
         remaining, reset_secs = raw
@@ -1699,8 +1851,8 @@ def run_provider_quota(
     provider_info: Dict[str, Any] = {}
     if key == "grok":
         resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
-        if reset_error:
-            provider_info["reset_error"] = reset_error
+    if reset_error:
+        provider_info["reset_error"] = reset_error
     if resets is not None:
         # pending usage-limit resets feed the shared spendability score; they
         # ride provider_info into the state reading and the debug output.

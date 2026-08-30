@@ -95,8 +95,8 @@ class QuotaReading:
     reset_seconds: float
     # pending manual usage-limit resets (Codex/Grok only). ``reset_count`` of
     # 0 means no extra wallets; ``reset_expiry_seconds`` of None means the
-    # provider exposes no reset-expiry clock, so the reset term falls back to
-    # the usage-reset countdown.
+    # expiry is unknown, so the credit stays counted but scores nothing —
+    # the usage-reset countdown is never borrowed as a stand-in.
     reset_count: int = 0
     reset_expiry_seconds: Optional[float] = None
 
@@ -588,10 +588,11 @@ def score_provider(
     (quota fraction 1.0) on the reset-expiry clock — additive and stackable,
     with no cap. The invariant: one pending reset at 0% remaining scores
     exactly like zero resets at 100% remaining when the two clocks match.
-    Providers without a reset-expiry API (Codex) reuse the usage-reset
-    countdown for the reset term, which is what makes that invariant hold
-    for them; a count of 0 adds nothing. Only Codex/Grok have a resets API
-    at all — reset fields on any other provider are inert (see
+    A reset whose expiry is unknown adds nothing: urgency is not measurable,
+    so the usage-reset countdown is never borrowed as a stand-in (the credit
+    stays visible as a count and still lifts the wallet out of the low-quota
+    sink). A count of 0 adds nothing either. Only Codex/Grok have a resets
+    API at all — reset fields on any other provider are inert (see
     ``_reset_credit_count``).
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
@@ -600,15 +601,10 @@ def score_provider(
     remaining_term = quota_frac * (REFERENCE_HOURS / hours)
     reset_count = _reset_credit_count(reading)
     reset_term = 0.0
-    if reset_count:
-        # no separate expiry clock (Codex): the reset wallet spends on the
-        # same countdown as the remaining quota
-        expiry_source = (
-            reading.reset_seconds
-            if reading.reset_expiry_seconds is None
-            else reading.reset_expiry_seconds
+    if reset_count and reading.reset_expiry_seconds is not None:
+        reset_hours = max(
+            float(reading.reset_expiry_seconds) / 3600.0, MIN_HOURS_REMAINING
         )
-        reset_hours = max(float(expiry_source) / 3600.0, MIN_HOURS_REMAINING)
         reset_term = reset_count * (REFERENCE_HOURS / reset_hours)
     return (remaining_term + reset_term) * resolved.rate_24h * resolved.rate_1h
 
@@ -616,11 +612,12 @@ def score_provider(
 def is_low_quota(reading: QuotaReading) -> bool:
     """True when the reading sinks into the low-quota bucket.
 
-    A 0% wallet with at least one pending usage-limit reset is equivalent
-    to a full one (the reset term replaces the remaining term), so it stays
-    in the healthy bucket; only a genuinely empty wallet with zero pending
-    resets sinks. Resets only exist for Codex/Grok — an injected count on
-    any other provider sinks with the wallet it polluted.
+    A 0% wallet with at least one pending usage-limit reset still holds
+    spendable capacity, so it stays in the healthy bucket (even when that
+    reset's expiry is unknown and it therefore scores nothing); only a
+    genuinely empty wallet with zero pending resets sinks. Resets only exist
+    for Codex/Grok — an injected count on any other provider sinks with the
+    wallet it polluted.
     """
     return reading.pct < LOW_QUOTA_PCT and _reset_credit_count(reading) <= 0
 
@@ -697,14 +694,22 @@ def compute_primary_slot(
     reading. Only candidates that have a desired_entries entry with a
     non-empty model string can be promoted — the model string has to come
     from somewhere. A top scorer without a chain entry is skipped, and the
-    best scorer WITH one wins instead. The current primary is scored too
-    (an untracked primary such as a plain openrouter route scores 0) and
-    wins ties. Ties between eligible tracked providers resolve to the
-    lowest CHANNEL_KEYS index; the unlimited route competes after them, so
-    it only wins by beating the best tracked score outright. Returns None
-    — "leave the primary alone" — when there is no usable current primary,
-    no eligible candidate at all, or none beats the current primary's
-    score.
+    best scorer WITH one wins instead. The ``compute_desired_order``
+    low-quota bucket applies to this race too, on BOTH sides of the
+    comparison: candidates bucket healthy (0) / sunk (1), and so does the
+    current primary — an untracked primary such as a plain openrouter route
+    is unscored (bucket 2), the unlimited route healthy through its
+    synthetic reading. Buckets are compared before any raw score: a sunk
+    current primary loses the slot to a healthy winner however large its
+    number (a 4%/1m wallet scores 403.2 yet is still nearly empty), a sunk
+    winner never displaces a healthy primary, and every scored winner
+    outranks an untracked one. Raw scores decide only inside one bucket,
+    where the current primary wins exact ties. Ties between eligible
+    tracked providers resolve to the lowest CHANNEL_KEYS index; the
+    unlimited route competes after them, so it only wins by beating the
+    best tracked score outright. Returns None — "leave the primary alone" —
+    when there is no usable current primary, no eligible candidate at all,
+    or none outranks the current primary's bucket-then-score standing.
     """
     current = current_primary(config)
     if current is None:
@@ -730,7 +735,19 @@ def compute_primary_slot(
     else:
         current_score = None
 
-    best: Optional[Tuple[float, Mapping[str, Any]]] = None
+    # (bucket, score, entry): bucket 1 is the low-quota sink, so a healthy
+    # candidate beats a sunk one at any raw score — a sub-5% wallet with no
+    # pending reset can carry the highest number in the race (its
+    # hours-remaining denominator floors at one minute) yet sink behind
+    # every healthy entry in the chain; the primary race must sink with it.
+    best: Optional[Tuple[int, float, Mapping[str, Any]]] = None
+
+    def _consider(reading: QuotaReading, entry: Mapping[str, Any], score: float) -> None:
+        nonlocal best
+        bucket = 1 if is_low_quota(reading) else 0
+        if best is None or (bucket, -score) < (best[0], -best[1]):
+            best = (bucket, score, entry)
+
     for key in CHANNEL_KEYS:  # CHANNEL_KEYS order breaks score ties
         provider = CHANNEL_KEY_TO_PROVIDER[key]
         reading = readings.get(provider)
@@ -739,22 +756,39 @@ def compute_primary_slot(
         entry = entry_by_provider.get(provider)
         if entry is None or not str(entry.get("model") or "").strip():
             continue
-        score = score_provider(reading, rates.get(provider))
-        if best is None or score > best[0]:
-            best = (score, entry)
+        _consider(reading, entry, score_provider(reading, rates.get(provider)))
 
     unlimited = _unlimited_chain_entry(desired_entries)
     if unlimited is not None:
-        score = score_provider(unlimited_reading(), rates.get(UNLIMITED_PROVIDER))
-        if best is None or score > best[0]:
-            best = (score, unlimited)
+        _consider(
+            unlimited_reading(),
+            unlimited,
+            score_provider(unlimited_reading(), rates.get(UNLIMITED_PROVIDER)),
+        )
 
     if best is None:
         return None
-    if (current_score or 0.0) >= best[0]:
+    # the race ranks the current primary by the chain's bucket order —
+    # healthy (0) before sunk (1) before unscored (2) — and compares that
+    # bucket against the winner's BEFORE any raw score: a sunk current
+    # primary cannot keep the slot on its number alone (a 4%/1m wallet
+    # scores 403.2 yet is still nearly empty), and a sunk winner never
+    # displaces a healthy one. An untracked primary is unscored — bucket 2 —
+    # so every scored winner outranks it; the unlimited route is healthy via
+    # its synthetic reading. Raw scores (ties to the current) decide only
+    # inside one bucket.
+    if current_reading is not None:
+        current_bucket = 1 if is_low_quota(current_reading) else 0
+    elif is_unlimited_route(current.provider, current.model):
+        current_bucket = 0
+    else:
+        current_bucket = 2
+    if current_bucket < best[0]:
+        return None
+    if current_bucket == best[0] and (current_score or 0.0) >= best[1]:
         return None
 
-    winner = best[1]
+    winner = best[2]
     return PrimarySlot(
         provider=str(winner.get("provider") or "").strip(),
         model=str(winner.get("model") or "").strip(),

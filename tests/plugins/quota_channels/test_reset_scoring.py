@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from plugins.quota_channels import core as core
 from plugins.quota_channels.core import (
@@ -34,6 +35,65 @@ def _fake_discord(req, timeout=25.0):
     return 200, json.dumps({"name": "patched"}).encode()
 
 
+def _codex_http_with_details(expires_in: float = 2 * DAY):
+    """Codex transport serving the usage payload plus its credit details."""
+    expires_at = (
+        datetime.fromtimestamp(NOW + expires_in, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+    def fake_http(req, timeout=25.0):
+        url = req.full_url
+        if "wham/usage" in url:
+            return 200, json.dumps(
+                {
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 0,
+                            "reset_after_seconds": WEEK,
+                        }
+                    },
+                    "rate_limit_reset_credits": {"available_count": 1},
+                }
+            ).encode()
+        if "rate-limit-reset-credits" in url:
+            return 200, json.dumps(
+                {
+                    "available_count": 1,
+                    "credits": [
+                        {
+                            "reset_type": "codex_rate_limits",
+                            "status": "available",
+                            "granted_at": "2026-08-28T00:00:00Z",
+                            "expires_at": expires_at,
+                            "title": "Usage limit reset",
+                        }
+                    ],
+                }
+            ).encode()
+        return _fake_discord(req, timeout=timeout)
+
+    return fake_http
+
+
+def _write_codex_auth(tmp_path):
+    (tmp_path / "auth.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "openai-codex": {
+                        "tokens": {
+                            "access_token": "codex-tok",
+                            "refresh_token": "codex-ref",
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+
 class TestDisplayRanksUseResetCredits:
     def test_emptied_grok_with_soon_reset_outranks_full_codex(self):
         # Discord order is the failover score: a 0% wallet whose pending
@@ -47,12 +107,23 @@ class TestDisplayRanksUseResetCredits:
 
     def test_pending_reset_lifts_a_row_out_of_the_low_quota_bucket(self):
         readings = {
-            "grok": _reading(0, WEEK, reset_count=1),  # 1.0, healthy
+            "grok": _reading(0, WEEK, reset_count=1, reset_expiry_seconds=3600),
             "zai": _reading(40, 22 * DAY),  # weakest healthy score ~0.127
         }
         assert (
             quota_display_ranks(readings)["grok"] < quota_display_ranks(readings)["zai"]
         )
+
+    def test_unknown_reset_expiry_never_borrows_the_quota_clock(self):
+        # the credit stays visible and out of the sink, but urgency is
+        # unmeasurable, so it ranks last among the healthy rows
+        readings = {
+            "codex": _reading(0, WEEK, reset_count=1),
+            "zai": _reading(40, 22 * DAY),
+            "kimi": _reading(0, WEEK),  # no resets: sinks
+        }
+        ranks = quota_display_ranks(readings)
+        assert ranks["zai"] < ranks["codex"] < ranks["kimi"]
 
     def test_zero_pct_without_resets_still_sinks(self):
         readings = {
@@ -221,6 +292,43 @@ class TestRunTickWritesResetReadings:
             "label": "Grok",
             "reset_count": 0,
         }
+
+    def test_codex_real_expiry_reaches_state_and_debug_output(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _write_codex_auth(tmp_path)
+        monkeypatch.setattr(core, "discord_headers", lambda: {"Authorization": "Bot x"})
+        monkeypatch.setattr(core, "TOKEN_FETCHERS", {})
+        monkeypatch.setattr(core, "sort_voice_channels", lambda *a, **k: False)
+        monkeypatch.setattr(core, "update_category", lambda *a, **k: "renamed")
+
+        result = run_tick(
+            validate_quota_config({
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"codex": "c1"},
+                "enabled_providers": ["codex"],
+            }),
+            force=True,
+            sleep_fn=lambda _: None,
+            now_fn=lambda: NOW,
+            http_fn=_codex_http_with_details(),
+        )
+
+        assert result["success"] is True
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        # the real reset-credit expiry rides into the persisted reading the
+        # fallback reorder scores from
+        assert state["readings"]["codex"] == {
+            "pct": 100,
+            "reset_seconds": float(WEEK),
+            "label": "Codex",
+            "reset_count": 1,
+            "reset_expiry_seconds": float(2 * DAY),
+        }
+        assert result["providers"]["Codex"]["reset_expiry_seconds"] == float(2 * DAY)
+        assert "reset_error" not in result["providers"]["Codex"]
 
     def test_unreadable_codex_credits_persist_nothing(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
