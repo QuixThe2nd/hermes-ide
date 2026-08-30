@@ -16,10 +16,15 @@ from tests.gateway.test_discord_cursor_progress_embed import _make_discord_send_
 @pytest.mark.parametrize(
     "content",
     [
+        # 192.168.30.20 is RFC1918 and 100.109.12.0 is Tailscale CGNAT — both
+        # stay legal viewer hosts, they are just no longer the *only* ones.
         "Claude Code Agent: http://192.168.30.20:8787/",
         "Claude Code Agent: http://192.168.30.20:8787/#20260829-024525-1532951",
         "Claude Code Agent: http://100.109.12.0:8787/#20260829-080009-1779398",
         "Claude Code Agent: https://192.168.30.20:8787/  \n",
+        "Claude Code Agent: http://127.0.0.1:8787/#20260829-024525-1532951",
+        "Claude Code Agent: http://127.0.0.1:8787/",
+        "Claude Code Agent: http://10.20.30.40:8787/#20260829-024525-1532951",
     ],
 )
 def test_claude_agent_status_url_accepts_valid(content):
@@ -36,7 +41,6 @@ def test_claude_agent_status_url_accepts_valid(content):
         "Claude Code Agent: ",
         "prefix Claude Code Agent: http://192.168.30.20:8787/",
         "Claude Code Agent: http://192.168.30.20:8787/ suffix",
-        "Claude Code Agent: http://127.0.0.1:8787/",
         "Claude Code Agent: https://cursor.com/agents/x",
         "Claude Code Agent: http://192.168.30.20:8787/watch live",
         "Claude Code Agent: http://192.168.30.20:8787/api/runs",
@@ -45,12 +49,26 @@ def test_claude_agent_status_url_accepts_valid(content):
         "Claude Code Agent: http://192.168.30.20:8787/#",
         "Claude Code Agent: http://192.168.30.20:8787/#not-a-stem",
         "Claude Code Agent: javascript:alert(1)",
+        # The viewer is unauthenticated, so public hosts never render.
+        "Claude Code Agent: http://8.8.8.8:8787/",
+        "Claude Code Agent: http://viewer.example.com:8787/",
     ],
 )
 def test_claude_agent_status_url_rejects_invalid(content):
     from plugins.platforms.discord.adapter import _claude_agent_status_url
 
     assert _claude_agent_status_url(content) is None
+
+
+def test_claude_agent_status_url_accepts_configured_extra_host(monkeypatch):
+    from plugins.platforms.discord.adapter import _claude_agent_status_url
+
+    monkeypatch.setattr(
+        "tools.claude_viewer_url.extra_hosts",
+        lambda cfg=None: ("viewer.lan",),
+    )
+    content = "Claude Code Agent: http://viewer.lan:8787/#20260829-024525-1532951"
+    assert _claude_agent_status_url(content) is not None
 
 
 def test_claude_agent_status_url_returns_original_string():

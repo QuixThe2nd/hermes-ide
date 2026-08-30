@@ -33,6 +33,7 @@ from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
 from agent.display import ToolPreview
+from tools.claude_viewer_url import is_allowed_watch_url
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +138,17 @@ def _cursor_cloud_agent_markdown_progress(url: str) -> str:
 _CLAUDE_AGENT_STATUS_PREFIX = "Claude Code Agent: "
 _CLAUDE_AGENT_ICON_URL = "https://claude.ai/images/claude_app_icon.png"
 _CLAUDE_AGENT_BRAND_URL = "https://claude.ai"
-_CLAUDE_VIEWER_ALLOWED_HOSTS = frozenset({"192.168.30.20", "100.109.12.0"})
-_CLAUDE_AGENT_RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
 
 
 def _claude_agent_status_url(content: str) -> Optional[str]:
-    """Return the watch URL when *content* is exactly a Claude Code Agent status line."""
+    """Return the watch URL when *content* is exactly a Claude Code Agent status line.
+
+    The URL itself is vetted by ``is_allowed_watch_url``
+    (tools/claude_viewer_url.py) — scheme http/https, path ``/`` only, no
+    query, fragment empty or a run stem, and a private-network host. The
+    viewer is unauthenticated, so that host gate is what keeps an embed from
+    pointing at something off the LAN/tailnet.
+    """
     if content is None:
         return None
     text = content.strip()
@@ -151,25 +157,7 @@ def _claude_agent_status_url(content: str) -> Optional[str]:
     url = text[len(_CLAUDE_AGENT_STATUS_PREFIX) :].strip()
     if not url or any(ch.isspace() for ch in url):
         return None
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return None
-    if parsed.username or parsed.password or "@" in parsed.netloc:
-        return None
-    hostname = parsed.hostname
-    if hostname not in _CLAUDE_VIEWER_ALLOWED_HOSTS:
-        return None
-    decoded_path = unquote(parsed.path)
-    if ".." in decoded_path:
-        return None
-    if decoded_path != "/":
-        return None
-    if parsed.query:
-        return None
-    # Test the raw URL for the delimiter: urlparse drops a bare trailing "#",
-    # leaving parsed.fragment empty, so a present-but-empty fragment must be
-    # rejected here rather than slip through the stem regex guard.
-    if "#" in url and not _CLAUDE_AGENT_RUN_STEM_RE.fullmatch(parsed.fragment):
+    if not is_allowed_watch_url(url):
         return None
     return url
 

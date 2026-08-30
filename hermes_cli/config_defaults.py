@@ -2188,6 +2188,23 @@ DEFAULT_CONFIG = {
         # Set to true to restore delivery of child process notifications
         # (with subagent attribution lines).
         "surface_child_process_notifications": False,
+        # Bundled claude-viewer — the web UI that tails delegate_claude_agent
+        # runs from <HERMES_HOME>/claude-runs. The claude_viewer plugin
+        # installs/starts it on Linux/systemd when the gateway comes up, and
+        # the "Watch live session" link a Discord embed renders points at
+        # this machine's own address (public_host override → Tailscale IPv4
+        # → LAN IPv4). It is UNAUTHENTICATED: bind only to trusted networks
+        # (default 0.0.0.0 is LAN/tailnet-only by firewall convention) and
+        # never expose it off-net. extra_hosts are additional hostnames/IPs
+        # the Discord embed allowlist accepts in addition to loopback,
+        # RFC1918, and the Tailscale CGNAT range.
+        "claude_viewer": {
+            "enabled": True,
+            "bind": "0.0.0.0",
+            "port": 8787,
+            "public_host": "",   # empty = auto-detect (Tailscale → LAN)
+            "extra_hosts": [],
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

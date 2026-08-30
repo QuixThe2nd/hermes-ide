@@ -77,6 +77,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.agent_cli_runner import run_agent_cli
+from tools.claude_viewer_url import watch_url
 from tools.registry import registry
 from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
 
@@ -308,21 +309,17 @@ def extract_log_warnings(log_text: str) -> List[str]:
 
 # Live-progress viewer that tails <HERMES_HOME>/claude-runs/<stem>.jsonl.
 # The Discord adapter renders a spawned-run notice as a branded embed only
-# when the URL's host is on its allowlist (_CLAUDE_VIEWER_ALLOWED_HOSTS in
-# plugins/platforms/discord/adapter.py) and the fragment fullmatches
-# ``[0-9]{8}-[0-9]{6}-[0-9]+`` — the delegate scheme guarantees the stem, so
-# the host is the one thing that must be kept in sync with that allowlist.
-# Constants for this fork's deployment; no env vars, no config keys.
-CLAUDE_VIEWER_HOST = "192.168.30.20"
-CLAUDE_VIEWER_PORT = 8787
+# when the URL passes is_allowed_watch_url (tools/claude_viewer_url.py) —
+# scheme http/https, path "/" only, fragment fullmatching
+# ``[0-9]{8}-[0-9]{6}-[0-9]+``, and a private-network host. The delegate
+# scheme guarantees the stem; the host comes from that same module so the
+# emitted URL always points at *this* machine (config or auto-detected LAN/
+# Tailscale address) rather than a hardcoded deployment.
 
 
 def _claude_viewer_status_line(stem: str) -> str:
     """Return the mid-tool status line pointing at a run's live viewer page."""
-    return (
-        f"{CLAUDE_AGENT_VIEWER_STATUS_PREFIX}"
-        f"http://{CLAUDE_VIEWER_HOST}:{CLAUDE_VIEWER_PORT}/#{stem}"
-    )
+    return f"{CLAUDE_AGENT_VIEWER_STATUS_PREFIX}{watch_url(stem)}"
 
 
 def _emit_viewer_progress_notice(log_path: Path) -> None:
