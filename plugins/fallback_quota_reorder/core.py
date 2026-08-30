@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -99,6 +100,12 @@ class QuotaReading:
     # the usage-reset countdown is never borrowed as a stand-in.
     reset_count: int = 0
     reset_expiry_seconds: Optional[float] = None
+    # each counted credit's own future expiry, when the richer per-credit
+    # state exists. None/empty means it does not, so the single
+    # ``reset_expiry_seconds`` clock keeps its legacy whole-stack meaning;
+    # a non-empty list scores every credit on its own clock exactly once and
+    # never multiplies one clock by the count.
+    reset_expiry_horizons: Optional[Tuple[float, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -377,6 +384,7 @@ def readings_from_names(
     names: Mapping[str, str],
     precise_readings: Optional[Mapping[str, Tuple[int, float]]] = None,
     precise_reset_fields: Optional[Mapping[str, Tuple[int, Optional[float]]]] = None,
+    precise_reset_horizons: Optional[Mapping[str, Tuple[float, ...]]] = None,
 ) -> Dict[str, QuotaReading]:
     readings: Dict[str, QuotaReading] = {}
     for key in CHANNEL_KEYS:
@@ -401,6 +409,12 @@ def readings_from_names(
                 # ones; state that predates them keeps what the name showed
                 overrides["reset_count"] = resets[0]
                 overrides["reset_expiry_seconds"] = resets[1]
+            horizons = (precise_reset_horizons or {}).get(key)
+            if horizons is not None:
+                # richer per-credit state outranks the single display clock
+                # for scoring; the name's one countdown never stands in for
+                # the whole stack while it exists
+                overrides["reset_expiry_horizons"] = horizons
             reading = replace(base, **overrides)
         if reading is not None:
             readings[reading.provider] = reading
@@ -414,10 +428,10 @@ def _fresh_quota_state_readings(
 ) -> Mapping[str, Any]:
     """quota_channels state readings mapping, or {} when unusable.
 
-    The one freshness gate shared by ``load_precise_readings`` and
-    ``load_precise_reset_fields``: empty when the state file is
-    missing/corrupt, predates the readings schema, or its
-    last_quota_success is older than 2 * quota_interval_seconds — callers
+    The one freshness gate shared by ``load_precise_readings``,
+    ``load_precise_reset_fields`` and ``load_precise_reset_horizons``: empty
+    when the state file is missing/corrupt, predates the readings schema, or
+    its last_quota_success is older than 2 * quota_interval_seconds — callers
     then fall back to strict channel-name parsing.
     """
     from plugins.quota_channels.core import state_path as quota_state_path
@@ -505,6 +519,57 @@ def load_precise_reset_fields(
     return fields
 
 
+def sanitize_reset_expiry_horizons(raw: Any) -> Tuple[float, ...]:
+    """Scoreable per-credit reset-expiry horizons (seconds) from ``raw``.
+
+    Each entry must be a positive finite number; malformed entries —
+    non-numeric, non-finite, or non-positive values — are dropped, never
+    fatal, so a hand-edited or half-written state row cannot fail the tick
+    or the reorder. Anything that is not a list/tuple at all sanitizes to an
+    empty tuple, which callers treat as "no richer list exists".
+    """
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    horizons: List[float] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        horizon = float(value)
+        if not math.isfinite(horizon) or horizon <= 0.0:
+            continue
+        horizons.append(horizon)
+    return tuple(horizons)
+
+
+def load_precise_reset_horizons(
+    quota_interval_seconds: int,
+    *,
+    now_fn: NowFn = time.time,
+) -> Dict[str, Tuple[float, ...]]:
+    """Map slug -> per-credit reset-expiry horizons from quota_channels state.
+
+    Same state file and freshness rules as ``load_precise_readings``. Only
+    rows whose provider has a resets API (see ``RESET_CREDIT_PROVIDERS``)
+    appear, and only when at least one sanitized horizon survives — a row
+    whose richer list is missing, empty, or entirely malformed is absent, so
+    scoring falls back to the legacy ``reset_count`` +
+    ``reset_expiry_seconds`` shape instead of losing the term or inferring
+    that every credit shares the display clock.
+    """
+    entries = _fresh_quota_state_readings(quota_interval_seconds, now_fn=now_fn)
+    horizons: Dict[str, Tuple[float, ...]] = {}
+    for slug, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        provider = str(CHANNEL_KEY_TO_PROVIDER.get(slug, slug)).strip().lower()
+        if provider not in RESET_CREDIT_PROVIDERS:
+            continue
+        clean = sanitize_reset_expiry_horizons(entry.get("reset_expiry_horizons"))
+        if clean:
+            horizons[str(slug)] = clean
+    return horizons
+
+
 def _entry_identity(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
     from hermes_cli.fallback_config import _entry_identity as fallback_identity
 
@@ -568,6 +633,18 @@ def _reset_credit_count(reading: QuotaReading) -> int:
     return max(0, int(reading.reset_count))
 
 
+def _scored_reset_horizons(reading: QuotaReading) -> Tuple[float, ...]:
+    """The per-credit expiry horizons that score for ``reading``.
+
+    Same contract gate as ``_reset_credit_count``: horizons injected into a
+    provider without a resets API are inert. Malformed entries are dropped
+    by ``sanitize_reset_expiry_horizons`` rather than trusted.
+    """
+    if str(reading.provider).strip().lower() not in RESET_CREDIT_PROVIDERS:
+        return ()
+    return sanitize_reset_expiry_horizons(reading.reset_expiry_horizons)
+
+
 def score_provider(
     reading: QuotaReading,
     rates: Optional[ReliabilityRates] = None,
@@ -576,7 +653,7 @@ def score_provider(
 
     score = (remaining_term + reset_term) * rate_24h * rate_1h
     remaining_term = quota_frac * (REFERENCE_HOURS / hours_remaining)
-    reset_term     = reset_count * (REFERENCE_HOURS / hours_reset_expires)
+    reset_term     = sum over credits of REFERENCE_HOURS / hours_credit_expires
 
     Time enters inversely: the sooner a wallet refills, the more urgent it
     is to burn it now, while a wallet resetting in exactly REFERENCE_HOURS
@@ -585,27 +662,38 @@ def score_provider(
     one minute so a nearly-reset wallet is not divided by zero.
 
     Each pending manual usage-limit reset adds its own full wallet
-    (quota fraction 1.0) on the reset-expiry clock — additive and stackable,
-    with no cap. The invariant: one pending reset at 0% remaining scores
-    exactly like zero resets at 100% remaining when the two clocks match.
-    A reset whose expiry is unknown adds nothing: urgency is not measurable,
-    so the usage-reset countdown is never borrowed as a stand-in (the credit
-    stays visible as a count and still lifts the wallet out of the low-quota
-    sink). A count of 0 adds nothing either. Only Codex/Grok have a resets
-    API at all — reset fields on any other provider are inert (see
-    ``_reset_credit_count``).
+    (quota fraction 1.0) on its own expiry clock — additive and stackable,
+    with no cap. When the richer per-credit horizons are known
+    (``reset_expiry_horizons``), every credit is scored exactly once on its
+    own clock: credits expiring in 3d and 9d score 168/72 + 168/216, never
+    2 * 168/72. A credit whose expiry is unknown is simply absent from that
+    list: it stays counted (``reset_count``) and lifts the wallet out of the
+    low-quota sink, but adds nothing — urgency is not measurable, so no
+    other clock is borrowed as a stand-in. Without a richer list the legacy
+    single-clock shape keeps its meaning: ``reset_count`` credits all on the
+    one ``reset_expiry_seconds`` clock, which is exactly what a channel name
+    or a pre-list state row reports. Only Codex/Grok have a resets API at
+    all — reset fields on any other provider are inert (see
+    ``_reset_credit_count`` and ``_scored_reset_horizons``).
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
     quota_frac = max(0.0, min(float(reading.pct) / 100.0, 1.0))
     resolved = rates or ReliabilityRates()
     remaining_term = quota_frac * (REFERENCE_HOURS / hours)
-    reset_count = _reset_credit_count(reading)
+    horizons = _scored_reset_horizons(reading)
     reset_term = 0.0
-    if reset_count and reading.reset_expiry_seconds is not None:
-        reset_hours = max(
-            float(reading.reset_expiry_seconds) / 3600.0, MIN_HOURS_REMAINING
+    if horizons:
+        reset_term = sum(
+            REFERENCE_HOURS / max(horizon / 3600.0, MIN_HOURS_REMAINING)
+            for horizon in horizons
         )
-        reset_term = reset_count * (REFERENCE_HOURS / reset_hours)
+    else:
+        reset_count = _reset_credit_count(reading)
+        if reset_count and reading.reset_expiry_seconds is not None:
+            reset_hours = max(
+                float(reading.reset_expiry_seconds) / 3600.0, MIN_HOURS_REMAINING
+            )
+            reset_term = reset_count * (REFERENCE_HOURS / reset_hours)
     return (remaining_term + reset_term) * resolved.rate_24h * resolved.rate_1h
 
 
@@ -1059,6 +1147,7 @@ def run_reorder(
         names,
         load_precise_readings(quota_interval_seconds, now_fn=now_fn),
         load_precise_reset_fields(quota_interval_seconds, now_fn=now_fn),
+        load_precise_reset_horizons(quota_interval_seconds, now_fn=now_fn),
     )
 
     from hermes_cli.config import load_config

@@ -24,6 +24,7 @@ from plugins.fallback_quota_reorder.core import (
     CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
     QuotaReading,
     is_low_quota,
+    sanitize_reset_expiry_horizons,
     score_provider,
 )
 from plugins.fallback_quota_reorder.reliability import (
@@ -199,6 +200,9 @@ def _state_reading_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         persisted["reset_count"] = entry["reset_count"]
     if "reset_expiry_seconds" in entry:
         persisted["reset_expiry_seconds"] = entry["reset_expiry_seconds"]
+    if isinstance(entry.get("reset_expiry_horizons"), (list, tuple)):
+        # per-credit expiry clocks; readers sanitize entries, never trust them
+        persisted["reset_expiry_horizons"] = list(entry["reset_expiry_horizons"])
     return persisted
 
 
@@ -207,8 +211,9 @@ def save_state(
     now_fn: NowFn = time.time,
 ) -> int:
     # readings: per-provider slug -> {'pct', 'reset_seconds', 'label',
-    # optionally 'reset_count'/'reset_expiry_seconds'} from the tick that
-    # just succeeded; failed providers stay absent (no stale merge).
+    # optionally 'reset_count'/'reset_expiry_seconds'/'reset_expiry_horizons'}
+    # from the tick that just succeeded; failed providers stay absent (no
+    # stale merge).
     state: Dict[str, Any] = {"last_quota_success": int(now_fn())}
     if readings is not None:
         state["readings"] = {
@@ -316,6 +321,12 @@ class ResetCredits(NamedTuple):
 
     count: int
     expiry_secs: Optional[float] = None
+    # each counted credit's own future expiry horizon, earliest first. This is
+    # the per-credit state the fallback score spends on — one full wallet per
+    # horizon, never the earliest clock times the count. ``expiry_secs`` stays
+    # the single display clock (the earliest horizon) and empty means no
+    # per-credit detail exists, so the legacy count + one-clock shape applies.
+    expiry_horizons: Tuple[float, ...] = ()
 
 
 def _reset_countdown(seconds: float) -> str:
@@ -407,11 +418,13 @@ def parse_codex_reset_credit_details(
     Reads the canonical `rate-limit-reset-credits` payload: each entry in
     `credits` carries `reset_type`, `status`, `granted_at`, `expires_at` and
     `title`. Only credits that are genuinely available for Codex rate limits
-    are counted, and the expiry shown is the earliest of theirs — the single
-    `ResetCredits.expiry_secs` field stands for the whole stack. A readable
-    `expires_at` that is already past means the credit cannot be spent, so it
-    is not counted at all; a missing or malformed `expires_at` leaves that
-    credit counted but contributing no expiry.
+    are counted, and each one's own future expiry horizon is kept in
+    `ResetCredits.expiry_horizons` — earliest first — so scoring never treats
+    one clock as standing for the whole stack. `expiry_secs` remains the
+    earliest horizon and is display-only: the compact channel-name countdown.
+    A readable `expires_at` that is already past means the credit cannot be
+    spent, so it is not counted at all; a missing or malformed `expires_at`
+    leaves that credit counted but contributing no horizon.
 
     Returns None when the payload is not the expected shape, so the caller
     keeps the count the usage payload already reported.
@@ -435,7 +448,7 @@ def parse_codex_reset_credit_details(
         return ResetCredits(max(0, count))
     now = now_fn()
     count = 0
-    earliest: Optional[float] = None
+    horizons: List[float] = []
     for credit in credits:
         if not isinstance(credit, Mapping):
             continue
@@ -454,9 +467,9 @@ def parse_codex_reset_credit_details(
             # already past its expiry, so it is not genuinely spendable
             continue
         count += 1
-        if earliest is None or remaining < earliest:
-            earliest = remaining
-    return ResetCredits(count, earliest)
+        horizons.append(remaining)
+    horizons.sort()
+    return ResetCredits(count, horizons[0] if horizons else None, tuple(horizons))
 
 
 def format_codex_name(
@@ -1692,6 +1705,11 @@ def quota_display_ranks(
     is_low_quota() rule sinks behind every healthy entry, and equal ranks
     keep the caller's insertion order — which is PROVIDER_SPECS order — so
     ties stay stable.
+
+    The reset term is per-credit whenever the reading carries
+    ``reset_expiry_horizons``; the single ``reset_expiry_seconds`` countdown
+    the channel name displays is never multiplied by the count to stand in
+    for the whole stack.
     """
 
     rates = reliability or {}
@@ -1709,6 +1727,9 @@ def quota_display_ranks(
                 None
                 if entry.get("reset_expiry_seconds") is None
                 else float(entry["reset_expiry_seconds"])
+            ),
+            reset_expiry_horizons=sanitize_reset_expiry_horizons(
+                entry.get("reset_expiry_horizons")
             ),
         )
         score = score_provider(reading, rates.get(provider))
@@ -1861,6 +1882,10 @@ def run_provider_quota(
         provider_info["reset_count"] = resets.count
         if resets.expiry_secs is not None:
             provider_info["reset_expiry_seconds"] = resets.expiry_secs
+        if resets.expiry_horizons:
+            # each credit's own expiry clock; reset_expiry_seconds above stays
+            # the earliest one and is display-only, never a stand-in for all
+            provider_info["reset_expiry_horizons"] = list(resets.expiry_horizons)
 
     name = _format_channel_name(key, fmt_metrics, reset_secs, resets=resets)
 
@@ -1972,6 +1997,10 @@ def run_tick(
             if "reset_expiry_seconds" in provider_info:
                 reading_entry["reset_expiry_seconds"] = provider_info[
                     "reset_expiry_seconds"
+                ]
+            if "reset_expiry_horizons" in provider_info:
+                reading_entry["reset_expiry_horizons"] = provider_info[
+                    "reset_expiry_horizons"
                 ]
             readings[key] = reading_entry
             successes.append((label, channel_id, key))
