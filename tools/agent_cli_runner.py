@@ -8,8 +8,9 @@ process-group cleanup) cannot drift between callers.
 
 The runner owns: subprocess spawn in a new session, a reader thread teeing
 stdout to a JSONL log, a monitor loop with interrupt + optional wall-clock
-timeout + stall watchdog, and process-group termination. Callers own: binary
-resolution, argv construction, environment construction, and log parsing.
+timeout + opt-in stall watchdog, and process-group termination. Callers own:
+binary resolution, argv construction, environment construction, and log
+parsing.
 """
 
 from __future__ import annotations
@@ -146,7 +147,7 @@ def run_agent_cli(
     *,
     workdir: str,
     timeout_seconds: int = 0,
-    stall_watchdog_seconds: float = 600.0,
+    stall_watchdog_seconds: float = 0.0,
     log_dir: Optional[Path] = None,
     run_timestamp: Optional[str] = None,
     log_path: Optional[Path] = None,
@@ -155,9 +156,11 @@ def run_agent_cli(
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
 
-    ``timeout_seconds <= 0`` disables the wall-clock limit; the stall
-    watchdog (no stdout growth for ``stall_watchdog_seconds``) always
-    applies — it is the dead-man switch for unbounded runs.
+    ``timeout_seconds <= 0`` disables the wall-clock limit. The stall
+    watchdog (no stdout growth for ``stall_watchdog_seconds``) is opt-in
+    and off by default: ``stall_watchdog_seconds <= 0`` disables it
+    entirely, so a quiet-but-healthy child runs until it exits or an
+    explicit wall-clock limit fires.
 
     The log path is either explicit (``log_path`` — used by the dev-pipeline
     executor, which needs a known path to tail mid-run) or computed as
@@ -249,7 +252,7 @@ def run_agent_cli(
         if timeout_seconds > 0 and elapsed >= timeout_seconds:
             error_code = "timeout"
             break
-        if now - last_byte_mono >= stall_watchdog_seconds:
+        if stall_watchdog_seconds > 0 and now - last_byte_mono >= stall_watchdog_seconds:
             error_code = "stalled"
             break
         time.sleep(_MONITOR_POLL_SECONDS)

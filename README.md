@@ -42,7 +42,7 @@ You can hand real coding work to machines from chat instead of babysitting a ter
 
 Claude Code gets a headless `/goal` mode: pass a `/goal <condition>` task and the run loops until a model judge confirms the condition is met (verified with the claude-glm wrapper). Overlong `/goal` conditions are auto-spilled to a workdir brief so Claude Code's 4000-character cap does not abort the run. The lane rule is deliberate: `delegate_cursor_agent` for small/medium work, `delegate_claude_agent` with default `/goal` for medium/large. `delegate_claude_agent` writes stream-json run logs, so claude-runs logs are live-tailable for progress reporting.
 
-Delegate coding tools run unbounded by default; the stall watchdog is the only kill switch. When you need visibility, `delegate_task action='list'` surfaces per-child liveness — current tool, iteration, seconds since activity, stalled flag — so a wedged subagent is distinguishable from a slow one. One shared agent-CLI runner powers both delegate tools and the dev-pipeline build lanes.
+Delegate coding tools run with no stall watchdog and no default wall-clock limit; an optional positive `timeout_seconds` still applies. When you need visibility, `delegate_task action='list'` surfaces per-child liveness — current tool, iteration, seconds since activity, stalled flag — so a wedged subagent is distinguishable from a slow one. One shared agent-CLI runner powers both delegate tools and the dev-pipeline build lanes.
 
 ### Dev pipeline
 
@@ -118,7 +118,7 @@ Z.AI silent default is GLM-5.3, with GLM-5.3-Flash as fallback. `security.allow_
   - Delegation — `delegate_claude_agent` supports Claude Code `/goal` headless: pass a `/goal <condition>` task and the run loops until a model judge confirms the condition met (verified with the claude-glm wrapper)
   - Delegation — lane rule: `delegate_cursor_agent` for small/medium, `delegate_claude_agent` with default `/goal` for medium/large
   - Delegation — `delegate_claude_agent` writes stream-json run logs, so claude-runs logs are live-tailable for progress reporting
-  - Delegation — delegate coding tools run unbounded by default; stall watchdog is the only kill switch
+  - Delegation — delegate coding tools run with no stall watchdog and no default wall-clock limit (an optional positive `timeout_seconds` still applies)
   - Delegation — `delegate_task action='list'` surfaces per-child liveness (current tool, iteration, seconds since activity, stalled flag) so a wedged subagent is distinguishable from a slow one
   - Delegation — one shared agent-CLI runner powers both delegate tools and the dev-pipeline build lanes
   - Delegation — `delegate_development plan_mode=debate` runs the multi-round adversarial council for planning; consult stays the default

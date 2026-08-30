@@ -128,9 +128,10 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Tools exempt from the batch/sequential execution deadline. The deadline
 # exists to catch wedged tool threads, not to kill healthy long-running
-# external coding agents (their own stall watchdogs are the dead-man switch)
-# or human-confirmation tools such as ``restart`` (they wait for a human
-# reply; clarify heartbeats keep activity alive). Override with
+# external coding agents (they run with no stall watchdog of their own —
+# long quiet stretches are normal) or human-confirmation tools such as
+# ``restart`` (they wait for a human reply; clarify heartbeats keep activity
+# alive). Override with
 # ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
 # explicit empty list disables the exemption entirely).
 _DEFAULT_UNBOUNDED_TOOLS = frozenset(
@@ -852,9 +853,10 @@ def _run_sequential_tool_execution_middleware(
     """
     timeout_s = _resolve_sequential_tool_timeout()
     if function_name in _resolve_unbounded_tools():
-        # Long-running external agents carry their own stall watchdog; human-
-        # confirmation tools (e.g. restart) wait for a human reply and rely on
-        # clarify heartbeats — the generic deadline must not fire for either.
+        # Long-running external agents have no stall watchdog of their own and
+        # may legitimately run (quietly) for hours; human-confirmation tools
+        # (e.g. restart) wait for a human reply and rely on clarify heartbeats
+        # — the generic deadline must not fire for either.
         timeout_s = None
     kwargs = {
         "function_name": function_name,
