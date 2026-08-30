@@ -57,13 +57,23 @@ Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.
 
 ```bash
 S=~/.hermes/skills/research/grounded-citations/scripts/sources.py
+PYTHON="$(command -v python3 || command -v python)"
+[ -n "$PYTHON" ] || { printf '%s\n' 'Python 3 is required' >&2; exit 1; }
 
-python3 "$S" reset                                  # start a clean ledger
-python3 "$S" add https://example.com/a --title "A"  # prints: [1]
-python3 "$S" add https://example.com/b --title "B"  # prints: [2]
-python3 "$S" list                                   # ledger table
-python3 "$S" render                                 # Sources: block
-python3 "$S" verify draft.md                        # catch bad citations
+"$PYTHON" "$S" reset                                  # start a clean ledger
+"$PYTHON" "$S" add https://example.com/a --title "A"  # prints: [1]
+"$PYTHON" "$S" add https://example.com/b --title "B"  # prints: [2]
+"$PYTHON" "$S" list                                   # ledger table
+"$PYTHON" "$S" render                                 # Sources: block
+"$PYTHON" "$S" verify draft.md                        # catch bad citations
+```
+
+Native Windows PowerShell uses the same selection rule:
+
+```powershell
+$PYTHON = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } elseif (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { throw "Python 3 is required" }
+$S = Join-Path $HOME ".hermes\skills\research\grounded-citations\scripts\sources.py"
+& $PYTHON $S reset
 ```
 
 `add` is idempotent and URL-normalized: the same page always returns the same
@@ -136,7 +146,7 @@ upgrade from citations to evidence:
 text to a file and attach the sentence(s) that carry each claim:
 
 ```bash
-python3 "$S" quote 1 --text "Ice is about 9% less dense than liquid water." --from page1.txt
+"$PYTHON" "$S" quote 1 --text "Ice is about 9% less dense than liquid water." --from page1.txt
 ```
 
 The quote is rejected unless it appears verbatim in the evidence text
@@ -168,8 +178,8 @@ corroboration.
 ④ **Verify with the evidence gate and render the evidence block:**
 
 ```bash
-python3 "$S" verify report.md --evidence --min-coverage 0.5
-python3 "$S" render --style evidence --replace-in report.md
+"$PYTHON" "$S" verify report.md --evidence --min-coverage 0.5
+"$PYTHON" "$S" render --style evidence --replace-in report.md
 ```
 
 `--evidence` fails the draft if any cited source has no attached quote. The
@@ -222,7 +232,7 @@ and read the `info: stats:` line to see the counts before picking a number.
 ## Verification
 
 ```bash
-python3 "$S" verify report.md --strict --min-coverage 0.5
+"$PYTHON" "$S" verify report.md --strict --min-coverage 0.5
 ```
 
 Green means: every `[n]` in the draft exists in the ledger, the Sources block
