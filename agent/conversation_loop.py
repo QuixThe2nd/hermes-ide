@@ -126,6 +126,51 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 )
 
 
+def _midturn_request_pressure_tokens(
+    agent: Any,
+    api_messages: List[Dict[str, Any]],
+    effective_system: str,
+    approx_tokens: int,
+) -> int:
+    """Token figure the mid-turn pre-API compression guard compares.
+
+    When the upcoming request is eligible for native Responses compaction the
+    transport will checkpoint-prune the payload before sending, so the generic
+    durable-history estimate overstates the wire by orders of magnitude on a
+    compacted session and fires a 600s local compression the main request
+    never needed (#96995). Mirror the turn-prologue preflight (#96644 /
+    #96155): use the pruned estimate when native eligibility is proven, the
+    generic message+tools figure otherwise.
+
+    The native estimator adds the system prompt and tool schemas itself and
+    its converter skips system-role rows, so passing the assembled
+    ``api_messages`` (which carries the system row) alongside
+    ``effective_system`` counts the system prompt exactly once.
+    """
+    try:
+        from agent.codex_responses_adapter import (
+            estimate_native_responses_preflight_tokens,
+        )
+
+        native = estimate_native_responses_preflight_tokens(
+            agent,
+            api_messages,
+            system_prompt=effective_system or "",
+            tools=getattr(agent, "tools", None) or None,
+        )
+        if isinstance(native, int) and not isinstance(native, bool) and native >= 0:
+            return native
+    except Exception:
+        logger.debug(
+            "native Responses mid-turn estimate unavailable; "
+            "using generic transcript estimate",
+            exc_info=True,
+        )
+    return approx_tokens + (
+        _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
+    )
+
+
 def _review_input_budget_exhausted(agent: Any) -> bool:
     """True when a detached review fork has replayed its aggregate input budget.
 
@@ -2620,8 +2665,14 @@ def run_conversation(
         # separately (compression needs them: 50+ tools = 20-30K tokens).
         # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        request_pressure_tokens = approx_tokens + (
-            _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
+        # Route-aware pressure: when the upcoming request is eligible for
+        # native Responses compaction the transport will checkpoint-prune
+        # the payload before sending — the generic durable-history figure
+        # overstates the wire by orders of magnitude on a compacted session
+        # and fires a 600s local compression the main request never needed
+        # (#96995, mirroring the turn-prologue preflight #96644/#96155).
+        request_pressure_tokens = _midturn_request_pressure_tokens(
+            agent, api_messages, effective_system or "", approx_tokens
         )
         # Usage-anchored override: when the last provider response's exact
         # usage is still valid for the durable transcript, replace the
@@ -7088,7 +7139,29 @@ def run_conversation(
                         or interim_has_codex_reasoning
                         or interim_has_codex_message_items
                     )
-                    if not interim_replayable:
+                    # A replayable interim is not the same thing as a retry
+                    # that DIFFERS.  When the interim replays but carries no
+                    # new instruction, the continuation is byte-identical to
+                    # the request that just failed and returns the same empty
+                    # response until the budget is gone.  Live case (gpt-5.6
+                    # on the Codex backend, Aug 2026): the model answers with
+                    # a server-side ``compaction`` checkpoint and no message.
+                    # The checkpoint lands in ``codex_reasoning_items``, so
+                    # ``interim_replayable`` is True and no nudge is added —
+                    # meanwhile the checkpoint makes the wire converter prune
+                    # every pre-checkpoint item, so all three attempts send
+                    # the same checkpoint + retained user messages and end on
+                    # an empty assistant turn with nothing to answer.  The
+                    # provider's own prefix cache reports 99-100% on the
+                    # repeats, and the turn dies with "Codex response
+                    # remained incomplete after 3 continuation attempts",
+                    # losing the whole turn's work.
+                    #
+                    # One bare retry is still worth trying (the model often
+                    # just needs another turn).  Once THAT has also come back
+                    # incomplete, a bare retry is proven not to work for this
+                    # turn, so every remaining attempt carries the nudge.
+                    if not interim_replayable or agent._codex_incomplete_retries >= 2:
                         _last_msg = messages[-1] if messages else None
                         _already_nudged = (
                             isinstance(_last_msg, dict)
@@ -7654,8 +7727,20 @@ def run_conversation(
                     # these add 20-30K tokens the messages-only
                     # estimate misses, which can skip compression
                     # past the configured threshold (#14695).
-                    _real_tokens = estimate_request_tokens_rough(
-                        messages, tools=agent.tools or None
+                    # Route-aware (#96995/#97602 class): on a compacted
+                    # native-Codex session the generic durable-history
+                    # figure overstates the wire and would false-trigger
+                    # compression here exactly like the pre-API guard —
+                    # this fallback runs precisely when no provider usage
+                    # is available (post-disconnect / gateway restart),
+                    # the unanchored case from #97602's repro.
+                    _real_tokens = _midturn_request_pressure_tokens(
+                        agent,
+                        messages,
+                        active_system_prompt or "",
+                        estimate_request_tokens_rough(
+                            messages, tools=agent.tools or None
+                        ),
                     )
 
                 if (

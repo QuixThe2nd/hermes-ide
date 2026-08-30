@@ -2023,6 +2023,9 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    capabilities=getattr(
+                                        result, "runtime_capabilities", None
+                                    ),
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -2083,6 +2086,7 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                             "request_overrides": dict(result.request_overrides or {}),
+                            "capabilities": dict(result.runtime_capabilities or {}),
                         }
 
                         # Write-through the non-secret parts to the session
@@ -2337,6 +2341,7 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        capabilities=getattr(result, "runtime_capabilities", None),
                     )
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working
@@ -2396,6 +2401,7 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
                 "request_overrides": dict(result.request_overrides or {}),
+                "capabilities": dict(result.runtime_capabilities or {}),
             }
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):
