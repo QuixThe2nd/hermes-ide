@@ -694,14 +694,18 @@ def compute_primary_slot(
     reading. Only candidates that have a desired_entries entry with a
     non-empty model string can be promoted — the model string has to come
     from somewhere. A top scorer without a chain entry is skipped, and the
-    best scorer WITH one wins instead. The current primary is scored too
-    (an untracked primary such as a plain openrouter route scores 0) and
-    wins ties. Ties between eligible tracked providers resolve to the
-    lowest CHANNEL_KEYS index; the unlimited route competes after them, so
-    it only wins by beating the best tracked score outright. Returns None
-    — "leave the primary alone" — when there is no usable current primary,
-    no eligible candidate at all, or none beats the current primary's
-    score.
+    best scorer WITH one wins instead. The ``compute_desired_order``
+    low-quota bucket applies to this race too: a reading ``is_low_quota``
+    never beats a healthy candidate at any raw score and never displaces a
+    healthy current primary — it only wins a race where every candidate and
+    the primary are sunk, by raw score among themselves. The current
+    primary is scored too (an untracked primary such as a plain openrouter
+    route scores 0) and wins ties. Ties between eligible tracked providers
+    resolve to the lowest CHANNEL_KEYS index; the unlimited route competes
+    after them, so it only wins by beating the best tracked score outright.
+    Returns None — "leave the primary alone" — when there is no usable
+    current primary, no eligible candidate at all, or none beats the
+    current primary's score.
     """
     current = current_primary(config)
     if current is None:
@@ -727,7 +731,19 @@ def compute_primary_slot(
     else:
         current_score = None
 
-    best: Optional[Tuple[float, Mapping[str, Any]]] = None
+    # (bucket, score, entry): bucket 1 is the low-quota sink, so a healthy
+    # candidate beats a sunk one at any raw score — a sub-5% wallet with no
+    # pending reset can carry the highest number in the race (its
+    # hours-remaining denominator floors at one minute) yet sink behind
+    # every healthy entry in the chain; the primary race must sink with it.
+    best: Optional[Tuple[int, float, Mapping[str, Any]]] = None
+
+    def _consider(reading: QuotaReading, entry: Mapping[str, Any], score: float) -> None:
+        nonlocal best
+        bucket = 1 if is_low_quota(reading) else 0
+        if best is None or (bucket, -score) < (best[0], -best[1]):
+            best = (bucket, score, entry)
+
     for key in CHANNEL_KEYS:  # CHANNEL_KEYS order breaks score ties
         provider = CHANNEL_KEY_TO_PROVIDER[key]
         reading = readings.get(provider)
@@ -736,22 +752,32 @@ def compute_primary_slot(
         entry = entry_by_provider.get(provider)
         if entry is None or not str(entry.get("model") or "").strip():
             continue
-        score = score_provider(reading, rates.get(provider))
-        if best is None or score > best[0]:
-            best = (score, entry)
+        _consider(reading, entry, score_provider(reading, rates.get(provider)))
 
     unlimited = _unlimited_chain_entry(desired_entries)
     if unlimited is not None:
-        score = score_provider(unlimited_reading(), rates.get(UNLIMITED_PROVIDER))
-        if best is None or score > best[0]:
-            best = (score, unlimited)
+        _consider(
+            unlimited_reading(),
+            unlimited,
+            score_provider(unlimited_reading(), rates.get(UNLIMITED_PROVIDER)),
+        )
 
     if best is None:
         return None
-    if (current_score or 0.0) >= best[0]:
+    # a sunk winner only ever takes the slot from another sunk primary, never
+    # from a healthy one; an untracked primary is unscored, which the low
+    # bucket still outranks — exactly the chain's bucket order
+    current_healthy = (
+        not is_low_quota(current_reading)
+        if current_reading is not None
+        else is_unlimited_route(current.provider, current.model)
+    )
+    if best[0] and current_healthy:
+        return None
+    if (current_score or 0.0) >= best[1]:
         return None
 
-    winner = best[1]
+    winner = best[2]
     return PrimarySlot(
         provider=str(winner.get("provider") or "").strip(),
         model=str(winner.get("model") or "").strip(),

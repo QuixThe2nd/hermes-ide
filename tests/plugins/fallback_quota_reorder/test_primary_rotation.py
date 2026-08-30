@@ -262,6 +262,158 @@ class TestUnlimitedPrimaryRotation:
         assert providers == ["openrouter", "xai-oauth"]
 
 
+class TestLowQuotaPrimary:
+    """The low-quota sink governs the primary race, not just the chain."""
+
+    def test_high_raw_score_sub5pct_candidate_loses_to_healthy_candidate(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # grok: 4% resetting in 1m scores 0.04 * 168/(1/60) = 403.2 — the
+        # highest raw score in the race by far — yet the sink rule buckets it
+        # behind every healthy candidate, exactly as compute_desired_order does
+        names = _names(
+            codex=f"Codex: 90% {BULLET} 7d left",  # 0.9 healthy
+            kimi=f"Kimi: 80% {BULLET} 7d left",  # 0.8 healthy, current primary
+            zai=f"z.ai: 70% {BULLET} 7d left",  # 0.7 healthy
+            grok=f"Grok: 4% {BULLET} 1m left",  # 403.2 but sunk
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "openrouter", "model": "or"},
+                {"provider": "openai-codex", "model": "codex"},
+                {"provider": "xai-oauth", "model": "grok"},
+                {"provider": "zai", "model": "zai"},
+            ],
+            model={"provider": "kimi-coding", "default": "kimi"},
+        )
+        _patch_channel_names(monkeypatch, names)
+
+        result = run_reorder(config_path=quota_config)
+
+        assert result["primary_desired"] == PrimarySlot(
+            provider="openai-codex", model="codex"
+        )
+        providers = [entry["provider"] for entry in get_fallback_chain(load_config())]
+        # the displaced healthy kimi (0.8) reinserts ahead of the healthy zai
+        # (0.7), which itself outranks the sunk grok (403.2): primary and
+        # chain sink the same wallet
+        assert providers == ["kimi-coding", "zai", "xai-oauth", "openrouter"]
+
+    def test_sunk_candidate_never_displaces_a_healthy_primary(
+        self, monkeypatch, tmp_path: Path
+    ):
+        names = _names(
+            codex=f"Codex: 90% {BULLET} 7d left",  # 0.9 healthy current primary
+            grok=f"Grok: 4% {BULLET} 1m left",  # 403.2 but sunk, only candidate
+            kimi="",
+            zai="",
+            cursor="",
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "xai-oauth", "model": "grok"},
+                {"provider": "zai", "model": "zai"},
+            ],
+            model={"provider": "openai-codex", "default": "codex"},
+        )
+        _patch_channel_names(monkeypatch, names)
+        original = (tmp_path / "config.yaml").read_bytes()
+
+        result = run_reorder(config_path=quota_config)
+
+        assert result["primary_desired"] is None
+        assert result["would_change"] is False
+        assert (tmp_path / "config.yaml").read_bytes() == original
+
+    def test_threshold_wallet_stays_eligible(self, monkeypatch, tmp_path: Path):
+        # 5% sits AT the threshold, not below it: no sink, so the 1m urgency
+        # (0.05 * 168/(1/60) = 504) promotes it over the 0.8 primary
+        names = _names(
+            kimi=f"Kimi: 80% {BULLET} 7d left",  # 0.8, current primary
+            grok=f"Grok: 5% {BULLET} 1m left",  # 504, healthy
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "xai-oauth", "model": "grok"},
+                {"provider": "openrouter", "model": "or"},
+            ],
+            model={"provider": "kimi-coding", "default": "kimi"},
+        )
+        _patch_channel_names(monkeypatch, names)
+
+        result = run_reorder(config_path=quota_config)
+
+        assert result["primary_desired"] == PrimarySlot(
+            provider="xai-oauth", model="grok"
+        )
+        loaded = load_config()
+        assert loaded["model"]["provider"] == "xai-oauth"
+
+    def test_emptied_wallet_with_pending_reset_stays_eligible(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # the reset credit is spendable capacity: 0% escapes the sink and the
+        # reset term (1 * 168/1h = 168.0) promotes it over kimi's 0.8
+        names = _names(
+            kimi=f"Kimi: 80% {BULLET} 7d left",  # 0.8, current primary
+            grok=f"Grok: 0% {BULLET} 7d left {BULLET} 1 reset in 1h",  # 168.0
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "xai-oauth", "model": "grok"},
+                {"provider": "openrouter", "model": "or"},
+            ],
+            model={"provider": "kimi-coding", "default": "kimi"},
+        )
+        _patch_channel_names(monkeypatch, names)
+
+        result = run_reorder(config_path=quota_config)
+
+        assert result["primary_desired"] == PrimarySlot(
+            provider="xai-oauth", model="grok"
+        )
+        loaded = load_config()
+        assert loaded["model"]["provider"] == "xai-oauth"
+
+    def test_sunk_candidate_still_rotates_a_sunk_primary(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # when the primary itself is sunk, raw score still decides among the
+        # sunk candidates — the guard protects healthy primaries only
+        names = _names(
+            codex=f"Codex: 4% {BULLET} 1m left",  # 403.2 sunk
+            grok=f"Grok: 3% {BULLET} 1m left",  # 302.4 sunk, current primary
+            kimi="",
+            zai="",
+            cursor="",
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[{"provider": "openai-codex", "model": "codex"}],
+            model={"provider": "xai-oauth", "default": "grok"},
+        )
+        _patch_channel_names(monkeypatch, names)
+
+        result = run_reorder(config_path=quota_config)
+
+        assert result["primary_desired"] == PrimarySlot(
+            provider="openai-codex", model="codex"
+        )
+        loaded = load_config()
+        assert loaded["model"]["provider"] == "openai-codex"
+        providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
+        assert providers == ["xai-oauth"]
+
+
 class TestPrimaryFreezeAndNoReadings:
     def test_frozen_blocks_primary_write(self, monkeypatch, tmp_path: Path):
         names = _names(
