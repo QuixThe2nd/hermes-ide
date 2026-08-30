@@ -329,6 +329,43 @@ class TestLowQuotaPrimary:
         assert result["would_change"] is False
         assert (tmp_path / "config.yaml").read_bytes() == original
 
+    def test_healthy_candidate_displaces_a_sunk_high_raw_score_primary(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # the mirror of the guard above, on the current-primary side: the
+        # sunk codex primary (4%/1m = 403.2) must not keep the slot just
+        # because its number beats the healthy 0.9 — buckets compare first,
+        # raw scores only inside one bucket
+        names = _names(
+            codex=f"Codex: 4% {BULLET} 1m left",  # 403.2 sunk, current primary
+            kimi=f"Kimi: 90% {BULLET} 7d left",  # 0.9 healthy
+        )
+        quota_config = _setup(
+            monkeypatch,
+            tmp_path,
+            fallback_providers=[
+                {"provider": "kimi-coding", "model": "kimi"},
+                {"provider": "xai-oauth", "model": "grok"},
+            ],
+            model={"provider": "openai-codex", "default": "codex"},
+        )
+        _patch_channel_names(monkeypatch, names)
+
+        result = run_reorder(config_path=quota_config)
+
+        assert result["primary_desired"] == PrimarySlot(
+            provider="kimi-coding", model="kimi"
+        )
+        assert result["would_change"] is True
+        loaded = load_config()
+        assert loaded["model"]["provider"] == "kimi-coding"
+        assert loaded["model"]["default"] == "kimi"
+        providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
+        # the displaced sunk codex reenters the chain in the sink — ahead of
+        # the unscored grok tail, behind every healthy entry — so primary and
+        # chain sink the same wallet
+        assert providers == ["openai-codex", "xai-oauth"]
+
     def test_threshold_wallet_stays_eligible(self, monkeypatch, tmp_path: Path):
         # 5% sits AT the threshold, not below it: no sink, so the 1m urgency
         # (0.05 * 168/(1/60) = 504) promotes it over the 0.8 primary

@@ -695,17 +695,21 @@ def compute_primary_slot(
     non-empty model string can be promoted — the model string has to come
     from somewhere. A top scorer without a chain entry is skipped, and the
     best scorer WITH one wins instead. The ``compute_desired_order``
-    low-quota bucket applies to this race too: a reading ``is_low_quota``
-    never beats a healthy candidate at any raw score and never displaces a
-    healthy current primary — it only wins a race where every candidate and
-    the primary are sunk, by raw score among themselves. The current
-    primary is scored too (an untracked primary such as a plain openrouter
-    route scores 0) and wins ties. Ties between eligible tracked providers
-    resolve to the lowest CHANNEL_KEYS index; the unlimited route competes
-    after them, so it only wins by beating the best tracked score outright.
-    Returns None — "leave the primary alone" — when there is no usable
-    current primary, no eligible candidate at all, or none beats the
-    current primary's score.
+    low-quota bucket applies to this race too, on BOTH sides of the
+    comparison: candidates bucket healthy (0) / sunk (1), and so does the
+    current primary — an untracked primary such as a plain openrouter route
+    is unscored (bucket 2), the unlimited route healthy through its
+    synthetic reading. Buckets are compared before any raw score: a sunk
+    current primary loses the slot to a healthy winner however large its
+    number (a 4%/1m wallet scores 403.2 yet is still nearly empty), a sunk
+    winner never displaces a healthy primary, and every scored winner
+    outranks an untracked one. Raw scores decide only inside one bucket,
+    where the current primary wins exact ties. Ties between eligible
+    tracked providers resolve to the lowest CHANNEL_KEYS index; the
+    unlimited route competes after them, so it only wins by beating the
+    best tracked score outright. Returns None — "leave the primary alone" —
+    when there is no usable current primary, no eligible candidate at all,
+    or none outranks the current primary's bucket-then-score standing.
     """
     current = current_primary(config)
     if current is None:
@@ -764,17 +768,24 @@ def compute_primary_slot(
 
     if best is None:
         return None
-    # a sunk winner only ever takes the slot from another sunk primary, never
-    # from a healthy one; an untracked primary is unscored, which the low
-    # bucket still outranks — exactly the chain's bucket order
-    current_healthy = (
-        not is_low_quota(current_reading)
-        if current_reading is not None
-        else is_unlimited_route(current.provider, current.model)
-    )
-    if best[0] and current_healthy:
+    # the race ranks the current primary by the chain's bucket order —
+    # healthy (0) before sunk (1) before unscored (2) — and compares that
+    # bucket against the winner's BEFORE any raw score: a sunk current
+    # primary cannot keep the slot on its number alone (a 4%/1m wallet
+    # scores 403.2 yet is still nearly empty), and a sunk winner never
+    # displaces a healthy one. An untracked primary is unscored — bucket 2 —
+    # so every scored winner outranks it; the unlimited route is healthy via
+    # its synthetic reading. Raw scores (ties to the current) decide only
+    # inside one bucket.
+    if current_reading is not None:
+        current_bucket = 1 if is_low_quota(current_reading) else 0
+    elif is_unlimited_route(current.provider, current.model):
+        current_bucket = 0
+    else:
+        current_bucket = 2
+    if current_bucket < best[0]:
         return None
-    if (current_score or 0.0) >= best[1]:
+    if current_bucket == best[0] and (current_score or 0.0) >= best[1]:
         return None
 
     winner = best[2]
