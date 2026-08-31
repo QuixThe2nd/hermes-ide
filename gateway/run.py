@@ -1267,7 +1267,7 @@ def _resolve_progress_thread_id(
         return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
-    if platform_key in {"slack", "mattermost"} and event_message_id:
+    if platform_key in {"slack", "mattermost", "buzz"} and event_message_id:
         return str(event_message_id)
     return None
 
@@ -31723,6 +31723,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception:
                     _progress_reply_in_thread = True
+        elif str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz":
+            # Buzz honours the same opt-out (reply_to_mode: off /
+            # extra.reply_in_thread: false). When the user asked for flat
+            # channel replies, progress must not synthesise a thread either.
+            _buzz_adapter_for_progress = self._adapter_for_source(source)
+            if _buzz_adapter_for_progress is not None:
+                try:
+                    _progress_reply_in_thread = (
+                        getattr(_buzz_adapter_for_progress, "_reply_to_mode", "first")
+                        != "off"
+                    )
+                except Exception:
+                    _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
             reply_in_thread=_progress_reply_in_thread,
@@ -31775,6 +31788,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.platform in (Platform.FEISHU, Platform.MATTERMOST)
                 and source.thread_id
                 and event_message_id
+            )
+            or (
+                # Buzz has no native thread_id; threading is always via reply-to
+                # the triggering event id (channel clutter otherwise). Skipped
+                # when the user opted out of threaded replies.
+                str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
+                and event_message_id
+                and _progress_reply_in_thread
             )
             or _relay_prospective_thread_id
             else None
@@ -34520,6 +34541,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             profile_homes = _multiplex_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
+                # Per-profile adapters so each profile's cron output is
+                # delivered via its own bot/adapter instead of the default
+                # profile's.
+                cron_start_kwargs["profile_adapters"] = getattr(
+                    runner, "_profile_adapters", None
+                )
+                # runner.adapters belongs to the default profile, which
+                # profiles_to_serve() names "default" in its multiplex list.
+                # Thread that identity so the ticker reserves the shared adapters
+                # for the default profile alone and never routes a secondary's
+                # cron through the default bot (even before its adapter connects,
+                # when profile_adapters[name] is still absent/empty).
+                cron_start_kwargs["default_profile"] = "default"
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s",
                     len(profile_homes),

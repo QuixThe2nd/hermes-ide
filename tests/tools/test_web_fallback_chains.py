@@ -415,15 +415,15 @@ class TestWebExtractToolFallbackE2E:
         from agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
-    def test_primary_raises_falls_back_to_tavily(self, monkeypatch):
+    def test_primary_raises_falls_back_to_keenable(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
             "extract_backend": "exa",
-            "extract_fallbacks": ["tavily"],
+            "extract_fallbacks": ["keenable"],
         })
         monkeypatch.setenv("EXA_API_KEY", "exa-key")
-        monkeypatch.setenv("TAVILY_API_KEY", "tvly")
+        monkeypatch.setenv("KEENABLE_API_KEY", "keen-key")
 
         async def _allow_ssrf(_url):
             return True
@@ -432,19 +432,19 @@ class TestWebExtractToolFallbackE2E:
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         from plugins.web.exa.provider import ExaWebSearchProvider
-        from plugins.web.tavily.provider import TavilyWebSearchProvider
+        from plugins.web.keenable.provider import KeenableWebSearchProvider
 
         def _exa_raise(self, urls, **kwargs):
             raise RuntimeError("exa backend down")
 
         monkeypatch.setattr(ExaWebSearchProvider, "extract", _exa_raise)
         monkeypatch.setattr(
-            TavilyWebSearchProvider, "extract",
-            lambda self, urls, **kwargs: [{"url": urls[0], "title": "tavily", "content": "body", "raw_content": "body"}],
+            KeenableWebSearchProvider, "extract",
+            lambda self, urls, **kwargs: [{"url": urls[0], "title": "keenable", "content": "body", "raw_content": "body"}],
         )
 
         result = json.loads(asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])
         ))
         # Fallback content reached the post-processing pipeline.
-        assert any("tavily" in (r.get("title") or "") for r in result["results"])
+        assert any("keenable" in (r.get("title") or "") for r in result["results"])

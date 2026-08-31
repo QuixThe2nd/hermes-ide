@@ -2301,10 +2301,30 @@ def _get_config_home_channel(platform_name: str):
 
 
 def _env_home_target_chat_id(platform_name: str) -> str:
-    """Return the home chat id from the legacy env mirror only (no config)."""
+    """Return the home chat id from the legacy env mirror only (no config).
+
+    Reads through ``get_secret`` (not raw ``os.getenv``) so a profile-scoped
+    secret scope wins in a multiplex gateway. ``DISCORD_HOME_CHANNEL`` lives in
+    each profile's ``.env``; in a multiplex process the winning cron tick runs
+    with the job-owning profile's scope installed (run_one_job sets it), so
+    reading via ``get_secret`` resolves the OWNING profile's chat id rather
+    than the host process's ``os.environ`` (#83182, chat-id leg — the token
+    leg was fixed earlier; chat id / thread id resolve through the same leak).
+    """
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
+    try:
+        from agent.secret_scope import get_secret
+    except Exception:
+        get_secret = None  # type: ignore
+    if get_secret is not None:
+        value = get_secret(env_var, "")
+        if not value:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = get_secret(legacy, "")
+        return value or ""
     value = os.getenv(env_var, "")
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
@@ -2341,15 +2361,33 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     without changing the lobby invariant.
     """
     env_var = _resolve_home_env_var(platform_name)
+    try:
+        from agent.secret_scope import get_secret
+    except Exception:
+        get_secret = None  # type: ignore
+
+    def _scope_get(name: str) -> str:
+        if get_secret is None:
+            return ""
+        v = get_secret(name, "")
+        return v if v is not None else ""
+
     if platform_name.lower() == "telegram":
-        cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
+        cron_thread = _scope_get("TELEGRAM_CRON_THREAD_ID").strip()
         if cron_thread:
             return cron_thread
-    value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
-    if not value and env_var:
-        legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
-        if legacy:
-            value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
+    if get_secret is not None:
+        value = _scope_get(f"{env_var}_THREAD_ID").strip() if env_var else ""
+        if not value and env_var:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = _scope_get(f"{legacy}_THREAD_ID").strip()
+    else:
+        value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
+        if not value and env_var:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
     if value:
         return value
     # Canonical config.yaml fallback — same rationale as
@@ -5146,6 +5184,66 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
+def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
+    """True when the primary gateway routes this platform to the profile the
+    scheduler is currently serving.
+
+    Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are
+    ticked by the primary gateway's in-process ticker (#69377) and delivered
+    through the primary gateway's live adapters — the satellite home never
+    holds the platform credentials itself (giving it a token of its own is a
+    ``duplicate_credential`` fatal). ``_preflight_check_delivery`` loads the
+    gateway config of the job's OWN home, where such a platform correctly
+    reads as unconnected; consulting the primary home's ``profile_routes``
+    keeps routed satellite jobs from being permanently false-blocked (#97476).
+    Reads the primary config.yaml directly (both the top-level and nested
+    ``gateway.`` forms) instead of ``load_gateway_config()`` so no primary
+    platform config leaks into this process's environment.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        primary_home = get_default_hermes_root()
+        current_home = Path(get_hermes_home())
+        if (
+            primary_home.expanduser().resolve(strict=False)
+            == current_home.expanduser().resolve(strict=False)
+        ):
+            return False  # this IS the primary home — nothing to consult
+        config_path = primary_home.expanduser() / "config.yaml"
+        if not config_path.exists():
+            return False
+
+        import yaml
+
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        routes_raw = raw.get("profile_routes")
+        if routes_raw is None and isinstance(raw.get("gateway"), dict):
+            routes_raw = raw["gateway"].get("profile_routes")
+        if not isinstance(routes_raw, list):
+            return False
+
+        from gateway.profile_routing import parse_profile_routes
+        from hermes_cli.profiles import profile_matches_home
+
+        platform_key = platform_name.lower()
+        for route in parse_profile_routes(routes_raw):
+            if (
+                route.enabled
+                and str(route.platform).lower() == platform_key
+                and profile_matches_home(route.profile)
+            ):
+                return True
+        return False
+    except Exception:
+        logger.debug(
+            "preflight: primary-gateway profile-route lookup unavailable",
+            exc_info=True,
+        )
+        return False
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check the job's delivery target(s) resolve to configured platforms.
 
@@ -5197,6 +5295,12 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 )
                 return None  # fail-open
         if platform_name.lower() not in connected:
+            # Multiplex escape hatch: a satellite profile whose deliveries
+            # are routed by the primary gateway's profile_routes is served
+            # by the primary's adapters, so its own unconnected reading is
+            # a false block (#97476).
+            if _delivery_platform_routed_from_primary_gateway(platform_name):
+                continue
             return (
                 f"delivery platform '{platform_name}' has no gateway "
                 "credentials configured (not connected). Configure it via "
@@ -6368,7 +6472,15 @@ def run_job(
 
             if _session_db_timeout > 0:
                 _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                _session_db_future = _session_db_pool.submit(SessionDB)
+                # The timeout worker is a second thread, so it does not inherit
+                # the multiplexed profile ContextVar automatically. Run the
+                # constructor inside a copy of the active context so a profile
+                # cron run resolves ITS OWN home (and state.db) instead of
+                # silently falling back to the process-global default.
+                _session_db_context = contextvars.copy_context()
+                _session_db_future = _session_db_pool.submit(
+                    _session_db_context.run, SessionDB
+                )
                 try:
                     _session_db = _session_db_future.result(timeout=_session_db_timeout)
                 except concurrent.futures.TimeoutError:
@@ -7158,6 +7270,13 @@ def _run_one_job_body(
     # computation and the post-delivery "alerted" transition.
     incident_acked = False
     failure_incident_id = None
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    _scope_token = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -7182,18 +7301,11 @@ def _run_one_job_body(
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
+        # Run and deliver under the profile's secret scope. get_secret() fails
+        # closed outside a scope once profile isolation is active, and cron
+        # fires from a ticker thread with no per-turn scope. Delivery adapters
+        # can also resolve credentials, so resetting after run_job would leave
+        # _deliver_result unscoped. Mirrors gateway/run.py's per-turn pattern.
 
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
@@ -7229,8 +7341,7 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
-        finally:
-            reset_secret_scope(_scope_token)
+        # The outer finally resets the scope after delivery and bookkeeping.
 
         if _fire_claim_ownership_lost():
             for _deferred_agent in _deferred_agents:
@@ -7618,6 +7729,13 @@ def _run_one_job_body(
         if not isinstance(e, Exception):
             raise
         return False
+    finally:
+        # Function-level on purpose: this must scope delivery, deferred-agent
+        # teardown, claim-loss handling and bookkeeping, not just run_job.
+        # An earlier revision reset inside the run block's finally, which left
+        # _deliver_result unscoped — do not move it back in a tidy-up.
+        if _scope_token is not None:
+            reset_secret_scope(_scope_token)
 
 
 def _notify_provider_jobs_changed() -> None:
@@ -7689,6 +7807,102 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 # to None to force a reap on the next tick.
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
 _last_dead_owner_reap_at: Optional[float] = None
+
+# Worktree maintenance throttle: the startup pruner historically ran only on
+# `hermes -w` launches, so on gateway-driven boxes (where sessions arrive via
+# Telegram/Discord and nobody launches the CLI for days) merged scratch trees
+# accumulated into tens of GB. The cron tick is the one reliably periodic
+# process on every install, so it owns a low-frequency sweep too. Tests may
+# reset _last_worktree_maintenance_at to None to force a sweep next tick.
+_WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
+_last_worktree_maintenance_at: Optional[float] = None
+_worktree_maintenance_lock = threading.Lock()
+
+
+def _worktree_maintenance_repos() -> List[str]:
+    """Repos whose ``.worktrees/`` this scheduler should keep pruned.
+
+    Candidates: the hermes install checkout itself (where ``hermes -w``
+    sessions on dev boxes create trees) and every configured job workdir's
+    repo root. Only repos that actually have a ``.worktrees/`` dir survive —
+    everything else costs nothing.
+    """
+    repos: set = set()
+
+    # The hermes source checkout (editable/git installs). Wheel installs have
+    # no .git here and are skipped.
+    try:
+        install_root = Path(__file__).resolve().parent.parent
+        if (install_root / ".git").exists():
+            repos.add(str(install_root))
+    except Exception:
+        pass
+
+    # Job workdirs may point inside other repos the agent works on.
+    try:
+        from cron.jobs import load_jobs
+
+        for job in load_jobs():
+            workdir = str(job.get("workdir") or "").strip()
+            if not workdir or not Path(workdir).is_dir():
+                continue
+            try:
+                probe = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=5, cwd=workdir,
+                )
+                if probe.returncode == 0 and probe.stdout.strip():
+                    repos.add(probe.stdout.strip())
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return [r for r in sorted(repos) if (Path(r) / ".worktrees").is_dir()]
+
+
+def _maybe_run_worktree_maintenance() -> None:
+    """Throttled, threaded worktree prune from the cron tick.
+
+    Runs ``cli._prune_stale_worktrees`` (the same conservative pruner the
+    ``hermes -w`` startup path uses — dirty/unpushed/live-locked trees are
+    never touched) against every candidate repo, on a daemon thread so the
+    tick itself never waits on git. Errors never propagate: worktree GC is
+    hygiene, not scheduling.
+    """
+    global _last_worktree_maintenance_at
+    now = time.monotonic()
+    with _worktree_maintenance_lock:
+        if (
+            _last_worktree_maintenance_at is not None
+            and now - _last_worktree_maintenance_at
+            < _WORKTREE_MAINTENANCE_INTERVAL_SECONDS
+        ):
+            return
+        _last_worktree_maintenance_at = now
+
+    def _run() -> None:
+        try:
+            repos = _worktree_maintenance_repos()
+            if not repos:
+                return
+            from cli import _prune_stale_worktrees
+
+            for repo in repos:
+                try:
+                    _prune_stale_worktrees(repo)
+                except Exception:
+                    logger.debug(
+                        "Cron worktree maintenance failed for %s", repo,
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.debug("Cron worktree maintenance skipped", exc_info=True)
+
+    threading.Thread(
+        target=_run, name="cron-worktree-prune", daemon=True
+    ).start()
 
 
 def tick(
@@ -7807,6 +8021,14 @@ def tick(
                     )
             except Exception as _reap_exc:
                 logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
+
+        # Periodic worktree GC (throttled to every 6h, threaded): gateway-only
+        # boxes never hit the `hermes -w` startup pruner, so this is the only
+        # sweep they get. Same conservative pruner, same guards.
+        try:
+            _maybe_run_worktree_maintenance()
+        except Exception as _wt_exc:
+            logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
         due_jobs = get_due_jobs()
 
