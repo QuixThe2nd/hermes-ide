@@ -683,6 +683,115 @@ describe("SessionsPage overview (last 24 hours)", () => {
       intervalSpy.mockRestore();
     }
   });
+
+  it("keeps loading when silent polls race ahead of a slow explicit load", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveOverview: (value: unknown) => void = () => {};
+      const deferred = new Promise((resolve) => {
+        resolveOverview = resolve;
+      });
+      apiMocks.getSessions.mockImplementation(async (_limit, _offset, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          return deferred.then(() => ({
+            sessions: [sessionRow("s1", "Late arrival")],
+            total: 1,
+            limit: 20,
+            offset: 0,
+          }));
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      });
+      // Stats resolving changes ``loadSessions``'s identity and re-runs the
+      // overview effect. Keep stats pending so the only explicit load is the
+      // initial mount, then fire silent polls manually.
+      apiMocks.getSessionStats.mockImplementation(() => new Promise(() => {}));
+
+      await renderPage();
+
+      // The explicit mount request is still in flight.
+      expect(text()).toContain("Active in the last 24 hours");
+      expect(text()).not.toContain("Late arrival");
+      expect(text()).not.toContain("No sessions were active");
+      expect(text()).not.toContain("Failed to load sessions");
+
+      // Advance across at least two 5-second poll ticks. Silent polls must be
+      // suppressed while the explicit load is unresolved.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(text()).not.toContain("Late arrival");
+      expect(text()).not.toContain("No sessions were active");
+
+      await act(async () => {
+        resolveOverview(undefined);
+      });
+
+      expect(text()).toContain("Late arrival");
+      expect(text()).not.toContain("No sessions were active");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the error when a later silent poll succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      let overviewCall = 0;
+      apiMocks.getSessions.mockImplementation(async (_limit, _offset, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          overviewCall += 1;
+          if (overviewCall === 1) {
+            return {
+              sessions: [sessionRow("s1", "Initial row")],
+              total: 1,
+              limit: 20,
+              offset: 0,
+            };
+          }
+          if (overviewCall === 2) {
+            throw new Error("backend hiccup");
+          }
+          return {
+            sessions: [sessionRow("s1", "Recovered row")],
+            total: 1,
+            limit: 20,
+            offset: 0,
+          };
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      });
+      // Keep stats pending so the only explicit load is the initial mount.
+      apiMocks.getSessionStats.mockImplementation(() => new Promise(() => {}));
+
+      await renderPage();
+      expect(text()).toContain("Initial row");
+      expect(text()).not.toContain("Failed to load sessions");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(text()).toContain("Failed to load sessions from the last 24 hours");
+      expect(text()).toContain("backend hiccup");
+      expect(text()).toContain("Retry");
+      expect(text()).toContain("Initial row");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(text()).toContain("Recovered row");
+      expect(text()).not.toContain("Failed to load sessions");
+      expect(text()).not.toContain("Retry");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /** Lazy import so the module-level vi.mock calls are installed first. */

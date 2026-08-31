@@ -1024,6 +1024,9 @@ export default function SessionsPage() {
   // Tracks which explicit request turned loading on, so silent polls that
   // complete while an explicit load is in flight cannot leave it stuck true.
   const overviewExplicitRequestRef = useRef(0);
+  // True while an explicit request is unresolved. Silent polls are skipped so
+  // they can't starve the explicit load or clear its loading flag early.
+  const overviewExplicitPendingRef = useRef(false);
 
   useEffect(() => {
     pageRef.current = page;
@@ -1179,17 +1182,22 @@ export default function SessionsPage() {
   useEffect(() => {
     let cancelled = false;
     const loadOverview = (silent: boolean) => {
-      // Every request — silent poll or explicit load — gets its own id so an
-      // older in-flight response can never overwrite a newer one. Only the
-      // latest id may apply rows/total/error/loading. Explicit loads (mount,
-      // page change, retry) show the loading state and clear the prior error;
-      // silent ticks keep whatever is rendered and only swap in fresher data
-      // so the background refresh never flickers the card or drops scroll
-      // position.
+      // Silent ticks never supersede an unresolved explicit mount/page/retry
+      // load. Skipping them prevents a faster poll from rejecting the explicit
+      // response in the staleness guard and then clearing loading via the old
+      // explicit request's finally, which would paint the false empty state.
+      if (silent && overviewExplicitPendingRef.current) return;
+      // Every accepted request — silent or explicit — gets its own monotonic id
+      // so an older in-flight response can never overwrite a newer one. Only
+      // the latest id may apply rows/total/error. Explicit loads show the
+      // loading state and clear the prior error; silent ticks keep whatever is
+      // rendered and only swap in fresher data so the background refresh never
+      // flickers the card or drops scroll position.
       const requestId = overviewRequestRef.current + 1;
       overviewRequestRef.current = requestId;
       if (!silent) {
         overviewExplicitRequestRef.current = requestId;
+        overviewExplicitPendingRef.current = true;
         setOverviewLoading(true);
         setOverviewError(null);
       }
@@ -1224,6 +1232,9 @@ export default function SessionsPage() {
             setOverviewPage(lastPage);
             return;
           }
+          // Any accepted successful response clears a prior error — recovered
+          // data must not keep displaying the Retry button and failure alert.
+          setOverviewError(null);
           setOverviewSessions(r.sessions);
           setOverviewTotal(r.total);
           // The dashboard server and a terminal CLI are separate processes
@@ -1257,6 +1268,7 @@ export default function SessionsPage() {
           // off. Silent polls must not flicker loading, and a stale explicit
           // response must not clear loading for a newer explicit load.
           if (requestId === overviewExplicitRequestRef.current) {
+            overviewExplicitPendingRef.current = false;
             setOverviewLoading(false);
           }
         });

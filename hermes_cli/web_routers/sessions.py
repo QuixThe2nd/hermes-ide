@@ -175,7 +175,7 @@ def get_sessions(
                 active_since=active_since,
                 active_until=active_until,
             )
-            now = time.time()
+            now = window_now if window_now is not None else time.time()
             # Same ownership contract as get_session_detail: rows are stamped
             # with the serving profile even when the request wasn't explicitly
             # scoped, so default-profile rows never circulate unowned.

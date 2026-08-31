@@ -3179,6 +3179,133 @@ class TestCompressionChainProjection:
         assert "_lineage_root_id" not in row
         assert row["end_reason"] == "compression"
 
+    def test_legacy_branch_stamped_before_reopen_avoids_compression_hijack(self, db):
+        """A markerless legacy branch must keep its identity across reopen/re-end.
+
+        Without durable stamping, reopening a branched parent and later ending it
+        as compression lets the old branch win the continuation preference if it
+        is fresher than the real continuation.
+        """
+        t0 = 1_800_000_000.0
+        db.create_session("parent", "cli")
+        db.create_session("legacy_branch", "cli", parent_session_id="parent")
+
+        # Parent ends as branched; the branch starts after the parent ended,
+        # satisfying the legacy branch heuristic.
+        db.end_session("parent", "branched")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+                (t0, t0 + 60, "branched", "parent"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 + 70, "legacy_branch"),
+            )
+            db._conn.commit()
+
+        # Sanity: both the parent and the legacy branch are listable now.
+        sessions = db.list_sessions_rich(limit=20)
+        ids = [s["id"] for s in sessions]
+        assert "parent" in ids
+        assert "legacy_branch" in ids
+
+        # Reopen the parent, re-end as compression, and add the real continuation.
+        db.reopen_session("parent")
+        db.end_session("parent", "compression")
+        db.create_session("real_tip", "cli", parent_session_id="parent")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 + 80, "real_tip"),
+            )
+            db._conn.commit()
+
+        # Make the old branch fresher than the real continuation.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+                (t0 + 200, t0 + 200, "legacy_branch"),
+            )
+            db._conn.commit()
+
+        # The real continuation must win; the branch must not hijack it.
+        assert db.get_compression_tip("parent") == "real_tip"
+
+        # Listing projects the compressed parent to the real tip, and the
+        # legacy branch remains independently visible. No row is duplicated.
+        sessions = db.list_sessions_rich(limit=20)
+        ids = [s["id"] for s in sessions]
+        assert "real_tip" in ids
+        assert "legacy_branch" in ids
+        assert "parent" not in ids
+        assert ids.count("real_tip") == 1
+        assert ids.count("legacy_branch") == 1
+
+        # Count parity: two logical conversations (parent->real_tip and branch).
+        assert db.session_count(exclude_children=True) == 2
+
+    def test_legacy_delegate_stamped_before_reopen_avoids_compression_hijack(self, db):
+        """A markerless legacy delegate/ephemeral child must stay hidden across
+        reopen/re-end and never be selected as the compression continuation.
+        """
+        t0 = 1_800_000_000.0
+        db.create_session("parent", "cli")
+        db.create_session("legacy_delegate", "delegate", parent_session_id="parent")
+
+        # Parent ends at a non-compression, non-branch boundary. The delegate
+        # child is ephemeral because it carries no routing key for the reset
+        # heuristic and has no stable markers.
+        db.end_session("parent", "idle")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+                (t0, t0 + 60, "idle", "parent"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 + 70, "legacy_delegate"),
+            )
+            db._conn.commit()
+
+        # Sanity: the delegate is hidden from listings.
+        sessions = db.list_sessions_rich(limit=20)
+        ids = [s["id"] for s in sessions]
+        assert "parent" in ids
+        assert "legacy_delegate" not in ids
+
+        # Reopen, re-end as compression, and add the real continuation.
+        db.reopen_session("parent")
+        db.end_session("parent", "compression")
+        db.create_session("real_tip", "cli", parent_session_id="parent")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 + 80, "real_tip"),
+            )
+            db._conn.commit()
+
+        # Make the old delegate fresher than the real continuation.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+                (t0 + 200, t0 + 200, "legacy_delegate"),
+            )
+            db._conn.commit()
+
+        # The delegate must not become the selected tip.
+        assert db.get_compression_tip("parent") == "real_tip"
+
+        # The delegate stays hidden; only the projected real tip surfaces.
+        sessions = db.list_sessions_rich(limit=20)
+        ids = [s["id"] for s in sessions]
+        assert "real_tip" in ids
+        assert "legacy_delegate" not in ids
+        assert ids.count("real_tip") == 1
+
+        # Count parity: one logical conversation (parent->real_tip).
+        assert db.session_count(exclude_children=True) == 1
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)

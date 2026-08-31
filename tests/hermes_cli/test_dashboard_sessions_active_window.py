@@ -293,3 +293,47 @@ def test_window_upper_bounds_activity_at_server_now(client, state_db):
         "at_now", "just_before_now", "in_window", "at_cutoff",
     ]
     assert payload["total"] == 4
+
+
+def test_window_uses_one_frozen_now_for_bounds_and_is_active(client, state_db, monkeypatch):
+    """A windowed request must sample ``time.time()`` once and reuse that value.
+
+    The single frozen ``now`` must drive both inclusive list/count bounds and
+    the per-row ``is_active`` flag. Callers that omit the window keep the
+    historical behavior of sampling a fresh ``now`` for ``is_active``.
+    """
+    from hermes_cli.web_routers import sessions as sessions_router
+
+    state_db.create_session("live", "cli")
+    state_db.create_session("stale", "cli")
+    _set_last_activity(state_db, "live", NOW - 60)
+    _set_last_activity(state_db, "stale", NOW - 400)
+
+    calls = []
+
+    def moving_time():
+        # Each call advances by a full window width so a second read would
+        # produce visibly different bounds and ``is_active`` results.
+        idx = len(calls)
+        calls.append(idx)
+        return NOW + idx * 24 * HOUR
+
+    monkeypatch.setattr(sessions_router, "time", SimpleNamespace(time=moving_time))
+
+    payload = _window(client, limit=20, offset=0)
+
+    # Exactly one server ``now`` per windowed request.
+    assert len(calls) == 1
+    # The same frozen value was forwarded to both the row query and the count,
+    # so rows and total agree on one page.
+    assert payload["total"] == len(payload["sessions"]) == 2
+    by_id = {s["id"]: s for s in payload["sessions"]}
+    # ``is_active`` is computed from the frozen NOW, not from a later read.
+    assert by_id["live"]["is_active"] is True
+    assert by_id["stale"]["is_active"] is False
+
+    # Non-windowed callers still obtain a fresh ``now`` normally.
+    calls.clear()
+    response = client.get("/api/sessions?order=recent&limit=20&offset=0")
+    assert response.status_code == 200
+    assert len(calls) == 1

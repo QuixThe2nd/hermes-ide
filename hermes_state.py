@@ -7381,10 +7381,44 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed.
 
-        Before clearing a reset boundary, stabilize markerless legacy reset
-        children that still depend on the parent's mutable end_reason.
+        Before clearing the lifecycle state, stabilize markerless legacy
+        children that still depend on the parent's mutable end_reason:
+        branches, delegate/ephemeral runs, and reset continuations. Stamping
+        them with the same stable JSON markers used by modern rows keeps them
+        from being reclassified as compression continuations if the parent is
+        later re-ended as ``compression``.
         """
         def _do(conn):
+            # Markerless legacy branch children: the heuristic relies on the
+            # parent having end_reason='branched' and the child starting after
+            # the parent ended. Freeze that identity before the parent's state
+            # changes. Reuse _BRANCH_CHILD_SQL so listing, deletion, and
+            # continuation semantics stay aligned.
+            conn.execute(
+                "UPDATE sessions AS child SET model_config = json_set("
+                "COALESCE(child.model_config, '{}'), '$._branched_from', "
+                "child.parent_session_id) "
+                "WHERE child.parent_session_id = ? "
+                "AND json_extract(COALESCE(child.model_config, '{}'), "
+                "                 '$._branched_from') IS NULL "
+                f"AND {_BRANCH_CHILD_SQL.format(a='child')}",
+                (session_id,),
+            )
+            # Markerless legacy delegate/ephemeral children: hidden subagent
+            # runs that lack the stable _delegate_from marker. Stamp them so
+            # they stay hidden and ineligible for compression continuation
+            # selection after reopen/re-end. Reuse _ephemeral_child_sql so the
+            # predicate cannot drift from listing/deletion/resume.
+            conn.execute(
+                "UPDATE sessions AS child SET model_config = json_set("
+                "COALESCE(child.model_config, '{}'), '$._delegate_from', "
+                "child.parent_session_id) "
+                "WHERE child.parent_session_id = ? "
+                "AND json_extract(COALESCE(child.model_config, '{}'), "
+                "                 '$._delegate_from') IS NULL "
+                f"AND {_ephemeral_child_sql('child')}",
+                (session_id,),
+            )
             placeholders = ",".join("?" for _ in _RESET_END_REASONS)
             # WHERE shape shared with _RESET_CHILD_SQL's fallback arm via
             # _legacy_reset_child_sql so the stamping and the listing
