@@ -97,6 +97,9 @@ def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, c
     )
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    # Popen is a recording fake here, so run the real (non-isolated) spawn
+    # path rather than the HERMES_TEST_ISOLATION no-op branch.
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
     caplog.set_level(logging.WARNING, logger=gateway_windows.__name__)
 
     assert gateway_windows._spawn_detached() == 12345
@@ -139,6 +142,9 @@ def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
     )
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    # Popen is a recording fake here, so run the real (non-isolated) spawn
+    # path rather than the HERMES_TEST_ISOLATION no-op branch.
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
     caplog.set_level(logging.WARNING, logger=gateway_windows.__name__)
 
     assert gateway_windows._spawn_detached() == 23456
