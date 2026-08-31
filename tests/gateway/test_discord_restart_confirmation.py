@@ -524,6 +524,120 @@ async def test_wind_down_reaction_seed_failure_still_offers():
     assert str(_OFFER_MSG_ID) in adapter._restart_wind_down_offers
 
 
+def _blocking_seed():
+    """An add_reaction that parks until the test releases it.
+
+    Forcing the window between the message id becoming known and the offer
+    send returning — exactly when a fast requester ⏸️ can arrive.
+    """
+    seed_in_flight = asyncio.Event()
+    release_seed = asyncio.Event()
+
+    async def _slow_seed(emoji):
+        assert emoji == "⏸️"
+        seed_in_flight.set()
+        await release_seed.wait()
+
+    return _slow_seed, seed_in_flight, release_seed
+
+
+@pytest.mark.asyncio
+async def test_wind_down_offer_registers_before_the_seeded_reaction_lands():
+    """The registry entry exists the moment the message id is known.
+
+    Registering only after the seeded reaction's round trip dropped a ⏸️
+    that arrived during it, then left the freshly registered prompt behind
+    as stale actionable state.
+    """
+    adapter, _channel, sent, _partial = _wind_down_adapter()
+    _slow_seed, seed_in_flight, release_seed = _blocking_seed()
+    sent.add_reaction = _slow_seed
+
+    offer_task = asyncio.create_task(_offer(adapter, generation=3, nonce="nonce-abc"))
+    await seed_in_flight.wait()
+
+    # Actionable while the seed is still in flight, not after it.
+    assert adapter._restart_wind_down_offers == {
+        str(_OFFER_MSG_ID): {
+            "channel_id": str(_OFFER_CHANNEL),
+            "requester_user_id": _REQUESTER_ID,
+            "generation": 3,
+            "nonce": "nonce-abc",
+        }
+    }
+
+    release_seed.set()
+    assert await offer_task == str(_OFFER_MSG_ID)
+    # The seed await must not re-register — and so re-arm — the prompt.
+    assert list(adapter._restart_wind_down_offers) == [str(_OFFER_MSG_ID)]
+
+
+@pytest.mark.asyncio
+async def test_requester_reaction_during_offer_send_is_accepted_once(
+    tmp_path, monkeypatch
+):
+    """A valid ⏸️ in the send window is honored, not lost and resurrected.
+
+    Real adapter and real runner wiring: the seeded reaction blocks, so the
+    requester's reaction reaches the gateway while the offer send has not
+    yet returned and the runner has not yet registered the offer.
+    """
+    # Patch only this module — patching hermes_constants.get_hermes_home
+    # poisons later imports of restart_loop_guard in the same process.
+    monkeypatch.setattr("gateway.restart_wind_down.get_hermes_home", lambda: tmp_path)
+    from gateway.restart_wind_down import (
+        COOPERATIVE_RESTART_REASON,
+        COOPERATIVE_RESTART_STEER,
+        load_resume_allowlist,
+    )
+
+    adapter, _channel, sent, partial = _wind_down_adapter()
+    runner, _platform = make_restart_runner(adapter=adapter, platform=Platform.DISCORD)
+    source = make_restart_source(
+        chat_id=str(_OFFER_CHANNEL),
+        chat_type="thread",
+        thread_id=str(_OFFER_CHANNEL),
+        platform=Platform.DISCORD,
+        user_id=_REQUESTER_ID,
+    )
+    runner._restart_command_source = source
+    other = MagicMock()
+    other.steer.return_value = True
+    runner._running_agents["agent:main:discord:thread:other"] = other
+    runner.session_store.mark_resume_pending.return_value = True
+    adapter.gateway_runner = runner
+
+    _slow_seed, seed_in_flight, release_seed = _blocking_seed()
+    sent.add_reaction = _slow_seed
+
+    send_task = asyncio.create_task(runner._send_restart_wind_down_prompt(source))
+    await seed_in_flight.wait()
+    # The restart is requested — and the requester reacts — while the embed's
+    # own seeded reaction is still in flight.
+    runner._restart_requested = True
+    reaction_task = asyncio.create_task(adapter._dispatch_raw_reaction(_reaction()))
+    await asyncio.sleep(0)
+    release_seed.set()
+
+    assert await send_task is True
+    await reaction_task
+
+    # Accepted exactly once: one steer, one mark, one receipt.
+    other.steer.assert_called_once_with(COOPERATIVE_RESTART_STEER)
+    runner.session_store.mark_resume_pending.assert_called_once_with(
+        "agent:main:discord:thread:other", COOPERATIVE_RESTART_REASON
+    )
+    assert load_resume_allowlist() == {"agent:main:discord:thread:other"}
+    assert runner._restart_wind_down_accepted is True
+    # No stale state on either side: neither an actionable adapter entry nor
+    # an authorized runner offer survives the spent prompt.
+    assert adapter._restart_wind_down_offers == {}
+    assert runner._restart_wind_down_offer is None
+    # The prompt got exactly one terminal edit and one reaction cleanup.
+    assert partial.edit.await_count == 1
+    assert partial.clear_reactions.await_count == 1
+
+
 @pytest.mark.asyncio
 async def test_valid_requester_reaction_routes_to_the_gateway_once():
     adapter, _channel, _sent, partial = _wind_down_adapter()

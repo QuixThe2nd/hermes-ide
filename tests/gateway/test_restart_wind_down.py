@@ -832,6 +832,64 @@ async def test_prompt_send_racing_finalization_leaves_no_actionable_prompt(
     assert (await _react(runner)) == {"accepted": False, "reason": "no_offer"}
 
 
+@pytest.mark.asyncio
+async def test_valid_reaction_during_prompt_send_waits_and_is_accepted(
+    tmp_path, monkeypatch
+):
+    """A requester ⏸️ that beats the runner's registration is not lost.
+
+    The adapter registers the offered message before its seeded-reaction
+    round trip, so a fast reaction can reach the runner while the offer send
+    has not yet returned and ``_restart_wind_down_offer`` is still None. It
+    must wait for the send to land and then be accepted exactly once — not
+    be answered ``no_offer`` and leave a live offer behind.
+    """
+    runner, adapter, source = _discord_runner(tmp_path, monkeypatch)
+    other = MagicMock()
+    other.steer.return_value = True
+    runner._running_agents["agent:main:discord:thread:other"] = other
+    runner.session_store.mark_resume_pending.return_value = True
+
+    send_in_flight = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def _slow_send(**kwargs):
+        send_in_flight.set()
+        await release_send.wait()
+        return "m-1"
+
+    adapter.send_restart_wind_down_offer = _slow_send
+
+    send_task = asyncio.create_task(runner._send_restart_wind_down_prompt(source))
+    await send_in_flight.wait()
+    # The restart proceeds and the requester reacts to a message id only the
+    # adapter knows yet — the runner's own offer registration is still pending.
+    runner._restart_requested = True
+    reaction = {
+        "message_id": "m-1",
+        "channel_id": "9001",
+        "requester_user_id": "111222333444555666",
+        "emoji": "⏸️",
+        "generation": runner._restart_generation,
+        "nonce": runner._restart_wind_down_nonce,
+    }
+    react_task = asyncio.create_task(runner.accept_restart_wind_down_opt_in(**reaction))
+    await asyncio.sleep(0)
+    release_send.set()
+
+    assert await send_task is True
+    assert (await react_task)["accepted"] is True
+    other.steer.assert_called_once_with(COOPERATIVE_RESTART_STEER)
+    # The reaction consumed the just-registered offer; nothing stale remains.
+    assert runner._restart_wind_down_offer is None
+    assert runner._restart_wind_down_accepted is True
+    # A remove/re-add of the same ⏸️ can never re-run the wind-down.
+    assert (await runner.accept_restart_wind_down_opt_in(**reaction)) == {
+        "accepted": False,
+        "reason": "already_accepted",
+    }
+
+
 # ── stale receipts must not leak across cycles ───────────────────────────
 
 

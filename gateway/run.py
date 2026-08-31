@@ -2990,6 +2990,7 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
 from gateway.restart_wind_down import (
+    RESTART_WIND_DOWN_SEND_WAIT_SECONDS,
     WIND_DOWN_TERMINAL_CLOSED,
     WIND_DOWN_TERMINAL_DRAINED,
     WIND_DOWN_TERMINAL_SAFETY_CAP,
@@ -8054,6 +8055,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # stale the instant it exists and gets a terminal edit instead.
     _restart_wind_down_finalized: bool = False
     _restart_wind_down_final_reason: Optional[str] = None
+    # While this cycle's ⏸️ embed is being delivered. The adapter registers
+    # the offered message before its seeded-reaction round trip, so a valid
+    # requester reaction can reach ``accept_restart_wind_down_opt_in`` before
+    # this runner has registered the offer; the record lets that reaction wait
+    # (bounded, identity-matched) instead of being answered ``no_offer``.
+    _restart_wind_down_send_in_flight: Optional[Dict[str, Any]] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -13454,6 +13461,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_wind_down_allowlist_written = False
         self._restart_wind_down_finalized = False
         self._restart_wind_down_final_reason = None
+        self._restart_wind_down_send_in_flight: Optional[Dict[str, Any]] = None
         return self._restart_generation
 
     def _restart_wind_down_offer_eligible(self, source: Optional[SessionSource]) -> bool:
@@ -13506,63 +13514,165 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Discord threads are their own channel: the connector keys chat_id on
         # the thread id, so chat_id alone already targets the right place.
         channel_id = str(source.chat_id)
+        # Mark the send in flight *before* awaiting it. The adapter registers
+        # the offered message the moment its id is known — before its own
+        # seeded-reaction round trip — so a fast requester ⏸️ can reach
+        # accept_restart_wind_down_opt_in() while this coroutine is still
+        # waiting for ``send`` to return. That reaction waits on this record
+        # instead of being told ``no_offer`` and lost.
+        in_flight = self._open_restart_wind_down_send(
+            generation=generation,
+            nonce=nonce,
+            channel_id=channel_id,
+            requester_user_id=requester_user_id,
+        )
         try:
-            message_id = await send(
-                channel_id=channel_id,
-                requester_user_id=requester_user_id,
-                generation=generation,
-                nonce=nonce,
-                spec=restart_wind_down_prompt_spec(),
-            )
-        except Exception:
-            logger.warning(
-                "Restart wind-down offer could not be sent; waiting naturally",
-                exc_info=True,
-            )
-            return False
-        if not message_id:
-            return False
-
-        # The send awaited above, so the drain may have finalized the cycle
-        # while the embed was in flight. Registering it now would resurrect an
-        # actionable prompt for a cycle that is already over — retire it
-        # straight into its terminal edit instead.
-        if self._restart_wind_down_finalized:
-            from gateway.restart_wind_down import restart_wind_down_terminal_spec
-
-            logger.info(
-                "Restart wind-down offer arrived after the cycle finalized; "
-                "marking the just-sent prompt terminal"
-            )
             try:
-                await adapter.finalize_restart_wind_down_offer(
-                    message_id=message_id,
+                message_id = await send(
                     channel_id=channel_id,
-                    spec=restart_wind_down_terminal_spec(
-                        self._restart_wind_down_final_reason
-                        or WIND_DOWN_TERMINAL_CLOSED
-                    ),
+                    requester_user_id=requester_user_id,
+                    generation=generation,
+                    nonce=nonce,
+                    spec=restart_wind_down_prompt_spec(),
                 )
             except Exception:
-                logger.debug(
-                    "Stale restart wind-down prompt could not be edited", exc_info=True
+                logger.warning(
+                    "Restart wind-down offer could not be sent; waiting naturally",
+                    exc_info=True,
                 )
-            return False
+                return False
+            if not message_id:
+                return False
 
-        self._restart_wind_down_offer = {
-            "generation": generation,
+            # The send awaited above, so the drain may have finalized the cycle
+            # while the embed was in flight. Registering it now would resurrect
+            # an actionable prompt for a cycle that is already over — retire it
+            # straight into its terminal edit instead.
+            if self._restart_wind_down_finalized:
+                from gateway.restart_wind_down import (
+                    restart_wind_down_terminal_spec,
+                )
+
+                logger.info(
+                    "Restart wind-down offer arrived after the cycle finalized; "
+                    "marking the just-sent prompt terminal"
+                )
+                try:
+                    await adapter.finalize_restart_wind_down_offer(
+                        message_id=message_id,
+                        channel_id=channel_id,
+                        spec=restart_wind_down_terminal_spec(
+                            self._restart_wind_down_final_reason
+                            or WIND_DOWN_TERMINAL_CLOSED
+                        ),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Stale restart wind-down prompt could not be edited",
+                        exc_info=True,
+                    )
+                return False
+
+            if self._restart_wind_down_accepted:
+                # A valid reaction landed while the embed was in flight, waited
+                # on the record above, and already ran the wind-down against a
+                # registration this coroutine no longer owns. Re-registering
+                # would re-arm a spent prompt; the reaction path already made
+                # its terminal edit.
+                logger.info(
+                    "Restart wind-down opt-in already accepted while the offer "
+                    "was being delivered; leaving the prompt unregistered"
+                )
+                return False
+
+            self._restart_wind_down_offer = {
+                "generation": generation,
+                "nonce": nonce,
+                "message_id": str(message_id),
+                "channel_id": channel_id,
+                "requester_user_id": requester_user_id,
+            }
+            logger.info(
+                "Restart wind-down offer sent (generation=%d, channel=%s); "
+                "waiting for the requester's ⏸️ reaction",
+                generation,
+                channel_id,
+            )
+            return True
+        finally:
+            # Release any reaction waiting on this send — after the offer (or
+            # its refusal) is registered, so waiters re-check settled state.
+            self._close_restart_wind_down_send(in_flight)
+
+    def _open_restart_wind_down_send(
+        self,
+        *,
+        generation: int,
+        nonce: Optional[str],
+        channel_id: str,
+        requester_user_id: str,
+    ) -> Dict[str, Any]:
+        """Record that this cycle's ⏸️ embed is being delivered.
+
+        Carries exactly the fields a reaction can be matched on before the
+        message id exists runner-side: the cycle's generation and nonce, the
+        channel, and the requester. The waiting side identity-checks those and
+        bounds the wait, so the record can only ever delay a would-be-valid
+        reaction — it can never authorize one.
+        """
+        record: Dict[str, Any] = {
+            "generation": int(generation),
             "nonce": nonce,
-            "message_id": str(message_id),
-            "channel_id": channel_id,
-            "requester_user_id": requester_user_id,
+            "channel_id": str(channel_id),
+            "requester_user_id": str(requester_user_id),
+            "done": asyncio.Event(),
         }
-        logger.info(
-            "Restart wind-down offer sent (generation=%d, channel=%s); "
-            "waiting for the requester's ⏸️ reaction",
-            generation,
-            channel_id,
-        )
-        return True
+        self._restart_wind_down_send_in_flight = record
+        return record
+
+    def _close_restart_wind_down_send(self, record: Dict[str, Any]) -> None:
+        """Drop the record and release its waiters; never clobber a newer one."""
+        if getattr(self, "_restart_wind_down_send_in_flight", None) is record:
+            self._restart_wind_down_send_in_flight = None
+        done = record.get("done")
+        if done is not None and not done.is_set():
+            done.set()
+
+    async def _await_restart_wind_down_send(
+        self,
+        *,
+        channel_id: str,
+        requester_user_id: str,
+        generation: int,
+        nonce: Optional[str],
+    ) -> None:
+        """Wait out this cycle's offer send — once, bounded, only on a match.
+
+        A no-op that never yields unless a send for this exact cycle,
+        requester and channel is still delivering its embed, so the latch
+        ordering in the caller is unchanged on every other path.
+        """
+        record = getattr(self, "_restart_wind_down_send_in_flight", None)
+        if not isinstance(record, dict):
+            return
+        if (
+            record.get("generation") != int(generation)
+            or record.get("nonce") != nonce
+            or str(record.get("channel_id") or "") != str(channel_id)
+            or str(record.get("requester_user_id") or "") != str(requester_user_id)
+        ):
+            return
+        done = record.get("done")
+        if not isinstance(done, asyncio.Event) or done.is_set():
+            return
+        try:
+            await asyncio.wait_for(done.wait(), RESTART_WIND_DOWN_SEND_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Restart wind-down offer send did not land within %ss; "
+                "answering the reaction as offer-less",
+                RESTART_WIND_DOWN_SEND_WAIT_SECONDS,
+            )
 
     async def accept_restart_wind_down_opt_in(
         self,
@@ -13589,6 +13699,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         between prompt and reaction — a harmless terminal no-op).
         """
         from gateway.restart_wind_down import normalize_pause_emoji
+
+        # The offer embed may still be delivering: the adapter registers the
+        # offered message before its seeded-reaction round trip, so a valid
+        # requester ⏸️ can beat this runner's own registration. Wait for that
+        # send to land — once, bounded, only on an exact cycle/requester/
+        # channel match — before ruling ``no_offer``. Every check below then
+        # runs unchanged against the registered offer.
+        if (
+            not self._restart_wind_down_accepted
+            and self._restart_wind_down_offer is None
+        ):
+            await self._await_restart_wind_down_send(
+                channel_id=channel_id,
+                requester_user_id=requester_user_id,
+                generation=generation,
+                nonce=nonce,
+            )
 
         offer = self._restart_wind_down_offer
         # The latch is checked first: a reaction re-submitted after the one

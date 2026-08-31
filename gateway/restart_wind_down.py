@@ -66,6 +66,12 @@ _PAUSE_EMOJI_ALIASES = ("⏸", "⏸️")
 # marker: the two reaction features share one dispatcher but never one prompt.
 WIND_DOWN_FOOTER_MARKER = "hermes restart wind-down"
 
+# How long a valid ⏸️ reaction may wait for an offer embed that is still
+# being delivered (the message send plus the seeded-reaction round trip)
+# before it is answered as offer-less. Generous for two REST calls, and a
+# hard bound so a wedged Discord request can never pin a reaction handler.
+RESTART_WIND_DOWN_SEND_WAIT_SECONDS = 5.0
+
 WIND_DOWN_TERMINAL_OPTED_IN = "opted_in"
 WIND_DOWN_TERMINAL_NO_TARGETS = "no_targets"
 WIND_DOWN_TERMINAL_DRAINED = "drained"

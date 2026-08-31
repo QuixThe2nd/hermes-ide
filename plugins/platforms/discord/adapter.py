@@ -6292,6 +6292,19 @@ class DiscordAdapter(BasePlatformAdapter):
         if not message_id:
             return None
 
+        # Register the offer the moment the message identity is known —
+        # BEFORE the seeded reaction's round trip below. The message is
+        # already visible when that seed is still in flight, so a requester
+        # ⏸️ can arrive right here; registering after the await dropped
+        # exactly that event and then re-armed a stale actionable prompt
+        # behind it.
+        self._restart_wind_down_offers[message_id] = {
+            "channel_id": str(channel_id),
+            "requester_user_id": str(requester_user_id),
+            "generation": int(generation),
+            "nonce": nonce,
+        }
+
         # Seed the pause reaction so the requester has something to click.
         # Best-effort: a permissions failure leaves a text-only prompt that a
         # plain reaction can still complete.
@@ -6303,12 +6316,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name, e,
             )
 
-        self._restart_wind_down_offers[message_id] = {
-            "channel_id": str(channel_id),
-            "requester_user_id": str(requester_user_id),
-            "generation": int(generation),
-            "nonce": nonce,
-        }
+        # Never re-register: the entry above may already have been claimed by
+        # a valid reaction (or retired by a finalize) while the seed was in
+        # flight, and restoring it would re-arm a spent prompt.
         return message_id
 
     async def finalize_restart_wind_down_offer(
