@@ -26,7 +26,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Any, Tuple
 from urllib.parse import quote, unquote, urljoin, urlparse
 
 from agent.async_utils import (
@@ -1297,6 +1297,24 @@ def _tool_stage_appearance(
     title = title[:_TOOL_STAGE_TITLE_CAP]
     description = description[:_TOOL_STAGE_DESC_CAP]
     return title, description, color_key
+
+
+# Title a Discord thread carries while the ``restart`` tool's confirm gate is
+# pending in it: the thread itself becomes the pending indicator, restored to
+# its exact original name the moment the gate resolves.
+RESTART_PENDING_THREAD_TITLE = "Restart Pending"
+
+
+class RestartPendingThreadTitle(NamedTuple):
+    """Invocation-scoped restore state for one pending-restart thread rename.
+
+    Exists only inside a single restart confirm call — never module or
+    process state — so two concurrent gates in different threads cannot
+    restore each other's original name.
+    """
+
+    thread_id: int
+    original_name: str
 
 
 class DiscordAdapter(BasePlatformAdapter):
@@ -8653,6 +8671,160 @@ class DiscordAdapter(BasePlatformAdapter):
         # rather than be reported as a definitive SendResult failure.
         msg = await channel.send(**send_kwargs)
         return SendResult(success=True, message_id=str(msg.id))
+
+    async def capture_restart_pending_thread_title(
+        self, thread_id: str
+    ) -> Optional[RestartPendingThreadTitle]:
+        """Capture *thread_id*'s exact name; return what a rename must restore.
+
+        Phase one of the pending-title lifecycle, and deliberately read-only:
+        the ``restart`` tool must already HOLD the exact original name before
+        it submits the mutating rename, because a rename Discord applied and
+        then stalled on can still time out on the tool's side — losing the
+        captured name with it would strand the thread on ``Restart Pending``
+        across the restart. A thread already carrying the pending title
+        returns ``None`` (no edit will follow, and no name is invented to
+        restore).
+
+        Purely cosmetic: every failure path logs and returns ``None``,
+        never raising — a failed title must not cancel or gate the restart.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            logger.warning(
+                "[%s] No Discord client for the restart-pending thread title "
+                "of %s (cosmetic)",
+                self.name,
+                thread_id,
+            )
+            return None
+        try:
+            thread_id_int = int(str(thread_id))
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Thread id %r is not a snowflake; no restart-pending "
+                "title (cosmetic)",
+                self.name,
+                thread_id,
+            )
+            return None
+
+        try:
+            channel = self._client.get_channel(thread_id_int)
+            if channel is None:
+                channel = await self._client.fetch_channel(thread_id_int)
+        except Exception:
+            logger.warning(
+                "[%s] Could not resolve thread %s for the restart-pending title (cosmetic)",
+                self.name,
+                thread_id,
+                exc_info=True,
+            )
+            return None
+        if not isinstance(channel, discord.Thread):
+            logger.warning(
+                "[%s] Channel %s is not a thread; no restart-pending title "
+                "(cosmetic)",
+                self.name,
+                thread_id,
+            )
+            return None
+
+        original_name = str(getattr(channel, "name", "") or "")
+        if original_name == RESTART_PENDING_THREAD_TITLE:
+            return None
+        return RestartPendingThreadTitle(
+            thread_id=thread_id_int, original_name=original_name
+        )
+
+    async def begin_restart_pending_thread_title(
+        self, restore: Optional[RestartPendingThreadTitle]
+    ) -> None:
+        """Phase two: retitle to ``Restart Pending``; cosmetic, never raises.
+
+        Takes the state ``capture_...`` already handed the caller, so the
+        exact original name predates this edit — which is why a failure or a
+        lost response here still leaves the caller holding a valid restore.
+        The exit-time restore is idempotent if this edit never landed, so it
+        runs regardless of this call's outcome. discord.py's own rate-limit
+        handling is the only retry mechanism; there is no sleep, timer, or
+        durable state here.
+        """
+        if restore is None:
+            return
+        if await self._set_thread_title(
+            restore.thread_id,
+            RESTART_PENDING_THREAD_TITLE,
+            reason="Hermes restart pending confirmation",
+        ):
+            logger.info(
+                "[%s] Titled thread %s %r for the pending restart confirm "
+                "(was %r)",
+                self.name,
+                restore.thread_id,
+                RESTART_PENDING_THREAD_TITLE,
+                restore.original_name,
+            )
+
+    async def end_restart_pending_thread_title(
+        self, restore: Optional[RestartPendingThreadTitle]
+    ) -> None:
+        """Restore the thread name captured by ``capture_...``; never raises.
+
+        Runs on every exit from the restart confirm gate (confirmation,
+        cancellation, delivery failure, exception) and completes before the
+        restart itself can be queued, so the pending title never outlives
+        the wait. Failures are logged and swallowed — restoration is
+        cosmetic and must not cancel, gate, or queue the restart by itself.
+        """
+        if restore is None:
+            return
+        if await self._set_thread_title(
+            restore.thread_id,
+            restore.original_name,
+            reason="Hermes restart pending restore",
+        ):
+            logger.info(
+                "[%s] Restored thread %s title to %r after the restart confirm",
+                self.name,
+                restore.thread_id,
+                restore.original_name,
+            )
+
+    async def _set_thread_title(
+        self, thread_id: int, name: str, *, reason: str
+    ) -> bool:
+        """Resolve *thread_id* and edit its name; ``True`` only when applied.
+
+        Shared by the pending-title edit and its restore. Every failure is
+        logged and returns ``False`` — a retitle or a restore is cosmetic
+        and must never raise into the restart gate. The client-less case
+        still logs (with the target name) because the rename may already
+        have landed: a silently skipped restore would strand the thread on
+        ``Restart Pending`` with nothing in the log to explain it.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            logger.warning(
+                "[%s] No Discord client to retitle thread %s to %r (cosmetic)",
+                self.name,
+                thread_id,
+                name,
+            )
+            return False
+        try:
+            channel = self._client.get_channel(thread_id)
+            if channel is None:
+                channel = await self._client.fetch_channel(thread_id)
+            await channel.edit(name=name, reason=reason)
+        except Exception:
+            logger.warning(
+                "[%s] Failed to retitle thread %s to %r (cosmetic)",
+                self.name,
+                thread_id,
+                name,
+                exc_info=True,
+            )
+            return False
+        return True
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
