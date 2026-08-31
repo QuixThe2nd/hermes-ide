@@ -102,7 +102,7 @@ Discord History is a read-only search over an owner-authorized PostgreSQL archiv
 
 `drift_watch` keeps a default-on eye on the live checkout: a timer inventories uncommitted drift twice hourly, auto-captures a patch plus untracked copies whenever the drift set changes, and attributes writes via auditd where available (`hermes drift_watch reconcile`; read-only toward git state).
 
-`claude_viewer` bundles the Claude run viewer and auto-installs/starts it on Linux/systemd when the gateway comes up, so the "Watch live session" link in a `delegate_claude_agent` embed points at *this machine's* address (LAN or Tailscale, auto-detected — never a hardcoded IP) and works on any install (`hermes claude_viewer status|enable|disable|reconcile`). It is **unauthenticated** — keep it on LAN/tailnet only; if the port is already served by a viewer you started yourself, reconcile stands down rather than racing it.
+`claude_viewer` bundles the Claude run viewer and auto-installs/starts it on Linux/systemd when the gateway comes up, so the "Watch live session" link in a `delegate_claude_agent` embed points at *this machine's* address (LAN or Tailscale, auto-detected — never a hardcoded IP) and works on any install (`hermes claude_viewer status|enable|disable|reconcile`). Opening a run lands on its original prompt, with `G` jumping to the live tail. It is **unauthenticated** — keep it on LAN/tailnet only; if the port is already served by a viewer you started yourself, reconcile stands down rather than racing it.
 
 ### Gateway lifecycle and operator UX
 
