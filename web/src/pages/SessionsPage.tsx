@@ -768,6 +768,10 @@ const PAGE_SIZE = 20;
 // rolling last 24 hours. The cutoff is computed server-side
 // (`active_within_hours`), so a skewed client clock can't shift the window.
 const OVERVIEW_WINDOW_HOURS = 24;
+// Explicit Overview requests (mount/page/retry) get a bounded recovery path
+// if the underlying promise never settles.  Kept well above two 5-second poll
+// ticks so normal slow responses are not mistaken for hung ones.
+const OVERVIEW_REQUEST_TIMEOUT_MS = 15_000;
 
 function SessionsPagination({
   className,
@@ -841,6 +845,10 @@ export default function SessionsPage() {
   const [overviewPage, setOverviewPage] = useState(0);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  // True once any Overview response has been accepted.  Hides the count badge
+  // during initial loading so a false ``0`` is never displayed, and shows the
+  // real ``0`` after an accepted empty response.
+  const [overviewHasResponse, setOverviewHasResponse] = useState(false);
   // Bumped by the overview card's Retry button; the load effect depends on
   // it, so a retry re-runs the explicit (non-silent) fetch.
   const [overviewRetryToken, setOverviewRetryToken] = useState(0);
@@ -1027,6 +1035,11 @@ export default function SessionsPage() {
   // True while an explicit request is unresolved. Silent polls are skipped so
   // they can't starve the explicit load or clear its loading flag early.
   const overviewExplicitPendingRef = useRef(false);
+  // Timer and timed-out request id for explicit requests that never settle.
+  const overviewExplicitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const overviewTimedOutRequestIdRef = useRef(0);
 
   useEffect(() => {
     pageRef.current = page;
@@ -1044,8 +1057,14 @@ export default function SessionsPage() {
   const showList = view === "list" || isSearching;
 
   // Header count badge mirrors the visible view: the 24-hour window total on
-  // the Overview, the filtered History total on the list.
-  const headerCount = showList ? total : overviewTotal;
+  // the Overview, the filtered History total on the list.  Hide the Overview
+  // badge until a response has been accepted so initial loading never shows a
+  // false ``0``.
+  const headerCount: number | null = showList
+    ? total
+    : overviewHasResponse
+      ? overviewTotal
+      : null;
   const headerLoading = showList ? loading : overviewLoading;
 
   useLayoutEffect(() => {
@@ -1054,9 +1073,11 @@ export default function SessionsPage() {
       return;
     }
     setAfterTitle(
-      <Badge tone="secondary" className="text-xs tabular-nums">
-        {headerCount}
-      </Badge>,
+      headerCount === null ? null : (
+        <Badge tone="secondary" className="text-xs tabular-nums">
+          {headerCount}
+        </Badge>
+      ),
     );
     return () => {
       setAfterTitle(null);
@@ -1198,8 +1219,26 @@ export default function SessionsPage() {
       if (!silent) {
         overviewExplicitRequestRef.current = requestId;
         overviewExplicitPendingRef.current = true;
+        overviewTimedOutRequestIdRef.current = 0;
         setOverviewLoading(true);
         setOverviewError(null);
+        // A brand new explicit load has not yet accepted a response for this
+        // generation, so keep the count badge hidden until something lands.
+        setOverviewHasResponse(false);
+        if (overviewExplicitTimerRef.current) {
+          clearTimeout(overviewExplicitTimerRef.current);
+        }
+        overviewExplicitTimerRef.current = setTimeout(() => {
+          if (cancelled || requestId !== overviewRequestRef.current) return;
+          overviewTimedOutRequestIdRef.current = requestId;
+          overviewExplicitPendingRef.current = false;
+          setOverviewLoading(false);
+          setOverviewError(
+            `Timed out after ${OVERVIEW_REQUEST_TIMEOUT_MS / 1000}s waiting for sessions`,
+          );
+          setOverviewSessions([]);
+          setOverviewTotal(0);
+        }, OVERVIEW_REQUEST_TIMEOUT_MS);
       }
       api
         .getStatus()
@@ -1213,7 +1252,13 @@ export default function SessionsPage() {
           activeWithinHours: OVERVIEW_WINDOW_HOURS,
         })
         .then((r) => {
-          if (cancelled || requestId !== overviewRequestRef.current) return;
+          if (
+            cancelled ||
+            requestId !== overviewRequestRef.current ||
+            requestId === overviewTimedOutRequestIdRef.current
+          ) {
+            return;
+          }
           // A rolling window shrinks under the reader: rows age out of the
           // last 24 hours and the page the user is ON can empty while
           // earlier pages still have results. Falling through would render
@@ -1237,6 +1282,7 @@ export default function SessionsPage() {
           setOverviewError(null);
           setOverviewSessions(r.sessions);
           setOverviewTotal(r.total);
+          setOverviewHasResponse(true);
           // The dashboard server and a terminal CLI are separate processes
           // sharing one session DB — there is no push channel, so we detect
           // sessions created in another process here. The window is ordered
@@ -1250,7 +1296,13 @@ export default function SessionsPage() {
           newestSeenRef.current = newest;
         })
         .catch((err) => {
-          if (cancelled || requestId !== overviewRequestRef.current) return;
+          if (
+            cancelled ||
+            requestId !== overviewRequestRef.current ||
+            requestId === overviewTimedOutRequestIdRef.current
+          ) {
+            return;
+          }
           setOverviewError(
             err instanceof Error ? err.message : String(err ?? "request failed"),
           );
@@ -1270,6 +1322,10 @@ export default function SessionsPage() {
           if (requestId === overviewExplicitRequestRef.current) {
             overviewExplicitPendingRef.current = false;
             setOverviewLoading(false);
+            if (overviewExplicitTimerRef.current) {
+              clearTimeout(overviewExplicitTimerRef.current);
+              overviewExplicitTimerRef.current = null;
+            }
           }
         });
     };
@@ -1278,6 +1334,10 @@ export default function SessionsPage() {
     return () => {
       cancelled = true;
       clearInterval(id);
+      if (overviewExplicitTimerRef.current) {
+        clearTimeout(overviewExplicitTimerRef.current);
+        overviewExplicitTimerRef.current = null;
+      }
     };
     // ``overviewPage``/``overviewRetryToken`` re-run the effect so paging
     // and Retry re-fetch immediately instead of waiting for the next tick.
@@ -2237,12 +2297,15 @@ export default function SessionsPage() {
                 <CardTitle className="min-w-0 truncate text-base">
                   Active in the last {OVERVIEW_WINDOW_HOURS} hours
                 </CardTitle>
-                <Badge
-                  tone="secondary"
-                  className="shrink-0 text-xs tabular-nums"
-                >
-                  {overviewTotal}
-                </Badge>
+                {overviewHasResponse && (
+                  <Badge
+                    data-testid="overview-count-badge"
+                    tone="secondary"
+                    className="shrink-0 text-xs tabular-nums"
+                  >
+                    {overviewTotal}
+                  </Badge>
+                )}
               </div>
             </CardHeader>
 

@@ -2804,6 +2804,82 @@ class TestListSessionsRich:
             exclude_children=True, include_hidden=False, **window
         ) == 25
 
+    def test_rich_list_with_count_pins_snapshot_on_writable_connection(
+        self, db, monkeypatch
+    ):
+        """An interleaved commit between rows and count must not inflate total.
+
+        ``list_sessions_rich_with_count`` keeps one read transaction open across
+        list, compression-tip projection, and count.  On the writable-connection
+        fallback path a fresh connection starts in auto-commit mode, so the helper
+        must explicitly ``BEGIN`` before the first list query.  Without that
+        ``BEGIN`` the count would run in a new transaction and observe the
+        interleaved commit.
+        """
+        import sqlite3
+        import threading
+
+        from hermes_state import SessionDB
+
+        t0 = 1_800_000_000.0
+        db.create_session("first", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+                (t0 - 3600, t0 - 3600, "first"),
+            )
+            db._conn.commit()
+
+        db_path = db.db_path
+        barrier = threading.Barrier(2, timeout=10)
+
+        # Force the helper onto the writable fallback connection so the snapshot
+        # is pinned on a fresh writable connection rather than a read-only pool
+        # connection.
+        monkeypatch.setattr(SessionDB, "_checkout_read_conn", lambda self: None)
+
+        original_list = SessionDB.list_sessions_rich
+        original_count = SessionDB.session_count
+
+        def _pausing_list(self, *args, **kwargs):
+            result = original_list(self, *args, **kwargs)
+            barrier.wait()
+            return result
+
+        def _pausing_count(self, *args, **kwargs):
+            barrier.wait()
+            return original_count(self, *args, **kwargs)
+
+        monkeypatch.setattr(SessionDB, "list_sessions_rich", _pausing_list)
+        monkeypatch.setattr(SessionDB, "session_count", _pausing_count)
+
+        def _commit_second():
+            barrier.wait()
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute(
+                    "INSERT INTO sessions (id, source, started_at, last_activity_at,"
+                    " model_config) VALUES (?, ?, ?, ?, ?)",
+                    ("second", "cli", t0 - 3600, t0 - 3600, None),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            barrier.wait()
+
+        window = dict(active_since=t0 - 86400, active_until=t0)
+        t = threading.Thread(target=_commit_second)
+        t.start()
+        try:
+            sessions, total = db.list_sessions_rich_with_count(**window)
+        finally:
+            t.join()
+
+        # The snapshot established by BEGIN before the list query must survive
+        # the interleaved commit, so rows and total agree on the pre-commit state.
+        assert [s["id"] for s in sessions] == ["first"]
+        assert total == 1
+
     @pytest.mark.parametrize(
         "end_reason",
         [
@@ -3305,6 +3381,171 @@ class TestCompressionChainProjection:
 
         # Count parity: one logical conversation (parent->real_tip).
         assert db.session_count(exclude_children=True) == 1
+
+
+class TestMalformedModelConfig:
+    """Malformed or non-object ``model_config`` must not abort active listings,
+    counts, or compression-tip selection."""
+
+    def test_malformed_model_config_does_not_abort_list_count_tip(self, db):
+        t0 = 1_800_000_000.0
+        db.create_session("root", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, end_reason=? WHERE id=?",
+                (t0, "compression", "root"),
+            )
+        db.create_session("tip", "cli", parent_session_id="root")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1, "tip")
+            )
+            # Corrupt model_config on both rows with invalid JSON.
+            db._conn.execute(
+                "UPDATE sessions SET model_config=? WHERE id IN (?, ?)",
+                ("not-json", "root", "tip"),
+            )
+            db._conn.commit()
+
+        # Active-window list and count must agree and not raise OperationalError.
+        sessions = db.list_sessions_rich(active_since=t0, active_until=t0 + 2)
+        assert [s["id"] for s in sessions] == ["tip"]
+        assert (
+            db.session_count(
+                active_since=t0, active_until=t0 + 2, exclude_children=True
+            )
+            == 1
+        )
+        # Compression-tip walk must survive the malformed row too.
+        assert db.get_compression_tip("root") == "tip"
+
+    def test_valid_markers_still_fencing_with_malformed_sibling(self, db):
+        db.create_session("parent", "cli")
+
+        # Plain child with malformed config stays hidden (treated as empty).
+        db.create_session("plain-child", "cli", parent_session_id="parent")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET model_config=? WHERE id=?",
+                ("{invalid json", "plain-child"),
+            )
+
+        # Valid delegate marker must stay hidden.
+        db.create_session(
+            "delegate-child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+
+        # Valid branch marker must surface.
+        db.create_session(
+            "branch-child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        # Tool source with malformed config stays hidden from compression chains.
+        db.create_session("tool-child", "tool", parent_session_id="parent")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET model_config=? WHERE id=?",
+                ("also not json", "tool-child"),
+            )
+            db._conn.commit()
+
+        sessions = db.list_sessions_rich()
+        ids = {s["id"] for s in sessions}
+        assert "parent" in ids
+        assert "branch-child" in ids
+        assert "plain-child" not in ids
+        assert "delegate-child" not in ids
+        assert "tool-child" not in ids
+
+        # get_compression_tip must ignore the tool child even with malformed
+        # config.  The malformed plain child is treated as empty `{}`, so it
+        # remains a normal compression continuation and becomes the tip.
+        db.end_session("parent", "compression")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET end_reason=? WHERE id=?",
+                ("compression", "parent"),
+            )
+            db._conn.commit()
+        assert db.get_compression_tip("parent") == "plain-child"
+
+    def test_reopen_session_stamps_malformed_legacy_branch_child(self, db):
+        """A markerless legacy branch child with malformed model_config must not
+        crash reopen_session; the stable marker must be written as valid JSON and
+        the child must stay fenced from compression continuation.
+        """
+        import json
+
+        t0 = 1_800_000_000.0
+        db.create_session("parent", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET end_reason=?, ended_at=? WHERE id=?",
+                ("branched", t0, "parent"),
+            )
+        db.create_session("child", "cli", parent_session_id="parent")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, model_config=? WHERE id=?",
+                (t0 + 1, "{bad json", "child"),
+            )
+            db._conn.commit()
+
+        # Reopen must survive the malformed config and stamp the branch marker.
+        db.reopen_session("parent")
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT model_config FROM sessions WHERE id=?", ("child",)
+            ).fetchone()
+        cfg = json.loads(row[0])
+        assert cfg == {"_branched_from": "parent"}
+
+        # After the parent is re-ended as compression, the branched child must
+        # not be treated as a compression continuation.
+        db.end_session("parent", "compression")
+        assert db.get_compression_tip("parent") == "parent"
+        sessions = db.list_sessions_rich()
+        ids = {s["id"] for s in sessions}
+        assert "parent" in ids
+        assert "child" in ids
+
+    def test_non_object_model_config_treated_as_empty(self, db):
+        """Valid JSON that is not an object (array, string, etc.) must be
+        treated as empty ``{}`` for lineage-marker reads and writes.
+        """
+        import json
+
+        db.create_session("parent", "cli")
+        db.create_session("array-child", "cli", parent_session_id="parent")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET model_config=? WHERE id=?",
+                ("[]", "array-child"),
+            )
+            db._conn.commit()
+
+        # Non-object config does not crash listing; plain child stays hidden.
+        sessions = db.list_sessions_rich()
+        assert [s["id"] for s in sessions] == ["parent"]
+
+        # reopen_session can stamp non-object config into a valid JSON object.
+        db.reopen_session("parent")
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT model_config FROM sessions WHERE id=?", ("array-child",)
+            ).fetchone()
+        assert json.loads(row[0]) == {"_delegate_from": "parent"}
+
+        # Once stamped as delegate, the child is fenced from compression chains.
+        db.end_session("parent", "compression")
+        assert db.get_compression_tip("parent") == "parent"
 
 
 # =========================================================================

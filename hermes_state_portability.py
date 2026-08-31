@@ -10,6 +10,7 @@ module-level constants live in hermes_state_common.
 
 import logging
 import json
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
@@ -146,7 +147,10 @@ class SessionPortabilityMixin:
         ).get(session_id)
 
     def _get_session_rich_rows_batch(
-        self, session_ids, compact_rows: bool = False
+        self,
+        session_ids,
+        compact_rows: bool = False,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Fetch multiple sessions with the same enriched columns as
         ``_get_session_rich_row``, in a single query.
@@ -171,7 +175,9 @@ class SessionPortabilityMixin:
             for start in range(0, len(ids), _CHUNK):
                 result.update(
                     self._get_session_rich_rows_batch(
-                        ids[start:start + _CHUNK], compact_rows=compact_rows
+                        ids[start:start + _CHUNK],
+                        compact_rows=compact_rows,
+                        conn=conn,
                     )
                 )
             return result
@@ -202,8 +208,8 @@ class SessionPortabilityMixin:
             {prompt_join}
             WHERE s.id IN ({placeholders})
         """
-        with self._lock:
-            cursor = self._conn.execute(query, ids)
+        with self._read_ctx(conn) as conn:
+            cursor = conn.execute(query, ids)
             rows = cursor.fetchall()
         result: Dict[str, Dict[str, Any]] = {}
         for row in rows:

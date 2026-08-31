@@ -171,10 +171,25 @@ def _shape_preview(raw: Any) -> str:
     return text
 
 
+# SQL expression that treats malformed or non-object ``model_config`` as empty
+# ``{}`` for lineage-marker reads.  Invalid JSON aborts ``json_extract``; this
+# guard keeps active listings, counts, and compression-tip walks working on
+# imported/legacy rows without mutating stored data.
+def _safe_model_config_json(col: str) -> str:
+    # ``json_valid`` alone accepts arrays/text/null; only objects can carry
+    # lineage markers and be extended with ``json_set``.  Doubled braces
+    # survive the f-string/.format layers these helpers are interpolated
+    # through; the final SQL sees a literal ``{}``.
+    return (
+        f"CASE WHEN json_valid({col}) AND json_type({col}) = 'object'"
+        f" THEN {col} ELSE '{{}}' END"
+    )
+
+
 # A child session counts as a /branch (kept visible, never cascade-deleted) if
 # it carries the stable marker OR the legacy end_reason heuristic holds.
 _BRANCH_CHILD_SQL = (
-    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+    f"json_extract({_safe_model_config_json('{a}.model_config')}, '$._branched_from') IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p"
     "            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'"
@@ -250,7 +265,7 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 # Requiring the exact non-empty routing key keeps ordinary child/subagent rows
 # out even when their parent is later reset.
 _RESET_CHILD_SQL = (
-    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+    f"json_extract({_safe_model_config_json('{a}.model_config')}, '$._reset_from') IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
 )
 
@@ -258,16 +273,19 @@ _RESET_CHILD_SQL = (
 # Rows that surface in pickers: roots + branch/reset children. Subagent runs
 # and compression continuations stay hidden.
 _LISTABLE_CHILD_SQL = (
-    f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
-    f" OR {_RESET_CHILD_SQL.format(a='s')})"
+    "(s.parent_session_id IS NULL OR "
+    + _BRANCH_CHILD_SQL.replace("{a}", "s")
+    + " OR "
+    + _RESET_CHILD_SQL.replace("{a}", "s")
+    + ")"
 )
 
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
     """Subagent runs, not branch, reset, or compression children."""
-    branch = _BRANCH_CHILD_SQL.format(a=alias)
-    compression = _COMPRESSION_CHILD_SQL.format(a=alias)
-    reset = _RESET_CHILD_SQL.format(a=alias)
+    branch = _BRANCH_CHILD_SQL.replace("{a}", alias)
+    compression = _COMPRESSION_CHILD_SQL.replace("{a}", alias)
+    reset = _RESET_CHILD_SQL.replace("{a}", alias)
     return (
         f"({alias}.parent_session_id IS NOT NULL"
         f" AND NOT ({branch})"

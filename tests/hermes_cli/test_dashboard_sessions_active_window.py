@@ -337,3 +337,116 @@ def test_window_uses_one_frozen_now_for_bounds_and_is_active(client, state_db, m
     response = client.get("/api/sessions?order=recent&limit=20&offset=0")
     assert response.status_code == 200
     assert len(calls) == 1
+
+
+def test_window_rows_and_total_read_one_snapshot(client, state_db, monkeypatch):
+    """An interleaved commit between row selection and count must not inflate total.
+
+    The snapshot must cover both the row query and the count.  If the router
+    reverts to two independent reads, the count will see the row committed
+    after rows were already selected and ``total`` will disagree.
+    """
+    import sqlite3
+    import threading
+
+    from hermes_state import SessionDB
+
+    state_db.create_session("first", "cli")
+    _set_started_at(state_db, "first", NOW - HOUR)
+
+    db_path = state_db.db_path
+    barrier = threading.Barrier(2, timeout=10)
+    original_list = SessionDB.list_sessions_rich
+    original_count = SessionDB.session_count
+
+    def _pausing_list(self, *args, **kwargs):
+        result = original_list(self, *args, **kwargs)
+        barrier.wait()
+        return result
+
+    def _pausing_count(self, *args, **kwargs):
+        barrier.wait()
+        return original_count(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionDB, "list_sessions_rich", _pausing_list)
+    monkeypatch.setattr(SessionDB, "session_count", _pausing_count)
+
+    def _commit_second():
+        barrier.wait()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO sessions (id, source, started_at, model_config) VALUES (?, ?, ?, ?)",
+                ("second", "cli", NOW - HOUR, None),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        barrier.wait()
+
+    t = threading.Thread(target=_commit_second)
+    t.start()
+    try:
+        payload = _window(client, limit=20, offset=0)
+    finally:
+        t.join()
+
+    # The read snapshot was established during row selection, before the
+    # interleaved commit, so rows and total agree on the pre-commit state.
+    assert [s["id"] for s in payload["sessions"]] == ["first"]
+    assert payload["total"] == 1
+
+
+def test_window_count_stays_in_snapshot_after_activity_update(client, state_db, monkeypatch):
+    """An interleaved activity update between rows and count must not drop total.
+
+    All enrichment/count reads must stay inside the same snapshot as the row
+    query, not re-read a newer database state.
+    """
+    import sqlite3
+    import threading
+
+    from hermes_state import SessionDB
+
+    state_db.create_session("kept", "cli")
+    _set_last_activity(state_db, "kept", NOW - HOUR)
+
+    db_path = state_db.db_path
+    barrier = threading.Barrier(2, timeout=10)
+    original_list = SessionDB.list_sessions_rich
+    original_count = SessionDB.session_count
+
+    def _pausing_list(self, *args, **kwargs):
+        result = original_list(self, *args, **kwargs)
+        barrier.wait()
+        return result
+
+    def _pausing_count(self, *args, **kwargs):
+        barrier.wait()
+        return original_count(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionDB, "list_sessions_rich", _pausing_list)
+    monkeypatch.setattr(SessionDB, "session_count", _pausing_count)
+
+    def _age_out():
+        barrier.wait()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+                (NOW - 2 * DAY, NOW - 2 * DAY, "kept"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        barrier.wait()
+
+    t = threading.Thread(target=_age_out)
+    t.start()
+    try:
+        payload = _window(client, limit=20, offset=0)
+    finally:
+        t.join()
+
+    assert [s["id"] for s in payload["sessions"]] == ["kept"]
+    assert payload["total"] == 1

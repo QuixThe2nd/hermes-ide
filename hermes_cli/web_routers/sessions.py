@@ -139,42 +139,63 @@ def get_sessions(
             # section (source=cron) into two independent lists.
             source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
             exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
-            sessions = db.list_sessions_rich(
-                source=source or None,
-                sources=source_list or None,
-                exclude_sources=exclude_list or None,
-                cwd_prefix=(cwd_prefix or None),
-                limit=limit,
-                offset=offset,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                order_by_last_active=order == "recent",
-                # SQL-level projection: when the caller didn't ask for full
-                # rows, skip the system_prompt blob inside SQLite too (pairs
-                # with the API-level _strip_session_list_rows below).
-                compact_rows=not full,
-                include_pinned=True,
-                active_since=active_since,
-                active_until=active_until,
-            )
-            total = db.session_count(
-                source=source or None,
-                sources=source_list or None,
-                cwd_prefix=(cwd_prefix or None),
-                exclude_sources=exclude_list or None,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                exclude_children=True,
-                # The list excludes hidden rows by default (include_hidden
-                # defaults to False there), so the paired count must too —
-                # otherwise ``total`` counts conversations the rows can never
-                # show and pagination/empty states lie about the set.
-                include_hidden=False,
-                active_since=active_since,
-                active_until=active_until,
-            )
+            # Active-window requests must read rows and total from one SQLite
+            # snapshot, otherwise an interleaved commit can make total disagree
+            # with the returned rows.  Use the atomic helper; omitting the
+            # window keeps the historical separate list/count path unchanged.
+            if active_within_hours is not None:
+                sessions, total = db.list_sessions_rich_with_count(
+                    source=source or None,
+                    sources=source_list or None,
+                    exclude_sources=exclude_list or None,
+                    cwd_prefix=(cwd_prefix or None),
+                    limit=limit,
+                    offset=offset,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    compact_rows=not full,
+                    include_pinned=True,
+                    active_since=active_since,
+                    active_until=active_until,
+                )
+            else:
+                sessions = db.list_sessions_rich(
+                    source=source or None,
+                    sources=source_list or None,
+                    exclude_sources=exclude_list or None,
+                    cwd_prefix=(cwd_prefix or None),
+                    limit=limit,
+                    offset=offset,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    order_by_last_active=order == "recent",
+                    # SQL-level projection: when the caller didn't ask for full
+                    # rows, skip the system_prompt blob inside SQLite too (pairs
+                    # with the API-level _strip_session_list_rows below).
+                    compact_rows=not full,
+                    include_pinned=True,
+                    active_since=active_since,
+                    active_until=active_until,
+                )
+                total = db.session_count(
+                    source=source or None,
+                    sources=source_list or None,
+                    cwd_prefix=(cwd_prefix or None),
+                    exclude_sources=exclude_list or None,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    exclude_children=True,
+                    # The list excludes hidden rows by default (include_hidden
+                    # defaults to False there), so the paired count must too —
+                    # otherwise ``total`` counts conversations the rows can never
+                    # show and pagination/empty states lie about the set.
+                    include_hidden=False,
+                    active_since=active_since,
+                    active_until=active_until,
+                )
             now = window_now if window_now is not None else time.time()
             # Same ownership contract as get_session_detail: rows are stamped
             # with the serving profile even when the request wasn't explicitly

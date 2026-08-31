@@ -718,6 +718,11 @@ describe("SessionsPage overview (last 24 hours)", () => {
       expect(text()).not.toContain("No sessions were active");
       expect(text()).not.toContain("Failed to load sessions");
 
+      const overviewCallsBefore = apiMocks.getSessions.mock.calls.filter((call) =>
+        (call[2] as { activeWithinHours?: number } | undefined)?.activeWithinHours !=
+        null,
+      ).length;
+
       // Advance across at least two 5-second poll ticks. Silent polls must be
       // suppressed while the explicit load is unresolved.
       await act(async () => {
@@ -725,6 +730,14 @@ describe("SessionsPage overview (last 24 hours)", () => {
       });
       expect(text()).not.toContain("Late arrival");
       expect(text()).not.toContain("No sessions were active");
+      // No additional Overview API calls were made across the poll ticks.
+      expect(
+        apiMocks.getSessions.mock.calls.filter(
+          (call) =>
+            (call[2] as { activeWithinHours?: number } | undefined)
+              ?.activeWithinHours != null,
+        ).length,
+      ).toBe(overviewCallsBefore);
 
       await act(async () => {
         resolveOverview(undefined);
@@ -734,6 +747,349 @@ describe("SessionsPage overview (last 24 hours)", () => {
       expect(text()).not.toContain("No sessions were active");
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("times out a hung explicit Overview request and recovers on Retry", async () => {
+    vi.useFakeTimers();
+    const deferred: {
+      resolve: (value: {
+        sessions: unknown[];
+        total: number;
+        limit: number;
+        offset: number;
+      }) => void;
+      reject: (reason?: unknown) => void;
+    }[] = [];
+    apiMocks.getSessions.mockImplementation(
+      async (_limit, _offset, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          return new Promise((resolve, reject) => {
+            deferred.push({ resolve, reject });
+          });
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      },
+    );
+    // Keep stats pending so the only explicit load is the initial mount.
+    apiMocks.getSessionStats.mockImplementation(() => new Promise(() => {}));
+
+    // Capture but do not fire the 5s silent-poll interval so the only
+    // in-flight requests are the explicit ones we control.
+    const intervalCallbacks: (() => void)[] = [];
+    const intervalSpy = vi
+      .spyOn(global, "setInterval")
+      .mockImplementation((callback: TimerHandler) => {
+        if (typeof callback === "function") {
+          intervalCallbacks.push(callback as () => void);
+        }
+        return 0 as unknown as ReturnType<typeof setInterval>;
+      });
+
+    try {
+      await renderPage();
+
+      // Initial loading state: no rows, no error, no Retry, count badge hidden.
+      expect(text()).toContain("Active in the last 24 hours");
+      expect(text()).not.toContain("Recovered row");
+      expect(text()).not.toContain("Failed to load sessions");
+      expect(text()).not.toContain("Retry");
+      expect(
+        container.querySelector('[data-testid="overview-count-badge"]'),
+      ).toBeNull();
+
+      // Advance past the explicit-request timeout.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_000);
+      });
+
+      // Timeout error with Retry; spinner gone; count badge still hidden.
+      expect(text()).toContain(
+        "Failed to load sessions from the last 24 hours",
+      );
+      expect(text()).toContain("Timed out after 15s");
+      expect(text()).toContain("Retry");
+      expect(text()).not.toContain("No sessions were active");
+      expect(
+        container.querySelector('[data-testid="overview-count-badge"]'),
+      ).toBeNull();
+
+      // Retry: a fresh explicit request starts. Resolve it.
+      await act(async () => {
+        button("Retry").click();
+      });
+      expect(text()).not.toContain("Recovered row");
+      await act(async () => {
+        deferred[1].resolve({
+          sessions: [sessionRow("s1", "Recovered row")],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        });
+      });
+      // Flush the resolved promise through React's state queue.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(text()).toContain("Recovered row");
+      expect(text()).not.toContain("Failed to load sessions");
+      expect(text()).not.toContain("Retry");
+      expect(
+        container.querySelector('[data-testid="overview-count-badge"]')
+          ?.textContent,
+      ).toBe("1");
+
+      // Resolving the original hung promise must not overwrite recovered state.
+      await act(async () => {
+        deferred[0].resolve({
+          sessions: [sessionRow("s-stale", "Stale row")],
+          total: 99,
+          limit: 20,
+          offset: 0,
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(text()).toContain("Recovered row");
+      expect(text()).not.toContain("Stale row");
+      expect(
+        container.querySelector('[data-testid="overview-count-badge"]')
+          ?.textContent,
+      ).toBe("1");
+
+      // Rejecting the original hung promise must also not overwrite state.
+      await act(async () => {
+        deferred[0].reject(new Error("stale failure"));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(text()).toContain("Recovered row");
+      expect(text()).not.toContain("stale failure");
+    } finally {
+      intervalSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("hides the Overview count badge until an accepted response arrives", async () => {
+    let resolveOverview: (value: unknown) => void = () => {};
+    const deferred = new Promise((resolve) => {
+      resolveOverview = resolve;
+    });
+    apiMocks.getSessions.mockImplementation(async (_limit, _offset, options) => {
+      if (
+        options &&
+        (options as { activeWithinHours?: number }).activeWithinHours != null
+      ) {
+        return deferred.then(() => ({
+          sessions: [],
+          total: 0,
+          limit: 20,
+          offset: 0,
+        }));
+      }
+      return { sessions: [], total: 0, limit: 20, offset: 0 };
+    });
+
+    await renderPage();
+
+    // During initial loading the count badge is absent, not showing a false 0.
+    expect(container.querySelector('[data-testid="overview-count-badge"]')).toBeNull();
+
+    await act(async () => {
+      resolveOverview(undefined);
+    });
+
+    // After an accepted empty response the real 0 is shown.
+    expect(
+      container.querySelector('[data-testid="overview-count-badge"]')?.textContent,
+    ).toBe("0");
+    expect(text()).toContain("No sessions were active in the last 24 hours");
+  });
+
+  it("ignores an older silent rejection after a newer silent success", async () => {
+    let overviewCall = 0;
+    const deferred: {
+      resolve: (value: {
+        sessions: unknown[];
+        total: number;
+        limit: number;
+        offset: number;
+      }) => void;
+      reject: (reason?: unknown) => void;
+    }[] = [];
+    let rejected = false;
+    apiMocks.getSessions.mockImplementation(
+      async (limit: number, offset: number, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          overviewCall += 1;
+          if (overviewCall === 1) {
+            return {
+              sessions: [sessionRow("s-initial", "Initial row")],
+              total: 1,
+              limit,
+              offset,
+            };
+          }
+          if (overviewCall === 2) {
+            // First silent poll: hangs, will reject later.
+            return new Promise((resolve, reject) => {
+              deferred.push({ resolve, reject });
+            });
+          }
+          // Second silent poll: succeeds immediately.
+          return {
+            sessions: [sessionRow("s-newer", "Newer row")],
+            total: 1,
+            limit,
+            offset,
+          };
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      },
+    );
+
+    apiMocks.getSessionStats.mockImplementation(() => new Promise(() => {}));
+
+    const intervalCallbacks: (() => void)[] = [];
+    const intervalSpy = vi
+      .spyOn(global, "setInterval")
+      .mockImplementation((callback: TimerHandler) => {
+        if (typeof callback === "function") {
+          intervalCallbacks.push(callback as () => void);
+        }
+        return 0 as unknown as ReturnType<typeof setInterval>;
+      });
+
+    try {
+      await renderPage();
+      expect(text()).toContain("Initial row");
+      expect(intervalCallbacks.length).toBeGreaterThan(0);
+
+      // First silent poll: pending rejection.
+      await act(async () => {
+        intervalCallbacks[intervalCallbacks.length - 1]();
+      });
+      expect(text()).toContain("Initial row");
+
+      // Second silent poll: newer rows.
+      await act(async () => {
+        intervalCallbacks[intervalCallbacks.length - 1]();
+      });
+      expect(text()).toContain("Newer row");
+      expect(text()).not.toContain("Failed to load sessions");
+
+      // The older pending poll finally rejects.
+      await act(async () => {
+        deferred[0].reject(new Error("stale failure"));
+        rejected = true;
+      });
+      expect(rejected).toBe(true);
+      expect(text()).toContain("Newer row");
+      expect(text()).not.toContain("Failed to load sessions");
+      expect(text()).not.toContain("stale failure");
+    } finally {
+      intervalSpy.mockRestore();
+    }
+  });
+
+  it("ignores an older silent success that would overwrite newer rows", async () => {
+    let overviewCall = 0;
+    const deferred: {
+      resolve: (value: {
+        sessions: unknown[];
+        total: number;
+        limit: number;
+        offset: number;
+      }) => void;
+    }[] = [];
+    let resolved = false;
+    apiMocks.getSessions.mockImplementation(
+      async (limit: number, offset: number, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          overviewCall += 1;
+          if (overviewCall === 1) {
+            return {
+              sessions: [sessionRow("s-initial", "Initial row")],
+              total: 1,
+              limit,
+              offset,
+            };
+          }
+          if (overviewCall === 2) {
+            // Older silent poll: hangs, will resolve with stale rows later.
+            return new Promise((resolve) => {
+              deferred.push({ resolve });
+            });
+          }
+          // Newer silent poll: returns different rows immediately.
+          return {
+            sessions: [sessionRow("s-newer", "Newer row")],
+            total: 1,
+            limit,
+            offset,
+          };
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      },
+    );
+
+    apiMocks.getSessionStats.mockImplementation(() => new Promise(() => {}));
+
+    const intervalCallbacks: (() => void)[] = [];
+    const intervalSpy = vi
+      .spyOn(global, "setInterval")
+      .mockImplementation((callback: TimerHandler) => {
+        if (typeof callback === "function") {
+          intervalCallbacks.push(callback as () => void);
+        }
+        return 0 as unknown as ReturnType<typeof setInterval>;
+      });
+
+    try {
+      await renderPage();
+      expect(text()).toContain("Initial row");
+
+      // Older silent poll: pending.
+      await act(async () => {
+        intervalCallbacks[intervalCallbacks.length - 1]();
+      });
+
+      // Newer silent poll: updates rows.
+      await act(async () => {
+        intervalCallbacks[intervalCallbacks.length - 1]();
+      });
+      expect(text()).toContain("Newer row");
+      expect(text()).not.toContain("Initial row");
+
+      // Older poll resolves with stale rows.
+      await act(async () => {
+        deferred[0].resolve({
+          sessions: [sessionRow("s-older", "Older row")],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        });
+        resolved = true;
+      });
+      expect(resolved).toBe(true);
+      expect(text()).toContain("Newer row");
+      expect(text()).not.toContain("Older row");
+      expect(text()).not.toContain("Initial row");
+    } finally {
+      intervalSpy.mockRestore();
     }
   });
 

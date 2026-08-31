@@ -71,6 +71,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
     _legacy_reset_child_sql,
+    _safe_model_config_json,
     _shape_preview,
     _sql_session_last_active,
     _sql_session_last_active_by_id,
@@ -261,7 +262,7 @@ def workspace_key(row: Dict[str, Any]) -> Optional[str]:
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
-    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+    return f"json_extract({_safe_model_config_json(col)}, '$._delegate_from')"
 
 
 # Sentinel returned by SessionDB._merge_model_config_json when the session row
@@ -4388,13 +4389,11 @@ def classify_session_status(
 # below and by ``get_compression_tip`` so both admit the exact same sibling
 # set before either ranks it.
 def _compression_child_eligible_sql(child: str) -> str:
+    cfg = _safe_model_config_json(f"{child}.model_config")
     return (
-        f"json_extract(COALESCE({child}.model_config, '{{}}'),"
-        f" '$._branched_from') IS NULL"
-        f" AND json_extract(COALESCE({child}.model_config, '{{}}'),"
-        f" '$._delegate_from') IS NULL"
-        f" AND json_extract(COALESCE({child}.model_config, '{{}}'),"
-        f" '$._reset_from') IS NULL"
+        f"json_extract({cfg}, '$._branched_from') IS NULL"
+        f" AND json_extract({cfg}, '$._delegate_from') IS NULL"
+        f" AND json_extract({cfg}, '$._reset_from') IS NULL"
         f" AND NOT {_legacy_reset_child_sql(child, _RESET_END_REASONS_SQL)}"
         f" AND COALESCE({child}.source, '') != 'tool'"
     )
@@ -4728,6 +4727,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # that follows would then repair WITHOUT its forensic backup.
                 try:
                     apply_database_pragmas(self._conn, db_label="state.db")
+                    # Read-only opens can still participate in the WAL read pool
+                    # when the on-disk database is WAL; snapshot-isolated reads
+                    # then cover list/count pairs without serializing writers.
+                    self._wal_active = (
+                        self._conn.execute("PRAGMA journal_mode").fetchone()[0]
+                        == "wal"
+                    )
                     cursor = self._conn.cursor()
                     self._fts_enabled = (
                         self._fts_table_probe(cursor, "messages_fts") is True
@@ -5040,7 +5046,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _checkout_read_conn(self) -> Optional[sqlite3.Connection]:
         """Borrow a read connection from the pool, opening one on a miss.
 
-        The single acquisition seam for the read path: the WAL/read_only gate,
+        The single acquisition seam for the read path: the WAL/active gate,
         the pool checkout and the open-on-miss all live here, so there is
         exactly one place to exercise (and one place for a caller to bypass by
         accident). Returns None when the read path is unavailable and the
@@ -5051,7 +5057,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         take a permit, so peak live connections is bounded by _READ_POOL_MAX no
         matter how many threads miss simultaneously.
         """
-        if not self._wal_active or self.read_only:
+        if not self._wal_active:
             return None
         try:
             return self._read_pool.get_nowait()
@@ -5059,7 +5065,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return self._get_read_conn()
 
     @contextmanager
-    def _read_ctx(self):
+    def _read_ctx(self, conn: Optional[sqlite3.Connection] = None):
         """Yield a connection for read-only statements.
 
         WAL: a read-only connection borrowed from a bounded pool with NO
@@ -5071,11 +5077,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         shared writer connection under self._lock, byte-for-byte the legacy
         behavior.
 
+        Pass an explicit ``conn`` to force every query in the block onto one
+        connection (e.g. a WAL read transaction so a list + count pair reads
+        one immutable snapshot). The caller owns checkout/return in that case.
+
         That last case is the deliberate degradation. Past the ceiling readers
         convoy on the writer lock instead of opening descriptors — measurably
         slower under a burst, and the alternative is EMFILE, which takes the
         whole process down in a way a restart-on-exit supervisor cannot see.
         """
+        if conn is not None:
+            yield conn
+            return
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -7393,15 +7406,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # parent having end_reason='branched' and the child starting after
             # the parent ended. Freeze that identity before the parent's state
             # changes. Reuse _BRANCH_CHILD_SQL so listing, deletion, and
-            # continuation semantics stay aligned.
+            # continuation semantics stay aligned.  Malformed child model_config
+            # is treated as `{}` so json_extract/json_set never see invalid JSON.
+            safe_cfg = _safe_model_config_json("child.model_config")
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
-                "COALESCE(child.model_config, '{}'), '$._branched_from', "
+                f"{safe_cfg}, '$._branched_from', "
                 "child.parent_session_id) "
                 "WHERE child.parent_session_id = ? "
-                "AND json_extract(COALESCE(child.model_config, '{}'), "
-                "                 '$._branched_from') IS NULL "
-                f"AND {_BRANCH_CHILD_SQL.format(a='child')}",
+                f"AND json_extract({safe_cfg}, '$._branched_from') IS NULL "
+                f"AND {_BRANCH_CHILD_SQL.replace('{a}', 'child')}",
                 (session_id,),
             )
             # Markerless legacy delegate/ephemeral children: hidden subagent
@@ -7411,11 +7425,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # predicate cannot drift from listing/deletion/resume.
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
-                "COALESCE(child.model_config, '{}'), '$._delegate_from', "
+                f"{safe_cfg}, '$._delegate_from', "
                 "child.parent_session_id) "
                 "WHERE child.parent_session_id = ? "
-                "AND json_extract(COALESCE(child.model_config, '{}'), "
-                "                 '$._delegate_from') IS NULL "
+                f"AND json_extract({safe_cfg}, '$._delegate_from') IS NULL "
                 f"AND {_ephemeral_child_sql('child')}",
                 (session_id,),
             )
@@ -7425,11 +7438,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # predicate cannot drift.
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
-                "COALESCE(child.model_config, '{}'), '$._reset_from', "
+                f"{safe_cfg}, '$._reset_from', "
                 "child.parent_session_id) "
                 "WHERE child.parent_session_id = ? "
-                "AND json_extract(COALESCE(child.model_config, '{}'), "
-                "                 '$._reset_from') IS NULL "
+                f"AND json_extract({safe_cfg}, '$._reset_from') IS NULL "
                 f"AND {_legacy_reset_child_sql('child', placeholders)}",
                 (session_id, *_RESET_END_REASONS),
             )
@@ -9888,7 +9900,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
         # Walk parent links up from the descendant, following only compression
         # continuation edges, and check whether ancestor_id is reached.
-        edge = _COMPRESSION_CHILD_SQL.format(a="child")
+        edge = _COMPRESSION_CHILD_SQL.replace("{a}", "child")
         row = conn.execute(
             f"""
             WITH RECURSIVE ancestors(id) AS (
@@ -10493,7 +10505,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
+    def get_compression_tip(
+        self, session_id: str, conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[str]:
         """Walk the compression-continuation chain forward and return the tip.
 
         A compression continuation is a child of a session whose
@@ -10526,7 +10540,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
-            with self._read_ctx() as conn:
+            with self._read_ctx(conn) as conn:
                 cursor = conn.execute(
                     f"""
                     SELECT child.id
@@ -10612,6 +10626,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_hidden: bool = False,
         active_since: float = None,
         active_until: float = None,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -10897,7 +10912,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])
-        with self._read_ctx() as conn:
+        with self._read_ctx(conn) as conn:
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
         sessions = []
@@ -10945,7 +10960,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 {pinned_where}
                 ORDER BY s.started_at DESC
             """
-            with self._read_ctx() as conn:
+            with self._read_ctx(conn) as conn:
                 pinned_cursor = conn.execute(pinned_query, base_where_params)
                 pinned_rows = pinned_cursor.fetchall()
             for row in pinned_rows:
@@ -10972,13 +10987,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                tip_id = self.get_compression_tip(s["id"], conn=conn)
                 if tip_id != s["id"]:
                     tip_ids_by_root[s["id"]] = tip_id
 
             tip_rows = (
                 self._get_session_rich_rows_batch(
-                    set(tip_ids_by_root.values()), compact_rows=compact_rows
+                    set(tip_ids_by_root.values()),
+                    compact_rows=compact_rows,
+                    conn=conn,
                 )
                 if tip_ids_by_root
                 else {}
@@ -11013,6 +11030,85 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             s["unread"] = self.session_unread(s)
 
         return sessions
+
+    def list_sessions_rich_with_count(
+        self,
+        source: str = None,
+        sources: List[str] = None,
+        exclude_sources: List[str] = None,
+        cwd_prefix: str = None,
+        limit: int = 20,
+        offset: int = 0,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        compact_rows: bool = False,
+        include_pinned: bool = False,
+        active_since: float = None,
+        active_until: float = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """List sessions and count them from one immutable SQLite snapshot.
+
+        Active-window callers need rows and total to describe the same database
+        state even when other connections commit between the row query and the
+        count.  This method keeps a single read transaction open across the
+        list, compression-tip projection, and count so every read sees the same
+        snapshot.  On every fresh connection an explicit ``BEGIN`` pins the
+        snapshot before the first list query; if the connection is already in a
+        caller-owned transaction, it is reused without committing or rolling it
+        back.
+        """
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            # A fresh connection (WAL pool miss or the shared fallback) starts
+            # in auto-commit mode, so the first SELECT would implicitly open a
+            # read transaction but only for the duration of that single
+            # statement.  Explicitly BEGIN before the first list query pins one
+            # immutable snapshot across list, compression-tip projection, and
+            # count.  If the caller already opened a transaction on this
+            # connection, reuse it without committing or rolling it back.
+            own_txn = not conn.in_transaction
+            if own_txn:
+                conn.execute("BEGIN")
+            try:
+                sessions = self.list_sessions_rich(
+                    source=source,
+                    sources=sources,
+                    exclude_sources=exclude_sources,
+                    cwd_prefix=cwd_prefix,
+                    limit=limit,
+                    offset=offset,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    order_by_last_active=True,
+                    compact_rows=compact_rows,
+                    include_pinned=include_pinned,
+                    active_since=active_since,
+                    active_until=active_until,
+                    conn=conn,
+                )
+                total = self.session_count(
+                    source=source,
+                    sources=sources,
+                    exclude_sources=exclude_sources,
+                    cwd_prefix=cwd_prefix,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    exclude_children=True,
+                    include_hidden=False,
+                    active_since=active_since,
+                    active_until=active_until,
+                    conn=conn,
+                )
+                return sessions, total
+            finally:
+                if own_txn:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
 
     def session_lifecycle_statuses(
         self, session_ids: List[str]
@@ -13463,6 +13559,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_hidden: bool = True,
         active_since: float = None,
         active_until: float = None,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -13566,7 +13663,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             query = f"SELECT COUNT(*) FROM sessions s{where_sql}"
             count_params = params
 
-        with self._read_ctx() as conn:
+        with self._read_ctx(conn) as conn:
             cursor = conn.execute(query, count_params)
             return cursor.fetchone()[0]
 
