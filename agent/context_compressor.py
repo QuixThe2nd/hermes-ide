@@ -343,6 +343,33 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
             msg.pop(_DB_PERSISTED_MARKER, None)
 
 
+def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
+    """Fulfil the post-commit contract of ``SessionDB.archive_and_compact()``.
+
+    ``archive_and_compact()`` atomically soft-archives the previous active
+    rows and inserts *messages* as the new active set — after it returns,
+    every dict in *messages* IS durably stored. Stamp ``_DB_PERSISTED_MARKER``
+    on those exact dict instances so the append-only flush
+    (``_persist_session`` → ``_flush_messages_to_session_db_unlocked``)
+    skips them instead of re-INSERTing the whole compacted transcript.
+
+    This is the single stamp site for ALL ``archive_and_compact`` callers
+    (in-place batch commit, micro-compaction sync, proactive prune). The
+    marker must land on the dicts the caller actually keeps as the live
+    message list: ``compress()`` output is marker-swept by design
+    (``_strip_persistence_markers``, #57491 — the sweep protects the
+    ROTATION flush to a child session), so a committed in-place set that
+    is returned to the caller unstamped is re-written as "new" by the next
+    persist walk and the live transcript doubles on every compaction
+    (#98450: ~58K → ~512K tokens). Call this ONLY after the commit
+    succeeded — an unstamped dict after a failed commit is correct
+    (the flush then durably writes it).
+    """
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg[_DB_PERSISTED_MARKER] = True
+
+
 def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     """Strip stale per-turn replay items (``codex_reasoning_items``) from
     assistant messages that belong to turns older than the active one.
@@ -1504,7 +1531,18 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     if not charge_stale_thinking:
         return tokens
+    # The wire ships at most ONE of the generic thinking keys: every request
+    # build pops ``reasoning`` after (optionally) promoting it into
+    # ``reasoning_content`` (``apply_reasoning_content_policy``), and a
+    # non-empty stored ``reasoning_content`` always displaces it. Charging
+    # both keys double-counted the same thinking text on echo-back providers
+    # that persist it under both (#84371 comment: +53% vs real
+    # prompt_tokens). Mirror the wire: reasoning_content wins when present.
+    _rc = msg.get("reasoning_content")
+    _skip_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
+        if key == "reasoning" and _skip_reasoning_dup:
+            continue
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     # reasoning_details: charge only the thinking TEXT, never the signed /
     # base64 envelope (#73298 second site; mirrors the preflight estimator's
@@ -2920,9 +2958,16 @@ class ContextCompressor(ContextEngine):
         cooldown_seconds: float,
         error: Optional[str],
     ) -> None:
-        cooldown_until = time.time() + cooldown_seconds
-        self._summary_failure_cooldown_until = time.monotonic() + cooldown_seconds
+        now_mono = time.monotonic()
+        new_mono = now_mono + float(cooldown_seconds)
+        # Never shorten a longer live deadline (#96775). A later stall or
+        # timeout records the latest error text but keeps the later of the
+        # two clocks.
+        if new_mono > self._summary_failure_cooldown_until:
+            self._summary_failure_cooldown_until = new_mono
         self._last_summary_error = error
+        remaining = max(0.0, self._summary_failure_cooldown_until - time.monotonic())
+        cooldown_until = time.time() + remaining
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -2943,14 +2988,23 @@ class ContextCompressor(ContextEngine):
             self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
-    def record_timeout_failure(self, error: str) -> None:
-        """Record a consecutive timeout failure using the shared cooldown ladder.
+    def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
+        """Record a consecutive timeout/stall failure using the shared ladder.
 
-        Used by both the summary-LLM exception handler (inline at line ~3714)
-        and the host-level ``compress_context`` timeout wrapper in
-        ``run_compress_context_with_progress_timeout``. Avoids re-implementing
-        the ladder at each call site (#62452).
+        Used by the summary-LLM exception handler, the host-level
+        ``compress_context`` timeout wrapper, and stall-interrupted
+        pre-commit cancellation (#62452, #96775).
+
+        The persisted error is prefixed with the attempt identity —
+        ``backoff:<failure_kind>:strategy=<tail_mode>`` — so the durable row
+        (``sessions.compression_failure_cooldown_until`` +
+        ``compression_failure_error`` in state.db) records WHICH strategy
+        failed and WHY, and a gateway restart rebuilds the same backoff
+        decision from ``bind_session_state()`` (#96775/#97488).
         """
+        strategy = getattr(self, "tail_mode", None) or "unknown"
+        kind = failure_kind or "timeout"
+        stamped = f"backoff:{kind}:strategy={strategy}: {error}"
         _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
         self._consecutive_timeout_failures = (
             getattr(self, "_consecutive_timeout_failures", 0) + 1
@@ -2959,7 +3013,7 @@ class ContextCompressor(ContextEngine):
             min(self._consecutive_timeout_failures,
                 len(_TIMEOUT_COOLDOWN_LADDER)) - 1
         ]
-        self._record_compression_failure_cooldown(float(cooldown), error)
+        self._record_compression_failure_cooldown(float(cooldown), stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # #76354 review F4: fence check BEFORE cooldown-clear. A late worker
@@ -2999,6 +3053,17 @@ class ContextCompressor(ContextEngine):
             logger.debug("compression failure cooldown clear failed: %s", exc)
         except Exception as exc:
             logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
+
+    def _compression_cancelled(self) -> bool:
+        """Read the host-owned cooperative cancellation signal, if installed."""
+        cancelled_check = getattr(self, "_compression_cancelled_check", None)
+        if not callable(cancelled_check):
+            return False
+        try:
+            return bool(cancelled_check())
+        except Exception:
+            logger.debug("compression cancellation check failed", exc_info=True)
+            return False
 
     def update_model(
         self,
@@ -3930,11 +3995,16 @@ class ContextCompressor(ContextEngine):
             # Same newest-turn-only thinking charge as the tail-cut walk
             # (#73624) — this boundary decides which tool results stay
             # prunable, and overcharging stale thinking shrinks that window.
+            # Echo-back routes charge every turn (#84371 estimator parity).
             _newest_asst_idx = _last_assistant_index(result)
+            _charge_all_thinking = self._stale_thinking_on_wire()
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(
-                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                    msg,
+                    charge_stale_thinking=(
+                        _charge_all_thinking or i == _newest_asst_idx
+                    ),
                 )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
@@ -4269,9 +4339,9 @@ class ContextCompressor(ContextEngine):
                     exc,
                 )
                 return messages, 0
-            for msg in pruned_msgs:
-                if isinstance(msg, dict):
-                    msg[_DB_PERSISTED_MARKER] = True
+            # Shared post-commit contract with the in-place batch commit and
+            # the micro-compaction sync (#98450) — one stamp site for the class.
+            stamp_db_persisted_markers(pruned_msgs)
         self._proactive_prune_rearm_tokens = next_rearm_tokens
         return pruned_msgs, pruned_count
 
@@ -4805,6 +4875,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         placeholder.
         """
         prompt_started_at = time.monotonic()
+        if self._compression_cancelled():
+            raise AuxiliaryExplicitCancellation()
         now = prompt_started_at
         if now < self._summary_failure_cooldown_until:
             logger.debug(
@@ -5183,6 +5255,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                     effective_aux_context=_aux_context,
                     phase_timings=_latency_info,
                 )
+            if self._compression_cancelled():
+                raise AuxiliaryExplicitCancellation()
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some
             # OpenAI-compatible proxies / local backends return a dict- or
@@ -6495,6 +6569,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
+    def _stale_thinking_on_wire(self) -> bool:
+        """Whether the active route replays stale thinking text (#84371).
+
+        The tail-budget walks and the preflight trigger must charge the SAME
+        stale-thinking policy or a reasoning-heavy session can look
+        over-threshold to one and fully tail-protected to the other — the
+        infinite ineffective compaction loop.  Echo-back chat-completions
+        families (DeepSeek/Kimi/MiMo thinking mode) replay stored
+        ``reasoning_content`` on EVERY assistant turn, so the walk must
+        charge it everywhere; codex_responses and strict providers never
+        ship the text keys, so newest-turn-only stands (#73624).
+        """
+        try:
+            from agent.message_sanitization import stale_thinking_reaches_wire
+
+            return stale_thinking_reaches_wire(
+                getattr(self, "api_mode", "") or "",
+                getattr(self, "provider", "") or "",
+                getattr(self, "model", "") or "",
+                getattr(self, "base_url", "") or "",
+            )
+        except Exception:
+            return False
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -6540,12 +6638,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         # fields any transport still replays (#73624) — every older turn's
         # reasoning/reasoning_content is stripped or padded at send time,
         # so charging it here spends tail budget on bytes that never ship.
+        # Exception: echo-back providers (DeepSeek/Kimi/MiMo thinking mode
+        # on chat_completions) replay stale thinking on EVERY turn — charge
+        # it everywhere so this walk agrees with the preflight trigger
+        # (#84371 estimator parity).
         _newest_asst_idx = _last_assistant_index(messages)
+        _charge_all_thinking = self._stale_thinking_on_wire()
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             msg_tokens = _estimate_msg_budget_tokens(
-                msg, charge_stale_thinking=(i == _newest_asst_idx)
+                msg,
+                charge_stale_thinking=(
+                    _charge_all_thinking or i == _newest_asst_idx
+                ),
             )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
@@ -6573,7 +6679,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
                 raw_tok = _estimate_msg_budget_tokens(
-                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                    raw_msg,
+                    charge_stale_thinking=(
+                        _charge_all_thinking or j == _newest_asst_idx
+                    ),
                 )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
@@ -7260,9 +7369,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             return
         try:
             session_db.archive_and_compact(session_id, compacted_messages)
-            for msg in compacted_messages:
-                if isinstance(msg, dict):
-                    msg[_DB_PERSISTED_MARKER] = True
+            # Shared post-commit contract with the in-place batch commit and
+            # the proactive prune (#98450) — one stamp site for the class.
+            stamp_db_persisted_markers(compacted_messages)
         except Exception:
             logger.info(
                 "Micro-compaction DB sync failed — resume will double-load "

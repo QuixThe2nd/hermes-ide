@@ -578,6 +578,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
             proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
             )
@@ -593,6 +594,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                     proc = subprocess.run(
                         [*argv, "--query-file", dm_file],
                         check=False,
+                        stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
                     )
