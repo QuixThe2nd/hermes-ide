@@ -243,6 +243,25 @@ class TestMaxIterationsTurnLimitParser:
         assert "Invalid number, keeping current value" in out
         assert "Max iterations set to" not in out
 
+    @pytest.mark.parametrize("answer", ["1e309", "+inf", "-inf", "1e400", "nan"])
+    def test_overflow_input_keeps_current_value(self, answer, tmp_path, monkeypatch, capsys):
+        """An overflow-like answer must not crash the wizard nor change the limit.
+
+        Regression guard: the resolver's string path did ``int(float(s))`` with
+        only ``except ValueError``, so ``int(float("1e309"))`` raised
+        OverflowError out of ``setup_agent_settings`` — the wizard died on the
+        Max iterations prompt instead of keeping the current value like it
+        does for any other unusable answer.
+        """
+        config = {k: dict(v) for k, v in self.BASE_CONFIG.items()}
+
+        _run_agent_settings_wizard(config, answer, monkeypatch, tmp_path)
+
+        assert config["agent"]["max_turns"] == 500
+        out = capsys.readouterr().out
+        assert "Invalid number, keeping current value" in out
+        assert "Max iterations set to" not in out
+
     def test_legacy_zero_config_normalized_to_supported_spelling(
         self, tmp_path, monkeypatch, capsys
     ):
