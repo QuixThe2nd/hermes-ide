@@ -306,6 +306,12 @@ def systemd_launch(
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "PYTHONUNBUFFERED": "1",
     }
+    # The runner resolves its worker binary through the same $HERMES_BIN
+    # override seam this process honors; without the passthrough the override
+    # would silently vanish inside the transient unit's fresh environment.
+    hermes_bin = os.environ.get("HERMES_BIN")
+    if hermes_bin:
+        env["HERMES_BIN"] = hermes_bin
     unit = unit_name(job_id)
     cmd = build_systemd_run_argv(
         unit=unit,

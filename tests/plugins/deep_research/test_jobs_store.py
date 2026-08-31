@@ -212,6 +212,61 @@ class TestStateTransitions:
 
 
 # ---------------------------------------------------------------------------
+# Cross-process status locking (review finding: RLock alone does not
+# serialize the gateway watcher against a runner process)
+# ---------------------------------------------------------------------------
+
+
+class TestInterProcessLock:
+    def test_advisory_lock_is_held_across_descriptors(self, home: Path) -> None:
+        # A second open file description — exactly what a separate process
+        # (runner transient unit vs gateway watcher) would use — cannot take
+        # the lock while a transaction is open, and can once it closes.
+        fcntl = pytest.importorskip("fcntl")
+        _job_id, directory = _make_job(home)
+        lock_path = directory / ".status.lock"
+        with jobs._job_lock(directory):
+            probe = open(lock_path, "a+", encoding="utf-8")
+            try:
+                with pytest.raises(OSError):
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                probe.close()
+        probe = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        finally:
+            probe.close()
+
+    def test_lock_is_reentrant_in_thread_without_deadlock(self, home: Path) -> None:
+        # Legacy callers may nest mutations; the nested acquisition must reuse
+        # the held lock rather than block on its own flock.
+        _job_id, directory = _make_job(home)
+        with jobs._job_lock(directory):
+            with jobs._job_lock(directory):
+                # A real transaction inside the nested section must compose,
+                # not deadlock on its own flock.
+                assert jobs.update_status(directory, mutate=lambda status: None) is not None
+
+    def test_sequential_transactions_compose(self, home: Path) -> None:
+        _job_id, directory = _make_job(home)
+        jobs.mark_running(directory, {"runner_mode": "fallback", "runner_pid": 4242})
+        jobs.update_lane(directory, 0, state=jobs.LANE_SUCCEEDED, exit_code=0)
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        assert jobs.mark_notified(directory) is True
+        status = jobs.read_status(directory)
+        assert status["state"] == "completed"
+        assert status["runner_pid"] == 4242
+        assert status["lanes"][0]["state"] == "succeeded"
+        assert status["notified"] is True
+        # The lock file sits inside the private job dir; the write itself is
+        # still an atomic replace of status.json.
+        assert (directory / ".status.lock").exists()
+        assert json.loads((directory / "status.json").read_text(encoding="utf-8"))["state"] == "completed"
+
+
+# ---------------------------------------------------------------------------
 # Evidence reads + list bounding
 # ---------------------------------------------------------------------------
 

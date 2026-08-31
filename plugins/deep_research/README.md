@@ -85,7 +85,9 @@ Without a usable transient service (macOS, Windows, containers, or a root gatewa
 
 A daemon watcher (started from `on_gateway_start`, off under `HERMES_TEST_ISOLATION`) notices terminal-but-unnotified jobs and pushes an `async_delegation`-shaped event onto the gateway's completion queue, so the outcome re-enters the originating session without polling. Notification is marked at-least-once and coalesced per job. Because everything durable is on disk, a lost in-memory event costs nothing: `status` and `result` recover the job at any time, across gateway restarts.
 
-On gateway start, non-terminal jobs whose runner is verifiably gone (unit inactive, or PID dead with a PID-reuse guard) become `failed` with reason `interrupted: runner not running after restart`. An inconclusive liveness probe never fails a job, and completed artifacts stay readable.
+Jobs are written under the *active* Hermes home, so on a multiplexed gateway a session's jobs live in that profile's home. The single watcher thread sweeps the process home and every live named-profile home under it (`<process home>/profiles/<name>/`, skipping tombstoned profiles) — no per-profile threads. Each sweep enumerates all terminal-but-unnotified jobs and then applies a delivery bound, so an older completion is never stranded behind newer ones.
+
+On gateway start, non-terminal jobs whose runner is verifiably gone (unit inactive, or PID dead with a PID-reuse guard) become `failed` with reason `interrupted: runner not running after restart` — across those same homes. An inconclusive liveness probe never fails a job, and completed artifacts stay readable. Status writes are serialized by a per-job advisory file lock (`.status.lock`) in addition to the atomic replace, so the gateway watcher and a runner process cannot interleave their read-modify-write cycles.
 
 ## Configuration
 

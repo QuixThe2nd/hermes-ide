@@ -196,13 +196,159 @@ class TestWatcherLifecycle:
         assert queue.events[0]["research_job_id"] == job_id
 
 
-class TestOriginContext:
-    def test_origin_without_session_is_empty_but_safe(self) -> None:
-        origin = notify.origin_context(None, None)
-        assert origin == {"session_id": "", "task_id": "", "session_key": ""}
+class TestNotifyStarvation:
+    """The per-tick bound must never strand an older completion."""
 
-    def test_origin_with_unknown_session_degrades_to_no_key(self) -> None:
+    def test_the_eleventh_completion_is_reached_by_the_next_sweep(self, home: Path) -> None:
+        queue = Queue()
+        job_ids = []
+        for index in range(11):
+            job_id, directory = _make_job(home, origin={"session_id": f"s{index}"})
+            jobs.finish_job(directory, jobs.STATE_COMPLETED)
+            job_ids.append(job_id)
+        first = notify.notify_pending(home, limit=10, queue_put=queue.put)
+        assert len(first) == 10
+        # Not lost behind the bound: the second sweep reaches job 11 even
+        # though ten terminal jobs already exist above it.
+        second = notify.notify_pending(home, limit=10, queue_put=queue.put)
+        assert len(second) == 1
+        assert set(first) | set(second) == set(job_ids)
+        assert len(queue.events) == 11
+        assert notify.notify_pending(home, limit=10, queue_put=queue.put) == []
+
+    def test_unroutable_jobs_do_not_consume_the_bound(self, home: Path) -> None:
+        # Jobs with no origin generate no event; they must not eat delivery
+        # slots that terminal-and-routable jobs need.
+        for _ in range(12):
+            _job_id, directory = _make_job(home, origin={})
+            jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        job_id, directory = _make_job(home, origin={"session_id": "s"})
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        queue = Queue()
+        assert notify.notify_pending(home, limit=5, queue_put=queue.put) == [job_id]
+
+
+class TestWatcherHomes:
+    """The watcher sweeps the process home plus its live named profiles."""
+
+    def test_process_home_plus_live_profile_children(self, home: Path) -> None:
+        alpha = home / "profiles" / "alpha"
+        alpha.mkdir(parents=True)
+        dead = home / "profiles" / "beta"
+        dead.mkdir(parents=True)
+        (home / "profiles" / ".deleted" / "beta").mkdir(parents=True)  # tombstone
+        (home / "profiles" / "not a profile!").mkdir()
+        (home / "profiles" / ".hidden").mkdir()
+        (home / "profiles" / "default").mkdir()  # the default IS the process home
+        (home / "profiles" / "stray.txt").write_text("x", encoding="utf-8")
+        assert notify.watcher_hermes_homes() == [home, alpha]
+
+    def test_tombstoned_and_missing_profiles_are_skipped(self, home: Path) -> None:
+        dead = home / "profiles" / "gone"
+        dead.mkdir(parents=True)
+        (home / "profiles" / ".deleted" / "gone").mkdir(parents=True)
+        assert notify.watcher_hermes_homes() == [home]
+
+    def test_enumeration_stays_under_the_process_home(self, home: Path) -> None:
+        # HERMES_HOME points at a tmpdir; the enumerator must never reach out
+        # to the operator's live ~/.hermes to enumerate profiles.
+        for path in notify.watcher_hermes_homes():
+            assert str(path).startswith(str(home))
+
+    def test_missing_profiles_root_is_just_the_process_home(self, home: Path) -> None:
+        assert notify.watcher_hermes_homes() == [home]
+        assert notify.watcher_hermes_homes(home) == [home]
+
+
+class TestProfileHomeSweep:
+    def test_watcher_notifies_a_job_in_a_named_profile_home(self, home: Path, monkeypatch) -> None:
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
+        queue = Queue()
+        alpha = home / "profiles" / "alpha"
+        job_id, directory = _make_job(alpha, origin={"session_id": "s"})
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        watcher = notify.CompletionWatcher(interval_seconds=0.05, hermes_home=home, queue_put=queue.put)
+        assert watcher._watch_homes() == [home, alpha]
+        watcher.start()
+        deadline = time.monotonic() + 5
+        while not queue.events and time.monotonic() < deadline:
+            time.sleep(0.02)
+        watcher.stop()
+        assert [event["research_job_id"] for event in queue.events] == [job_id]
+
+    def test_watcher_recovers_stale_jobs_in_a_named_profile_home(
+        self, home: Path, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
+        queue = Queue()
+        alpha = home / "profiles" / "beta"
+        job_id, directory = _make_job(alpha, origin={"session_id": "s"})
+        jobs.mark_running(directory, {"runner_mode": "fallback", "runner_pid": 999_999_999})
+        status = jobs.read_status(directory)
+        status["updated_at"] = time.time() - 10_000
+        (directory / "status.json").write_text(json.dumps(status), encoding="utf-8")
+
+        watcher = notify.CompletionWatcher(interval_seconds=0.05, hermes_home=home, queue_put=queue.put)
+        watcher.start()
+        deadline = time.monotonic() + 5
+        while not queue.events and time.monotonic() < deadline:
+            time.sleep(0.02)
+        watcher.stop()
+        # The profile-home job was failed AND notified about it.
+        assert jobs.read_status(directory)["state"] == "failed"
+        assert "interrupted" in jobs.read_status(directory)["error"]
+        assert queue.events[0]["research_job_id"] == job_id
+
+
+class TestOriginContext:
+    def test_origin_without_session_is_empty_but_safe(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        origin = notify.origin_context(None, None)
+        assert origin == {
+            "session_id": "",
+            "task_id": "",
+            "session_key": "",
+            "hermes_home": str(tmp_path),
+        }
+
+    def test_origin_with_unknown_session_degrades_to_no_key(self, home: Path) -> None:
         origin = notify.origin_context("no-such-session-id")
         assert origin["session_id"] == "no-such-session-id"
         # No session store row → empty key, never a crash.
         assert origin["session_key"] == ""
+
+    def test_session_key_resolves_from_the_active_profile_state_db(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Multiplexed shape: the process home is the root, but the session
+        # row lives in the ACTIVE profile home — the same home `start` uses.
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_state import SessionDB
+
+        process_home = tmp_path / "process-home"
+        profile_home = process_home / "profiles" / "alpha"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        SessionDB(db_path=profile_home / "state.db").create_session(
+            "sess-42", "gateway:discord", session_key="discord:dm:42"
+        )
+        assert (profile_home / "state.db").exists()
+        assert not (process_home / "state.db").exists()  # the row is profile-local
+
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            origin = notify.origin_context("sess-42")
+        finally:
+            reset_hermes_home_override(token)
+        assert origin["session_key"] == "discord:dm:42"
+        assert origin["hermes_home"] == str(profile_home)
+
+    def test_origin_data_is_frozen_for_post_restart_routing(self, home: Path) -> None:
+        # request.json carries the resolved key and the start home, so a
+        # restarted gateway routes the completion without re-resolving.
+        origin = notify.origin_context("sess-9", "task-9")
+        _job_id, directory = _make_job(home, origin=origin)
+        frozen = jobs.read_request(directory)["origin"]
+        assert frozen["session_id"] == "sess-9"
+        assert frozen["task_id"] == "task-9"
+        assert frozen["hermes_home"] == str(home)

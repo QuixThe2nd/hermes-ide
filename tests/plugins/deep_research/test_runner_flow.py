@@ -329,6 +329,59 @@ class TestBudgetExpiry:
 
 
 # ---------------------------------------------------------------------------
+# Worker budget handoff: the true remainder, never a floor past the budget
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerBudgetHandoff:
+    def _research(self, home: Path, job_id: str, clock) -> runner.ResearchRunner:
+        return runner.ResearchRunner(
+            job_id, home, config=_config(), worker_argv=["/opt/fake/hermes"],
+            spawn=FakeSpawn(), clock=clock,
+        )
+
+    def test_remaining_passes_the_true_remainder_not_a_floor(self, home: Path) -> None:
+        job_id, _directory = _make_job(home)
+        clock = FakeClock()
+        research = self._research(home, job_id, clock)
+        research.deadline = clock.now + 30
+        # 30 seconds left → a 30s window, never the old 60s floor that would
+        # run a worker past the advertised job budget.
+        assert research._remaining("lane") == 30
+
+    def test_remaining_floors_at_one_second(self, home: Path) -> None:
+        job_id, _directory = _make_job(home)
+        clock = FakeClock()
+        research = self._research(home, job_id, clock)
+        research.deadline = clock.now + 0.25
+        assert research._remaining("lane") == 1.0
+
+    def test_remaining_raises_budget_exhausted_when_spent(self, home: Path) -> None:
+        job_id, _directory = _make_job(home)
+        clock = FakeClock()
+        research = self._research(home, job_id, clock)
+        research.deadline = clock.now - 1
+        with pytest.raises(runner.BudgetExhausted):
+            research._remaining("lane")
+
+    def test_workers_receive_shrinking_windows_as_the_budget_spends(self, home: Path) -> None:
+        job_id, directory = _make_job(home, timeout=10)
+        clock = FakeClock()
+        timeouts: list[float] = []
+
+        def lane_and_writer(argv, env, timeout: float):
+            timeouts.append(timeout)
+            clock.advance(9 * 60)  # each worker burns 9 of the 10 minutes
+            return 0, f"report citing [x]({GOOD_URL})", ""
+
+        _seed_evidence(directory, GOOD_URL)
+        _run(job_id, home, lane_and_writer, clock=clock)
+        # The lane gets the full budget; the synthesis writer gets only what
+        # is left — never re-extended to a fixed floor.
+        assert timeouts == [600.0, 60.0]
+
+
+# ---------------------------------------------------------------------------
 # Area 9: citation provenance
 # ---------------------------------------------------------------------------
 

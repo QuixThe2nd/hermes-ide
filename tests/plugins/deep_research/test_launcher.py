@@ -144,6 +144,60 @@ class TestSystemdArgv:
 
 
 # ---------------------------------------------------------------------------
+# Transient-unit environment handoff
+# ---------------------------------------------------------------------------
+
+
+class TestSystemdEnvHandoff:
+    def test_hermes_bin_is_passed_through_to_the_transient_unit(self, job, monkeypatch) -> None:
+        # resolve_worker_argv() honors $HERMES_BIN; the runner inside the unit
+        # must resolve the same binary, so the override has to survive the
+        # handoff. No live systemd daemon is touched — the runner is recorded.
+        job_id, _directory = job
+        monkeypatch.setenv("HERMES_BIN", "/opt/fake/hermes")
+        recorded = RecordingRunner()
+        launcher.systemd_launch(
+            job_id=job_id,
+            scope=launcher.MANAGER_SCOPE_USER,
+            runtime_max_sec=1500,
+            memory_max="2G",
+            hermes_home=Path("/home/dr"),
+            runner=recorded,
+        )
+        argv = recorded.calls[0]
+        assert argv[0] == "systemd-run" and argv[1] == "--user"
+        assert "--setenv=HERMES_BIN=/opt/fake/hermes" in argv
+        assert "--setenv=HERMES_HOME=/home/dr" in argv
+
+    def test_hermes_bin_absent_when_not_set(self, job, monkeypatch) -> None:
+        job_id, _directory = job
+        monkeypatch.delenv("HERMES_BIN", raising=False)
+        recorded = RecordingRunner()
+        launcher.systemd_launch(
+            job_id=job_id,
+            scope=launcher.MANAGER_SCOPE_USER,
+            runtime_max_sec=1500,
+            memory_max="2G",
+            hermes_home=Path("/home/dr"),
+            runner=recorded,
+        )
+        assert not any(part.startswith("--setenv=HERMES_BIN=") for part in recorded.calls[0])
+
+    def test_build_argv_carries_env_through_verbatim(self, job) -> None:
+        job_id, _directory = job
+        argv = launcher.build_systemd_run_argv(
+            unit=launcher.unit_name(job_id),
+            runtime_max_sec=900,
+            memory_max="2G",
+            working_directory=Path("/repo"),
+            env={"HERMES_HOME": "/home/dr", "HERMES_BIN": "/opt/fake/hermes"},
+            argv=["/usr/bin/python3"],
+        )
+        assert "--setenv=HERMES_BIN=/opt/fake/hermes" in argv
+        assert "--setenv=HERMES_HOME=/home/dr" in argv
+
+
+# ---------------------------------------------------------------------------
 # Launch path selection (auto / systemd / fallback)
 # ---------------------------------------------------------------------------
 

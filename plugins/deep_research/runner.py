@@ -42,9 +42,6 @@ from plugins.deep_research.launcher import resolve_worker_argv
 LOG_MAX_BYTES = 256 * 1024
 LOG_BACKUPS = 1
 _STDERR_TAIL_CHARS = 300
-# Floor for a single worker subprocess timeout so a nearly-spent job budget
-# still gives the worker a graceful moment rather than an instant kill.
-_MIN_WORKER_SECONDS = 60
 
 RESEARCH_JOB_ENV = "HERMES_RESEARCH_JOB"
 WRITER_TOOLSETS = "file_readonly"
@@ -351,7 +348,10 @@ class ResearchRunner:
         remaining = self.deadline - self._clock()
         if remaining <= 0:
             raise BudgetExhausted(f"{phase} budget exhausted")
-        return max(_MIN_WORKER_SECONDS, remaining)
+        # The true remainder — never a floor that would stretch a worker past
+        # the advertised job budget. 1s is the smallest a subprocess timeout
+        # accepts, so a nearly-spent budget still gets its graceful moment.
+        return max(1.0, remaining)
 
     def _check_active(self, directory: Path) -> None:
         state = jobs.read_status(directory).get("state")

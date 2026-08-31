@@ -8,6 +8,12 @@ onto ``process_registry.completion_queue`` — the same infrastructure
 ``delegate_task``/missions use, so the outcome re-enters the originating
 session without polling.
 
+``start`` writes each job under the *active* ``get_hermes_home()`` — a
+multiplexed or named-profile session's jobs land in that profile's home — so
+the single watcher thread sweeps the process home **and** every live
+named-profile home under it (:func:`watcher_hermes_homes`), never a
+per-profile thread.
+
 Losing the notification costs nothing durable: ``status``/``result`` read the
 artifacts on disk, so a gateway restart (or a CLI-origin job the gateway cannot
 route) still recovers the result on demand.
@@ -22,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_process_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from plugins.deep_research import jobs
 
 logger = logging.getLogger("hermes.plugins.deep_research.notify")
@@ -36,21 +42,27 @@ SUMMARY_CHARS = 700
 def origin_context(session_id: Optional[str], task_id: Optional[str] = None) -> Dict[str, Any]:
     """Origin identifiers recorded in ``request.json`` for completion routing.
 
-    ``session_key`` is resolved best-effort from the session store; without it a
-    CLI-origin job simply has no gateway route and is recovered via
-    ``status``/``result`` instead.
+    ``session_key`` is resolved best-effort from the session store under the
+    **active** home (:func:`hermes_constants.get_hermes_home`) — the same home
+    ``start`` creates the job under, which for a multiplexed session is the
+    profile home, not the process-default one. The resolved key and the home
+    itself are frozen into ``request.json``, so completion routing survives a
+    gateway restart without re-resolving anything. Without a key a CLI-origin
+    job simply has no gateway route and is recovered via ``status``/``result``.
     """
+    home = get_hermes_home()
     origin: Dict[str, Any] = {
         "session_id": str(session_id or ""),
         "task_id": str(task_id or ""),
         "session_key": "",
+        "hermes_home": str(home),
     }
     if not origin["session_id"]:
         return origin
     try:
         from hermes_state import SessionDB
 
-        db_path = get_process_hermes_home() / "state.db"
+        db_path = Path(home) / "state.db"
         if not db_path.exists():
             return origin
         row = SessionDB(db_path=db_path).get_session(origin["session_id"])
@@ -98,6 +110,39 @@ def completion_event(
     }
 
 
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _unnotified_terminal_dirs(hermes_home: Optional[Path] = None) -> List[Path]:
+    """Terminal-but-unnotified job dirs, newest first, unbounded.
+
+    Enumerating *all* job directories before filtering is what keeps old
+    completions reachable: slicing the listing to the newest N first would
+    strand every older terminal job behind a wall of already-notified ones.
+    """
+    root = jobs.research_jobs_root(hermes_home)
+    try:
+        entries = [child for child in root.iterdir() if child.is_dir()]
+    except OSError:
+        return []
+    entries.sort(key=_mtime, reverse=True)
+    pending: List[Path] = []
+    for directory in entries:
+        if not jobs.is_canonical_job_id(directory.name):
+            continue
+        status = jobs.read_status(directory)
+        if status.get("state") not in jobs.TERMINAL_STATES:
+            continue
+        if status.get("notified"):
+            continue
+        pending.append(directory)
+    return pending
+
+
 def notify_pending(
     hermes_home: Optional[Path] = None,
     *,
@@ -106,9 +151,12 @@ def notify_pending(
 ) -> List[str]:
     """Notify every terminal-but-unnotified job. Returns the job ids sent.
 
-    ``mark_notified`` is the single-winner flip, so a concurrent watcher (or a
-    restart racing the old gateway) can never double-deliver. A queue that
-    rejects the event rolls the claim back, making delivery retryable.
+    The per-tick ``limit`` is a delivery bound applied *after* filtering to
+    terminal-and-unnotified jobs, so one full tick never silently strands the
+    (limit+1)-th completion (the next tick picks it up). ``mark_notified`` is
+    the single-winner flip, so a concurrent watcher (or a restart racing the
+    old gateway) can never double-deliver. A queue that rejects the event
+    rolls the claim back, making delivery retryable.
     """
     if queue_put is None:
         try:
@@ -119,19 +167,11 @@ def notify_pending(
             return []
 
     sent: List[str] = []
-    for summary in jobs.list_recent_jobs(limit, hermes_home):
-        job_id = str(summary.get("job_id") or "")
-        if not jobs.is_canonical_job_id(job_id):
-            continue
-        if summary.get("state") not in jobs.TERMINAL_STATES:
-            continue
-        try:
-            directory = jobs.resolve_existing_job(job_id, hermes_home)
-            status = jobs.read_status(directory)
-        except (ValueError, FileNotFoundError):
-            continue
-        if status.get("notified"):
-            continue
+    for directory in _unnotified_terminal_dirs(hermes_home):
+        if len(sent) >= max(1, limit):
+            break
+        job_id = directory.name
+        status = jobs.read_status(directory)
         event = completion_event(directory, status, jobs.read_request(directory))
         if event is None:
             continue
@@ -152,6 +192,51 @@ def notify_pending(
 # ---------------------------------------------------------------------------
 # Gateway watcher
 # ---------------------------------------------------------------------------
+
+
+def watcher_hermes_homes(process_home: Optional[Path] = None) -> List[Path]:
+    """Hermes homes the gateway watcher sweeps: the process home plus every
+    live named-profile home under it.
+
+    ``start`` writes jobs under the *active* :func:`hermes_constants.get_hermes_home`,
+    and for a multiplexed/named-profile session that is a profile home
+    (``<process home>/profiles/<name>/``) — so a watcher that only swept the
+    process home would never recover or completion-notify those jobs. The
+    enumeration is a directory scan anchored at the process home only: it
+    never consults the operator's live ``~/.hermes`` (tests point
+    ``HERMES_HOME`` at a tmpdir for exactly that reason), skips tombstoned or
+    missing profile homes, and ignores non-profile entries such as the
+    ``.deleted`` tombstone directory.
+    """
+    home = Path(process_home) if process_home is not None else get_process_hermes_home()
+    homes = [home]
+    profiles_root = home / "profiles"
+    try:
+        entries = sorted(child for child in profiles_root.iterdir() if child.is_dir())
+    except OSError:
+        return homes
+    try:
+        from hermes_cli.profiles import validate_profile_name
+
+        def _is_profile_home(entry: Path) -> bool:
+            if entry.name == "default":
+                return False  # "default" IS the process home, not a child of profiles/
+            try:
+                validate_profile_name(entry.name)
+            except ValueError:
+                return False  # dot-dirs, tombstone dirs, stray names
+            return True
+
+        from hermes_constants import named_profile_is_deleted
+    except Exception:  # noqa: BLE001 — a broken profiles module must not stop the sweep
+        return homes
+    for entry in entries:
+        if not _is_profile_home(entry):
+            continue
+        if named_profile_is_deleted(entry) or not entry.exists():
+            continue
+        homes.append(entry)
+    return homes
 
 
 class CompletionWatcher:
@@ -187,23 +272,32 @@ class CompletionWatcher:
             thread.join(timeout=timeout)
         self._thread = None
 
+    def _watch_homes(self) -> List[Path]:
+        """Homes to sweep this tick: the process home plus its live profiles.
+
+        Re-derived every tick so profiles created or deleted after the watcher
+        started are picked up without a restart.
+        """
+        return watcher_hermes_homes(self.hermes_home)
+
     def _loop(self) -> None:
-        # Startup recovery: fail jobs whose runner died with the old process.
+        # Startup recovery: fail jobs whose runner died with the old process —
+        # across the process home and every live profile home under it.
         try:
             from plugins.deep_research.launcher import runner_alive
 
-            recovered = jobs.recover_stale_jobs(
-                runner_alive=runner_alive, hermes_home=self.hermes_home
-            )
-            for job_id in recovered:
-                logger.info("deep research: job %s marked interrupted after restart", job_id)
+            for home in self._watch_homes():
+                recovered = jobs.recover_stale_jobs(runner_alive=runner_alive, hermes_home=home)
+                for job_id in recovered:
+                    logger.info("deep research: job %s marked interrupted after restart", job_id)
         except Exception:  # noqa: BLE001
             logger.exception("deep research: stale-job recovery failed")
         while not self._stop.wait(self.interval_seconds):
-            try:
-                notify_pending(self.hermes_home, queue_put=self.queue_put)
-            except Exception:  # noqa: BLE001 — one bad tick must not kill the thread
-                logger.exception("deep research: notify sweep failed")
+            for home in self._watch_homes():
+                try:
+                    notify_pending(home, queue_put=self.queue_put)
+                except Exception:  # noqa: BLE001 — one bad tick must not kill the thread
+                    logger.exception("deep research: notify sweep failed")
 
 
 _WATCHER: Optional[CompletionWatcher] = None

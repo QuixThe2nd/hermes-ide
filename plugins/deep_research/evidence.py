@@ -193,7 +193,12 @@ def fetched_urls_from_result(tool_name: str, args: Dict[str, Any], result: Any) 
         return out
 
     if tool_name == "browser_navigate":
-        url = args.get("url") if isinstance(args, dict) else None
+        # A navigation can redirect; the result's final ``url`` is the page the
+        # lane actually read, and it is what citation validation compares
+        # against — recording the argument would reject the redirected URL.
+        final_url = payload.get("url") if payload else None
+        requested = args.get("url") if isinstance(args, dict) else None
+        url = final_url if isinstance(final_url, str) and final_url.strip() else requested
         if isinstance(url, str) and url.strip():
             out.append({"url": url.strip(), "title": ""})
         return out

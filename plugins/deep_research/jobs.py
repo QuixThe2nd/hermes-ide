@@ -11,8 +11,11 @@ path parameters from the model are never joined onto the filesystem.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -20,6 +23,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_write_text
+
+logger = logging.getLogger("hermes.plugins.deep_research.jobs")
 
 PLUGIN_STATE_DIRNAME = "research_jobs"
 
@@ -465,19 +470,48 @@ def mark_lanes_failed(directory: Path, error: str) -> None:
 # Locking
 # ---------------------------------------------------------------------------
 
+# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent
+# (or unusable on this filesystem), in which case _job_lock() degrades to
+# in-process locking only — the same shape as cron/jobs.py.
+try:
+    import fcntl  # windows-footgun: ok — msvcrt fallback below
+except ImportError:  # pragma: no cover — POSIX always provides fcntl
+    fcntl = None
+try:
+    import msvcrt  # windows-footgun: ok — POSIX never imports this branch
+except ImportError:  # pragma: no cover — Windows-only module
+    msvcrt = None
+
 _JOB_LOCKS: Dict[str, Any] = {}
 _LOCKS_GUARD: Any = None
+_LOCK_DEPTH = threading.local()
+_LOCK_FILE_NAME = ".status.lock"
+# Bounded flock acquisition for the same reason cron bounds its jobs lock
+# (#60703): an unbounded blocking lock held by a wedged process would freeze
+# every status write — cancel, finish, and the notify watcher alike.
+_JOB_LOCK_TIMEOUT_SECONDS = 10.0
 
 
+@contextlib.contextmanager
 def _job_lock(directory: Path):
-    """Per-job re-entrant lock guarding read-modify-write cycles in-process.
+    """Serialize one job's read-modify-write status cycles.
 
-    Cross-process safety comes from atomic replace: two writers produce two
-    complete files, never a torn one. The lock keeps the in-process runner,
-    cancel path, and notify watcher from interleaving their read-modify-writes.
+    Layer 1 is the per-job RLock: the runner, the cancel path, and the notify
+    watcher can all live in the gateway process, and their read-guard-mutate-
+    write cycles must not interleave. Layer 2 is an advisory exclusive lock on
+    ``<job>/.status.lock``: the gateway watcher and a runner transient service
+    are *separate processes* that share no memory, so only a file lock makes
+    cancel-vs-finish and mark_notified single-winner across them. Atomic
+    replace still provides the durability (a crashed writer leaves a whole
+    file); the lock serializes the transaction, it does not replace the write.
+
+    Mirrors the fcntl + msvcrt pattern in ``cron/jobs.py`` and
+    ``tools/memory_tool.py``. The flock poll is bounded: on timeout the write
+    proceeds under in-process locking only (a briefly racing cross-process
+    write is strictly better than a cancel or watcher thread frozen forever).
+    Re-entrant per thread like the cron lock, so a nested acquisition reuses
+    the held lock instead of deadlocking on its own flock.
     """
-    import threading
-
     global _LOCKS_GUARD
     if _LOCKS_GUARD is None:
         _LOCKS_GUARD = threading.Lock()
@@ -487,7 +521,90 @@ def _job_lock(directory: Path):
         if lock is None:
             lock = threading.RLock()
             _JOB_LOCKS[key] = lock
-    return lock
+
+    depths = getattr(_LOCK_DEPTH, "depths", None)
+    if depths is None:
+        depths = {}
+        _LOCK_DEPTH.depths = depths
+    if depths.get(key):
+        depths[key] += 1
+        try:
+            yield
+        finally:
+            depths[key] -= 1
+        return
+
+    with lock:
+        depths[key] = 1
+        try:
+            release = _acquire_status_file_lock(directory)
+            try:
+                yield
+            finally:
+                if release is not None:
+                    release()
+        finally:
+            depths[key] = 0
+
+
+def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
+    """Take the cross-process advisory lock; return its releaser or ``None``.
+
+    ``None`` means "proceed under the in-process lock only" — unavailable
+    primitives, an unopenable path, or a bounded-acquisition timeout all
+    degrade the same way rather than blocking the caller forever.
+    """
+    if fcntl is None and msvcrt is None:
+        return None
+    try:
+        handle = open(directory / _LOCK_FILE_NAME, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        if fcntl is not None:
+            deadline = time.monotonic() + _JOB_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        logger.error(
+                            "Timed out after %.0fs waiting for the status lock (%s) — "
+                            "another process is holding it. Proceeding with in-process "
+                            "locking only so this status write still lands.",
+                            _JOB_LOCK_TIMEOUT_SECONDS,
+                            directory / _LOCK_FILE_NAME,
+                        )
+                        handle.close()
+                        return None
+                    time.sleep(0.1)
+        else:
+            handle.seek(0)
+            getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+    except OSError:
+        logger.warning(
+            "status cross-process lock unavailable; proceeding with in-process lock only",
+        )
+        try:
+            handle.close()
+        except OSError:
+            pass
+        return None
+
+    def _release() -> None:
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            else:
+                handle.seek(0)
+                getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+        except OSError:
+            pass
+        finally:
+            handle.close()
+
+    return _release
 
 
 # ---------------------------------------------------------------------------

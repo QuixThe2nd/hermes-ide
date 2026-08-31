@@ -121,6 +121,23 @@ class TestHookRecordsFetchesOnly:
         assert [r["url"] for r in records] == [FETCHED]
         assert records[0]["tool"] == "browser_navigate"
 
+    def test_browser_navigation_records_the_final_url_after_redirects(
+        self, ledger_env: Path
+    ) -> None:
+        # The lane cites the page it actually read; recording the argument
+        # would make citation validation reject the redirected URL.
+        evidence.handle_post_tool_call(
+            tool_name="browser_navigate",
+            args={"url": "http://example.org/a"},
+            result={"success": True, "url": "https://example.org/a", "title": "A"},
+        )
+        assert [r["url"] for r in _lines(ledger_env)] == ["https://example.org/a"]
+
+    def test_browser_navigation_falls_back_to_the_argument_url(self, ledger_env: Path) -> None:
+        for result in ({"success": True}, {"success": True, "url": ""}, {"success": True, "url": None}):
+            evidence.handle_post_tool_call("browser_navigate", {"url": FETCHED}, result)
+        assert [r["url"] for r in _lines(ledger_env)] == [FETCHED] * 3
+
     def test_search_snippets_are_discovery_not_evidence(self, ledger_env: Path) -> None:
         snippet_result = {
             "success": True,

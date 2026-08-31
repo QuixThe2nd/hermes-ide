@@ -188,6 +188,17 @@ class TestStartKnobs:
         assert status["runner_scope"] == "system"
         assert status["runner_mode"] == "systemd"
 
+    def test_start_freezes_origin_routing_data(self, profile_home: Path, launcher_stub) -> None:
+        # session_key resolution happens once, at start, against the ACTIVE
+        # home; request.json then carries enough to route the completion even
+        # after a gateway restart (no re-resolution, no live db needed).
+        result = _start(launcher_stub)
+        origin = jobs.read_request(Path(result["job_dir"]))["origin"]
+        assert origin["session_id"] == "sess-1"
+        assert origin["task_id"] == "task-1"
+        assert origin["hermes_home"] == str(profile_home)
+        assert "session_key" in origin  # best-effort; frozen either way
+
     def test_forced_systemd_failure_fails_the_start(self, profile_home: Path, monkeypatch) -> None:
         # runner_mode=systemd requires a transient service: no silent fallback.
         (profile_home / "config.yaml").write_text(

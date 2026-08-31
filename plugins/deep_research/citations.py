@@ -13,16 +13,42 @@ from dataclasses import dataclass, field
 from typing import Iterable, List, Set
 from urllib.parse import urlsplit, urlunsplit
 
-# Markdown links ``[label](https://…)``, reference links, and bare http(s) URLs.
+# Markdown links ``[label](https://…)``, reference links, and bare http(s)
+# URLs. Parentheses are allowed *inside* the URL (Wikipedia-style
+# ``Foo_(bar)``); the Markdown link closer is split off afterwards by paren
+# balance (:func:`_strip_prose_tail`), not by the character class.
 _URL_RE = re.compile(
-    r"""(?:\]\(\s*)?(https?://[^\s<>"'\)\]]+)""",
+    r"""(?:\]\(\s*)?(https?://[^\s<>"'\]]+)""",
     re.IGNORECASE,
 )
 
-# Trailing punctuation that is prose, not part of the URL.
-_TRAILING_PUNCT = ".,;:!?)]}'\">’”》"
+# Trailing punctuation that is prose, not part of the URL. ``)`` is absent on
+# purpose: a balanced ``)`` can be the URL's own final character.
+_TRAILING_PUNCT = ".,;:!?]}'\">’”》"
 
 _SCHEME_HTTP = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _strip_unbalanced_parens(url: str) -> str:
+    """Drop trailing ``)`` characters the URL's own ``(``s cannot account for.
+
+    In ``[source](https://example.org/wiki/Foo_(bar))`` the regex match
+    greedily includes the Markdown link closer; the URL itself ends at the
+    paren that balances its only ``(``.
+    """
+    while url.endswith(")") and url.count(")") > url.count("("):
+        url = url[:-1]
+    return url
+
+
+def _strip_prose_tail(url: str) -> str:
+    """Trim prose punctuation from a matched URL, preserving balanced parens."""
+    candidate = (url or "").strip()
+    while True:
+        trimmed = _strip_unbalanced_parens(candidate.rstrip(_TRAILING_PUNCT))
+        if trimmed == candidate:
+            return trimmed
+        candidate = trimmed
 
 
 @dataclass
@@ -43,7 +69,7 @@ def normalize_url(url: str) -> str:
     root path. Query strings and paths are compared verbatim — over-normalizing
     would let two distinct sources collapse into one.
     """
-    candidate = (url or "").strip().rstrip(_TRAILING_PUNCT)
+    candidate = _strip_prose_tail(url)
     if not _SCHEME_HTTP.match(candidate):
         return candidate.lower()
     try:
@@ -65,7 +91,7 @@ def extract_report_urls(text: str) -> List[str]:
     urls: List[str] = []
     seen: Set[str] = set()
     for match in _URL_RE.finditer(text or ""):
-        raw = match.group(1).strip().rstrip(_TRAILING_PUNCT)
+        raw = _strip_prose_tail(match.group(1))
         if not raw:
             continue
         normalized = normalize_url(raw)
