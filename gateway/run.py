@@ -34,6 +34,7 @@ import logging
 import os
 import queue
 import re
+import secrets
 import shlex
 import site
 import sys
@@ -2987,6 +2988,11 @@ from gateway.whatsapp_identity import (
     canonical_whatsapp_identifier as _canonical_whatsapp_identifier,  # noqa: F401
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
+)
+from gateway.restart_wind_down import (
+    WIND_DOWN_TERMINAL_CLOSED,
+    WIND_DOWN_TERMINAL_DRAINED,
+    WIND_DOWN_TERMINAL_SAFETY_CAP,
 )
 
 
@@ -8027,6 +8033,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _cooperative_restart_steered_sessions: Optional[List[str]] = None
+    # ── Opt-in restart wind-down cycle state (⏸️ Discord reaction) ─────────
+    # ``_restart_generation`` counts restart cycles this process opened and
+    # ``_restart_wind_down_nonce`` is a fresh random token per cycle, so a
+    # reaction can only ever authorize the offer the *current* cycle minted.
+    # ``_restart_wind_down_offer`` is the authoritative server-side binding of
+    # message id + requester snowflake to that cycle; ``None`` means no
+    # actionable prompt exists. ``_restart_wind_down_accepted`` is the one-shot
+    # latch — it flips synchronously, before any await, so concurrent reaction
+    # events can only ever produce a single accepted transition.
+    _restart_generation: int = 0
+    _restart_cycle_open: bool = False
+    _restart_wind_down_nonce: Optional[str] = None
+    _restart_wind_down_offer: Optional[Dict[str, Any]] = None
+    _restart_wind_down_accepted: bool = False
+    _restart_wind_down_allowlist_written: bool = False
+    # Set the moment a cycle's prompt is retired, whatever retired it. A send
+    # that is still in flight when that happens must not re-register its
+    # message as actionable — the cycle is over, so the just-sent prompt is
+    # stale the instant it exists and gets a terminal edit instead.
+    _restart_wind_down_finalized: bool = False
+    _restart_wind_down_final_reason: Optional[str] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -8228,6 +8255,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._detached_restart_helper_started = False
         self._restart_command_source: Optional[SessionSource] = None
+        self._restart_generation = 0
+        self._restart_cycle_open = False
+        self._restart_wind_down_nonce: Optional[str] = None
+        self._restart_wind_down_offer: Optional[Dict[str, Any]] = None
+        self._restart_wind_down_accepted = False
+        self._restart_wind_down_allowlist_written = False
+        self._restart_wind_down_finalized = False
+        self._restart_wind_down_final_reason: Optional[str] = None
         # Monotonic-ish wall clock of when this GatewayRunner was constructed.
         # Used by the /restart redelivery guard to bound the window in which a
         # missing dedup marker is treated as a stale redelivery.
@@ -13203,6 +13238,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         active = self._active_work_count()
         if active <= 0:
+            await self._finalize_restart_wind_down_offer(
+                WIND_DOWN_TERMINAL_DRAINED
+            )
             return True
 
         awaitable = self._awaitable_work_count()
@@ -13213,6 +13251,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "and proceeding to stop()/drain which will interrupt them",
                 active,
             )
+            await self._finalize_restart_wind_down_offer(
+                WIND_DOWN_TERMINAL_SAFETY_CAP
+            )
             return False
 
         timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
@@ -13221,6 +13262,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Restart requested with %d active work unit(s); "
                 "restart_after_turn_timeout=0 — entering stop()/drain immediately",
                 active,
+            )
+            await self._finalize_restart_wind_down_offer(
+                WIND_DOWN_TERMINAL_SAFETY_CAP
             )
             return False
 
@@ -13249,6 +13293,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     timeout,
                     self._active_work_count(),
                 )
+                await self._finalize_restart_wind_down_offer(
+                    WIND_DOWN_TERMINAL_SAFETY_CAP
+                )
                 return False
             if (now - last_status_at) >= 30.0:
                 logger.info(
@@ -13271,12 +13318,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "proceeding to stop()/drain which will interrupt them",
                 self._active_work_count(),
             )
+            await self._finalize_restart_wind_down_offer(
+                WIND_DOWN_TERMINAL_SAFETY_CAP
+            )
             return False
 
         logger.info(
             "Restart deferred wait complete — active work drained; "
             "proceeding to stop()"
         )
+        await self._finalize_restart_wind_down_offer(WIND_DOWN_TERMINAL_DRAINED)
         return True
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
@@ -13290,7 +13341,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
         self._draining = True
-        self._request_cooperative_restart_wind_down()
+        # No cooperative wind-down here. The drain waits naturally; the park
+        # steer only happens if the requester opts in via the ⏸️ reaction on
+        # the Discord embed begin_user_restart offered for this cycle.
+        self._begin_restart_cycle()
 
         async def _run_restart() -> None:
             await self._await_active_work_before_restart()
@@ -13342,9 +13396,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running agents so they can reach a pausable state instead of
         pinning the drain until they naturally finish.
 
-        The active-chat snapshot is written even when nobody accepts a
-        steer, including the empty set. Startup then resumes only that
-        list instead of every leftover ``resume_pending`` flag.
+        Called at opt-in time — never merely because a restart began — so the
+        snapshot reflects what is live *at the reaction*, and a requester who
+        never reacts leaves every live session to finish on its own.
+
+        The snapshot receipt is written only when somebody was left to ask:
+        an empty snapshot is a terminal no-op, not "resume nobody".
         """
         from gateway.restart_wind_down import (
             mark_cooperative_restart_sessions,
@@ -13354,6 +13411,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         snapshotted = snapshot_active_sessions_for_restart(self)
         steered = steer_running_agents_for_restart(self)
+        if snapshotted:
+            self._restart_wind_down_allowlist_written = True
         # This is deliberately distinct from the broader steer-time snapshot:
         # user-facing shutdown notices may claim an LLM steer was sent only
         # for sessions whose agent actually accepted that exact text.
@@ -13372,6 +13431,265 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             marked,
         )
         return steered
+
+    # ------------------------------------------------------------------
+    # Opt-in restart wind-down (⏸️ reaction on the Discord pause offer)
+    # ------------------------------------------------------------------
+
+    def _begin_restart_cycle(self) -> int:
+        """Open one restart cycle: bump the generation and mint a nonce.
+
+        Idempotent within the cycle. ``begin_user_restart`` opens it early so
+        the ⏸️ offer it is about to send can be bound to a generation;
+        ``request_restart`` then re-enters here and must NOT mint a second
+        generation, or the live offer would be orphaned behind a stale one.
+        """
+        if self._restart_cycle_open:
+            return self._restart_generation
+        self._restart_cycle_open = True
+        self._restart_generation += 1
+        self._restart_wind_down_nonce = secrets.token_hex(8)
+        self._restart_wind_down_offer = None
+        self._restart_wind_down_accepted = False
+        self._restart_wind_down_allowlist_written = False
+        self._restart_wind_down_finalized = False
+        self._restart_wind_down_final_reason = None
+        return self._restart_generation
+
+    def _restart_wind_down_offer_eligible(self, source: Optional[SessionSource]) -> bool:
+        """True only for a native-Discord user restart with someone to ask.
+
+        Every other surface — Telegram/Signal/Slack, relay-fronted Discord,
+        signal, update, API and service-manager restarts — never reaches the
+        offer at all, because they never call :meth:`begin_user_restart` with
+        a native Discord source. This is the second gate: even on that path an
+        offer needs a numeric requester snowflake to authorize against, and at
+        least one live chat that is not the requester's own turn.
+        """
+        if source is None or source.platform != Platform.DISCORD:
+            return False
+        if getattr(source, "delivered_via_upstream_relay", False) is True:
+            return False
+        requester_user_id = str(getattr(source, "user_id", "") or "").strip()
+        if not requester_user_id.isdigit():
+            return False
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
+            return False
+        from gateway.restart_wind_down import iter_steerable_agents
+
+        for _session_key, _agent in iter_steerable_agents(self):
+            return True
+        return False
+
+    async def _send_restart_wind_down_prompt(self, source: SessionSource) -> bool:
+        """Post the one ⏸️ opt-in embed in the requester's channel/thread.
+
+        Returns True when an actionable prompt is now registered. Any failure
+        (no adapter, no client, Discord send error) simply leaves the restart
+        on the natural-wait path — the offer is an acceleration, never a
+        precondition.
+        """
+        from gateway.restart_wind_down import restart_wind_down_prompt_spec
+
+        if not self._restart_wind_down_offer_eligible(source):
+            return False
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            return False
+        send = getattr(adapter, "send_restart_wind_down_offer", None)
+        if not callable(send):
+            return False
+
+        generation = self._begin_restart_cycle()
+        nonce = self._restart_wind_down_nonce
+        requester_user_id = str(source.user_id or "").strip()
+        # Discord threads are their own channel: the connector keys chat_id on
+        # the thread id, so chat_id alone already targets the right place.
+        channel_id = str(source.chat_id)
+        try:
+            message_id = await send(
+                channel_id=channel_id,
+                requester_user_id=requester_user_id,
+                generation=generation,
+                nonce=nonce,
+                spec=restart_wind_down_prompt_spec(),
+            )
+        except Exception:
+            logger.warning(
+                "Restart wind-down offer could not be sent; waiting naturally",
+                exc_info=True,
+            )
+            return False
+        if not message_id:
+            return False
+
+        # The send awaited above, so the drain may have finalized the cycle
+        # while the embed was in flight. Registering it now would resurrect an
+        # actionable prompt for a cycle that is already over — retire it
+        # straight into its terminal edit instead.
+        if self._restart_wind_down_finalized:
+            from gateway.restart_wind_down import restart_wind_down_terminal_spec
+
+            logger.info(
+                "Restart wind-down offer arrived after the cycle finalized; "
+                "marking the just-sent prompt terminal"
+            )
+            try:
+                await adapter.finalize_restart_wind_down_offer(
+                    message_id=message_id,
+                    channel_id=channel_id,
+                    spec=restart_wind_down_terminal_spec(
+                        self._restart_wind_down_final_reason
+                        or WIND_DOWN_TERMINAL_CLOSED
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Stale restart wind-down prompt could not be edited", exc_info=True
+                )
+            return False
+
+        self._restart_wind_down_offer = {
+            "generation": generation,
+            "nonce": nonce,
+            "message_id": str(message_id),
+            "channel_id": channel_id,
+            "requester_user_id": requester_user_id,
+        }
+        logger.info(
+            "Restart wind-down offer sent (generation=%d, channel=%s); "
+            "waiting for the requester's ⏸️ reaction",
+            generation,
+            channel_id,
+        )
+        return True
+
+    async def accept_restart_wind_down_opt_in(
+        self,
+        *,
+        message_id: str,
+        channel_id: str,
+        requester_user_id: str,
+        emoji: str,
+        generation: int,
+        nonce: Optional[str],
+    ) -> Dict[str, Any]:
+        """Run the cooperative wind-down once, at reaction time.
+
+        The whole authorization decision is made against server-side state
+        this runner owns: the exact message id it offered, the exact requester
+        snowflake, the exact normalized pause emoji, and the current restart
+        generation and nonce. Footer text is never consulted. The one-shot
+        latch flips before the first await, so a second valid event —
+        concurrent, duplicated, or a remove/re-add — can only ever see
+        ``already_accepted``.
+
+        Returns a dict with ``accepted`` plus either ``accepted_count`` (the
+        sessions that took the steer) or ``no_targets`` (everything finished
+        between prompt and reaction — a harmless terminal no-op).
+        """
+        from gateway.restart_wind_down import normalize_pause_emoji
+
+        offer = self._restart_wind_down_offer
+        # The latch is checked first: a reaction re-submitted after the one
+        # accepted transition is "already accepted" even if a broken adapter
+        # managed to re-register the message.
+        if self._restart_wind_down_accepted:
+            return {"accepted": False, "reason": "already_accepted"}
+        if offer is None:
+            return {"accepted": False, "reason": "no_offer"}
+        if normalize_pause_emoji(emoji) is None:
+            return {"accepted": False, "reason": "wrong_emoji"}
+        if generation != offer["generation"]:
+            return {"accepted": False, "reason": "stale_generation"}
+        if nonce is None or nonce != offer["nonce"]:
+            return {"accepted": False, "reason": "stale_nonce"}
+        if str(message_id) != offer["message_id"]:
+            return {"accepted": False, "reason": "wrong_message"}
+        if str(channel_id) != offer["channel_id"]:
+            return {"accepted": False, "reason": "wrong_channel"}
+        if str(requester_user_id) != offer["requester_user_id"]:
+            return {"accepted": False, "reason": "wrong_user"}
+        if not self._restart_requested:
+            return {"accepted": False, "reason": "not_restarting"}
+
+        # Claim the transition synchronously, then retire the offer so no
+        # later event — including one already in flight — can re-enter.
+        self._restart_wind_down_accepted = True
+        self._restart_wind_down_offer = None
+
+        steered = self._request_cooperative_restart_wind_down()
+        if not self._restart_wind_down_allowlist_written:
+            logger.info(
+                "Restart wind-down opt-in: every live session had already "
+                "finished; nothing to pause and no resume receipt written"
+            )
+            return {"accepted": True, "no_targets": True, "accepted_count": 0}
+        logger.info(
+            "Restart wind-down opt-in accepted: %d session(s) took the "
+            "safe-pause steer",
+            len(steered),
+        )
+        return {"accepted": True, "accepted_count": len(steered), "steered": steered}
+
+    async def _finalize_restart_wind_down_offer(self, reason: str) -> None:
+        """Retire the ⏸️ prompt. Local state first, then best-effort cleanup.
+
+        ``reason`` is one of the ``WIND_DOWN_TERMINAL_*`` kinds. Called from
+        every path that makes the prompt moot: natural drain completion and
+        safety-cap progression out of ``_await_active_work_before_restart``,
+        and shutdown/cancellation out of ``_stop_impl_body`` (adapters are
+        still connected there, so the terminal edit can still be delivered).
+
+        A Discord cleanup failure is logged and swallowed — it must never
+        re-arm the offer or block the restart.
+        """
+        from gateway.restart_wind_down import (
+            clear_resume_allowlist,
+            restart_wind_down_terminal_spec,
+        )
+
+        offer = self._restart_wind_down_offer
+        # Deactivate local state FIRST: from here on a reaction is a no-op even
+        # if every Discord call below fails.
+        self._restart_wind_down_offer = None
+        self._restart_wind_down_finalized = True
+        self._restart_wind_down_final_reason = reason
+        if not self._restart_wind_down_allowlist_written:
+            # No opt-in happened this cycle, so any receipt on disk belongs to
+            # an older one. Drop it or the next boot would resume sessions that
+            # were never asked to park. This must also run for the cycles that
+            # never had an offer to retire — Telegram/signal/update restarts,
+            # a Discord restart with no live peer — which is exactly why it
+            # sits above the no-offer early return below.
+            clear_resume_allowlist()
+
+        if offer is None:
+            return
+
+        accepted = int(
+            len(getattr(self, "_cooperative_restart_steered_sessions", None) or [])
+        )
+        spec = restart_wind_down_terminal_spec(reason, accepted=accepted)
+        adapter = self.adapters.get(Platform.DISCORD)
+        finalize = (
+            getattr(adapter, "finalize_restart_wind_down_offer", None)
+            if adapter is not None
+            else None
+        )
+        if not callable(finalize):
+            return
+        try:
+            await finalize(
+                message_id=offer["message_id"],
+                channel_id=offer["channel_id"],
+                spec=spec,
+            )
+        except Exception:
+            logger.debug(
+                "Restart wind-down offer cleanup failed (offer already inert)",
+                exc_info=True,
+            )
 
     def _resume_allowlist_for_this_boot(self):
         """Steer-time snapshot for this process, or None on the crash path.
@@ -16879,6 +17197,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
+
+            # Retire any ⏸️ restart wind-down prompt before adapters go down,
+            # while the terminal embed edit can still be delivered. Covers the
+            # paths the after-turn wait never reaches: signal shutdown, update
+            # restarts, and a drain cancel/abort.
+            await self._finalize_restart_wind_down_offer(WIND_DOWN_TERMINAL_CLOSED)
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):

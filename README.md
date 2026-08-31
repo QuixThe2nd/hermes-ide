@@ -108,7 +108,7 @@ Discord History is a read-only search over an owner-authorized PostgreSQL archiv
 
 During stalls you can turn on a live provider retry/fallback progress bubble (`display.retry_progress`, off by default). Replies can end with a timing breakdown — total, API, tools, other (off by default upstream).
 
-Steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context. `/restart` parks only live chats, resumes only that snapshot, and shows each accepted LLM park steer in its shutdown warning. Chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM. An agent-callable `restart` tool pings the requester, waits indefinitely for the exact word `restart` (anything else cancels), then uses the same drain path as `/restart` — on Discord the confirmation is one embed that pings the requester, with no progress bubble beside it.
+Steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context. `/restart` waits for active sessions to finish naturally; on Discord the requester gets one ⏸️ embed in the same chat, and only their reaction asks the other live chats to park safely now — that reaction-time snapshot is the only set resumed after restart, and the shutdown warning shows each accepted LLM park steer. Chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM. An agent-callable `restart` tool pings the requester, waits indefinitely for the exact word `restart` (anything else cancels), then uses the same drain path as `/restart` — on Discord the confirmation is one embed that pings the requester, with no progress bubble beside it.
 
 Lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`). The system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context.
 
@@ -172,7 +172,7 @@ Z.AI silent default is GLM-5.3, with GLM-5.3-Flash as fallback. `security.allow_
   - Gateway — optional live provider retry/fallback progress bubble during stalls (`display.retry_progress`, off by default)
   - Gateway — replies can end with a timing breakdown: total, API, tools, other (off by default upstream)
   - Gateway — steered follow-ups get a second "✅ Steer delivered" ack the moment the text actually lands in the model's context
-  - Gateway — `/restart` parks only live chats, resumes only that snapshot, and shows each accepted LLM park steer in its shutdown warning
+  - Gateway — `/restart` waits for live chats to finish; on Discord a ⏸️ reaction on the requester's offer asks the others to park now, and only that reaction-time snapshot resumes after restart
   - Gateway — chats that got the shutdown warning get a matching ♻️ back-online notice after restart, including raw SIGTERM
   - Gateway — lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`)
   - Gateway — `/sethomeserver` provisions the whole Discord home server from one command (confirm required to move an existing one), wires `#gateway-restarts` as `agents-N` while up and `restarting-N-agents` while draining, then re-syncs at most hourly
