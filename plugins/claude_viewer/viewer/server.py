@@ -405,7 +405,32 @@ def read_run_prompt(path: Path) -> str | None:
     return None
 
 
+# Bytes read per scan step below: small enough that a capped page stops just
+# past its first omitted event instead of materializing the whole remainder.
+TAIL_READ_CHUNK_BYTES = 64 * 1024
+
+# json.dumps({"lines": events}) with default separators is exactly
+# '{"lines": [' + ', '.join(dumps(e) for e in events) + ']}', so a page's
+# encoded size is EMPTY payload + sum(event bytes) + 2 per separator. The
+# running total accounts for that envelope exactly, so each event is
+# serialized exactly once and the growing page is never re-serialized.
+_EMPTY_LINES_PAYLOAD_BYTES = len(json.dumps({"lines": []}).encode("utf-8"))
+_ITEM_SEPARATOR_BYTES = len(", ".encode("utf-8"))  # json.dumps default
+
+
 def read_from_offset(path: Path, offset: int) -> tuple[int, list[dict[str, Any]]]:
+    """Read the oldest fitting page of kept events starting at `offset`.
+
+    Scans forward incrementally from `offset`, bounded by the file size
+    snapshot taken on entry — bytes appended after that snapshot are left
+    for the next poll, never chased. When the next kept event would push the
+    JSON page past MAX_RESPONSE_BYTES the scan stops and the returned cursor
+    stays at that omitted event's byte start, so polling resumes there and
+    every kept event is delivered in order, exactly once. A partial final
+    line is never consumed. Total read volume across a full drain is linear
+    in file size: each page reads its own span plus at most one chunk
+    overshoot, and only the first omitted event is ever reread.
+    """
     try:
         size = path.stat().st_size
     except OSError:
@@ -416,57 +441,42 @@ def read_from_offset(path: Path, offset: int) -> tuple[int, list[dict[str, Any]]
     if offset > size:
         return size, []
 
+    kept: list[dict[str, Any]] = []
+    payload_bytes = _EMPTY_LINES_PAYLOAD_BYTES
+    cursor = offset
+    leftover = b""
+    pos = offset
     with open(path, "rb") as fh:
         fh.seek(offset)
-        raw = fh.read()
-
-    if not raw:
-        return size, []
-
-    last_nl = raw.rfind(b"\n")
-    if last_nl == -1:
-        return offset, []
-
-    complete = raw[: last_nl + 1]
-    full_offset = offset + len(complete)
-
-    # Track each kept event's byte end so a capped page can stop the cursor
-    # exactly at the last returned event; the next poll then resumes at the
-    # first omitted event instead of dropping the omitted prefix forever.
-    kept: list[dict[str, Any]] = []
-    ends: list[int] = []
-    cursor = offset
-    for raw_line in complete.split(b"\n")[:-1]:
-        cursor += len(raw_line) + 1
-        obj = parse_json_line(raw_line.decode("utf-8", errors="replace"))
-        if obj is not None and not is_noise_event(obj):
-            kept.append(obj)
-            ends.append(cursor)
-
-    if not kept:
-        # Only noise/unparseable bytes past the cursor: nothing renders, so
-        # advancing through all complete bytes is safe.
-        return full_offset, []
-
-    if len(json.dumps({"lines": kept}).encode("utf-8")) <= MAX_RESPONSE_BYTES:
-        return full_offset, kept
-
-    # Cap reached: return the OLDEST fitting prefix (never the newest
-    # suffix) and stop the cursor at that prefix's last byte. Polling from
-    # there returns every omitted kept event in order, exactly once; noise
-    # lines in between are reread and dropped again, never rendered.
-    lo, hi = 1, len(kept)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        candidate = json.dumps({"lines": kept[:mid]})
-        if len(candidate.encode("utf-8")) <= MAX_RESPONSE_BYTES:
-            lo = mid
-        else:
-            hi = mid - 1
-    # One event larger than the cap still ships alone (soft page cap), so the
-    # cursor advances instead of returning empty pages forever.
-    count = max(lo, 1)
-    return ends[count - 1], kept[:count]
+        while pos < size:
+            data = fh.read(min(TAIL_READ_CHUNK_BYTES, size - pos))
+            if not data:
+                break  # truncated since the snapshot
+            pos += len(data)
+            segments = (leftover + data).split(b"\n")
+            leftover = segments.pop()
+            for raw_line in segments:
+                line_start = cursor
+                cursor += len(raw_line) + 1
+                obj = parse_json_line(raw_line.decode("utf-8", errors="replace"))
+                if obj is None or is_noise_event(obj):
+                    continue  # noise/invalid bytes are consumed, never rendered
+                event_bytes = len(json.dumps(obj).encode("utf-8"))
+                added = event_bytes if not kept else _ITEM_SEPARATOR_BYTES + event_bytes
+                if kept and payload_bytes + added > MAX_RESPONSE_BYTES:
+                    # Cap reached: stop BEFORE this event. The cursor stays
+                    # at its byte start, so the next poll rereads exactly
+                    # this one omitted line — the only reread per page.
+                    return line_start, kept
+                kept.append(obj)
+                payload_bytes += added
+                if payload_bytes > MAX_RESPONSE_BYTES:
+                    # A first kept event larger than the soft cap still ships
+                    # alone, so the cursor advances instead of stalling.
+                    return cursor, kept
+    # `leftover` holds a partial final line: never advance the cursor
+    # through bytes that do not yet end in a newline.
+    return cursor, kept
 
 
 def list_runs() -> dict[str, Any]:

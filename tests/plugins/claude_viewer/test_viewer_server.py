@@ -342,3 +342,179 @@ def test_oversized_single_event_is_delivered_and_advances_the_cursor(
     offset2, page2 = server.read_from_offset(log_file, offset1)
     assert [l["message"]["content"][0]["text"] for l in page2] == ["after"]
     assert offset2 == log_file.stat().st_size
+
+
+# ── read_from_offset: bounded linear-time scanning (Codex P2) ────────────
+#
+# The scan must be incremental: a capped page reads only through its first
+# omitted event, and draining N pages costs O(file size) total input — not
+# the old fh.read()-to-EOF that rescanned and re-materialized the whole
+# remainder on every page (O(pages × file)).
+
+
+class _ReadMeter:
+    """Counts bytes the server reads from run logs, via its open() global."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import builtins
+
+        real_open = builtins.open
+        self.bytes_read = 0
+
+        def metering_open(file, mode="r", *args, **kwargs):
+            fh = real_open(file, mode, *args, **kwargs)
+            if not (isinstance(mode, str) and "r" in mode and "b" in mode):
+                return fh
+            meter = self
+
+            class _Wrapped:
+                def read(self, n: int = -1) -> bytes:
+                    data = fh.read(n)
+                    meter.bytes_read += len(data)
+                    return data
+
+                def __getattr__(self, name: str):
+                    return getattr(fh, name)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc) -> bool:
+                    fh.close()
+                    return False
+
+            return _Wrapped()
+
+        monkeypatch.setattr(server, "open", metering_open, raising=False)
+
+
+def _padded_events(count: int, pad: int = 64) -> list[dict]:
+    return [_event(f"event {i:02d} " + "y" * pad) for i in range(count)]
+
+
+def test_capped_first_page_stops_reading_at_the_first_omitted_event(
+    log_file: Path, monkeypatch
+) -> None:
+    """Page one's read volume is bounded by the first omitted event plus one
+    chunk — far less than the multi-page backlog behind it. This is the test
+    the old full-remainder behavior fails, and it fails on read volume: the
+    old fh.read() pulled the ENTIRE remainder (the whole file here) on page
+    one alone, blowing past both bounds below."""
+    monkeypatch.setattr(server, "MAX_RESPONSE_BYTES", 512)
+    # Optional constant: pre-chunk servers don't define it, so raising=False
+    # lets the mutation run reach the bytes-read assertions below.
+    monkeypatch.setattr(server, "TAIL_READ_CHUNK_BYTES", 256, raising=False)
+    events = _padded_events(30)
+    _write_events(log_file, events)
+    size = log_file.stat().st_size
+    assert size > 4 * 512  # genuinely a multi-page backlog
+
+    meter = _ReadMeter(monkeypatch)
+    offset, page1 = server.read_from_offset(log_file, 0)
+    assert page1
+    assert len(page1) < len(events)
+
+    # The scan stops at the first omitted kept event, so reads cover at most
+    # that event's byte end rounded up to the chunk being read.
+    omitted_end = sum(
+        len(json.dumps(e).encode("utf-8")) + 1 for e in events[: len(page1) + 1]
+    )
+    assert meter.bytes_read <= omitted_end + server.TAIL_READ_CHUNK_BYTES
+    # Far less than the remaining backlog the old code read in full.
+    assert meter.bytes_read < size // 2
+    # And the returned cursor still sits exactly at that omitted event.
+    assert offset == omitted_end - (len(json.dumps(events[len(page1)]).encode("utf-8")) + 1)
+
+
+def test_draining_all_pages_has_linear_total_read_volume(
+    log_file: Path, monkeypatch
+) -> None:
+    """Total input across a full drain is the file size plus at most one
+    chunk overshoot and one omitted-line reread per page — linear in the
+    file, not the old O(pages × remainder) rescan. Under the old behavior
+    this fails on volume: page k reread ~size - offset_k bytes, totaling
+    roughly pages × size / 2."""
+    monkeypatch.setattr(server, "MAX_RESPONSE_BYTES", 512)
+    # Optional constant, as above: absent on the old full-remainder server.
+    monkeypatch.setattr(server, "TAIL_READ_CHUNK_BYTES", 256, raising=False)
+    events = _padded_events(30)
+    _write_events(log_file, events)
+    size = log_file.stat().st_size
+    line_lens = [len(json.dumps(e).encode("utf-8")) + 1 for e in events]
+    max_line = max(line_lens)
+
+    meter = _ReadMeter(monkeypatch)
+    texts: list[str] = []
+    offset = 0
+    pages = 0
+    while offset < size:
+        new_offset, lines = server.read_from_offset(log_file, offset)
+        assert lines, "every page of an all-kept file returns events"
+        assert new_offset > offset
+        texts.extend(l["message"]["content"][0]["text"] for l in lines)
+        offset = new_offset
+        pages += 1
+        assert pages < 100
+
+    # Exactly-once, in order — the cap never loses or repeats an event.
+    assert texts == [f"event {i:02d} " + "y" * 64 for i in range(30)]
+    assert pages > 1
+
+    # Linear bound: file bytes once, plus per page one chunk of overshoot
+    # and at most one reread omitted line (bounded by the longest line).
+    bound = size + pages * (server.TAIL_READ_CHUNK_BYTES + max_line)
+    assert meter.bytes_read <= bound
+    # Emphatically sub-quadratic: well under two full passes over the file.
+    assert meter.bytes_read < 2 * size
+
+
+def test_tail_read_does_not_chase_bytes_appended_after_the_snapshot(
+    log_file: Path, monkeypatch
+) -> None:
+    """The read is bounded by the opening stat(): bytes landing after that
+    snapshot are left for the next poll, not consumed mid-scan."""
+    import builtins
+
+    real_open = builtins.open
+    size_before = _write_events(log_file, [_event("one"), _event("two")])
+
+    appended = False
+
+    def appending_open(file, mode="r", *args, **kwargs):
+        nonlocal appended
+        if isinstance(mode, str) and "rb" in mode and not appended:
+            appended = True
+            _write_events(log_file, [_event("late")])
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(server, "open", appending_open, raising=False)
+
+    offset, lines = server.read_from_offset(log_file, 0)
+    assert appended  # the append really happened mid-call
+    assert [l["message"]["content"][0]["text"] for l in lines] == ["one", "two"]
+    assert offset == size_before  # snapshot bound, not the live EOF
+
+    # The next poll from the snapshot cursor picks the late event up.
+    offset2, lines2 = server.read_from_offset(log_file, offset)
+    assert [l["message"]["content"][0]["text"] for l in lines2] == ["late"]
+    assert offset2 == log_file.stat().st_size
+
+
+def test_invalid_json_and_bad_utf8_lines_are_consumed_never_rendered(
+    log_file: Path, monkeypatch
+) -> None:
+    """Unparseable lines (invalid JSON, undecodable UTF-8, blank lines) are
+    consumed safely — they never render and never block or reorder kept
+    events across capped pages."""
+    monkeypatch.setattr(server, "MAX_RESPONSE_BYTES", 512)
+    _write_events(log_file, [_event("before")])
+    with open(log_file, "ab") as fh:
+        fh.write(b"this is not json\n")
+        fh.write(b'{"type": "assistant", broken\n')
+        fh.write(b"\xff\xfe undecodable\n")
+        fh.write(b"\n")
+    _write_events(log_file, [_event("after")])
+
+    texts, offsets = _drain_tail(log_file)
+    assert texts == ["before", "after"]
+    assert offsets[-1] == log_file.stat().st_size  # garbage bytes consumed
