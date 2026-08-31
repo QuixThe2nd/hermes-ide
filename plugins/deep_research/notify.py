@@ -27,7 +27,7 @@ import stat
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from plugins.deep_research import jobs
@@ -233,6 +233,82 @@ def _is_real_child_directory(entry: Path, resolved_root: Path) -> bool:
         return False
 
 
+class _SweepTarget(NamedTuple):
+    """One watcher sweep target plus the context that validated it.
+
+    ``profiles_root`` is the resolved ``profiles/`` root that admitted a named
+    profile home; it is ``None`` for the process home, the trusted base that
+    needs no child validation. Carrying the root lets the watcher re-run the
+    same real-child-directory policy at the use boundary, where enumeration
+    callbacks have had their chance to swap an already-retained entry for a
+    symlink aimed at a foreign home.
+    """
+
+    path: Path
+    profiles_root: Optional[Path]
+
+    def still_valid(self) -> bool:
+        """Use-boundary revalidation; nothing callback-bearing may run
+        between this check and the use that follows it."""
+        if self.profiles_root is None:
+            return True
+        return _is_real_child_directory(self.path, self.profiles_root)
+
+
+def _sweep_targets(process_home: Optional[Path] = None) -> List[_SweepTarget]:
+    """Validated watcher sweep targets (see :func:`watcher_hermes_homes`)."""
+    home = Path(process_home) if process_home is not None else get_process_hermes_home()
+    targets = [_SweepTarget(home, None)]
+    profiles_root = home / "profiles"
+    try:
+        root_stat = profiles_root.lstat()
+    except OSError:
+        return targets  # no profiles root: the process home only
+    if stat.S_ISLNK(root_stat.st_mode):
+        logger.warning(
+            "deep research: %s is a symlink; refusing to sweep profile homes through it",
+            profiles_root,
+        )
+        return targets
+    try:
+        resolved_root = profiles_root.resolve()
+        entries = sorted(profiles_root.iterdir())
+    except OSError:
+        return targets
+    try:
+        from hermes_cli.profiles import validate_profile_name
+
+        def _is_profile_home(entry: Path) -> bool:
+            if entry.name == "default":
+                return False  # "default" IS the process home, not a child of profiles/
+            try:
+                validate_profile_name(entry.name)
+            except ValueError:
+                return False  # dot-dirs, tombstone dirs, stray names
+            return True
+
+        from hermes_constants import named_profile_is_deleted
+    except Exception:  # noqa: BLE001 — a broken profiles module must not stop the sweep
+        return targets
+    for entry in entries:
+        if not _is_profile_home(entry):
+            continue
+        # Gate before the tombstone lookup, so that lookup is never handed an
+        # entry already known to be a symlink or a non-child.
+        if not _is_real_child_directory(entry, resolved_root):
+            continue
+        if named_profile_is_deleted(entry):
+            continue
+        # Final callback-free validation: the tombstone lookup above runs on
+        # the watcher thread and can re-enter the filesystem, so the entry
+        # must clear the same real-child-directory policy again — with no
+        # callback in between — before the Path is retained.
+        if not _is_real_child_directory(entry, resolved_root):
+            continue
+        targets.append(_SweepTarget(entry, resolved_root))
+    return targets
+
+
 def watcher_hermes_homes(process_home: Optional[Path] = None) -> List[Path]:
     """Hermes homes the gateway watcher sweeps: the process home plus every
     live named-profile home physically under ``<process home>/profiles/``.
@@ -254,49 +330,26 @@ def watcher_hermes_homes(process_home: Optional[Path] = None) -> List[Path]:
     A symlinked entry is therefore skipped even when its name is valid and
     its target is a real directory inside this process home, and a symlinked
     ``profiles`` root refuses the enumeration outright.
+
+    Callback-swap revalidation: each entry is validated as a real child
+    directory before the ``named_profile_is_deleted`` tombstone lookup and —
+    because that lookup can synchronously rename the entry and plant a
+    symlink in its place — validated again, with no callback in between,
+    before the Path is retained. Retained candidates are revalidated once
+    more at the use boundary (:meth:`_SweepTarget.still_valid`) immediately
+    before each of ``recover_stale_jobs``/``notify_pending``, since a later
+    entry's tombstone lookup can swap an entry retained earlier in the same
+    pass. The process home itself is the trusted base and is never
+    revalidated.
+
+    Residual, stated exactly: this prevents profile-path swaps performed by
+    watcher callbacks on the single watcher thread — synchronous or already
+    completed when a validation runs. It does not make these mutable
+    ``Path`` lookups atomic against an arbitrary concurrent local process;
+    that would take descriptor-relative I/O and a cross-platform jobs API
+    rewrite, deliberately out of scope here.
     """
-    home = Path(process_home) if process_home is not None else get_process_hermes_home()
-    homes = [home]
-    profiles_root = home / "profiles"
-    try:
-        root_stat = profiles_root.lstat()
-    except OSError:
-        return homes  # no profiles root: the process home only
-    if stat.S_ISLNK(root_stat.st_mode):
-        logger.warning(
-            "deep research: %s is a symlink; refusing to sweep profile homes through it",
-            profiles_root,
-        )
-        return homes
-    try:
-        resolved_root = profiles_root.resolve()
-        entries = sorted(profiles_root.iterdir())
-    except OSError:
-        return homes
-    try:
-        from hermes_cli.profiles import validate_profile_name
-
-        def _is_profile_home(entry: Path) -> bool:
-            if entry.name == "default":
-                return False  # "default" IS the process home, not a child of profiles/
-            try:
-                validate_profile_name(entry.name)
-            except ValueError:
-                return False  # dot-dirs, tombstone dirs, stray names
-            return True
-
-        from hermes_constants import named_profile_is_deleted
-    except Exception:  # noqa: BLE001 — a broken profiles module must not stop the sweep
-        return homes
-    for entry in entries:
-        if not _is_profile_home(entry):
-            continue
-        if not _is_real_child_directory(entry, resolved_root):
-            continue
-        if named_profile_is_deleted(entry) or not entry.exists():
-            continue
-        homes.append(entry)
-    return homes
+    return [target.path for target in _sweep_targets(process_home)]
 
 
 class CompletionWatcher:
@@ -332,32 +385,49 @@ class CompletionWatcher:
             thread.join(timeout=timeout)
         self._thread = None
 
-    def _watch_homes(self) -> List[Path]:
-        """Homes to sweep this tick: the process home plus its live profiles.
+    def _watch_targets(self) -> List[_SweepTarget]:
+        """Targets to sweep this tick: the process home plus its live profiles.
 
         Re-derived every tick so profiles created or deleted after the watcher
         started are picked up without a restart.
         """
-        return watcher_hermes_homes(self.hermes_home)
+        return _sweep_targets(self.hermes_home)
 
-    def _loop(self) -> None:
+    def _recover_once(self) -> None:
         # Startup recovery: fail jobs whose runner died with the old process —
         # across the process home and every live profile home under it.
         try:
             from plugins.deep_research.launcher import runner_alive
 
-            for home in self._watch_homes():
-                recovered = jobs.recover_stale_jobs(runner_alive=runner_alive, hermes_home=home)
+            for target in self._watch_targets():
+                # Use-boundary revalidation: a later entry's tombstone lookup
+                # can swap an entry retained earlier in this enumeration.
+                # Nothing callback-bearing runs between check and use.
+                if not target.still_valid():
+                    continue
+                recovered = jobs.recover_stale_jobs(
+                    runner_alive=runner_alive, hermes_home=target.path
+                )
                 for job_id in recovered:
                     logger.info("deep research: job %s marked interrupted after restart", job_id)
         except Exception:  # noqa: BLE001
             logger.exception("deep research: stale-job recovery failed")
+
+    def _notify_once(self) -> None:
+        for target in self._watch_targets():
+            # Same use-boundary revalidation as recovery: check, then use,
+            # with no callback in between.
+            if not target.still_valid():
+                continue
+            try:
+                notify_pending(target.path, queue_put=self.queue_put)
+            except Exception:  # noqa: BLE001 — one bad tick must not kill the thread
+                logger.exception("deep research: notify sweep failed")
+
+    def _loop(self) -> None:
+        self._recover_once()
         while not self._stop.wait(self.interval_seconds):
-            for home in self._watch_homes():
-                try:
-                    notify_pending(home, queue_put=self.queue_put)
-                except Exception:  # noqa: BLE001 — one bad tick must not kill the thread
-                    logger.exception("deep research: notify sweep failed")
+            self._notify_once()
 
 
 _WATCHER: Optional[CompletionWatcher] = None

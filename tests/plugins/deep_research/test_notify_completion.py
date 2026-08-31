@@ -10,6 +10,7 @@ import json
 import time
 from pathlib import Path
 
+import hermes_constants
 import pytest
 
 from plugins.deep_research import jobs, notify
@@ -355,6 +356,183 @@ class TestWatcherSymlinkConfinement:
         assert notify.watcher_hermes_homes(home) == [home, alpha]
 
 
+class TestCallbackSwapConfinement:
+    """A profile-path swap performed inside the tombstone lookup must never
+    reach a use.
+
+    ``named_profile_is_deleted`` runs on the watcher thread and can re-enter
+    the filesystem, so it stands in for any watcher callback that synchronously
+    renames a real profile and plants a symlink to a foreign home. Two shapes:
+    the *same-entry* swap (the entry being looked up is replaced under the
+    watcher) and the *cross-entry* swap (a later entry's lookup replaces an
+    entry the same enumeration already retained).
+    """
+
+    def _completed_foreign_job(self, tmp_path: Path) -> tuple[Path, Path]:
+        foreign = tmp_path / "foreign-operator-home"
+        _job_id, directory = _make_job(foreign, origin={"session_id": "foreign-session"})
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        return foreign, directory
+
+    def _stale_foreign_job(self, tmp_path: Path) -> tuple[Path, Path]:
+        foreign = tmp_path / "foreign-operator-home"
+        _job_id, directory = _make_job(foreign, origin={"session_id": "foreign-session"})
+        jobs.mark_running(directory, {"runner_mode": "fallback", "runner_pid": 999_999_999})
+        status = jobs.read_status(directory)
+        status["updated_at"] = time.time() - 10_000
+        (directory / "status.json").write_text(json.dumps(status), encoding="utf-8")
+        return foreign, directory
+
+    def _swap_on_lookup(
+        self, monkeypatch, trigger: Path, victim: Path, foreign: Path
+    ) -> dict:
+        """Tombstone lookup that swaps ``victim`` for a symlink at ``trigger``."""
+        state = {"swapped": False}
+
+        def lookup(entry: Path) -> bool:
+            if entry == trigger and not state["swapped"]:
+                victim.rename(victim.with_name(f"{victim.name}-original"))
+                victim.symlink_to(foreign, target_is_directory=True)
+                state["swapped"] = True
+            return False
+
+        monkeypatch.setattr(hermes_constants, "named_profile_is_deleted", lookup)
+        return state
+
+    @staticmethod
+    def _unswap(victim: Path) -> None:
+        """Undo a swap: drop the symlink, put the renamed original back."""
+        victim.unlink()
+        victim.with_name(f"{victim.name}-original").rename(victim)
+
+    def test_same_entry_swap_is_excluded_from_the_enumeration(
+        self, home: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Exact reviewer probe shape: the tombstone lookup renames the real
+        # alpha and plants a symlink to a foreign home, then returns False.
+        foreign, directory = self._completed_foreign_job(tmp_path)
+        alpha = home / "profiles" / "alpha"
+        alpha.mkdir(parents=True)
+        state = self._swap_on_lookup(monkeypatch, trigger=alpha, victim=alpha, foreign=foreign)
+        assert notify.watcher_hermes_homes(home) == [home]
+        # The swap really fired inside the lookup, and was still dropped.
+        assert state["swapped"] is True
+        assert alpha.is_symlink()
+        assert jobs.read_status(directory)["notified"] is False
+
+    def test_same_entry_swap_delivers_nothing_through_the_watchers_sweep(
+        self, home: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The watcher's exact sweep, as the reviewer probe drives it: notify
+        # every home the enumeration returns. Pre-fix this delivered the
+        # foreign job through the retained symlink.
+        foreign, directory = self._completed_foreign_job(tmp_path)
+        alpha = home / "profiles" / "alpha"
+        alpha.mkdir(parents=True)
+        state = self._swap_on_lookup(monkeypatch, trigger=alpha, victim=alpha, foreign=foreign)
+        queue = Queue()
+        for sweep_home in notify.watcher_hermes_homes(home):
+            notify.notify_pending(sweep_home, queue_put=queue.put)
+        assert state["swapped"] is True
+        assert queue.events == []
+        assert jobs.read_status(directory)["notified"] is False
+
+    def test_cross_entry_swap_of_a_retained_profile_is_notified_nowhere(
+        self, home: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        # alpha is retained before beta's tombstone lookup swaps it, so only
+        # the use-boundary revalidation can stop the foreign delivery.
+        foreign, directory = self._completed_foreign_job(tmp_path)
+        alpha = home / "profiles" / "alpha"
+        beta = home / "profiles" / "beta"
+        alpha.mkdir(parents=True)
+        beta.mkdir()
+        queue = Queue()
+        watcher = notify.CompletionWatcher(
+            interval_seconds=0.05, hermes_home=home, queue_put=queue.put
+        )
+        # Pass 1: prove the enumeration itself retains alpha across beta's
+        # swap — the use boundary is the only remaining defense.
+        state = self._swap_on_lookup(monkeypatch, trigger=beta, victim=alpha, foreign=foreign)
+        assert [target.path for target in watcher._watch_targets()] == [home, alpha, beta]
+        assert state["swapped"] is True
+        self._unswap(alpha)
+        # Pass 2: same swap inside _notify_once's own enumeration.
+        state = self._swap_on_lookup(monkeypatch, trigger=beta, victim=alpha, foreign=foreign)
+        watcher._notify_once()
+        assert state["swapped"] is True
+        assert queue.events == []
+        assert jobs.read_status(directory)["notified"] is False
+
+    def test_cross_entry_swap_of_a_retained_profile_recovers_nothing_foreign(
+        self, home: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Same cross-entry shape against startup recovery: the foreign home's
+        # stale running job must not be failed through the swapped profile.
+        foreign, directory = self._stale_foreign_job(tmp_path)
+        alpha = home / "profiles" / "alpha"
+        beta = home / "profiles" / "beta"
+        alpha.mkdir(parents=True)
+        beta.mkdir()
+        watcher = notify.CompletionWatcher(
+            interval_seconds=0.05, hermes_home=home, queue_put=Queue().put
+        )
+        state = self._swap_on_lookup(monkeypatch, trigger=beta, victim=alpha, foreign=foreign)
+        assert [target.path for target in watcher._watch_targets()] == [home, alpha, beta]
+        self._unswap(alpha)
+        state = self._swap_on_lookup(monkeypatch, trigger=beta, victim=alpha, foreign=foreign)
+        watcher._recover_once()
+        assert state["swapped"] is True
+        status = jobs.read_status(directory)
+        assert status["state"] == "running"  # untouched: no interrupted-failure
+        assert status["notified"] is False
+
+    def test_benign_tombstone_lookup_still_sweeps_the_real_profile(
+        self, home: Path, monkeypatch
+    ) -> None:
+        # Control: an extra callback in the lookup must not make the
+        # revalidation overzealous — a real profile still recovers/notifies.
+        monkeypatch.setattr(hermes_constants, "named_profile_is_deleted", lambda entry: False)
+        alpha = home / "profiles" / "alpha"
+        stale_id, stale_dir = _make_job(alpha, origin={"session_id": "s-stale"})
+        jobs.mark_running(stale_dir, {"runner_mode": "fallback", "runner_pid": 999_999_999})
+        stale = jobs.read_status(stale_dir)
+        stale["updated_at"] = time.time() - 10_000
+        (stale_dir / "status.json").write_text(json.dumps(stale), encoding="utf-8")
+        done_id, done_dir = _make_job(alpha, origin={"session_id": "s-done"})
+        jobs.finish_job(done_dir, jobs.STATE_COMPLETED)
+        queue = Queue()
+        watcher = notify.CompletionWatcher(
+            interval_seconds=0.05, hermes_home=home, queue_put=queue.put
+        )
+        assert notify.watcher_hermes_homes(home) == [home, alpha]
+        watcher._recover_once()
+        watcher._notify_once()
+        assert jobs.read_status(stale_dir)["state"] == "failed"
+        assert {event["research_job_id"] for event in queue.events} == {stale_id, done_id}
+        assert jobs.read_status(done_dir)["notified"] is True
+
+    def test_tombstoned_profile_is_still_skipped_under_a_delegating_callback(
+        self, home: Path, monkeypatch
+    ) -> None:
+        # Control: the revalidation ordering must not bypass a real tombstone.
+        real_lookup = hermes_constants.named_profile_is_deleted
+        calls: list[Path] = []
+
+        def delegating_lookup(entry: Path) -> bool:
+            calls.append(entry)
+            return real_lookup(entry)
+
+        monkeypatch.setattr(hermes_constants, "named_profile_is_deleted", delegating_lookup)
+        alpha = home / "profiles" / "alpha"
+        alpha.mkdir(parents=True)
+        dead = home / "profiles" / "gone"
+        dead.mkdir(parents=True)
+        (home / "profiles" / ".deleted" / "gone").mkdir(parents=True)
+        assert notify.watcher_hermes_homes(home) == [home, alpha]
+        assert dead in calls  # the tombstone was consulted, not bypassed
+
+
 class TestProfileHomeSweep:
     def test_watcher_notifies_a_job_in_a_named_profile_home(self, home: Path, monkeypatch) -> None:
         monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
@@ -363,7 +541,7 @@ class TestProfileHomeSweep:
         job_id, directory = _make_job(alpha, origin={"session_id": "s"})
         jobs.finish_job(directory, jobs.STATE_COMPLETED)
         watcher = notify.CompletionWatcher(interval_seconds=0.05, hermes_home=home, queue_put=queue.put)
-        assert watcher._watch_homes() == [home, alpha]
+        assert [target.path for target in watcher._watch_targets()] == [home, alpha]
         watcher.start()
         deadline = time.monotonic() + 5
         while not queue.events and time.monotonic() < deadline:
