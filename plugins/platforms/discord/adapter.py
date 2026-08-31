@@ -1508,6 +1508,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+        # Live restart wind-down offers, keyed by the offered message id.
+        # Deliberately separate from the resolve_ticket pending store: the two
+        # reaction features share one dispatcher but never a prompt, and their
+        # message ids must never authorize each other.
+        self._restart_wind_down_offers: Dict[str, Dict[str, Any]] = {}
 
     def _config_value(
         self, key: str, default: Any, *, env_key: Optional[str] = None
@@ -1754,29 +1759,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_raw_reaction_add(payload):
-                """Resolve-ticket confirmations: ✅/❌ on resolve_ticket embeds.
-
-                The handler filters to the tool's own embeds via the footer
-                marker, so unrelated reactions cost one cheap emoji check.
-                """
-                try:
-                    if payload.emoji.name not in ("✅", "❌"):
-                        return
-                    bot_user = adapter_self._client.user
-                    if bot_user is not None and payload.user_id == bot_user.id:
-                        return
-                    from tools.discord_resolve_tool import handle_resolve_reaction
-                    result = await asyncio.to_thread(
-                        handle_resolve_reaction,
-                        str(payload.channel_id),
-                        str(payload.message_id),
-                        payload.emoji.name,
-                        adapter_self.config.token,
-                    )
-                    if result.get("acted"):
-                        logger.info("[%s] resolve_ticket reaction: %s", adapter_self.name, result)
-                except Exception:
-                    logger.exception("[%s] resolve_ticket reaction handler failed", adapter_self.name)
+                await adapter_self._dispatch_raw_reaction(payload)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -6251,6 +6234,332 @@ class DiscordAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    # ── Restart wind-down ⏸️ offer (opt-in cooperative restart) ────────────
+
+    async def _dispatch_raw_reaction(self, payload: Any) -> None:
+        """One raw reaction event, routed by emoji to its owning feature.
+
+        Two consumers share this dispatcher: resolve-ticket confirmations
+        (✅/❌ on ``resolve_ticket`` embeds) and the restart wind-down opt-in
+        (⏸️ on the gateway's own pause offer). Their emoji sets are disjoint
+        and each filters to its own messages — resolve-ticket through its
+        pending-listener store, wind-down through the offered message-id
+        registry — so an unrelated reaction costs one cheap emoji check and
+        never reaches either. A failure in one branch can never leak into the
+        other.
+        """
+        try:
+            emoji_name = getattr(payload.emoji, "name", None)
+        except Exception:
+            emoji_name = None
+
+        if emoji_name in ("✅", "❌"):
+            try:
+                bot_user = self._client.user if self._client else None
+                if bot_user is not None and payload.user_id == bot_user.id:
+                    return
+                from tools.discord_resolve_tool import handle_resolve_reaction
+                result = await asyncio.to_thread(
+                    handle_resolve_reaction,
+                    str(payload.channel_id),
+                    str(payload.message_id),
+                    emoji_name,
+                    self.config.token,
+                )
+                if result.get("acted"):
+                    logger.info("[%s] resolve_ticket reaction: %s", self.name, result)
+            except Exception:
+                logger.exception(
+                    "[%s] resolve_ticket reaction handler failed", self.name
+                )
+            return
+
+        try:
+            from gateway.restart_wind_down import normalize_pause_emoji
+
+            if normalize_pause_emoji(emoji_name) is None:
+                return
+            await self._handle_restart_wind_down_reaction(payload)
+        except Exception:
+            logger.exception(
+                "[%s] restart wind-down reaction handler failed", self.name
+            )
+
+    def _wind_down_embed(self, spec: Dict[str, Any]) -> Any:
+        """Render one wind-down embed from its pure-data spec."""
+        embed = discord.Embed(
+            title=spec["title"],
+            description=spec["description"],
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=spec["footer"])
+        return embed
+
+    async def _wind_down_channel(self, channel_id: str):
+        """Resolve the channel/thread an offer lives in."""
+        if not self._client:
+            return None
+        channel = self._client.get_channel(int(channel_id))
+        if not channel:
+            channel = await self._client.fetch_channel(int(channel_id))
+        return channel
+
+    async def send_restart_wind_down_offer(
+        self,
+        *,
+        channel_id: str,
+        requester_user_id: str,
+        generation: int,
+        nonce: Optional[str],
+        spec: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Post the ⏸️ opt-in embed and register it as actionable.
+
+        The registry entry is the adapter-side half of the authorization: it
+        says "this exact message is a live offer for this exact requester in
+        this exact cycle". ``on_raw_reaction_add`` filters on it before
+        anything reaches the gateway, and the gateway re-checks every field
+        against its own state — so a forged or stale footer can never carry a
+        reaction through on its own.
+
+        Returns the offered message id, or None when nothing was sent (in
+        which case there is nothing to react to and the restart just waits).
+        """
+        from gateway.restart_wind_down import (
+            PAUSE_EMOJI,
+            restart_wind_down_prompt_spec,
+        )
+
+        if not self._client or not DISCORD_AVAILABLE:
+            return None
+        try:
+            channel = await self._wind_down_channel(channel_id)
+            if channel is None:
+                return None
+            message = await channel.send(
+                embed=self._wind_down_embed(spec or restart_wind_down_prompt_spec())
+            )
+        except Exception as e:
+            logger.debug(
+                "[%s] Restart wind-down offer send failed: %s", self.name, e,
+                exc_info=True,
+            )
+            return None
+
+        message_id = str(getattr(message, "id", "") or "")
+        if not message_id:
+            return None
+
+        # Register the offer the moment the message identity is known —
+        # BEFORE the seeded reaction's round trip below. The message is
+        # already visible when that seed is still in flight, so a requester
+        # ⏸️ can arrive right here; registering after the await dropped
+        # exactly that event and then re-armed a stale actionable prompt
+        # behind it.
+        entry = {
+            "channel_id": str(channel_id),
+            "requester_user_id": str(requester_user_id),
+            "generation": int(generation),
+            "nonce": nonce,
+        }
+        self._restart_wind_down_offers[message_id] = entry
+
+        # Seed the pause reaction so the requester has something to click.
+        # Best-effort: a permissions failure leaves a text-only prompt that a
+        # plain reaction can still complete.
+        try:
+            await message.add_reaction(PAUSE_EMOJI)
+        except Exception as e:
+            logger.debug(
+                "[%s] Restart wind-down offer reaction seed failed: %s",
+                self.name, e,
+            )
+        except BaseException:
+            # Cancellation is not a Discord failure, so the best-effort clause
+            # above must not swallow it: this send is being torn down and the
+            # caller never receives the message id, so the entry it leaves
+            # behind would be an authorization for an offer nobody owns. Drop
+            # exactly what this call inserted — one already claimed by a valid
+            # reaction, or already retired by a finalize, has been removed in
+            # the meantime and must stay removed — then let the cancellation
+            # propagate. Nothing below this point can re-arm it.
+            if self._restart_wind_down_offers.get(message_id) is entry:
+                del self._restart_wind_down_offers[message_id]
+            raise
+
+        # Never re-register: the entry above may already have been claimed by
+        # a valid reaction (or retired by a finalize) while the seed was in
+        # flight, and restoring it would re-arm a spent prompt.
+        return message_id
+
+    async def finalize_restart_wind_down_offer(
+        self,
+        *,
+        message_id: str,
+        channel_id: str,
+        spec: Dict[str, Any],
+    ) -> bool:
+        """Retire an offered prompt: terminal edit, then clear the reaction.
+
+        Purely best-effort from the caller's point of view — the gateway has
+        already deactivated its own state, so a Discord failure here cannot
+        re-arm anything. The local registry entry is dropped first for the
+        same reason.
+        """
+        from gateway.restart_wind_down import PAUSE_EMOJI
+
+        self._restart_wind_down_offers.pop(str(message_id), None)
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        try:
+            channel = await self._wind_down_channel(channel_id)
+            if channel is None:
+                return False
+            message = channel.get_partial_message(int(message_id))
+            await message.edit(embed=self._wind_down_embed(spec))
+        except Exception as e:
+            logger.debug(
+                "[%s] Restart wind-down terminal edit failed: %s", self.name, e,
+            )
+            return False
+        try:
+            await message.clear_reactions()
+        except Exception:
+            # ``clear_reactions`` needs the manage_messages permission; fall
+            # back to removing just the pause we seeded.
+            try:
+                await message.remove_reaction(PAUSE_EMOJI, self._client.user)
+            except Exception as e:
+                logger.debug(
+                    "[%s] Restart wind-down reaction cleanup failed: %s",
+                    self.name, e,
+                )
+        return True
+
+    async def _retire_restart_wind_down_offer(
+        self, *, message_id: str, channel_id: str
+    ) -> None:
+        """Edit a spent offer into its non-actionable terminal form.
+
+        Used when the gateway rejected a reaction the adapter had already
+        claimed, or when no gateway is wired at all: either way nothing can
+        ever authorize an opt-in on this message again, so the visible prompt
+        must stop offering one. Best-effort by construction — the registry
+        entry is gone before this runs.
+        """
+        from gateway.restart_wind_down import (
+            WIND_DOWN_TERMINAL_CLOSED,
+            restart_wind_down_terminal_spec,
+        )
+
+        try:
+            await self.finalize_restart_wind_down_offer(
+                message_id=message_id,
+                channel_id=channel_id,
+                spec=restart_wind_down_terminal_spec(WIND_DOWN_TERMINAL_CLOSED),
+            )
+        except Exception as e:
+            logger.debug(
+                "[%s] Restart wind-down post-rejection edit failed: %s",
+                self.name, e,
+            )
+
+    async def _handle_restart_wind_down_reaction(self, payload: Any) -> None:
+        """Route one ⏸️ raw reaction to the gateway's opt-in entry point.
+
+        Everything here is filtering; the authorization decision itself lives
+        in ``GatewayRunner.accept_restart_wind_down_opt_in``, which re-checks
+        message id, requester snowflake, emoji, generation and nonce against
+        state the adapter cannot influence. The registry entry is claimed
+        synchronously before the first await so a duplicate, concurrent, or
+        remove/re-add event is a no-op even if the gateway-side latch were
+        somehow bypassed.
+        """
+        from gateway.restart_wind_down import normalize_pause_emoji
+
+        emoji_name = getattr(getattr(payload, "emoji", None), "name", None)
+        if normalize_pause_emoji(emoji_name) is None:
+            return
+        message_id = str(getattr(payload, "message_id", "") or "")
+        channel_id = str(getattr(payload, "channel_id", "") or "")
+        if not message_id:
+            return
+        entry = self._restart_wind_down_offers.get(message_id)
+        if entry is None:
+            return
+        # The bot's own seeded reaction is not a user opting in.
+        bot_user = self._client.user if self._client else None
+        user_id = str(getattr(payload, "user_id", "") or "")
+        if bot_user is not None and user_id == str(bot_user.id):
+            return
+        if channel_id != entry["channel_id"]:
+            return
+        if user_id != entry["requester_user_id"]:
+            return
+
+        # Claim before awaiting: the first valid event wins outright.
+        self._restart_wind_down_offers.pop(message_id, None)
+
+        from gateway.restart_wind_down import (
+            WIND_DOWN_TERMINAL_NO_TARGETS,
+            WIND_DOWN_TERMINAL_OPTED_IN,
+            restart_wind_down_terminal_spec,
+        )
+
+        runner = getattr(self, "gateway_runner", None)
+        accept = getattr(runner, "accept_restart_wind_down_opt_in", None)
+        if not callable(accept):
+            # No gateway behind this adapter means nothing can ever authorize
+            # the opt-in — the spent prompt must not keep looking clickable.
+            await self._retire_restart_wind_down_offer(
+                message_id=message_id, channel_id=channel_id
+            )
+            return
+        result = await accept(
+            message_id=message_id,
+            channel_id=channel_id,
+            requester_user_id=user_id,
+            emoji=str(emoji_name),
+            generation=entry["generation"],
+            nonce=entry["nonce"],
+        )
+
+        if not result.get("accepted"):
+            # The runner owns the authorization, so its "no" is final for this
+            # prompt: a stale-generation, already-finalized, or spent offer
+            # must not stay actionable-looking with a seeded ⏸️ on it. The
+            # registry entry is already gone, so this edit is the only thing
+            # that makes the *visible* prompt match the dead server-side one.
+            logger.info(
+                "[%s] Restart wind-down reaction rejected (%s); retiring the offer",
+                self.name,
+                result.get("reason", "unknown"),
+            )
+            await self._retire_restart_wind_down_offer(
+                message_id=message_id, channel_id=channel_id
+            )
+            return
+
+        kind = (
+            WIND_DOWN_TERMINAL_NO_TARGETS
+            if result.get("no_targets")
+            else WIND_DOWN_TERMINAL_OPTED_IN
+        )
+        spec = restart_wind_down_terminal_spec(
+            kind, accepted=int(result.get("accepted_count", 0) or 0)
+        )
+        # Failure here leaves a stale-looking prompt behind, but the wind-down
+        # has already run — never re-run it to "fix" the embed.
+        try:
+            await self.finalize_restart_wind_down_offer(
+                message_id=message_id, channel_id=channel_id, spec=spec
+            )
+        except Exception as e:
+            logger.debug(
+                "[%s] Restart wind-down post-opt-in edit failed: %s",
+                self.name, e,
+            )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing indicator for a channel.

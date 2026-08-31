@@ -1619,7 +1619,8 @@ class GatewaySlashCommandsMixin:
         the agent-callable ``restart`` tool (``plugins/gateway_restart``) come
         through here, so the two can never drift apart. This method owns the
         requester's comeback routing (``.restart_notify.json`` +
-        ``_restart_command_source``), the supervisor/container restart branch,
+        ``_restart_command_source``), the opt-in Discord wind-down offer,
+        the supervisor/container restart branch,
         and the ``request_restart(...)`` call itself. Telegram redelivery dedup
         *detection* (``_is_stale_restart_redelivery``) deliberately stays in
         the slash handler — it is a property of the Telegram *update*, and the
@@ -1722,6 +1723,17 @@ class GatewaySlashCommandsMixin:
                 logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
+        # Opt-in cooperative wind-down: for a native-Discord requester with at
+        # least one other live chat, offer the ⏸️ pause embed *before*
+        # request_restart() opens the drain task. The embed is the only thing
+        # that can trigger a park steer — without it the restart simply waits
+        # for the live sessions to finish on their own. Sent here rather than
+        # inside request_restart() so signal/update/API/cron restarts, which
+        # never pass a Discord source, can never see an offer.
+        try:
+            await self._send_restart_wind_down_prompt(source)
+        except Exception as e:
+            logger.debug("Restart wind-down offer skipped: %s", e)
         # When running under a service manager (systemd/launchd) or inside a
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
