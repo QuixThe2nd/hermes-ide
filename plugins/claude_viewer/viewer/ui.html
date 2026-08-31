@@ -905,6 +905,16 @@ body {
     newPill.classList.remove('visible');
   }
 
+  /* A deep-linked run opens on its original prompt, not the final output:
+     aim the nested transcript scroller at the prompt card. Only that
+     scroller moves — html/body are overflow:hidden, so the window itself
+     never scrolls, and landing near the top keeps userNearBottom false. */
+  function revealPromptCard() {
+    const card = transcript.querySelector('.prompt-card');
+    if (!card) return;
+    transcript.scrollTop = Math.max(0, card.offsetTop - transcript.offsetTop);
+  }
+
   function resetDerivedState() {
     transcript.innerHTML = '';
     state.pendingTools.clear();
@@ -1131,9 +1141,16 @@ body {
       state.historyBefore = data.has_more ? data.before : null;
       state.prompt = data.prompt || '';
       renderPromptCard();
+      // With a prompt, the run opens at its original question, not the live
+      // tail: leave tail-follow BEFORE the first scheduled flush so that
+      // flushRender() renders the head batch without scrollToBottom(), then
+      // aim the scroller at the card once that batch is in the DOM.
+      const revealPrompt = !!state.prompt;
+      if (revealPrompt) state.userNearBottom = false;
       scheduleRender(data.lines || []);
       await new Promise((r) => setTimeout(r, RENDER_INTERVAL_MS + 20));
       if (state.selectedFile !== file) return;
+      if (revealPrompt) revealPromptCard();
       state.tailOffset = await getFileSize(file);
       if (!state.paused && state.selectedFile === file) tailLoop();
     } catch (_) {
