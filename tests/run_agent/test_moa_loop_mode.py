@@ -583,6 +583,60 @@ def test_references_run_in_parallel(monkeypatch):
     assert out[0][1] == "resp-p1"
 
 
+def test_references_parallel_progress_reaches_total_with_skipped_slot(monkeypatch):
+    """Progress callbacks enumerate every slot exactly once and reach the total.
+
+    A recursion-guarded slot (a preset referencing another preset) resolves
+    instantly as a skip note — it must still count as completed, or a preset
+    containing one could never report ``refs_done == refs_total`` and visible
+    progress would stall short of done.
+    """
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **kw: _response("advice"))
+
+    refs = [
+        {"provider": "p1", "model": "m1"},
+        {"provider": "moa", "model": "nested"},  # recursion guard, no call
+        {"provider": "p2", "model": "m2"},
+        {"provider": "p3", "model": "m3"},
+    ]
+    seen: list[tuple[int, int]] = []
+
+    def progress(done: int, total: int, label: str) -> None:
+        seen.append((done, total))
+        assert isinstance(label, str) and label
+
+    out = moa_loop._run_references_parallel(
+        refs, [{"role": "user", "content": "hi"}], progress_callback=progress
+    )
+
+    assert len(out) == len(refs)
+    # One event per slot, each incrementing by exactly one, reaching the total.
+    assert [done for done, _total in seen] == [1, 2, 3, 4]
+    assert {total for _done, total in seen} == {len(refs)}
+
+
+def test_references_parallel_progress_callback_failure_is_fail_soft(monkeypatch):
+    """A raising progress callback must never break the fan-out."""
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **kw: _response("advice"))
+
+    def boom(_done: int, _total: int, _label: str) -> None:
+        raise RuntimeError("display exploded")
+
+    out = moa_loop._run_references_parallel(
+        [{"provider": "p1", "model": "m1"}, {"provider": "p2", "model": "m2"}],
+        [{"role": "user", "content": "hi"}],
+        progress_callback=boom,
+    )
+
+    assert [text for _label, text, _acct in out] == ["advice", "advice"]
+
+
 def test_references_parallel_without_agent_is_unaffected(monkeypatch):
     """No agent passed (the pre-fix call shape) must behave exactly as
     before: block until every reference completes, no interrupt check."""

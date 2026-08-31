@@ -102,6 +102,26 @@ def _install_consult_fakes(monkeypatch, outputs):
     )
 
 
+def _install_progress_fan_out(monkeypatch):
+    """Swap in a fan-out that drives the real ``progress_callback`` contract.
+
+    The canary label stands in for a provider:model slot label handed to the
+    callback — it must never reach a stage event.
+    """
+    from tools import moa_tool
+
+    def fake_run(
+        refs, msgs, *, temperature=None, max_tokens=None, progress_callback=None, **_kw
+    ):
+        total = len(refs)
+        if progress_callback is not None:
+            for done in range(1, total + 1):
+                progress_callback(done, total, "canary-provider:canary-model")
+        return [(f"slot-{i}", f"advice {i}", CanonicalUsage()) for i in range(total)]
+
+    monkeypatch.setattr(moa_tool, "_run_references_parallel", fake_run)
+
+
 def _install_debate_fakes(monkeypatch, proposals):
     from tools import moa_debate
 
@@ -313,6 +333,82 @@ def test_moa_ask_terminal_failure_when_config_unusable(monkeypatch, configured_m
     assert collector.stages() == ["starting", "complete"]
     assert collector.events[-1]["status"] == "failure"
     assert collector.events[-1]["terminal"] is True
+
+
+def test_moa_ask_advisor_progress_emits_monotonic_advisors_stages(
+    monkeypatch, configured_moa
+):
+    from tools import moa_tool
+
+    _install_progress_fan_out(monkeypatch)
+
+    with _StageCollector("sess-advisor-progress") as collector:
+        result = json.loads(
+            moa_tool.moa_ask(question="q", session_id="sess-advisor-progress")
+        )
+
+    assert result["success"] is True
+    advisors = [e for e in collector.events if e["stage"] == "advisors"]
+    assert advisors, "expected advisors stage events"
+    completed = [e["counts"]["completed"] for e in advisors]
+    totals = [e["counts"]["total"] for e in advisors]
+
+    # Starts at 0, strictly increases, and reaches the configured total.
+    assert completed[0] == 0
+    assert all(b > a for a, b in zip(completed, completed[1:]))
+    assert completed[-1] == totals[-1]
+    assert set(totals) == {3}  # the configured advisor count, on every event
+    assert {e["counts"]["advisors"] for e in advisors} == {3}
+    assert {e["counts"]["models"] for e in advisors} == {3}
+    # Live updates are non-terminal stages between the initial count and
+    # aggregation — never a status, never a terminal.
+    assert all(e["terminal"] is False for e in advisors)
+    assert all(e["status"] is None for e in advisors)
+    stages = collector.stages()
+    assert stages[0] == "starting"
+    assert stages[-2:] == ["aggregating", "complete"]
+    assert set(stages[1:-2]) == {"advisors"}
+
+
+def test_moa_ask_advisor_progress_never_carries_slot_labels(
+    monkeypatch, configured_moa
+):
+    from tools import moa_tool
+
+    _install_progress_fan_out(monkeypatch)
+
+    with _StageCollector("sess-progress-labels") as collector:
+        json.loads(moa_tool.moa_ask(question="q", session_id="sess-progress-labels"))
+
+    # The fan-out hands its callback a provider:model label; the stage
+    # payload must stay numeric-only.
+    assert "canary-provider" not in json.dumps(collector.events)
+    assert "canary-model" not in json.dumps(collector.events)
+    for event in collector.events:
+        for value in event["counts"].values():
+            assert isinstance(value, int)
+
+
+def test_moa_ask_advisor_progress_is_fail_soft_when_rendering_raises(
+    monkeypatch, configured_moa
+):
+    from agent.moa_loop import subscribe_tool_stage_events
+    from tools import moa_tool
+
+    _install_progress_fan_out(monkeypatch)
+
+    def exploding_subscriber(event):
+        raise RuntimeError("rendering exploded")
+
+    unsub = subscribe_tool_stage_events("sess-progress-boom", exploding_subscriber)
+    try:
+        result = json.loads(
+            moa_tool.moa_ask(question="q", session_id="sess-progress-boom")
+        )
+    finally:
+        unsub()
+
+    assert result["success"] is True
 
 
 def test_moa_debate_stage_order_with_revision_round(monkeypatch, configured_moa):
@@ -1788,6 +1884,105 @@ def test_tool_stage_appearance_maps_all_documented_stages():
     _, desc, _ = _tool_stage_appearance("moa_ask", "advisors", None, {"advisors": 2, "junk": "text"})
     assert "2 advisors" in desc
     assert "junk" not in desc
+
+
+def test_discord_stage_renders_advisor_completion_fraction():
+    from plugins.platforms.discord.adapter import _tool_stage_appearance
+
+    title, description, color = _tool_stage_appearance(
+        "moa_ask",
+        "advisors",
+        None,
+        {"advisors": 4, "models": 4, "completed": 2, "total": 4},
+    )
+    assert title == "moa_ask — advisors running"
+    assert description == "2/4 advisors complete · 4 models"
+    assert color == "running"
+
+    # Nothing completed yet still shows the live total.
+    _, initial, _ = _tool_stage_appearance(
+        "moa_ask", "advisors", None,
+        {"advisors": 3, "models": 2, "completed": 0, "total": 3},
+    )
+    assert initial == "0/3 advisors complete · 2 models"
+
+
+def test_discord_stage_fraction_only_renders_with_both_counts_valid():
+    from plugins.platforms.discord.adapter import _tool_stage_appearance
+
+    # A missing, non-numeric, or inconsistent half falls back to the plain
+    # per-key summary — never a half-rendered fraction.
+    invalid_counts = [
+        {"advisors": 4, "completed": 2},  # no total
+        {"advisors": 4, "total": 4},  # no completed
+        {"advisors": 4, "completed": "2", "total": 4},
+        {"advisors": 4, "completed": True, "total": 4},
+        {"advisors": 4, "completed": 5, "total": 4},  # over total
+        {"advisors": 4, "completed": 2, "total": 0},
+    ]
+    for counts in invalid_counts:
+        _, description, _ = _tool_stage_appearance("moa_ask", "advisors", None, counts)
+        assert "advisors complete" not in description, counts
+        assert "4 advisors" in description, counts
+
+
+def test_discord_advisor_fraction_is_exclusive_to_moa_ask_advisors_stage():
+    """Only moa_ask's running advisors stage may say ``N/T advisors complete``.
+
+    ``completed``/``total`` are generic count names a future or unknown tool
+    could easily publish. Regression: any other tool, any other stage of a
+    known tool, or a terminal event carrying valid integer counts must render
+    the plain allowlisted summary — never the advisor-progress label.
+    """
+    from plugins.platforms.discord.adapter import _tool_stage_appearance
+
+    live_counts = {"advisors": 4, "models": 2, "completed": 2, "total": 4}
+    collisions = [
+        ("future_tool", "advisors", None),  # unknown tool, borrowed stage id
+        ("future_tool", "weird_stage", None),  # unknown tool and stage
+        ("moa_debate", "advisors", None),  # known tool, not an advisors publisher
+        ("moa_ask", "aggregating", None),  # another stage of the owning tool
+        ("moa_ask", "advisors", "success"),  # terminal event on the owning stage
+        ("moa_ask", "complete", "success"),  # terminal stage, valid counts
+    ]
+    for tool, stage, status in collisions:
+        _, description, _ = _tool_stage_appearance(tool, stage, status, live_counts)
+        assert "advisors complete" not in description, (tool, stage, status)
+        assert "2/4" not in description, (tool, stage, status)
+        assert "4 advisors" in description, (tool, stage, status)
+
+    # The one intended pair keeps its live-progress rendering.
+    _, description, _ = _tool_stage_appearance(
+        "moa_ask", "advisors", None, dict(live_counts)
+    )
+    assert description == "2/4 advisors complete · 2 models"
+
+
+@pytest.mark.asyncio
+async def test_discord_advisor_progress_edits_same_embed():
+    adapter, sent, edited = _make_discord_stage_adapter()
+
+    first = _stage_event(
+        "moa_ask", "inv-live", "advisors", advisors=4, models=4, completed=0, total=4
+    )
+    result = await adapter.send_tool_stage_embed("555", first)
+    assert result.success is True
+    assert "0/4 advisors complete" in sent["embed"].description
+
+    for done in (1, 2, 3, 4):
+        event = _stage_event(
+            "moa_ask",
+            "inv-live",
+            "advisors",
+            advisors=4,
+            models=4,
+            completed=done,
+            total=4,
+        )
+        edit = await adapter.edit_tool_stage_embed("555", "4242", event)
+        assert edit.success is True
+
+    assert edited["embed"].description == "4/4 advisors complete · 4 models"
 
 
 def test_plain_platform_adapters_do_not_expose_stage_embed_capability():
