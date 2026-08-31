@@ -1,18 +1,37 @@
 """Durable runner launching for research jobs.
 
-Two modes:
+``runner_mode: auto`` picks the first launch path that actually works on this
+host, in this order:
 
-``systemd``
+user service
     A transient **user service** (``systemd-run --user --unit=…``) with bounded
     ``RuntimeMaxSec`` and ``MemoryMax``. Deliberately NOT ``--scope``: a scope
     would keep the runner inside the gateway's cgroup, so a gateway restart
     would kill the job. A transient service owns its own cgroup and survives.
 
-``fallback``
+system service
+    When the process runs as root (the usual gateway deployment: a root-owned
+    ``hermes-gateway.service`` in system.slice with ``KillMode=mixed``), the
+    gateway environment often has no user D-Bus session at all — no
+    ``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS``, so ``systemd-run --user``
+    cannot reach a user manager even when ``/run/user/<uid>/bus`` exists. In
+    that case a transient **system service** (``systemd-run`` without
+    ``--user``) is used instead: it lives outside the gateway's cgroup, so the
+    job survives a gateway restart, and it needs no user session.
+
+fallback
     A detached ``Popen`` (``start_new_session=True`` on POSIX,
     ``windows_detach_popen_kwargs()`` on Windows). Honest reduced durability:
-    it survives gateway *process* exit, but not a cgroup-wide supervisor stop.
-    The mode is recorded in ``status.json`` so ``status``/``result`` can say so.
+    it survives gateway *process* exit, but not a cgroup-wide supervisor stop
+    (exactly what kills it under the root gateway service described above).
+    The downgrade and its reason are recorded in ``status.json``.
+
+``runner_mode: systemd`` requires a transient service (either manager scope)
+and fails closed — it never silently downgrades to the fallback.
+
+Which manager scope was used is recorded per job (``runner_scope``:
+``user``/``system``/``fallback``) so cancel/liveness always address the exact
+unit with the matching ``systemctl`` invocation.
 
 All commands are argv lists. Nothing user-controlled is ever interpolated into
 a command line.
@@ -41,6 +60,24 @@ RUNTIME_SLACK_SECONDS = 300
 LAUNCH_MODE_SYSTEMD = "systemd"
 LAUNCH_MODE_FALLBACK = "fallback"
 
+# Which systemd manager owns the transient unit.
+MANAGER_SCOPE_USER = "user"
+MANAGER_SCOPE_SYSTEM = "system"
+MANAGER_SCOPES = frozenset({MANAGER_SCOPE_USER, MANAGER_SCOPE_SYSTEM})
+
+# A manager probe must answer quickly, not block a `start` for a minute.
+PROBE_TIMEOUT_SECONDS = 10
+
+# ``is-system-running`` exit states that still mean "the manager answered".
+# Anything else (no output, a bus error, "offline") means unusable.
+_MANAGER_ANSWERED_STATES = frozenset(
+    {"running", "degraded", "initializing", "starting", "stopping", "maintenance"}
+)
+
+
+class RunnerLaunchError(RuntimeError):
+    """The configured runner mode cannot launch. Fail closed — no downgrade."""
+
 
 def default_runner(args: Sequence[str]) -> Tuple[int, str, str]:
     """Run a command, returning ``(rc, stdout, stderr)``. Never raises."""
@@ -50,6 +87,21 @@ def default_runner(args: Sequence[str]) -> Tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+
+
+def probe_runner(args: Sequence[str]) -> Tuple[int, str, str]:
+    """Like :func:`default_runner` but bounded short, for manager probes."""
+    try:
+        proc = subprocess.run(
+            [str(a) for a in args],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
             check=False,
         )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
@@ -102,49 +154,98 @@ def unit_name(job_id: str) -> str:
 @dataclass
 class LaunchResult:
     mode: str
-    unit: Optional[str]
-    pid: Optional[int]
-    pid_start: Optional[int]
+    unit: Optional[str] = None
+    pid: Optional[int] = None
+    pid_start: Optional[int] = None
+    manager_scope: Optional[str] = None
+    reason: Optional[str] = None
 
     def as_status(self) -> Dict[str, Optional]:
-        return {
+        info: Dict[str, Optional] = {
             "runner_mode": self.mode,
             "runner_unit": self.unit,
             "runner_pid": self.pid,
             "runner_pid_start": self.pid_start,
+            # The manager that actually owns the runner: user | system | fallback.
+            "runner_scope": self.manager_scope or LAUNCH_MODE_FALLBACK,
         }
+        if self.reason:
+            info["runner_reason"] = self.reason
+        return info
 
 
 # ---------------------------------------------------------------------------
-# systemd availability
+# Manager scopes
 # ---------------------------------------------------------------------------
 
 
-def systemd_user_available(*, runner: Runner = default_runner) -> bool:
-    """True when a systemd **user** manager can accept transient units.
+def systemctl_argv(scope: str, *verbs: Any) -> List[str]:
+    """Exact ``systemctl`` argv for one manager scope. Never a pattern."""
+    if scope not in MANAGER_SCOPES:
+        raise ValueError(f"unknown manager scope: {scope!r}")
+    prefix = ["systemctl", "--user"] if scope == MANAGER_SCOPE_USER else ["systemctl"]
+    return prefix + [str(verb) for verb in verbs]
 
-    ``shutil.which`` alone is insufficient — under a system service there may be
-    no user D-Bus session, so every ``systemd-run --user`` would fail. Probe the
-    user manager's control socket (either the session bus or systemd's private
-    socket) the way ``hermes_cli/gateway.py`` does.
+
+def manager_reachable(scope: str, *, runner: Optional[Runner] = None) -> bool:
+    """True when this scope's service manager answers a real status query.
+
+    A socket existing proves nothing: under a root system-service gateway the
+    user sockets can be present while ``systemd-run --user`` has no bus to talk
+    to (no ``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS`` in the environment).
+    The probe issues the same ``systemctl`` query the launcher would use, bounded
+    short, and believes only a real answer from the manager itself.
     """
-    if shutil.which("systemd-run") is None or shutil.which("systemctl") is None:
+    if scope not in MANAGER_SCOPES:
         return False
     if sys.platform == "win32" or not hasattr(os, "getuid"):
         return False
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX probe
-    runtime = Path(xdg)
-    for candidate in (runtime / "bus", runtime / "systemd" / "private"):
-        try:
-            if candidate.exists():
-                return True
-        except OSError:
-            continue
-    return False
+    if shutil.which("systemd-run") is None or shutil.which("systemctl") is None:
+        return False
+    rc, out, _err = (runner or probe_runner)(systemctl_argv(scope, "is-system-running"))
+    if rc == 0:
+        return True
+    # A non-zero exit that still printed a state word ("degraded", "starting",
+    # …) means the manager answered. Connection failures print no state word.
+    return (out or "").strip().lower() in _MANAGER_ANSWERED_STATES
+
+
+def candidate_scopes(*, root: Optional[bool] = None) -> List[str]:
+    """Manager scopes to try for a transient service, in order.
+
+    The user manager first — same privileges as the gateway, no root units. The
+    system manager only when actually running as root: a non-root system
+    transient service needs polkit rights the launcher cannot assume, while a
+    root gateway's detached fallback child would be killed by the gateway
+    unit's cgroup cleanup on restart.
+    """
+    if root is None:
+        root = hasattr(os, "getuid") and os.getuid() == 0  # windows-footgun: ok — guarded probe
+    scopes = [MANAGER_SCOPE_USER]
+    if root:
+        scopes.append(MANAGER_SCOPE_SYSTEM)
+    return scopes
+
+
+def manager_scope_of(status: Dict[str, Any]) -> str:
+    """The manager scope a recorded systemd runner was launched under.
+
+    Statuses written before scopes existed default to the user manager.
+    """
+    scope = status.get("runner_scope")
+    return scope if scope in MANAGER_SCOPES else MANAGER_SCOPE_USER
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    """Bounded first line of a command's stderr, for status/launch reasons."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return ""
+    return stripped.splitlines()[0].strip()[:limit]
 
 
 # ---------------------------------------------------------------------------
-# Transient user service
+# Transient service (user or system manager)
 # ---------------------------------------------------------------------------
 
 
@@ -157,12 +258,17 @@ def build_systemd_run_argv(
     env: Dict[str, str],
     argv: Sequence[str],
     systemd_run: str = "systemd-run",
+    scope: str = MANAGER_SCOPE_USER,
 ) -> List[str]:
-    """Exact ``systemd-run`` argv for a transient user service.
+    """Exact ``systemd-run`` argv for a transient service in ``scope``.
 
     Pure function — the exact-argv test asserts against this list.
     """
-    cmd: List[str] = [systemd_run, "--user"]
+    if scope not in MANAGER_SCOPES:
+        raise ValueError(f"unknown manager scope: {scope!r}")
+    cmd: List[str] = [systemd_run]
+    if scope == MANAGER_SCOPE_USER:
+        cmd.append("--user")
     cmd.extend(
         [
             f"--unit={unit}",
@@ -183,19 +289,27 @@ def build_systemd_run_argv(
 def systemd_launch(
     *,
     job_id: str,
+    scope: str,
     runtime_max_sec: int,
     memory_max: str,
     hermes_home: Path,
     runner: Runner = default_runner,
-) -> Optional[LaunchResult]:
-    """Start the runner as a transient user service. ``None`` if it failed."""
+) -> LaunchResult:
+    """Start the runner as a transient service in ``scope``'s manager.
+
+    Raises :class:`RunnerLaunchError` when the manager refuses, so the caller
+    decides whether to try the next scope, fall back, or fail closed — a
+    silently-dead runner is never reported as launched.
+    """
     env = {
         "HERMES_HOME": str(hermes_home),
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "PYTHONUNBUFFERED": "1",
     }
+    unit = unit_name(job_id)
     cmd = build_systemd_run_argv(
-        unit=unit_name(job_id),
+        unit=unit,
+        scope=scope,
         runtime_max_sec=runtime_max_sec,
         memory_max=memory_max,
         working_directory=repo_root(),
@@ -204,28 +318,35 @@ def systemd_launch(
     )
     rc, _out, err = runner(cmd)
     if rc != 0:
-        return None
-    unit = unit_name(job_id)
-    pid = _unit_main_pid(unit, runner=runner)
+        detail = _first_line(err) or f"exit {rc}"
+        raise RunnerLaunchError(f"systemd-run ({scope} manager) failed: {detail}")
+    pid = _unit_main_pid(unit, scope=scope, runner=runner)
     return LaunchResult(
         mode=LAUNCH_MODE_SYSTEMD,
         unit=unit,
         pid=pid,
         pid_start=pid_start_time(pid) if pid else None,
+        manager_scope=scope,
     )
 
 
-def _unit_main_pid(unit: str, *, runner: Runner = default_runner) -> Optional[int]:
-    rc, out, _err = runner(["systemctl", "--user", "show", unit, "--property=MainPID", "--value"])
+def _unit_main_pid(
+    unit: str, *, scope: str = MANAGER_SCOPE_USER, runner: Runner = default_runner
+) -> Optional[int]:
+    rc, out, _err = runner(
+        systemctl_argv(scope, "show", unit, "--property=MainPID", "--value")
+    )
     if rc != 0:
         return None
     value = (out or "").strip().splitlines()[0].strip() if out else ""
     return int(value) if value.isdigit() else None
 
 
-def unit_active(unit: str, *, runner: Runner = default_runner) -> Optional[str]:
+def unit_active(
+    unit: str, *, scope: str = MANAGER_SCOPE_USER, runner: Runner = default_runner
+) -> Optional[str]:
     """``active``/``activating``/``inactive``/… or ``None`` when unknowable."""
-    rc, out, _err = runner(["systemctl", "--user", "is-active", unit])
+    rc, out, _err = runner(systemctl_argv(scope, "is-active", unit))
     if rc == 0:
         return "active"
     state = (out or "").strip().lower()
@@ -248,8 +369,9 @@ def fallback_launch(
     log_path: Path,
     env: Optional[Dict[str, str]] = None,
     popen: Optional[Callable[..., "subprocess.Popen"]] = None,
+    reason: Optional[str] = None,
 ) -> LaunchResult:
-    """Detached runner spawn for hosts without a usable user systemd."""
+    """Detached runner spawn for hosts without a usable transient service."""
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
     child_env = dict(os.environ if env is None else env)
@@ -281,6 +403,7 @@ def fallback_launch(
         unit=None,
         pid=proc.pid,
         pid_start=pid_start_time(proc.pid),
+        reason=reason,
     )
 
 
@@ -299,35 +422,72 @@ def launch(
     runner_mode: str = "auto",
     runner: Runner = default_runner,
     popen: Optional[Callable[..., "subprocess.Popen"]] = None,
+    probe: Optional[Runner] = None,
 ) -> LaunchResult:
-    """Start the durable runner, preferring systemd and falling back detached."""
+    """Start the durable runner according to ``runner_mode``.
+
+    ``auto`` tries a transient user service first, then (when running as root)
+    a transient system service outside the gateway's cgroup, and only then an
+    honest detached fallback — recording why it downgraded. ``systemd`` requires
+    a transient service and raises :class:`RunnerLaunchError` (fail closed,
+    never a silent downgrade). ``fallback`` never consults systemd at all.
+    """
     runtime_max_sec = timeout_minutes * 60 + RUNTIME_SLACK_SECONDS
-    if runner_mode != LAUNCH_MODE_FALLBACK and systemd_user_available(runner=runner):
-        result = systemd_launch(
+    probe = probe or probe_runner
+
+    if runner_mode == LAUNCH_MODE_FALLBACK:
+        return fallback_launch(
             job_id=job_id,
-            runtime_max_sec=runtime_max_sec,
-            memory_max=memory_max,
             hermes_home=hermes_home,
-            runner=runner,
+            log_path=log_path,
+            popen=popen,
+            reason="runner_mode=fallback (configured)",
         )
-        if result is not None:
-            return result
+
+    attempts: List[str] = []
+    for scope in candidate_scopes():
+        if not manager_reachable(scope, runner=probe):
+            attempts.append(f"{scope} manager unreachable")
+            continue
+        try:
+            return systemd_launch(
+                job_id=job_id,
+                scope=scope,
+                runtime_max_sec=runtime_max_sec,
+                memory_max=memory_max,
+                hermes_home=hermes_home,
+                runner=runner,
+            )
+        except RunnerLaunchError as exc:
+            attempts.append(str(exc))
+    detail = "; ".join(attempts) or "no service manager candidate for this process"
+
+    if runner_mode == LAUNCH_MODE_SYSTEMD:
+        # A forced systemd mode means a transient service is REQUIRED.
+        raise RunnerLaunchError(
+            f"forced runner_mode=systemd could not launch a transient service: {detail}"
+        )
+
     return fallback_launch(
-        job_id=job_id, hermes_home=hermes_home, log_path=log_path, popen=popen
+        job_id=job_id,
+        hermes_home=hermes_home,
+        log_path=log_path,
+        popen=popen,
+        reason=f"no usable systemd service manager ({detail}); using detached fallback",
     )
 
 
 def cancel_runner(status: Dict[str, Any], *, runner: Runner = default_runner) -> bool:
     """Stop exactly this job's runner and its descendants.
 
-    systemd: ``systemctl --user stop <unit>`` reaps the whole cgroup (including
-    double-forked descendants) — scoped to this job's unit only. Fallback: a
-    process-tree kill of the recorded PID, guarded against PID reuse. Never a
-    broad kill of other Hermes processes.
+    systemd: ``systemctl [--user] stop <unit>`` with the manager scope recorded
+    at launch, reaping that unit's whole cgroup — scoped to this job's unit
+    only, never a pattern or a broad sweep. Fallback: a process-tree kill of
+    the recorded PID, guarded against PID reuse.
     """
     unit = status.get("runner_unit")
     if status.get("runner_mode") == LAUNCH_MODE_SYSTEMD and unit:
-        rc, _out, _err = runner(["systemctl", "--user", "stop", str(unit)])
+        rc, _out, _err = runner(systemctl_argv(manager_scope_of(status), "stop", str(unit)))
         return rc == 0
 
     pid = status.get("runner_pid")
@@ -342,7 +502,7 @@ def runner_alive(status: Dict[str, Any], *, runner: Runner = default_runner) -> 
         unit = status.get("runner_unit")
         if not unit:
             return None
-        state = unit_active(str(unit), runner=runner)
+        state = unit_active(str(unit), scope=manager_scope_of(status), runner=runner)
         if state is None:
             return None
         return state in ("active", "activating")

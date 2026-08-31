@@ -107,7 +107,8 @@ def notify_pending(
     """Notify every terminal-but-unnotified job. Returns the job ids sent.
 
     ``mark_notified`` is the single-winner flip, so a concurrent watcher (or a
-    restart racing the old gateway) can never double-deliver.
+    restart racing the old gateway) can never double-deliver. A queue that
+    rejects the event rolls the claim back, making delivery retryable.
     """
     if queue_put is None:
         try:
@@ -139,7 +140,10 @@ def notify_pending(
         try:
             queue_put(event)
         except Exception:  # noqa: BLE001 — delivery must not take the watcher down
-            logger.warning("deep research: completion queue rejected job %s", job_id)
+            # Roll the claim back so a later sweep retries this job instead of
+            # permanently losing the completion behind a "notified" flag.
+            logger.warning("deep research: completion queue rejected job %s; will retry", job_id)
+            jobs.unmark_notified(directory)
             continue
         sent.append(job_id)
     return sent

@@ -83,26 +83,41 @@ def home(tmp_path: Path) -> Path:
     return tmp_path / "home"
 
 
-def _make_job(home: Path, *, questions=None, timeout=10, max_parallel=2) -> tuple[str, Path]:
+def _make_job(home: Path, *, questions=None, timeout=10, max_parallel=2, origin=None) -> tuple[str, Path]:
     created = jobs.create_job(
         brief="Research the widget runtimes thoroughly.",
         research_questions=questions,
         timeout_minutes=timeout,
         max_parallel=max_parallel,
         worker_profile="researcher",
+        origin=origin,
         hermes_home=home,
     )
     return created["job_id"], created["dir"]
 
 
-def _run(job_id: str, home: Path, spawn, config=None) -> str:
+def _run(job_id: str, home: Path, spawn, config=None, clock=None) -> str:
     return runner.ResearchRunner(
         job_id,
         home,
         config=config or _config(),
         worker_argv=["/opt/fake/hermes"],
         spawn=spawn,
+        clock=clock or time.monotonic,
     ).run()
+
+
+class FakeClock:
+    """Deterministic monotonic clock so budget expiry needs no real sleeping."""
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def _seed_evidence(directory: Path, *urls: str) -> None:
@@ -210,6 +225,107 @@ class TestLaneFanOut:
         assert state == "cancelled"
         assert seen == ["lane"]  # remaining lanes were never started
         assert jobs.read_status(directory)["state"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Budget expiry is a terminal state (correction pass)
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetExpiry:
+    def test_budget_exhausted_during_lanes_lands_failed_terminally(self, home, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        job_id, directory = _make_job(
+            home,
+            questions=["lane one", "lane two"],
+            max_parallel=1,
+            origin={"session_id": "sess-budget"},
+        )
+        clock = FakeClock()
+
+        def lane(argv, env, timeout):
+            # Each worker blows straight through the whole 10-minute budget.
+            clock.advance(11 * 60)
+            return 0, f"lane report citing [x]({GOOD_URL})", ""
+
+        _seed_evidence(directory, GOOD_URL)
+        state = _run(job_id, home, lane, clock=clock)
+        assert state == "failed"
+
+        status = jobs.read_status(directory)
+        # Terminal, with the exact bounded reason — never left "running".
+        assert status["state"] == "failed"
+        assert status["error"] == "budget exhausted"
+        assert status["phase"] == "budget_exhausted"
+        assert status["completed_at"] is not None
+        assert status["lanes"][0]["state"] == "succeeded"
+        assert status["lanes"][1]["state"] == "failed"  # ended with the job, not stuck running
+        assert status["lanes"][1]["error"] == "budget exhausted"
+        assert not (directory / "report.md").exists()
+
+        # The tool reports the failure, never a plausible partial report.
+        from plugins.deep_research import tool as dr_tool
+
+        result = json.loads(dr_tool.handle_delegate_research({"action": "result", "job_id": job_id}))
+        assert result["ok"] is False and result["error"] == "not_completed"
+        assert result["state"] == "failed" and result["failure"] == "budget exhausted"
+        summary = json.loads(dr_tool.handle_delegate_research({"action": "status", "job_id": job_id}))
+        assert summary["state"] == "failed" and summary["error"] == "budget exhausted"
+        assert summary["lanes"] == {"total": 2, "succeeded": 1, "failed": 1, "running": 0, "pending": 0}
+
+        # And the terminal state is notified exactly like any other failure.
+        events: list[dict] = []
+        from plugins.deep_research import notify
+
+        assert notify.notify_pending(home, queue_put=events.append) == [job_id]
+        assert events[0]["research_state"] == "failed"
+        assert events[0]["error"] == "budget exhausted"
+
+    def test_budget_exhausted_during_synthesis_lands_failed_terminally(self, home) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        clock = FakeClock()
+        writer_calls: list[list[str]] = []
+
+        def lane_then_blow_budget(argv, env, timeout):
+            if "-t" in argv:
+                writer_calls.append([str(part) for part in argv])
+            clock.advance(11 * 60)  # the lane spends the whole budget
+            return 0, f"lane report citing [x]({GOOD_URL})", ""
+
+        _seed_evidence(directory, GOOD_URL)
+        state = _run(job_id, home, lane_then_blow_budget, clock=clock)
+        assert state == "failed"
+        status = jobs.read_status(directory)
+        # The job passed through synthesizing but did not stay stuck in it.
+        assert status["state"] == "failed" and status["state"] != "synthesizing"
+        assert status["error"] == "budget exhausted"
+        assert status["synthesis"]["attempts"] == 0  # the writer never ran
+        assert writer_calls == []
+        assert not (directory / "report.md").exists()
+
+    def test_budget_expiry_never_overwrites_an_explicit_cancel(self, home) -> None:
+        job_id, directory = _make_job(home, questions=["lane one", "lane two"], max_parallel=1)
+        clock = FakeClock()
+        ticks = {"count": 0}
+
+        def tick() -> float:
+            ticks["count"] += 1
+            if ticks["count"] == 3:
+                # The user's cancel lands in the same instant the budget dies
+                # (this is lane two's budget check, after lane one's spawn).
+                jobs.finish_job(directory, jobs.STATE_CANCELLED)
+            return clock.now
+
+        def lane(argv, env, timeout):
+            clock.advance(11 * 60)
+            return 0, f"lane report citing [x]({GOOD_URL})", ""
+
+        _seed_evidence(directory, GOOD_URL)
+        state = _run(job_id, home, lane, clock=tick)
+        # Cancellation is the explicit user decision: it wins.
+        assert state == "cancelled"
+        status = jobs.read_status(directory)
+        assert status["state"] == "cancelled" and status["error"] is None
 
 
 # ---------------------------------------------------------------------------

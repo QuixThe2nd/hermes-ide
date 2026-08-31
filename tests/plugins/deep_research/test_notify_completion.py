@@ -115,6 +115,45 @@ class TestNotifyPending:
         assert "example.org" in (directory / "report.md").read_text(encoding="utf-8")
 
 
+class TestDeliveryRetry:
+    """A rejected queue delivery must release the claim, not lose the event."""
+
+    def test_rejected_delivery_rolls_back_the_claim(self, home: Path) -> None:
+        job_id, directory = _make_job(home, origin={"session_id": "s"})
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+
+        class RejectingQueue:
+            def put(self, event: dict) -> None:
+                raise RuntimeError("completion queue is closed")
+
+        assert notify.notify_pending(home, queue_put=RejectingQueue().put) == []
+        # The claim was rolled back, so the completion is not lost forever.
+        assert jobs.read_status(directory)["notified"] is False
+
+    def test_rolled_back_claim_is_retried_and_delivered_once(self, home: Path) -> None:
+        job_id, directory = _make_job(home, origin={"session_id": "s"})
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+
+        class RejectingQueue:
+            def put(self, event: dict) -> None:
+                raise RuntimeError("completion queue is closed")
+
+        notify.notify_pending(home, queue_put=RejectingQueue().put)
+        queue = Queue()
+        assert notify.notify_pending(home, queue_put=queue.put) == [job_id]
+        assert [event["research_job_id"] for event in queue.events] == [job_id]
+        # Delivered now, and never re-delivered by a later sweep.
+        assert notify.notify_pending(home, queue_put=queue.put) == []
+        assert len(queue.events) == 1
+
+    def test_unmark_notified_is_refused_on_an_active_job(self, home: Path) -> None:
+        # Only a terminal job's claim can be released — an active job never
+        # had one, and unmarking must not touch its status.
+        _job_id, directory = _make_job(home, origin={"session_id": "s"})
+        assert jobs.unmark_notified(directory) is False
+        assert jobs.read_status(directory)["notified"] is False
+
+
 class TestWatcherLifecycle:
     def test_watcher_refuses_to_start_under_test_isolation(self, monkeypatch) -> None:
         monkeypatch.setenv("HERMES_TEST_ISOLATION", "1")

@@ -23,10 +23,10 @@ The tool is hidden (`check_fn`) when the plugin is disabled, the configured work
 ```
 delegate_research start
   └─ jobs.create_job()                  $HERMES_HOME/research_jobs/rj_<hex12>/
-  └─ launcher.launch()                  systemd-run --user (or detached fallback)
+  └─ launcher.launch()                  systemd-run --user | systemd-run (system) | detached fallback
        └─ python -m plugins.deep_research.runner --job rj_… --hermes-home …
-            ├─ lane 0..N  hermes -p researcher --cli chat -Q --query-file prompts/lane_N.md
-            ├─ synthesis  hermes -p researcher … -t file_readonly   (no retrieval tools)
+            ├─ lane 0..N  hermes -p researcher chat -Q --query-file prompts/lane_N.md
+            ├─ synthesis  hermes -p researcher chat -Q --query-file prompts/synthesis.md -t file_readonly
             └─ citations.validate_citations() → publish report.md, or fail closed
 ```
 
@@ -51,9 +51,19 @@ Job ids are canonical (`rj_` + 12 hex) and validated on every access and every p
 
 ### Worker execution
 
-On Linux with a usable systemd **user** manager, the runner is a transient user service — `systemd-run --user --unit=hermes-research-<job_id> --collect` with bounded `RuntimeMaxSec` (job budget + 300 s slack) and `MemoryMax`, plus `OOMScoreAdjust=500`. Deliberately *not* `--scope`: a scope would keep the runner inside the gateway's cgroup and die with a gateway restart. A transient service owns its own cgroup, so the job survives the gateway. `cancel` stops that one unit — systemd reaps its whole cgroup — and never touches other Hermes processes.
+The runner is a host-owned job that must survive a gateway restart, so it is never a child of the gateway process tree when systemd can take it. There are three launch paths, tried in this order under the default `runner_mode: auto`:
+
+1. **Transient user service** — `systemd-run --user --unit=hermes-research-<job_id> --collect` with bounded `RuntimeMaxSec` (job budget + 300 s slack) and `MemoryMax`, plus `OOMScoreAdjust=500`. Used whenever a systemd **user** manager actually answers.
+2. **Transient system service** (root gateways only) — the same `systemd-run` invocation *without* `--user`, used when the process runs as root and no user manager is reachable. This is the normal shape of a production gateway: `hermes-gateway.service` is root-owned in system.slice with `KillMode=mixed`, and its environment has no `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS`, so `systemd-run --user` cannot reach a user manager even when `/run/user/0/bus` exists. A system transient service lives outside the gateway's cgroup, so the job survives a gateway restart, and cleanup that kills the gateway's remaining cgroup PIDs does not touch it.
+3. **Detached fallback** — a plain detached `Popen` when no transient service can launch (macOS, Windows, containers, or a stripped-down host). Honest reduced durability: it survives a gateway *process* restart but is killed by a cgroup-wide supervisor stop — including the root gateway case above. The downgrade and its reason are recorded in `status.json` (`runner_reason`) and surfaced by `start`/`status`.
+
+Both transient-service paths are deliberately *not* `--scope`: a scope would keep the runner inside the gateway's cgroup and die with a gateway restart. A transient service owns its own cgroup. Unit names derive only from the canonical job id (`hermes-research-rj_<hex12>`), commands are argv lists with no shell, and cancellation/liveness always address that one exact unit with the `systemctl` flavor (`--user` or system) matching the manager scope recorded at launch — never a pattern, never a broad kill of other Hermes processes.
+
+`runner_mode: systemd` requires a transient service in either scope: if none can launch, `start` returns `launch_failed` and the job is recorded `failed` — it never silently downgrades to the fallback. `runner_mode: fallback` never consults systemd at all.
 
 Each lane is one independent `researcher` session with that profile's tools (`web`, `browser`, `file_readonly`). Lanes run concurrently up to `max_parallel`. Without `research_questions`, exactly one lane runs the frozen brief. The lane prompt requires reading full pages (not snippets), preferring primary sources, two independent or one authoritative source per material claim, reporting conflicts and coverage gaps, and citing only fetched URLs.
+
+An exhausted job budget is terminal: the runner marks the job `failed` with `error: "budget exhausted"` before it exits, so a spent job can never sit in `running`/`synthesizing` forever — and an explicit cancellation always wins over the budget failure.
 
 Synthesis runs once, after every requested lane has succeeded. The writer is the same profile but with `--toolsets file_readonly`, so it has no retrieval tool at all and cannot do new research; its only inputs are the frozen brief and the lane reports.
 
@@ -61,7 +71,7 @@ Synthesis runs once, after every requested lane has succeeded. The writer is the
 
 ### Evidence and citations
 
-A `post_tool_call` hook records sources into the job's `evidence.jsonl`. It is a strict no-op unless the runner set `HERMES_RESEARCH_EVIDENCE` to a canonical ledger path — ordinary conversations, including the parent that started the job, record nothing. Only successful `web_extract` results (per-URL, ignoring per-URL failures) and successful `browser_navigate` calls are recorded. `web_search` snippets are discovery and are never evidence. Each record is `{url, normalized_url, tool, lane, fetched_at, title, status}` — appended under `O_APPEND` + `flock`, never page bodies, never secrets.
+A `post_tool_call` hook records sources into the job's `evidence.jsonl`. It is a strict no-op unless the runner set `HERMES_RESEARCH_EVIDENCE` to a canonical ledger path — ordinary conversations, including the parent that started the job, record nothing. Only successful `web_extract` results (per-URL, ignoring per-URL failures) and successful `browser_navigate` calls are recorded. `web_search` snippets are discovery and are never evidence, and every other browser interaction (`browser_click`, `browser_type`, …) is conservatively **not** evidence either: a URL that was only ever touched through those tools fails citation validation unless a logged tool (`web_extract`/`browser_navigate`) also fetched it during the job. Each record is `{url, normalized_url, tool, lane, fetched_at, title, status}` — appended under `O_APPEND` + `flock`, never page bodies, never secrets.
 
 Before publication, every http(s) URL in the report must normalize-match a ledger entry, and a non-empty report must cite at least one source. On failure the writer gets one bounded correction pass restricted to the allowed URL list (still no retrieval); if that also fails, the job is `failed` and the draft is preserved as `report.draft.md`.
 
@@ -69,7 +79,7 @@ Before publication, every http(s) URL in the report must normalize-match a ledge
 
 ## Non-systemd fallback
 
-Without a usable user systemd (macOS, Windows, containers, or a system-service context with no user D-Bus session), the runner spawns detached instead (`start_new_session=True` / `windows_detach_popen_kwargs()`), output captured to `runner.out` in the job dir. The mode is recorded in `status.json` and surfaced by `status`/`start` as reduced durability: it survives a gateway *process* restart, but not a cgroup-wide host supervisor stop. `runner_mode: fallback` in config forces it; `systemd` forces the service path. Artifacts and recovery behave identically either way.
+Without a usable transient service (macOS, Windows, containers, or a root gateway whose user *and* system managers are both unreachable — see the root system-service case above), the runner spawns detached instead (`start_new_session=True` / `windows_detach_popen_kwargs()`), output captured to `runner.out` in the job dir. The mode, the manager scope (`user`/`system`/`fallback`), and the downgrade reason are recorded in `status.json` and surfaced by `status`/`start` as reduced durability: it survives a gateway *process* restart, but not a cgroup-wide host supervisor stop. `runner_mode: fallback` in config forces it; `runner_mode: systemd` *requires* a transient service and fails the start instead of downgrading. Artifacts and recovery behave identically either way.
 
 ## Completion and recovery
 
@@ -88,7 +98,7 @@ deep_research:
   default_timeout_minutes: 30  # per job, 5–60
   max_parallel: 2              # concurrent lanes, 1–4
   memory_max: 2G               # systemd MemoryMax per runner unit
-  runner_mode: auto            # auto | systemd | fallback
+  runner_mode: auto            # auto | systemd | fallback (see Worker execution)
   notify_interval_seconds: 5.0 # completion watcher sweep
   max_recent_jobs: 20          # bound on list output
 ```

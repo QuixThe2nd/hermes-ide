@@ -81,7 +81,7 @@ DELEGATE_RESEARCH_SCHEMA = {
                 "type": "integer",
                 "minimum": MIN_TIMEOUT_MINUTES,
                 "maximum": MAX_TIMEOUT_MINUTES,
-                "description": "start only: overall job budget (default 20).",
+                "description": "start only: overall job budget in minutes (default 30).",
             },
             "max_parallel": {
                 "type": "integer",
@@ -183,6 +183,8 @@ def _status_summary(directory: Path) -> Dict[str, Any]:
         "max_parallel": status.get("max_parallel"),
         "worker_profile": status.get("worker_profile"),
         "runner_mode": status.get("runner_mode"),
+        # Manager scope the runner actually launched under: user | system | fallback.
+        "runner_scope": status.get("runner_scope"),
         "created_at": _iso(status.get("created_at")),
         "updated_at": _iso(status.get("updated_at")),
         "error": _bounded(status.get("error")),
@@ -191,8 +193,8 @@ def _status_summary(directory: Path) -> Dict[str, Any]:
         summary["blocker"] = "runner has not picked the job up yet"
     if status.get("runner_mode") == "fallback":
         summary["durability"] = (
-            "fallback runner (no systemd user manager): survives a gateway "
-            "process restart, not a host/cgroup supervisor stop"
+            f"fallback runner ({_bounded(status.get('runner_reason'), 160) or 'no systemd service manager'}): "
+            "survives a gateway process restart, not a host/cgroup supervisor stop"
         )
     return summary
 
@@ -342,6 +344,7 @@ def _action_start(args: Dict[str, Any], session_id: Optional[str], task_id: Opti
         "state": jobs.read_status(directory).get("state") or jobs.STATE_QUEUED,
         "job_dir": str(directory),
         "runner_mode": runner_info.get("runner_mode"),
+        "runner_scope": runner_info.get("runner_scope"),
         "lanes": {"total": len(questions) if questions else 1},
         "timeout_minutes": timeout_minutes,
         "max_parallel": max_parallel,
@@ -355,8 +358,8 @@ def _action_start(args: Dict[str, Any], session_id: Optional[str], task_id: Opti
     }
     if runner_info.get("runner_mode") == "fallback":
         payload["durability"] = (
-            "fallback runner (no systemd user manager detected): the job "
-            "survives a gateway restart but not a host supervisor stop"
+            f"fallback runner ({_bounded(runner_info.get('runner_reason'), 160) or 'no systemd service manager detected'}): "
+            "the job survives a gateway process restart but not a host/cgroup supervisor stop"
         )
     return _ok(**payload)
 
@@ -416,6 +419,10 @@ def _action_result(args: Dict[str, Any]) -> str:
         )
         payload["ok"] = False
         payload["error"] = "not_completed"
+        if state == jobs.STATE_FAILED:
+            # Why it failed, bounded — the caller should not need a second
+            # round trip to learn the job's terminal reason.
+            payload["failure"] = _bounded(status.get("error"))
         return json.dumps(payload, ensure_ascii=True)
 
     report = jobs.read_report(directory)

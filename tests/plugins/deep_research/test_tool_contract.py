@@ -43,7 +43,14 @@ def launcher_stub(monkeypatch, profile_home: Path):
                 )["state"],
             }
         )
-        return {"runner_mode": "fallback", "runner_unit": None, "runner_pid": None, "runner_pid_start": None}
+        return {
+            "runner_mode": "fallback",
+            "runner_unit": None,
+            "runner_pid": None,
+            "runner_pid_start": None,
+            "runner_scope": "fallback",
+            "runner_reason": "no usable systemd service manager (user manager unreachable); using detached fallback",
+        }
 
     monkeypatch.setattr(tool, "launch_job", _launch)
     return calls
@@ -154,7 +161,59 @@ class TestStartKnobs:
     def test_fallback_durability_is_stated(self, profile_home: Path, launcher_stub) -> None:
         result = _start(launcher_stub)
         assert result["runner_mode"] == "fallback"
+        assert result["runner_scope"] == "fallback"
         assert "fallback" in result["durability"]
+        # The downgrade reason is honest, not a generic shrug.
+        assert "user manager unreachable" in result["durability"]
+
+    def test_schema_documents_the_real_timeout_default(self) -> None:
+        description = tool.DELEGATE_RESEARCH_SCHEMA["parameters"]["properties"]["timeout_minutes"]["description"]
+        assert "default 30" in description
+
+    def test_start_and_status_surface_the_manager_scope(self, profile_home: Path, monkeypatch) -> None:
+        def _system_launch(job_id, hermes_home, config, timeout_minutes):
+            return {
+                "runner_mode": "systemd",
+                "runner_unit": f"hermes-research-{job_id}",
+                "runner_pid": None,
+                "runner_pid_start": None,
+                "runner_scope": "system",
+            }
+
+        monkeypatch.setattr(tool, "launch_job", _system_launch)
+        result = _start(None)  # type: ignore[arg-type]
+        assert result["runner_scope"] == "system"
+        assert "durability" not in result  # a real transient service needs no caveat
+        status = _call({"action": "status", "job_id": result["job_id"]})
+        assert status["runner_scope"] == "system"
+        assert status["runner_mode"] == "systemd"
+
+    def test_forced_systemd_failure_fails_the_start(self, profile_home: Path, monkeypatch) -> None:
+        # runner_mode=systemd requires a transient service: no silent fallback.
+        (profile_home / "config.yaml").write_text(
+            "deep_research:\n  runner_mode: systemd\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
+
+        def refusing_launch(**kwargs):
+            from plugins.deep_research import launcher
+
+            raise launcher.RunnerLaunchError(
+                "forced runner_mode=systemd could not launch a transient service: "
+                "user manager unreachable; system manager unreachable"
+            )
+
+        monkeypatch.setattr("plugins.deep_research.launcher.launch", refusing_launch)
+        result = _start(None)  # type: ignore[arg-type]
+        assert result["ok"] is False and result["error"] == "launch_failed"
+        assert "forced runner_mode=systemd" in result["message"]
+        directory = jobs.research_jobs_root(profile_home) / result["job_id"]
+        status = jobs.read_status(directory)
+        assert status["state"] == "failed"
+        assert status["phase"] == "launch_failed"
+        assert "forced runner_mode=systemd" in status["error"]
+        # No runner was ever recorded — nothing is pretending to run.
+        assert status["runner_mode"] is None and status["runner_scope"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -10,9 +10,10 @@ job's evidence-ledger env so the plugin's ``post_tool_call`` hook records the
 sources it actually fetched. Synthesis is a second one-shot with
 ``--toolsets file_readonly`` — the writer has no retrieval tools at all.
 
-Fail-closed by design: a lane failure, a writer failure, or a citation
-validation failure after the single correction pass marks the job ``failed``
-with every artifact preserved and no ``report.md`` published.
+Fail-closed by design: a lane failure, a writer failure, a citation
+validation failure after the single correction pass, or an exhausted job
+budget marks the job ``failed`` with every artifact preserved and no
+``report.md`` published.
 """
 
 from __future__ import annotations
@@ -54,6 +55,10 @@ Spawner = Callable[[Sequence[str], Dict[str, str], float], SpawnResult]
 
 class JobAborted(Exception):
     """The job left the active states (cancelled/interrupted) mid-run."""
+
+
+class BudgetExhausted(JobAborted):
+    """The job's own time budget ran out mid-run."""
 
 
 def default_spawn(argv: Sequence[str], env: Dict[str, str], timeout: float) -> SpawnResult:
@@ -129,6 +134,7 @@ class ResearchRunner:
         worker_argv: Optional[Sequence[str]] = None,
         spawn: Spawner = default_spawn,
         logger: Optional[logging.Logger] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.job_id = job_id
         self.hermes_home = Path(hermes_home)
@@ -136,6 +142,7 @@ class ResearchRunner:
         self.worker_argv = list(worker_argv) if worker_argv is not None else resolve_worker_argv()
         self.spawn = spawn
         self.log = logger or _job_logger(jobs.job_dir(job_id, self.hermes_home))
+        self._clock = clock
         self._aborted = threading.Event()
 
     # -- public entry ------------------------------------------------------
@@ -154,7 +161,7 @@ class ResearchRunner:
         profile = str(request.get("worker_profile") or self.config.worker_profile)
         budget_seconds = float(request.get("timeout_minutes") or self.config.default_timeout_minutes) * 60
         max_parallel = int(request.get("max_parallel") or self.config.max_parallel)
-        self.deadline = time.monotonic() + budget_seconds
+        self.deadline = self._clock() + budget_seconds
 
         jobs.mark_running(directory, {})
         self.log.info(
@@ -177,6 +184,17 @@ class ResearchRunner:
                 )
                 return jobs.STATE_FAILED
             self._run_synthesis(directory, brief, profile)
+            return jobs.read_status(directory).get("state") or jobs.STATE_FAILED
+        except BudgetExhausted as exc:
+            # The job's own budget ran out: land a terminal state before this
+            # process exits, or the job would sit in running/synthesizing
+            # forever with nothing left to notify about. finish_job refuses an
+            # already-terminal status, so an explicit cancellation always wins.
+            self.log.warning("job %s aborted: %s", self.job_id, exc)
+            if self._finish(
+                directory, jobs.STATE_FAILED, error="budget exhausted", phase="budget_exhausted"
+            ):
+                jobs.mark_lanes_failed(directory, "budget exhausted")
             return jobs.read_status(directory).get("state") or jobs.STATE_FAILED
         except JobAborted:
             self.log.info("job %s aborted mid-run; leaving recorded terminal state", self.job_id)
@@ -330,9 +348,9 @@ class ResearchRunner:
     # -- helpers -----------------------------------------------------------
 
     def _remaining(self, phase: str) -> float:
-        remaining = self.deadline - time.monotonic()
+        remaining = self.deadline - self._clock()
         if remaining <= 0:
-            raise JobAborted(f"{phase} budget exhausted")
+            raise BudgetExhausted(f"{phase} budget exhausted")
         return max(_MIN_WORKER_SECONDS, remaining)
 
     def _check_active(self, directory: Path) -> None:
@@ -353,10 +371,12 @@ class ResearchRunner:
 
         jobs.update_status(directory, mutate=mutate)
 
-    def _finish(self, directory: Path, state: str, *, error: Optional[str] = None) -> bool:
+    def _finish(
+        self, directory: Path, state: str, *, error: Optional[str] = None, phase: Optional[str] = None
+    ) -> bool:
         """Land the terminal state. ``False`` when a cancel/interrupt beat us."""
         self._aborted.set()
-        finished = jobs.finish_job(directory, state, error=error)
+        finished = jobs.finish_job(directory, state, error=error, phase=phase)
         if finished is None:
             self.log.info("job %s already terminal; not overriding", self.job_id)
             return False

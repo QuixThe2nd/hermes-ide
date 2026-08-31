@@ -47,6 +47,17 @@ LANE_CANCELLED = "cancelled"
 DIR_MODE = 0o700
 FILE_MODE = 0o600
 
+# Runner identity recorded in status.json (manager scope + downgrade reason
+# included so cancel/liveness address the exact unit and honesty survives).
+RUNNER_KEYS = (
+    "runner_mode",
+    "runner_unit",
+    "runner_pid",
+    "runner_pid_start",
+    "runner_scope",
+    "runner_reason",
+)
+
 
 def new_job_id() -> str:
     """Mint a canonical job id."""
@@ -167,6 +178,8 @@ def create_job(
         "runner_unit": None,
         "runner_pid": None,
         "runner_pid_start": None,
+        "runner_scope": None,
+        "runner_reason": None,
         "timeout_minutes": timeout_minutes,
         "max_parallel": max_parallel,
         "worker_profile": worker_profile,
@@ -318,7 +331,7 @@ def mark_running(directory: Path, runner_info: Dict[str, Any]) -> None:
         status["state"] = STATE_RUNNING
         status["phase"] = "running lanes"
         status["started_at"] = status.get("started_at") or _now()
-        for key in ("runner_mode", "runner_unit", "runner_pid", "runner_pid_start"):
+        for key in RUNNER_KEYS:
             if key in runner_info:
                 status[key] = runner_info[key]
 
@@ -333,7 +346,7 @@ def record_runner_info(directory: Path, runner_info: Dict[str, Any]) -> None:
     """
 
     def mutate(status: Dict[str, Any]) -> None:
-        for key in ("runner_mode", "runner_unit", "runner_pid", "runner_pid_start"):
+        for key in RUNNER_KEYS:
             if key in runner_info:
                 status[key] = runner_info[key]
 
@@ -399,11 +412,50 @@ def mark_notified(directory: Path) -> bool:
     )
 
 
+def unmark_notified(directory: Path) -> bool:
+    """Release a notification claim after a failed delivery.
+
+    The watcher flips ``notified`` *before* queueing the event; if the queue
+    rejects it, the claim must come back off so a later sweep retries instead
+    of silently losing the completion forever.
+    """
+
+    def mutate(status: Dict[str, Any]) -> None:
+        status["notified"] = False
+
+    return (
+        update_status(
+            directory,
+            mutate=mutate,
+            require_state=TERMINAL_STATES,
+            guard=lambda status: bool(status.get("notified")),
+        )
+        is not None
+    )
+
+
 def mark_all_lanes_cancelled(directory: Path) -> None:
     def mutate(status: Dict[str, Any]) -> None:
         for lane in status.get("lanes") or []:
             if lane.get("state") in (LANE_PENDING, LANE_RUNNING):
                 lane["state"] = LANE_CANCELLED
+                lane["updated_at"] = _now()
+
+    update_status(directory, mutate=mutate)
+
+
+def mark_lanes_failed(directory: Path, error: str) -> None:
+    """Fail lanes still pending/running — the job ended without them.
+
+    Used when the job's own budget runs out mid-run, so a terminal ``failed``
+    job never reports a lane as ``running`` forever.
+    """
+
+    def mutate(status: Dict[str, Any]) -> None:
+        for lane in status.get("lanes") or []:
+            if lane.get("state") in (LANE_PENDING, LANE_RUNNING):
+                lane["state"] = LANE_FAILED
+                lane["error"] = error
                 lane["updated_at"] = _now()
 
     update_status(directory, mutate=mutate)
