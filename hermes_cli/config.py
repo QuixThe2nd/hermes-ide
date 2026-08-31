@@ -3208,7 +3208,9 @@ def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
         (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
       - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
         :data:`DEFAULT_MAX_TURNS` — 256 turns by default).
-      - Anything unparseable → ``default`` (with a debug log).
+      - Anything unparseable — including values whose numeric magnitude has no
+        finite int representation (``"1e309"``, ``"+inf"``, YAML ``.inf`` /
+        ``.nan``) — → ``default`` (with a debug log), never an exception.
 
     The returned int is always ≥ 1, so loop conditions like
     ``while api_call_count < agent.max_iterations`` behave correctly even when
@@ -3228,7 +3230,15 @@ def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
         # silently become 1/0.
         return default
     if isinstance(raw, (int, float)):
-        n = int(raw)
+        try:
+            n = int(raw)
+        except (ValueError, OverflowError):
+            # Non-finite float — YAML ``.inf`` / ``.nan`` (or a float too large
+            # for an int).  int() raises OverflowError for ±inf and ValueError
+            # for NaN; both mean "no usable integer limit", so fall back to the
+            # default rather than crashing the caller over a bad config value.
+            logger.debug("resolve_turn_limit: non-finite value %r → default %d", raw, default)
+            return default
         if n <= 0:
             return TURN_LIMIT_UNLIMITED
         return n
@@ -3243,7 +3253,11 @@ def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
         except ValueError:
             try:
                 n = int(float(s))
-            except ValueError:
+            except (ValueError, OverflowError):
+                # ValueError: not a number at all.  OverflowError: parses as a
+                # float but overflows int() ("1e309", "+inf", "-1e309") — a
+                # magnitude with no usable limit, so treat it like garbage
+                # rather than letting it blow up the setup wizard / gateway.
                 logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
                 return default
         if n <= 0:

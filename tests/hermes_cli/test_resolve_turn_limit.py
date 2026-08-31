@@ -101,6 +101,53 @@ class TestInvalidInputs:
         assert resolve_turn_limit({"max_turns": 90}) == DEFAULT_MAX_TURNS
 
 
+class TestOverflowLikeInputs:
+    """Values whose magnitude has no finite int representation resolve to the
+    default instead of raising.
+
+    Regression guard: the string path's ``int(float(s))`` raises
+    ``OverflowError`` (not ``ValueError``) for ``"1e309"``/``"+inf"``, and the
+    numeric path called ``int(raw)`` bare — so a YAML ``.inf`` or a pasted
+    ``1e309`` at the setup wizard's Max iterations prompt crashed the caller
+    instead of falling back to the default like every other unusable value.
+    """
+
+    @pytest.mark.parametrize("raw", ["1e309", "-1e309", "1e400", "1e1000000", "+inf", "-inf"])
+    def test_overflow_string_returns_default(self, raw):
+        assert resolve_turn_limit(raw) == DEFAULT_MAX_TURNS
+
+    @pytest.mark.parametrize("raw", [float("inf"), float("-inf"), float("nan")])
+    def test_non_finite_float_returns_default(self, raw):
+        # YAML `.inf` / `.nan` reach the resolver as floats, not strings.
+        assert resolve_turn_limit(raw) == DEFAULT_MAX_TURNS
+
+    def test_overflow_honors_custom_default(self):
+        assert resolve_turn_limit("1e309", default=500) == 500
+        assert resolve_turn_limit(float("nan"), default=500) == 500
+
+    def test_overflow_signals_keep_current_to_setup_wizard(self):
+        """setup_agent_settings calls with default=None: a None result is
+        exactly its "keep current value" path, so overflow-like input must
+        produce None rather than raise."""
+        assert resolve_turn_limit("1e309", default=None) is None
+        assert resolve_turn_limit("+inf", default=None) is None
+        assert resolve_turn_limit(float("inf"), default=None) is None
+
+    def test_advertised_unlimited_spellings_still_win(self):
+        """The spelling table is consulted before numeric conversion, so the
+        documented unlimited spellings keep their meaning even though they
+        would otherwise overflow (or fail) ``int(float(...))``."""
+        for spelling in ("inf", "INF", "infinity", "infinite", "unlimited", "none"):
+            assert resolve_turn_limit(spelling) == TURN_LIMIT_UNLIMITED, spelling
+
+    def test_large_but_finite_values_kept_exact(self):
+        """Positive-int semantics survive the guard: anything that *does* fit
+        an int is kept exact, via both the int and float-string paths."""
+        assert resolve_turn_limit(10**18) == 10**18
+        assert resolve_turn_limit(str(10**18)) == 10**18
+        assert resolve_turn_limit("2e3") == 2000
+
+
 class TestSentinelProperties:
     def test_sentinel_is_sys_maxsize(self):
         assert TURN_LIMIT_UNLIMITED == sys.maxsize
