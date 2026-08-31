@@ -657,6 +657,9 @@ def _escalate_wedged_gateway(
 
     Returns True once the PID has left the process table.
     """
+    from gateway.status import get_process_start_time
+
+    expected_start_time = get_process_start_time(pid)
     try:
         terminate_pid(pid, force=False)
     except (ProcessLookupError, PermissionError, OSError):
@@ -664,7 +667,7 @@ def _escalate_wedged_gateway(
     if _wait_for_pid_exit(pid, max(float(term_grace), 0.0)):
         return True
     try:
-        terminate_pid(pid, force=True)
+        terminate_pid(pid, force=True, expected_start_time=expected_start_time)
         print(f"⚠ Gateway PID {pid} unresponsive to SIGTERM; sent SIGKILL")
     except (ProcessLookupError, PermissionError, OSError):
         pass
@@ -2149,7 +2152,20 @@ def kill_gateway_processes(
 
     for pid in pids:
         try:
-            terminate_pid(pid, force=force)
+            expected_start_time = None
+            if force:
+                # Re-verify at kill time, not just scan time: the cmdline
+                # match inside find_gateway_pids() is stale by the time we
+                # get here, and a recycled PID could otherwise be tree-killed
+                # (#89614 class). _capture_gateway_argv re-reads the LIVE
+                # cmdline and returns None for anything that no longer looks
+                # like a gateway — refuse those.
+                if _capture_gateway_argv(pid) is None:
+                    continue
+                from gateway.status import get_process_start_time
+
+                expected_start_time = get_process_start_time(pid)
+            terminate_pid(pid, force=force, expected_start_time=expected_start_time)
             killed += 1
         except ProcessLookupError:
             # Process already gone
@@ -2289,11 +2305,38 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # the Scheduled-Task bootstrap's argv (``gateway run``) matches the
     # gateway scan — killing that bootstrap takes the detached gateway it
     # spawned down with it.
+    #
+    # Exclusion evidence comes from the RAW registration record, not the
+    # liveness-validated probe.  ``get_running_pid`` (any flags) returns
+    # None whenever a record fails validation — start-time mismatch after
+    # PID-reuse checks, argv drift, lock hiccups — which is exactly when a
+    # healthy standalone gateway (no service supervisor — e.g. `hermes
+    # gateway run` on Windows) is at risk: its PID never joins the
+    # exclusion set and the sweep hard-kills it.  On Windows SIGTERM is
+    # TerminateProcess, so the gateway's planned-stop watcher never gets a
+    # chance to drain.  Reading the raw pidfile + lock records (no
+    # validation, no unlink side effects) is strictly safer for a KILL
+    # exclusion list: a stale recorded PID at worst spares one process this
+    # sweep, while a validation false-negative would kill a live gateway.
+    # The validated probe is still consulted for the runtime-status
+    # fallback PID it can surface when no pidfile exists.
     try:
-        from gateway.status import get_running_pid
+        from gateway.status import (
+            _pid_from_record,
+            _read_gateway_lock_record,
+            _read_pid_record,
+            get_running_pid,
+        )
 
-        recorded = get_running_pid()
-        if recorded and recorded > 0:
+        recorded_pids = set()
+        for _record in (_read_pid_record(), _read_gateway_lock_record()):
+            _raw_pid = _pid_from_record(_record)
+            if _raw_pid and _raw_pid > 0:
+                recorded_pids.add(_raw_pid)
+        _probed = get_running_pid(cleanup_stale=False)
+        if _probed and _probed > 0:
+            recorded_pids.add(_probed)
+        for recorded in recorded_pids:
             own.add(recorded)
             try:
                 import psutil  # type: ignore
@@ -2321,6 +2364,20 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     if not orphans:
         return False
 
+    # Pin each orphan's identity NOW: the cmdline scan above matched at
+    # scan-time only, and the SIGKILL escalation below fires seconds later.
+    # A PID recycled inside that window must never be force-killed (#89614
+    # class). Fingerprint capture is best-effort — SIGTERM below proceeds
+    # regardless (it targets the process verified by the scan an instant
+    # ago), but the delayed SIGKILL requires a still-matching fingerprint.
+    from gateway.status import get_process_start_time
+
+    orphan_identity: dict[int, int] = {}
+    for pid in orphans:
+        start = get_process_start_time(pid)
+        if start is not None:
+            orphan_identity[pid] = start
+
     reaped = False
     for pid in orphans:
         try:
@@ -2337,21 +2394,86 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         reaped = True
 
     # SIGTERM released the port in the field report but the orphan kept
-    # running until a follow-up SIGKILL — wait briefly, then force-kill
-    # any survivor so the replacement can bind the port cleanly.
-    deadline = time.monotonic() + 5.0
-    survivors = list(orphans)
-    while survivors and time.monotonic() < deadline:
-        survivors = [p for p in survivors if _pid_exists(p)]
-        if survivors:
-            time.sleep(0.2)
+    # running until a follow-up SIGKILL — wait, then force-kill any survivor
+    # so the replacement can bind the port cleanly.
+    survivors = _await_gateway_exit(orphans, pid_exists=_pid_exists)
+    # Re-verify identity at kill time: the delayed SIGKILL only fires when
+    # the PID still names the process fingerprinted at scan time (fail-closed
+    # taskkill class fix — a recycled PID must never be force-killed).
+    verified_survivors = []
     for pid in survivors:
-        try:
-            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        recorded = orphan_identity.get(pid)
+        if recorded is None or get_process_start_time(pid) != recorded:
+            continue
+        verified_survivors.append(pid)
+    _force_kill_survivors(verified_survivors)
 
     return reaped
+
+
+# A retiring gateway runs a PASSIVE WAL checkpoint in ``SessionDB.close()``.
+# On a large store with a WAL well past the 1000-page autocheckpoint threshold
+# that does not finish in the 5s this used to allow, and the SIGKILL then
+# landed mid-checkpoint — half-written b-tree pages, which is the 2026-08-31
+# ``state.db`` corruption. The outgoing gateway keeps serving while we wait,
+# so a longer grace delays only the replacement's port bind, never traffic.
+_ORPHAN_EXIT_GRACE_SECONDS = 30.0
+_ORPHAN_EXIT_POLL_SECONDS = 0.2
+
+
+def _await_gateway_exit(
+    pids,
+    *,
+    pid_exists,
+    sleep=None,
+    grace_s: float = _ORPHAN_EXIT_GRACE_SECONDS,
+    poll_s: float = _ORPHAN_EXIT_POLL_SECONDS,
+):
+    """Wait up to *grace_s* for *pids* to exit; return those still alive.
+
+    Polls rather than blocking so a process that exits early costs nothing.
+    ``pid_exists``/``sleep`` are injected so the wait is testable without
+    real processes.
+    """
+    if sleep is None:
+        sleep = time.sleep
+    survivors = [p for p in pids]
+    for _ in range(max(1, int(grace_s / poll_s))):
+        survivors = [p for p in survivors if pid_exists(p)]
+        if not survivors:
+            break
+        sleep(poll_s)
+    else:
+        # Re-check after the LAST sleep. Without this a process that exits in
+        # the final interval is reported as a survivor and gets SIGKILL —
+        # usually a harmless ProcessLookupError, but a recycled PID would put
+        # that signal on an unrelated process.
+        survivors = [p for p in survivors if pid_exists(p)]
+    return survivors
+
+
+def _force_kill_survivors(survivors, *, kill=None) -> None:
+    """SIGKILL processes that outlasted the grace period, loudly.
+
+    A force-kill is the event that can tear the store, so it must leave a
+    trace: the 2026-08-31 incident had no record of which restart did it.
+    """
+    if not survivors:
+        return
+    if kill is None:
+        kill = os.kill
+    for pid in survivors:
+        logger.warning(
+            "Gateway PID %s did not exit within %.0fs of SIGTERM — sending "
+            "SIGKILL. A kill during a WAL checkpoint can corrupt state.db; "
+            "the next start will run an integrity check.",
+            pid,
+            _ORPHAN_EXIT_GRACE_SECONDS,
+        )
+        try:
+            kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def stop_profile_gateway() -> bool:
@@ -3952,6 +4074,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
+Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -3990,6 +4113,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
+Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -5283,6 +5407,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_SUPERVISED_CHILD</key>
+        <string>1</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -5701,7 +5827,7 @@ def _wait_for_gateway_exit(
         force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
-    from gateway.status import get_running_pid
+    from gateway.status import get_process_start_time, get_running_pid
 
     deadline = time.monotonic() + timeout
     force_deadline = (
@@ -5721,7 +5847,11 @@ def _wait_for_gateway_exit(
         ):
             # Grace period expired — force-kill the specific PID.
             try:
-                terminate_pid(pid, force=True)
+                terminate_pid(
+                    pid,
+                    force=True,
+                    expected_start_time=get_process_start_time(pid),
+                )
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError, OSError):
                 return True  # Already gone or we can't touch it.
@@ -6245,6 +6375,24 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
         logger.debug("Existing-gateway process probe failed", exc_info=True)
         return
     if pid is None:
+        # get_running_pid() now filters records by the current profile's
+        # HERMES_HOME (via _pid_record_belongs_to_current_profile). When no
+        # match was found, check whether a stale PID file from a different
+        # profile exists — the user may have switched profiles while the old
+        # gateway is still running.
+        try:
+            from gateway.status import _read_pid_record, _pid_record_belongs_to_current_profile
+
+            stale = _read_pid_record()
+            if stale is not None and not _pid_record_belongs_to_current_profile(stale):
+                stale_home = stale.get("hermes_home", "<unknown>")
+                logger.warning(
+                    "PID file belongs to another profile (hermes_home=%s). "
+                    "The old gateway may still be running under that profile.",
+                    stale_home,
+                )
+        except Exception:
+            pass
         return
 
     print_error(

@@ -689,6 +689,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 lazy=True,
                 todo_state=_todo_state_from_history(history),
+                explicit_cwd=bool(profile_resume_cwd),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -760,6 +761,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
+                explicit_cwd=bool(profile_resume_cwd),
             )
             record["resume_history_ready"] = threading.Event()
             record["resume_hydrating"] = True
@@ -860,6 +862,7 @@ def _(rid, params: dict) -> dict:
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
                 todo_state=_todo_state_from_history(history),
+                explicit_cwd=bool(profile_resume_cwd),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -945,6 +948,10 @@ def _(rid, params: dict) -> dict:
                     session_id=target,
                     session_db=db,
                     platform_override=source,
+                    context_cwd_is_launch_artifact=(
+                        source in _LAUNCH_CWD_NOT_A_WORKSPACE
+                        and not profile_resume_cwd
+                    ),
                     **stored_runtime_overrides,
                 )
             finally:
@@ -994,6 +1001,7 @@ def _(rid, params: dict) -> dict:
                         cwd=profile_resume_cwd,
                         session_db=db,
                         source=source,
+                        explicit_cwd=bool(profile_resume_cwd),
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
@@ -3304,6 +3312,9 @@ def _(rid, params: dict) -> dict:
                     session_id=new_key,
                     session_db=branch_db,
                     platform_override=source,
+                    context_cwd_is_launch_artifact=(
+                        _context_cwd_is_launch_artifact(session)
+                    ),
                 )
             finally:
                 _clear_session_context(tokens)
@@ -3317,6 +3328,7 @@ def _(rid, params: dict) -> dict:
                 session_db=branch_db,
                 source=source,
                 profile_home=parent_home,
+                explicit_cwd=bool(session.get("explicit_cwd")),
             )
             # Ownership TRANSFER — the branched session's agent holds this
             # handle for its whole life and closes it on teardown. Drop is
