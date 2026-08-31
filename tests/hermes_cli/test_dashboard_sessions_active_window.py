@@ -450,3 +450,42 @@ def test_window_count_stays_in_snapshot_after_activity_update(client, state_db, 
 
     assert [s["id"] for s in payload["sessions"]] == ["kept"]
     assert payload["total"] == 1
+
+
+def test_window_order_created_vs_recent(client, state_db):
+    """Windowed ``order`` must sort by the requested criterion.
+
+    ``older-created-fresher`` was created first but has newer activity;
+    ``newer-created`` was created later but has older activity.  The two
+    orderings must therefore return opposite ID sequences while the total
+    stays the same atomic snapshot.
+    """
+    state_db.create_session("older-created-fresher", "cli")
+    _set_last_activity(state_db, "older-created-fresher", NOW - HOUR)
+    _set_started_at(state_db, "older-created-fresher", NOW - 2 * DAY)
+
+    state_db.create_session("newer-created", "cli")
+    _set_last_activity(state_db, "newer-created", NOW - 5 * HOUR)
+    _set_started_at(state_db, "newer-created", NOW - 1 * DAY)
+
+    recent = client.get(
+        "/api/sessions?order=recent&active_within_hours=24&limit=20&offset=0"
+    )
+    assert recent.status_code == 200
+    recent_payload = recent.json()
+    assert [s["id"] for s in recent_payload["sessions"]] == [
+        "older-created-fresher",
+        "newer-created",
+    ]
+    assert recent_payload["total"] == 2
+
+    created = client.get(
+        "/api/sessions?order=created&active_within_hours=24&limit=20&offset=0"
+    )
+    assert created.status_code == 200
+    created_payload = created.json()
+    assert [s["id"] for s in created_payload["sessions"]] == [
+        "newer-created",
+        "older-created-fresher",
+    ]
+    assert created_payload["total"] == 2

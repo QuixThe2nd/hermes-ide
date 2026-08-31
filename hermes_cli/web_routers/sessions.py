@@ -158,6 +158,7 @@ def get_sessions(
                     include_pinned=True,
                     active_since=active_since,
                     active_until=active_until,
+                    order_by_last_active=order == "recent",
                 )
             else:
                 sessions = db.list_sessions_rich(

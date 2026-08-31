@@ -11046,6 +11046,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         active_since: float = None,
         active_until: float = None,
+        order_by_last_active: bool = False,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """List sessions and count them from one immutable SQLite snapshot.
 
@@ -11081,7 +11082,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     min_message_count=min_message_count,
                     include_archived=include_archived,
                     archived_only=archived_only,
-                    order_by_last_active=True,
+                    order_by_last_active=order_by_last_active,
                     compact_rows=compact_rows,
                     include_pinned=include_pinned,
                     active_since=active_since,
