@@ -283,7 +283,7 @@ class TestCodexResetCreditDetailsParsing:
         resets = parse_codex_reset_credit_details(
             _details_body([_credit(expires_at=LIVE_EXPIRES_AT)]), now_fn=lambda: NOW
         )
-        assert resets == ResetCredits(1, LIVE_EXPIRY_SECS)
+        assert resets == ResetCredits(1, LIVE_EXPIRY_SECS, (LIVE_EXPIRY_SECS,))
 
     def test_real_expiry_reaches_the_channel_name(self):
         resets = parse_codex_reset_credit_details(
@@ -294,8 +294,10 @@ class TestCodexResetCreditDetailsParsing:
             "Codex: 95% \u2022 7d left \u2022 1 reset in 24d"
         )
 
-    def test_earliest_future_expiry_wins(self):
-        # one schema field stands for the whole stack: show the soonest
+    def test_each_future_expiry_is_kept_earliest_first(self):
+        # no single clock stands for the whole stack: every credit's own
+        # horizon survives (earliest first for a stable state round-trip),
+        # and the display clock is just the first of them
         body = _details_body(
             [
                 _credit(expires_at=_iso(NOW + 9 * DAY)),
@@ -303,7 +305,32 @@ class TestCodexResetCreditDetailsParsing:
             ]
         )
         assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
-            ResetCredits(2, 3 * DAY)
+            ResetCredits(2, 3 * DAY, (3 * DAY, 9 * DAY))
+        )
+
+    def test_two_credits_display_only_the_earliest_countdown(self):
+        # the Discord name stays compact: one representative countdown (the
+        # earliest), while the horizons carry both clocks for the score
+        resets = parse_codex_reset_credit_details(
+            _details_body(
+                [
+                    _credit(expires_at=_iso(NOW + 9 * DAY)),
+                    _credit(expires_at=_iso(NOW + 3 * DAY)),
+                ]
+            ),
+            now_fn=lambda: NOW,
+        )
+        assert resets.expiry_horizons == (3 * DAY, 9 * DAY)
+        assert format_codex_name(95, 7 * DAY, resets=resets) == (
+            "Codex: 95% \u2022 7d left \u2022 2 resets in 3d"
+        )
+
+    def test_missing_expiry_key_counts_the_credit_without_a_horizon(self):
+        # a credit with no expires_at field at all is still spendable today;
+        # it just has no measurable urgency, so no horizon and no countdown
+        body = _details_body([_credit(), _credit(expires_at=_iso(NOW + 5 * DAY))])
+        assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
+            ResetCredits(2, 5 * DAY, (5 * DAY,))
         )
 
     def test_only_genuinely_available_codex_credits_count(self):
@@ -317,7 +344,7 @@ class TestCodexResetCreditDetailsParsing:
             available_count=4,
         )
         assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
-            ResetCredits(1, 3 * DAY)
+            ResetCredits(1, 3 * DAY, (3 * DAY,))
         )
 
     def test_past_expiry_is_not_counted(self):
@@ -345,7 +372,7 @@ class TestCodexResetCreditDetailsParsing:
             available_count=2,
         )
         assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
-            ResetCredits(1, 3 * DAY)
+            ResetCredits(1, 3 * DAY, (3 * DAY,))
         )
 
     @pytest.mark.parametrize(
@@ -368,7 +395,7 @@ class TestCodexResetCreditDetailsParsing:
             ]
         )
         assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
-            ResetCredits(2, 5 * DAY)
+            ResetCredits(2, 5 * DAY, (5 * DAY,))
         )
 
     def test_empty_credit_list_is_zero(self):
@@ -383,7 +410,7 @@ class TestCodexResetCreditDetailsParsing:
             available_count=3,
         )
         assert parse_codex_reset_credit_details(body, now_fn=lambda: NOW) == (
-            ResetCredits(1, 3 * DAY)
+            ResetCredits(1, 3 * DAY, (3 * DAY,))
         )
 
     def test_missing_credit_list_falls_back_to_the_root_total(self):
@@ -457,7 +484,7 @@ class TestCodexResetCreditFetch:
         )
 
         assert error is None
-        assert resets == ResetCredits(1, 2 * DAY)
+        assert resets == ResetCredits(1, 2 * DAY, (2 * DAY,))
         assert details_calls == ["Bearer codex-tok", "Bearer new-tok"]
         assert len(refresh_calls) == 1
         saved = json.loads((tmp_path / "auth.json").read_text(encoding="utf-8"))

@@ -4,25 +4,38 @@ The additive term: each pending manual reset stacks one full wallet
 (quota fraction 1.0) on its own expiry clock, with the invariant that one
 pending reset at 0% remaining equals zero resets at 100% remaining when the
 clocks match. An expiry the provider never reports adds nothing — the
-usage-reset countdown is never borrowed as a stand-in.
+usage-reset countdown is never borrowed as a stand-in. When the richer
+per-credit horizons are known, every credit scores on its own clock exactly
+once; the single earliest countdown the channel name shows is display-only.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from plugins.fallback_quota_reorder.core import (
+    PrimarySlot,
     QuotaReading,
     REFERENCE_HOURS,
     compute_desired_order,
+    compute_primary_slot,
     is_low_quota,
     load_precise_readings,
     load_precise_reset_fields,
+    load_precise_reset_horizons,
     readings_from_names,
+    run_reorder,
     score_provider,
 )
 from plugins.fallback_quota_reorder.reliability import ReliabilityRates
 from plugins.quota_channels.core import save_state
+from tests.plugins.fallback_quota_reorder._helpers import (
+    fake_http_for_names,
+    write_hermes_home,
+    write_quota_config_path,
+)
 
 BULLET = "•"
 DAY = 86400
@@ -37,6 +50,7 @@ def _reading(
     *,
     reset_count: int = 0,
     reset_expiry_seconds: float | None = None,
+    reset_expiry_horizons: tuple[float, ...] | None = None,
     channel_key: str | None = None,
 ) -> QuotaReading:
     return QuotaReading(
@@ -47,6 +61,7 @@ def _reading(
         reset_seconds=reset_seconds,
         reset_count=reset_count,
         reset_expiry_seconds=reset_expiry_seconds,
+        reset_expiry_horizons=reset_expiry_horizons,
     )
 
 
@@ -181,6 +196,122 @@ class TestStacking:
         # an already-expired reset still spends now: floored at one minute
         reading = _reading("xai-oauth", 0, WEEK, reset_count=1, reset_expiry_seconds=0)
         assert score_provider(reading) == pytest.approx(REFERENCE_HOURS * 60.0)
+
+
+class TestPerCreditExpiryScoring:
+    """Each credit scores on its own clock, exactly once (PR #163 P2).
+
+    ``reset_expiry_horizons`` is the richer per-credit state from the Codex
+    details payload; ``reset_expiry_seconds`` is the earliest of them and is
+    display-only while the list exists.
+    """
+
+    def test_three_and_nine_day_credits_score_as_two_separate_wallets(self):
+        # 3d + 9d must score 168/72 + 168/216, never 2 * 168/72: the display
+        # clock is the earliest expiry, not a clock the whole stack shares
+        reading = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=3 * DAY,
+            reset_expiry_horizons=(3 * DAY, 9 * DAY),
+            channel_key="codex",
+        )
+        assert score_provider(reading) == pytest.approx(
+            REFERENCE_HOURS / 72.0 + REFERENCE_HOURS / 216.0
+        )
+        assert score_provider(reading) < 2 * REFERENCE_HOURS / 72.0
+
+    def test_legacy_single_clock_still_multiplies_the_count(self):
+        # without a richer list, count * one clock keeps its legacy meaning —
+        # exactly what a channel name or a pre-list state row reports
+        reading = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=3 * DAY,
+            channel_key="codex",
+        )
+        assert score_provider(reading) == pytest.approx(2 * REFERENCE_HOURS / 72.0)
+
+    def test_known_plus_unknown_scores_only_the_known_credit(self):
+        # the unknown credit must not borrow its sibling's clock; it stays
+        # counted, so the wallet keeps its low-quota escape
+        reading = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=3 * DAY,
+            reset_expiry_horizons=(3 * DAY,),
+            channel_key="codex",
+        )
+        assert score_provider(reading) == pytest.approx(REFERENCE_HOURS / 72.0)
+        assert reading.reset_count == 2
+        assert not is_low_quota(reading)
+
+    def test_all_unknown_horizons_score_nothing_but_stay_counted(self):
+        reading = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=None,
+            reset_expiry_horizons=(),
+            channel_key="codex",
+        )
+        assert score_provider(reading) == 0.0
+        # the credits are still real spendable capacity: no low-quota sink
+        assert not is_low_quota(reading)
+
+    def test_horizons_never_borrow_the_usage_reset_countdown(self):
+        # a short usage countdown must not masquerade as reset urgency just
+        # because the richer list exists but carries no clocks
+        reading = _reading(
+            "openai-codex",
+            0,
+            60,
+            reset_count=2,
+            reset_expiry_seconds=None,
+            reset_expiry_horizons=(),
+            channel_key="codex",
+        )
+        assert score_provider(reading) == 0.0
+
+    def test_horizons_are_gated_to_reset_providers(self):
+        # a horizons list injected into a provider without a resets API is
+        # as inert as the count next to it
+        polluted = _reading(
+            "kimi-coding",
+            0,
+            WEEK,
+            reset_count=1,
+            reset_expiry_seconds=WEEK,
+            reset_expiry_horizons=(WEEK,),
+            channel_key="kimi",
+        )
+        clean = _reading("kimi-coding", 0, WEEK, channel_key="kimi")
+        assert score_provider(polluted) == score_provider(clean) == 0.0
+
+    def test_horizons_stack_with_the_remaining_term_and_uptime_factors(self):
+        # the reset term stays additive with the remaining term, and the
+        # uptime factors still multiply the whole sum
+        rates = ReliabilityRates(rate_24h=0.6, rate_1h=0.5)
+        reading = _reading(
+            "openai-codex",
+            50,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=3 * DAY,
+            reset_expiry_horizons=(3 * DAY, 9 * DAY),
+            channel_key="codex",
+        )
+        expected = (
+            0.5 + REFERENCE_HOURS / 72.0 + REFERENCE_HOURS / 216.0
+        ) * 0.6 * 0.5
+        assert score_provider(reading, rates) == pytest.approx(expected)
 
 
 class TestNoResetCreditsIsUnchanged:
@@ -336,6 +467,76 @@ class TestLowQuotaSinkRule:
         assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=3))
 
 
+class TestPerCreditOrdering:
+    """The per-credit clocks must move the fallback order, not just the math."""
+
+    def test_precise_horizons_swap_the_fallback_order(self):
+        # legacy shape: codex's two resets on one 3d clock (4.67) beat grok's
+        # single 2d wallet (3.5); per-credit reality (3d + 9d = 3.11) loses
+        entries = [
+            {"provider": "openai-codex", "model": "codex"},
+            {"provider": "xai-oauth", "model": "grok"},
+        ]
+        grok = _reading(
+            "xai-oauth",
+            0,
+            WEEK,
+            reset_count=1,
+            reset_expiry_seconds=2 * DAY,
+            channel_key="grok",
+        )
+        legacy = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=3 * DAY,
+            channel_key="codex",
+        )
+        precise = replace(legacy, reset_expiry_horizons=(3 * DAY, 9 * DAY))
+        assert [e["provider"] for e in compute_desired_order(
+            entries, {"openai-codex": legacy, "xai-oauth": grok}
+        )] == ["openai-codex", "xai-oauth"]
+        assert [e["provider"] for e in compute_desired_order(
+            entries, {"openai-codex": precise, "xai-oauth": grok}
+        )] == ["xai-oauth", "openai-codex"]
+
+    def test_precise_horizons_decide_the_primary_race(self):
+        # same readings through the primary slot: grok's single 2d wallet
+        # takes over only once codex's second credit spends on its own
+        # weaker clock instead of doubling the 3d one
+        config = {"model": {"provider": "zai", "default": "zai"}}
+        entries = [
+            {"provider": "openai-codex", "model": "codex"},
+            {"provider": "xai-oauth", "model": "grok"},
+            {"provider": "zai", "model": "zai"},
+        ]
+        zai = _reading("zai", 40, 22 * DAY, channel_key="zai")
+        grok = _reading(
+            "xai-oauth",
+            0,
+            WEEK,
+            reset_count=1,
+            reset_expiry_seconds=2 * DAY,
+            channel_key="grok",
+        )
+        legacy = _reading(
+            "openai-codex",
+            0,
+            WEEK,
+            reset_count=2,
+            reset_expiry_seconds=3 * DAY,
+            channel_key="codex",
+        )
+        precise = replace(legacy, reset_expiry_horizons=(3 * DAY, 9 * DAY))
+        assert compute_primary_slot(
+            config, entries, {"openai-codex": legacy, "xai-oauth": grok, "zai": zai}
+        ) == PrimarySlot(provider="openai-codex", model="codex")
+        assert compute_primary_slot(
+            config, entries, {"openai-codex": precise, "xai-oauth": grok, "zai": zai}
+        ) == PrimarySlot(provider="xai-oauth", model="grok")
+
+
 class TestPreciseStateResets:
     def test_state_reset_fields_reach_the_reading(self):
         names = {"grok": f"Grok: 46% {BULLET} 3d left {BULLET} 0 resets"}
@@ -362,6 +563,177 @@ class TestPreciseStateResets:
         assert score_provider(known["openai-codex"]) == pytest.approx(
             1.0 + REFERENCE_HOURS / 48.0
         )
+
+    def test_state_horizons_round_trip_into_the_score(self, monkeypatch, tmp_path):
+        # the exact PR #163 shape: state carries each credit's own expiry, so
+        # the reorder scores 3d + 9d as two separate wallets, never the name's
+        # one 3d countdown times two
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "codex": {
+                    "pct": 100,
+                    "reset_seconds": WEEK,
+                    "label": "Codex",
+                    "reset_count": 2,
+                    "reset_expiry_seconds": 3 * DAY,
+                    "reset_expiry_horizons": [3 * DAY, 9 * DAY],
+                },
+            },
+            now_fn=lambda: NOW,
+        )
+        names = {"codex": f"Codex: 100% {BULLET} 7d left {BULLET} 2 resets in 3d"}
+        readings = readings_from_names(
+            names,
+            load_precise_readings(1800, now_fn=lambda: NOW),
+            load_precise_reset_fields(1800, now_fn=lambda: NOW),
+            load_precise_reset_horizons(1800, now_fn=lambda: NOW),
+        )
+        reading = readings["openai-codex"]
+        assert reading.reset_count == 2
+        # the display clock survives for the name, the horizons for the score
+        assert reading.reset_expiry_seconds == 3 * DAY
+        assert reading.reset_expiry_horizons == (3 * DAY, 9 * DAY)
+        assert score_provider(reading) == pytest.approx(
+            1.0 + REFERENCE_HOURS / 72.0 + REFERENCE_HOURS / 216.0
+        )
+
+    def test_state_without_horizons_keeps_the_single_clock_meaning(
+        self, monkeypatch, tmp_path
+    ):
+        # a pre-list state row (and every Grok row) keeps count * one clock
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "codex": {
+                    "pct": 100,
+                    "reset_seconds": WEEK,
+                    "label": "Codex",
+                    "reset_count": 2,
+                    "reset_expiry_seconds": 3 * DAY,
+                },
+                "grok": {
+                    "pct": 46,
+                    "reset_seconds": 3 * DAY,
+                    "label": "Grok",
+                    "reset_count": 1,
+                    "reset_expiry_seconds": 2 * DAY,
+                },
+            },
+            now_fn=lambda: NOW,
+        )
+        assert load_precise_reset_horizons(1800, now_fn=lambda: NOW) == {}
+        names = {
+            "codex": f"Codex: 100% {BULLET} 7d left {BULLET} 2 resets in 3d",
+            "grok": f"Grok: 46% {BULLET} 3d left {BULLET} 1 reset in 2d",
+        }
+        readings = readings_from_names(
+            names,
+            load_precise_readings(1800, now_fn=lambda: NOW),
+            load_precise_reset_fields(1800, now_fn=lambda: NOW),
+            load_precise_reset_horizons(1800, now_fn=lambda: NOW),
+        )
+        assert score_provider(readings["openai-codex"]) == pytest.approx(
+            1.0 + 2 * REFERENCE_HOURS / 72.0
+        )
+        assert score_provider(readings["xai-oauth"]) == pytest.approx(
+            0.46 * REFERENCE_HOURS / 72.0 + REFERENCE_HOURS / 48.0
+        )
+
+    def test_malformed_state_horizons_drop_only_the_bad_entries(
+        self, monkeypatch, tmp_path
+    ):
+        # junk entries are dropped, never fatal: the one readable horizon
+        # still scores, and nothing borrows the display clock for the rest
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "codex": {
+                    "pct": 100,
+                    "reset_seconds": WEEK,
+                    "label": "Codex",
+                    "reset_count": 2,
+                    "reset_expiry_seconds": 3 * DAY,
+                    "reset_expiry_horizons": [3 * DAY, "soon", None, -DAY, True],
+                },
+            },
+            now_fn=lambda: NOW,
+        )
+        assert load_precise_reset_horizons(1800, now_fn=lambda: NOW) == {
+            "codex": (3 * DAY,)
+        }
+        names = {"codex": f"Codex: 100% {BULLET} 7d left {BULLET} 2 resets in 3d"}
+        readings = readings_from_names(
+            names,
+            load_precise_readings(1800, now_fn=lambda: NOW),
+            load_precise_reset_fields(1800, now_fn=lambda: NOW),
+            load_precise_reset_horizons(1800, now_fn=lambda: NOW),
+        )
+        # only the readable 3d credit scores; the count of 2 is untouched
+        assert score_provider(readings["openai-codex"]) == pytest.approx(
+            1.0 + REFERENCE_HOURS / 72.0
+        )
+        assert readings["openai-codex"].reset_count == 2
+
+    def test_entirely_malformed_state_horizons_fall_back_to_legacy(
+        self, monkeypatch, tmp_path
+    ):
+        # a richer list with no readable entry is "no richer list": scoring
+        # falls back to the count + single display clock the tick recorded
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "codex": {
+                    "pct": 100,
+                    "reset_seconds": WEEK,
+                    "label": "Codex",
+                    "reset_count": 2,
+                    "reset_expiry_seconds": 3 * DAY,
+                    "reset_expiry_horizons": ["soon", None],
+                },
+            },
+            now_fn=lambda: NOW,
+        )
+        assert load_precise_reset_horizons(1800, now_fn=lambda: NOW) == {}
+        names = {"codex": f"Codex: 100% {BULLET} 7d left {BULLET} 2 resets in 3d"}
+        readings = readings_from_names(
+            names,
+            load_precise_readings(1800, now_fn=lambda: NOW),
+            load_precise_reset_fields(1800, now_fn=lambda: NOW),
+            load_precise_reset_horizons(1800, now_fn=lambda: NOW),
+        )
+        assert score_provider(readings["openai-codex"]) == pytest.approx(
+            1.0 + 2 * REFERENCE_HOURS / 72.0
+        )
+
+    def test_state_horizons_are_gated_to_reset_providers(
+        self, monkeypatch, tmp_path
+    ):
+        # horizons polluting a non-Codex/Grok row never leave the state
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_state(
+            {
+                "kimi": {
+                    "pct": 80,
+                    "reset_seconds": WEEK,
+                    "label": "Kimi",
+                    "reset_count": 1,
+                    "reset_expiry_seconds": WEEK,
+                    "reset_expiry_horizons": [WEEK, WEEK],
+                },
+            },
+            now_fn=lambda: NOW,
+        )
+        assert load_precise_reset_horizons(1800, now_fn=lambda: NOW) == {}
+        names = {"kimi": f"Kimi: 80% {BULLET} 7d left"}
+        readings = readings_from_names(
+            names,
+            load_precise_readings(1800, now_fn=lambda: NOW),
+            load_precise_reset_fields(1800, now_fn=lambda: NOW),
+            load_precise_reset_horizons(1800, now_fn=lambda: NOW),
+        )
+        assert readings["kimi-coding"].reset_count == 0
+        assert score_provider(readings["kimi-coding"]) == pytest.approx(0.8)
 
     def test_state_without_reset_fields_keeps_the_name_parsed_resets(self):
         # a pre-upgrade state file must not erase resets the name still shows
@@ -481,3 +853,103 @@ class TestPreciseStateResets:
             now_fn=lambda: NOW,
         )
         assert load_precise_reset_fields(1800, now_fn=lambda: NOW) == {}
+
+
+class TestReorderUsesPerCreditState:
+    """The full path: quota_channels state -> reorder order and primary slot."""
+
+    def test_horizons_in_state_flip_the_primary_and_the_order(
+        self, monkeypatch, tmp_path
+    ):
+        # codex shows an emptied wallet plus two resets with the earliest
+        # (3d) countdown; grok one reset in 2d. Legacy single-clock scoring
+        # makes codex the winner (2 * 168/72 = 4.67 vs grok's 3.5); the
+        # per-credit horizons state records (168/72 + 168/216 = 3.11) hand
+        # both races to grok.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        write_hermes_home(
+            tmp_path,
+            fallback_providers=[
+                {"provider": "openrouter", "model": "or"},
+                {"provider": "openai-codex", "model": "codex"},
+                {"provider": "xai-oauth", "model": "grok"},
+            ],
+            extra_config={"model": {"provider": "kimi-coding", "default": "kimi"}},
+        )
+        quota_config = tmp_path / "quota-config.yaml"
+        write_quota_config_path(quota_config)
+        names = {
+            "codex": f"Codex: 0% {BULLET} 7d left {BULLET} 2 resets in 3d",
+            "kimi": f"Kimi: 80% {BULLET} 7d left",
+            "grok": f"Grok: 0% {BULLET} 7d left {BULLET} 1 reset in 2d",
+            "zai": "",
+            "cursor": "",
+        }
+        codex_row = {
+            "pct": 0,
+            "reset_seconds": WEEK,
+            "label": "Codex",
+            "reset_count": 2,
+            "reset_expiry_seconds": 3 * DAY,
+        }
+        grok_row = {
+            "pct": 0,
+            "reset_seconds": WEEK,
+            "label": "Grok",
+            "reset_count": 1,
+            "reset_expiry_seconds": 2 * DAY,
+        }
+        kimi_row = {"pct": 80, "reset_seconds": WEEK, "label": "Kimi"}
+
+        save_state(
+            {"codex": codex_row, "grok": grok_row, "kimi": kimi_row},
+            now_fn=lambda: NOW,
+        )
+        legacy = run_reorder(
+            config_path=quota_config,
+            dry_run=True,
+            http_fn=fake_http_for_names(names),
+            now_fn=lambda: NOW,
+        )
+        assert legacy["primary_desired"] == PrimarySlot(
+            provider="openai-codex", model="codex"
+        )
+        # the promoted provider graduates out of the chain, so grok leads it
+        assert [e["provider"] for e in legacy["desired_entries"]] == [
+            "xai-oauth",
+            "kimi-coding",
+            "openrouter",
+        ]
+        assert legacy["scores"]["openai-codex"] == pytest.approx(
+            2 * REFERENCE_HOURS / 72.0
+        )
+
+        save_state(
+            {
+                "codex": {
+                    **codex_row,
+                    "reset_expiry_horizons": [3 * DAY, 9 * DAY],
+                },
+                "grok": grok_row,
+                "kimi": kimi_row,
+            },
+            now_fn=lambda: NOW,
+        )
+        precise = run_reorder(
+            config_path=quota_config,
+            dry_run=True,
+            http_fn=fake_http_for_names(names),
+            now_fn=lambda: NOW,
+        )
+        assert precise["primary_desired"] == PrimarySlot(
+            provider="xai-oauth", model="grok"
+        )
+        # now codex stays in the chain it no longer tops
+        assert [e["provider"] for e in precise["desired_entries"]] == [
+            "openai-codex",
+            "kimi-coding",
+            "openrouter",
+        ]
+        assert precise["scores"]["openai-codex"] == pytest.approx(
+            REFERENCE_HOURS / 72.0 + REFERENCE_HOURS / 216.0
+        )
