@@ -86,13 +86,15 @@ def get_sessions(
     after it auto-compresses into a fresh continuation id.
 
     ``active_within_hours`` filters to logical sessions whose EFFECTIVE last
-    activity (compression-chain projected, boundary-inclusive at the cutoff)
-    falls within the rolling window ending at this server's ``time.time()``.
-    The cutoff is computed once here and handed to both the row query and the
-    count, so ``total`` and the paginated rows always describe the same set.
-    Composes with ``source``/``sources``/``exclude_sources``/``archived``/
-    ``min_messages``/``order``; callers that omit it get the unwindowed
-    behavior unchanged.
+    activity (compression-chain projected, boundary-inclusive at both ends)
+    falls within the rolling window ``[now - hours, now]``, where ``now`` is
+    this server's ``time.time()``. Both bounds are computed once here from a
+    single frozen ``now`` and handed to both the row query and the count, so
+    ``total`` and the paginated rows always describe the same set — and rows
+    with FUTURE-dated activity (a skewed or hostile client clock) can't plant
+    themselves at the top of the window forever. Composes with
+    ``source``/``sources``/``exclude_sources``/``archived``/``min_messages``/
+    ``order``; callers that omit it get the unwindowed behavior unchanged.
 
     Rows omit ``system_prompt``/``model_config`` (the payload-dominating
     fields no list UI reads) unless ``full=1`` is passed.
@@ -110,14 +112,16 @@ def get_sessions(
     profile_name: Optional[str] = None
     if profile:
         profile_name, _ = _cron_profile_home(profile)
-    # One cutoff for both the row query and the count, frozen before the DB
-    # is opened, so a row sitting exactly on the boundary can't qualify for
-    # one and not the other across the two calls.
+    # One frozen server "now" defines BOTH window bounds, so the inclusive
+    # range ``now - hours <= effective activity <= now`` is identical for the
+    # row query and the count — a row sitting exactly on either boundary
+    # can't qualify for one and not the other across the two calls. The upper
+    # bound rejects future-dated activity instead of admitting it forever.
+    window_now = time.time() if active_within_hours is not None else None
     active_since = (
-        time.time() - active_within_hours * 3600.0
-        if active_within_hours is not None
-        else None
+        window_now - active_within_hours * 3600.0 if window_now is not None else None
     )
+    active_until = window_now
     try:
         # Auto-archive is the only configured write on this GET path. Run it
         # through a dedicated maintenance connection, close that writer, then
@@ -152,6 +156,7 @@ def get_sessions(
                 compact_rows=not full,
                 include_pinned=True,
                 active_since=active_since,
+                active_until=active_until,
             )
             total = db.session_count(
                 source=source or None,
@@ -162,7 +167,13 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
+                # The list excludes hidden rows by default (include_hidden
+                # defaults to False there), so the paired count must too —
+                # otherwise ``total`` counts conversations the rows can never
+                # show and pagination/empty states lie about the set.
+                include_hidden=False,
                 active_since=active_since,
+                active_until=active_until,
             )
             now = time.time()
             # Same ownership contract as get_session_detail: rows are stamped

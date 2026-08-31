@@ -1201,6 +1201,24 @@ export default function SessionsPage() {
         })
         .then((r) => {
           if (cancelled || requestId !== overviewRequestRef.current) return;
+          // A rolling window shrinks under the reader: rows age out of the
+          // last 24 hours and the page the user is ON can empty while
+          // earlier pages still have results. Falling through would render
+          // the global "No sessions were active" empty state (and hide
+          // pagination) even though total > 0 — stranding the UI on a page
+          // that no longer exists. Reload onto the last valid page instead,
+          // keeping the rows already on screen up while it refetches, so the
+          // card never briefly claims the window is empty.
+          const lastPage = Math.max(0, Math.ceil(r.total / PAGE_SIZE) - 1);
+          if (
+            r.sessions.length === 0 &&
+            r.total > 0 &&
+            overviewPageRef.current > lastPage
+          ) {
+            setOverviewLoading(true);
+            setOverviewPage(lastPage);
+            return;
+          }
           setOverviewSessions(r.sessions);
           setOverviewTotal(r.total);
           // The dashboard server and a terminal CLI are separate processes
@@ -1629,7 +1647,10 @@ export default function SessionsPage() {
     }
   }
 
-  if (loading) {
+  // Full-page spinner is the History/search loading state ONLY. The Overview
+  // owns its own loading/error/rows inside its card below, so a slow — or
+  // never-resolving — History request must not blank the default view.
+  if (showList && loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />

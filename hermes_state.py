@@ -4382,6 +4382,55 @@ def classify_session_status(
     return SESSION_STATUS_COMPLETE
 
 
+# Eligibility of a child row (referenced by ``child`` alias) to be a
+# compression continuation of its parent: not an explicit branch, not a
+# delegate subagent, not a tool-sourced run. Shared by the SQL chain walk
+# below and by ``get_compression_tip`` so both admit the exact same sibling
+# set before either ranks it.
+def _compression_child_eligible_sql(child: str) -> str:
+    return (
+        f"json_extract(COALESCE({child}.model_config, '{{}}'),"
+        f" '$._branched_from') IS NULL"
+        f" AND json_extract(COALESCE({child}.model_config, '{{}}'),"
+        f" '$._delegate_from') IS NULL"
+        f" AND COALESCE({child}.source, '') != 'tool'"
+    )
+
+
+# The ONE continuation a parent's chain follows, among its eligible children:
+# prefer children that keep the chain going (``end_reason='compression'``),
+# then still-live ones, over stale closed siblings such as
+# ``ws_orphan_reap``; break ties by recency, then start time, then id.
+#
+# This is the single source of truth for "which sibling is the
+# continuation" — ``get_compression_tip`` (projection) and
+# ``_compression_chain_cte_sql`` (SQL effective activity: window membership
+# + recent ordering) both resolve it through this helper, so the row a list
+# PROJECTS can never be a different continuation than the one whose
+# activity admitted/ordered it. Before they shared it, the SQL walk took
+# MAX over EVERY eligible sibling while projection picked one preferred
+# path, so a fresh stale-websocket sibling could drag a conversation into
+# a 24-hour window (or reorder it) while the returned fields described an
+# older, different tip.
+def _compression_preferred_child_sql(parent: str, child: str) -> str:
+    return f"""
+            SELECT {child}.id
+            FROM sessions {child}
+            WHERE {child}.parent_session_id = {parent}.id
+              AND {_compression_child_eligible_sql(child)}
+            ORDER BY
+              CASE
+                WHEN {child}.end_reason = 'compression' THEN 0
+                WHEN {child}.ended_at IS NULL THEN 1
+                ELSE 2
+              END,
+              {_sql_session_last_active(child)} DESC,
+              {child}.started_at DESC,
+              {child}.id DESC
+            LIMIT 1
+    """
+
+
 # Recursive compression-chain walk shared by the effective-activity surfaces
 # (``list_sessions_rich``'s recent ordering / activity-window filter and
 # ``session_count``'s window-filtered total). Seeds from whatever rows the
@@ -4391,6 +4440,11 @@ def classify_session_status(
 # helper so the list query and its matching COUNT can never drift apart —
 # a divergence there is exactly how a filtered ``total`` stops agreeing with
 # the rows the endpoint returns.
+#
+# The recursive arm advances along the SAME single preferred continuation
+# ``get_compression_tip`` walks (see ``_compression_preferred_child_sql``):
+# every root owns exactly one chain — the one projection surfaces — instead
+# of a fan-out over all eligible siblings.
 #
 # Do NOT require child.started_at >= parent.ended_at in the recursive arm:
 # real desktop/gateway races can insert the continuation row before the
@@ -4404,11 +4458,10 @@ def _compression_chain_cte_sql(where_sql: str) -> str:
         SELECT c.root_id, child.id
         FROM chain c
         JOIN sessions parent ON parent.id = c.cur_id
-        JOIN sessions child ON child.parent_session_id = c.cur_id
+        JOIN sessions child
+          ON child.id = ({_compression_preferred_child_sql(parent="parent", child="child")})
         WHERE parent.end_reason = 'compression'
-          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-          AND COALESCE(child.source, '') != 'tool'
+          AND {_compression_child_eligible_sql("child")}
     ),
     chain_max AS (
         SELECT
@@ -10423,6 +10476,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
         continuation exists.
+
+        The eligibility and preference live in
+        ``_compression_child_eligible_sql`` / ``_compression_preferred_child_sql``
+        — the SAME shared SQL the effective-activity chain CTE
+        (``_compression_chain_cte_sql``) advances along, so the tip this
+        projects and the activity SQL admits/orders can never disagree about
+        which sibling is the continuation.
         """
         current = session_id
         seen = {current} if current else set()
@@ -10434,21 +10494,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"""
                     SELECT child.id
                     FROM sessions parent
-                    JOIN sessions child ON child.parent_session_id = parent.id
+                    JOIN sessions child
+                      ON child.id = ({_compression_preferred_child_sql(parent="parent", child="child")})
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
-                    ORDER BY
-                      CASE
-                        WHEN child.end_reason = 'compression' THEN 0
-                        WHEN child.ended_at IS NULL THEN 1
-                        ELSE 2
-                      END,
-                      {_sql_session_last_active("child")} DESC,
-                      child.started_at DESC,
-                      child.id DESC
+                      AND {_compression_child_eligible_sql("child")}
                     LIMIT 1
                     """,
                     (current,),
@@ -10524,6 +10574,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_key: str = None,
         include_hidden: bool = False,
         active_since: float = None,
+        active_until: float = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -10579,16 +10630,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
 
-        Pass ``active_since`` (absolute unix seconds) to keep only
-        conversations whose EFFECTIVE last activity is at or after the
-        cutoff — boundary-inclusive, so activity exactly at the cutoff
-        qualifies. Effect is chain-projected like ``order_by_last_active``:
-        activity on a compression continuation counts as activity on its
-        logical root, so an old root continued recently still surfaces.
-        Callers should compute the cutoff once (e.g. ``time.time() - h *
-        3600``) and pass the same value to the matching ``session_count`` so
-        the filtered total agrees with these rows. Pinned back-fill is
-        suppressed while this is set: a pin must keep a conversation
+        Pass ``active_since`` / ``active_until`` (absolute unix seconds) to
+        keep only conversations whose EFFECTIVE last activity lies inside the
+        inclusive range — boundary-inclusive at both ends, so activity
+        exactly at either bound qualifies. A window with only ``active_since``
+        stays a pure lower bound (the pre-existing behavior); passing
+        ``active_until`` too (typically the SAME server ``now`` the cutoff was
+        derived from) rejects future-dated activity — a skewed or malicious
+        client clock must not be able to plant a session "active" tomorrow and
+        pin it to the top of a last-24-hours view forever. Effect is
+        chain-projected like ``order_by_last_active``: activity on a
+        compression continuation counts as activity on its logical root, so
+        an old root continued recently still surfaces. Callers should compute
+        the bounds once (e.g. ``now = time.time()``; ``now - h * 3600`` /
+        ``now``) and pass the same values to the matching ``session_count``
+        so the filtered total agrees with these rows. Pinned back-fill is
+        suppressed while any bound is set: a pin must keep a conversation
         reachable, not smuggle it past an activity window the caller asked
         for.
         """
@@ -10665,10 +10722,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
         search_needle = (search_query or "").strip().lower()
-        # ``active_since`` needs the same chain CTE the recent ordering builds
-        # (the window is defined on effective, chain-projected activity), so
-        # either flag selects this path.
-        if order_by_last_active or active_since is not None:
+        # ``active_since``/``active_until`` need the same chain CTE the recent
+        # ordering builds (the window is defined on effective, chain-projected
+        # activity), so any of these flags selects this path.
+        if (
+            order_by_last_active
+            or active_since is not None
+            or active_until is not None
+        ):
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
             # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
@@ -10722,24 +10783,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     id_params.append(_like_pattern(compact_needle))
                 filter_clauses.append(search_clause + "))")
-            if active_since is not None:
+            if active_since is not None or active_until is not None:
                 # Activity window on the SAME chain-projected recency the
                 # ORDER BY uses, so a root whose continuation is fresh
                 # qualifies while the root's own stale last_active would not.
-                # Boundary-inclusive: activity exactly at the cutoff counts.
+                # Boundary-inclusive at both ends: activity exactly at the
+                # cutoff AND exactly at ``now`` counts; anything AFTER ``now``
+                # (a future-dated row from a skewed clock) does not — the
+                # window is the server's rolling 24h, not "cutoff and beyond".
                 # Like the id/search clauses this applies to the outer select
                 # only — filtering the CTE seed would drop old roots before
                 # their chain (and therefore their fresh tip) is ever walked.
-                filter_clauses.append(
-                    "COALESCE(cm.effective_last_active, s.started_at) >= ?"
-                )
-                id_params.append(active_since)
+                if active_since is not None:
+                    filter_clauses.append(
+                        "COALESCE(cm.effective_last_active, s.started_at) >= ?"
+                    )
+                    id_params.append(active_since)
+                if active_until is not None:
+                    filter_clauses.append(
+                        "COALESCE(cm.effective_last_active, s.started_at) <= ?"
+                    )
+                    id_params.append(active_until)
             if filter_clauses:
                 combined = " AND ".join(filter_clauses)
                 outer_where = (
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
             _sel = self._compact_session_cols() if compact_rows else "s.*"
+            # ``created`` order breaks ties on the row id: sessions started in
+            # the same instant (bulk import, batch runner) otherwise paginate
+            # in whatever order SQLite yields tied rows — OFFSET paging can
+            # then repeat a row on one page and drop it from the next.
+            created_order_sql = "ORDER BY s.started_at DESC, s.id DESC"
             query = f"""
                 {_compression_chain_cte_sql(where_sql)}
                 SELECT {_sel}{prompt_select},
@@ -10759,7 +10834,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 {outer_where}
                 {"ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC"
                  if order_by_last_active else
-                 "ORDER BY s.started_at DESC"}
+                 created_order_sql}
                 LIMIT ? OFFSET ?
             """
             # WHERE params apply twice (CTE seed + outer select); the id filter
@@ -10802,12 +10877,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # that had made the page on its own. One extra query, bounded by the
         # number of pins (a handful), never N+1 per pin.
         #
-        # Suppressed under ``active_since``: the back-fill would resurrect
-        # pinned conversations that the requested activity window excludes
-        # (and it can't evaluate chain-projected activity), smuggling old
-        # pins into a "last 24 hours"-style view. A pinned conversation that
-        # IS inside the window surfaces through the windowed query itself.
-        if include_pinned and active_since is None:
+        # Suppressed under ``active_since``/``active_until``: the back-fill
+        # would resurrect pinned conversations that the requested activity
+        # window excludes (and it can't evaluate chain-projected activity),
+        # smuggling old pins into a "last 24 hours"-style view. A pinned
+        # conversation that IS inside the window surfaces through the
+        # windowed query itself.
+        if include_pinned and active_since is None and active_until is None:
             seen_ids = {s["id"] for s in sessions}
             pinned_where = (
                 f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
@@ -13347,7 +13423,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived_only: bool = False,
         exclude_children: bool = False,
         exclude_sources: List[str] = None,
+        include_hidden: bool = True,
         active_since: float = None,
+        active_until: float = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -13363,12 +13441,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cron-excluded ``list_sessions_rich`` page and doesn't keep "load more"
         stuck on for buried scheduler sessions).
 
-        Pass ``active_since`` (absolute unix seconds, boundary-inclusive) to
-        count only conversations whose chain-projected effective activity is at
-        or after the cutoff — the same predicate ``list_sessions_rich`` applies,
-        over the same shared chain CTE, so a windowed count always equals the
-        number of rows the windowed list can paginate through. Compute the
-        cutoff once and hand the identical value to both methods.
+        ``include_hidden`` defaults to True (the historical behavior): store
+        totals — stats cards, CLI ``sessions stats`` — intentionally count
+        hidden rows too, because a hidden session still exists. Pass False
+        when the count is PAIRED with a ``list_sessions_rich`` page: the list
+        excludes hidden rows by default, so a count that admits them reports a
+        ``total`` the paired rows can never reach — the exact drift that keeps
+        "load more"/pagination stuck on for rows the page never shows.
+
+        Pass ``active_since`` / ``active_until`` (absolute unix seconds,
+        boundary-inclusive at both ends) to count only conversations whose
+        chain-projected effective activity lies inside the inclusive range —
+        the same predicate ``list_sessions_rich`` applies, over the same
+        shared chain CTE, so a windowed count always equals the number of rows
+        the windowed list can paginate through. ``active_since`` alone stays a
+        pure lower bound; add ``active_until`` (the same server ``now`` the
+        cutoff came from) to reject future-dated activity. Compute the bounds
+        once and hand the identical values to both methods.
         """
         where_clauses = []
         params = []
@@ -13399,17 +13488,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
+        if not include_hidden:
+            # Mirror list_sessions_rich's default hidden exclusion so a paired
+            # count can't exceed the paired page's reachable rows.
+            where_clauses.append("s.hidden = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-        if active_since is not None:
+        if active_since is not None or active_until is not None:
             # Window the count on effective (chain-projected) activity, using
             # the exact CTE + predicate list_sessions_rich windows its rows
             # with. The WHERE applies twice (CTE seed + outer count) exactly as
-            # it does in the list query, then the cutoff binds last.
-            window_clause = (
-                "COALESCE(cm.effective_last_active, s.started_at) >= ?"
-            )
+            # it does in the list query, then the bounds bind last.
+            window_clauses = []
+            window_params: List[Any] = []
+            if active_since is not None:
+                window_clauses.append(
+                    "COALESCE(cm.effective_last_active, s.started_at) >= ?"
+                )
+                window_params.append(active_since)
+            if active_until is not None:
+                window_clauses.append(
+                    "COALESCE(cm.effective_last_active, s.started_at) <= ?"
+                )
+                window_params.append(active_until)
+            window_clause = " AND ".join(window_clauses)
             outer_where = (
                 f"{where_sql} AND {window_clause}" if where_sql
                 else f" WHERE {window_clause}"
@@ -13421,7 +13524,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {outer_where}
             """
-            count_params = params + params + [active_since]
+            count_params = params + params + window_params
         else:
             query = f"SELECT COUNT(*) FROM sessions s{where_sql}"
             count_params = params

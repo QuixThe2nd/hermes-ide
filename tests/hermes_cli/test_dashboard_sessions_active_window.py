@@ -215,3 +215,81 @@ def test_omitting_the_window_keeps_unfiltered_behavior(client, state_db):
     payload = response.json()
     assert {s["id"] for s in payload["sessions"]} == {"fresh", "stale"}
     assert payload["total"] == 2
+
+
+def _set_last_activity(state_db, session_id, active_at):
+    """Pin a session's effective activity exactly (heartbeat path)."""
+    with state_db._lock:
+        state_db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (active_at, active_at, session_id),
+        )
+        state_db._conn.commit()
+
+
+def test_window_excludes_hidden_sessions_from_rows_total_and_pages(client, state_db):
+    """Hidden in-window sessions must not affect rows, total, empty state, or pages.
+
+    The list excludes hidden rows, so the paired count must too — otherwise
+    ``total`` describes rows the endpoint can never return and the empty
+    state/pagination lie about the window's contents.
+    """
+    for i in range(22):
+        session_id = f"visible-{i:02d}"
+        state_db.create_session(session_id, "cli")
+        _set_last_activity(state_db, session_id, NOW - (i + 1) * 60)
+    for i in range(3):
+        session_id = f"hidden-{i}"
+        state_db.create_session(session_id, "cli")
+        _set_last_activity(state_db, session_id, NOW - (30 + i) * 60)
+        state_db.set_session_hidden(session_id, True)
+
+    page_one = _window(client, limit=20, offset=0)
+    page_two = _window(client, limit=20, offset=20)
+
+    # Rows: hidden conversations never surface on any page...
+    listed = [s["id"] for s in page_one["sessions"] + page_two["sessions"]]
+    assert len(page_one["sessions"]) == 20
+    assert len(page_two["sessions"]) == 2
+    assert not any(sid.startswith("hidden-") for sid in listed)
+    # ...and total: agrees with the rows (25 would mean hidden rows count).
+    assert page_one["total"] == page_two["total"] == 22
+
+    # Empty state: hide EVERYTHING in-window and the endpoint reports a
+    # genuinely empty window — zero rows AND zero total, never a phantom
+    # "total > 0 with nothing to show" stranding.
+    for i in range(22):
+        state_db.set_session_hidden(f"visible-{i:02d}", True)
+    emptied = _window(client, limit=20, offset=0)
+    assert emptied["sessions"] == []
+    assert emptied["total"] == 0
+
+
+def test_window_upper_bounds_activity_at_server_now(client, state_db):
+    """The window is the inclusive range ``[now - 24h, now]``.
+
+    Future-dated activity must NOT be admitted forever: a skewed or hostile
+    client clock planting "active tomorrow" rows would otherwise pin them to
+    the top of the Overview until real time catches up.
+    """
+    cases = {
+        # exactly at the server-computed cutoff: in (pinned separately above)
+        "at_cutoff": NOW - DAY,
+        "in_window": NOW - HOUR,
+        "just_before_now": NOW - 1,
+        # exactly at server now: still in — the bound is inclusive
+        "at_now": NOW,
+        # anything after server now: out, no matter how far
+        "just_after_now": NOW + 1,
+        "far_future": NOW + 7 * DAY,
+    }
+    for session_id, active_at in cases.items():
+        state_db.create_session(session_id, "cli")
+        _set_last_activity(state_db, session_id, active_at)
+
+    payload = _window(client, limit=20, offset=0)
+
+    assert [s["id"] for s in payload["sessions"]] == [
+        "at_now", "just_before_now", "in_window", "at_cutoff",
+    ]
+    assert payload["total"] == 4

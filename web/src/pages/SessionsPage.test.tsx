@@ -466,6 +466,95 @@ describe("SessionsPage overview (last 24 hours)", () => {
       activeWithinHours: 24,
     });
   });
+
+  it("reloads to the last valid page when the window shrinks under the reader", async () => {
+    vi.useFakeTimers();
+    try {
+      // Server-side window total the overview query reports. Dropping it
+      // mid-session is the rolling-window reality: rows age out of the last
+      // 24 hours and the page the user is ON stops existing.
+      let total = 45;
+      apiMocks.getSessions.mockImplementation(
+        async (limit: number, offset: number, options) => {
+          if (
+            options &&
+            (options as { activeWithinHours?: number }).activeWithinHours != null
+          ) {
+            const page = Math.floor(offset / limit);
+            if (page >= Math.ceil(total / limit)) {
+              // The clamped server view: the requested page is past the end.
+              return { sessions: [], total, limit, offset };
+            }
+            return {
+              sessions: [sessionRow(`s-${page}`, `Row ${page}`)],
+              total,
+              limit,
+              offset,
+            };
+          }
+          return { sessions: [], total: 0, limit: 20, offset: 0 };
+        },
+      );
+
+      await renderPage();
+      expect(text()).toContain("Page 1 of 3");
+
+      await act(async () => {
+        iconButton("Next page").click();
+      });
+      expect(text()).toContain("Page 2 of 3");
+      expect(text()).toContain("Row 1");
+
+      // The window shrinks to 15 rows: page 2 no longer exists while page 1
+      // still has results. The 5s poll delivers the now-empty page.
+      total = 15;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      // Clamped back onto the last valid page and reloaded: page 1's rows
+      // render and pagination reflects the shrunken window...
+      expect(text()).toContain("Row 0");
+      expect(text()).not.toContain("Row 1");
+      expect(text()).not.toContain("Page 2 of");
+      const clampedCall = apiMocks.getSessions.mock.calls
+        .filter((call) => (call[2] as { activeWithinHours?: number })?.activeWithinHours)
+        .pop();
+      expect(clampedCall![1]).toBe(0);
+      // ...and the card never claimed the window was empty on the way there.
+      expect(text()).not.toContain("No sessions were active");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders the Overview while the History request is still pending", async () => {
+    // History never resolves — a hung backend — while the window query
+    // answers immediately. The full-page spinner belongs to the History
+    // view, so the DEFAULT view must still show its own rows.
+    apiMocks.getSessions.mockImplementation(async (_limit, _offset, options) => {
+      if (
+        options &&
+        (options as { activeWithinHours?: number }).activeWithinHours != null
+      ) {
+        return {
+          sessions: [sessionRow("s1", "Resolved overview row")],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        };
+      }
+      return new Promise(() => {});
+    });
+
+    await renderPage();
+
+    expect(text()).toContain("Active in the last 24 hours");
+    expect(text()).toContain("Resolved overview row");
+    // The History tab's own loading/empty states must not bleed in.
+    expect(text()).not.toContain("No sessions were active");
+    expect(text()).not.toContain("No sessions yet");
+  });
 });
 
 /** Lazy import so the module-level vi.mock calls are installed first. */

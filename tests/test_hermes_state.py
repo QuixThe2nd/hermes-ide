@@ -2514,6 +2514,220 @@ class TestListSessionsRich:
         )
         assert {s["id"] for s in unwindowed} == {"pinned_old", "recent"}
 
+    def test_rich_list_active_since_hidden_rows_stay_out_of_rows_and_total(self, db):
+        """Hidden in-window rows must not affect rows, total, empty state, or pages.
+
+        ``list_sessions_rich`` excludes hidden rows by default, so the paired
+        ``session_count`` must pass ``include_hidden=False`` — otherwise the
+        windowed ``total`` counts conversations the rows can never surface and
+        pagination/empty states describe a set that doesn't exist.
+        """
+        t0 = 1_800_000_000.0
+
+        def _stamp(session_id, active_at):
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_activity_at=?"
+                    " WHERE id=?",
+                    (active_at, active_at, session_id),
+                )
+                db._conn.commit()
+
+        # 22 visible in-window conversations plus 3 hidden ones interleaved
+        # by recency — enough that hidden rows would spill onto page 2 and
+        # beyond if the count admitted them.
+        for i in range(22):
+            session_id = f"visible-{i:02d}"
+            db.create_session(session_id, "cli")
+            _stamp(session_id, t0 - (i + 1) * 60)
+        for i in range(3):
+            session_id = f"hidden-{i}"
+            db.create_session(session_id, "cli")
+            _stamp(session_id, t0 - (30 + i) * 60)
+            db.set_session_hidden(session_id, True)
+
+        cutoff = t0 - 86400
+        window = dict(active_since=cutoff, active_until=t0)
+
+        # Rows: hidden conversations never surface, on any page.
+        page_one = db.list_sessions_rich(limit=20, offset=0, **window)
+        page_two = db.list_sessions_rich(limit=20, offset=20, **window)
+        listed_ids = [s["id"] for s in page_one] + [s["id"] for s in page_two]
+        assert len(page_one) == 20
+        assert len(page_two) == 2
+        assert not any(sid.startswith("hidden-") for sid in listed_ids)
+        assert len(set(listed_ids)) == 22
+
+        # Total: the paired count uses the list's hidden semantics.
+        assert db.session_count(exclude_children=True, include_hidden=False, **window) == 22
+        # Store-total callers that intentionally include hidden rows keep
+        # getting them (default stays inclusive).
+        assert db.session_count(exclude_children=True, **window) == 25
+
+        # Empty state: with every in-window row hidden, rows AND total agree
+        # on zero — no phantom "total > 0 with nothing to show" stranding.
+        for i in range(22):
+            db.set_session_hidden(f"visible-{i:02d}", True)
+        assert db.list_sessions_rich(limit=20, offset=0, **window) == []
+        assert db.session_count(exclude_children=True, include_hidden=False, **window) == 0
+
+    def test_rich_list_active_since_follows_preferred_continuation_sibling(self, db):
+        """Window membership, order, and projection describe ONE continuation.
+
+        Adversarial sibling shape: a compression-ended root with a LIVE real
+        continuation plus a closed stale-websocket sibling whose activity is
+        FRESHER than the live tip's. Projection (``get_compression_tip``)
+        follows the live tip; the SQL effective-activity walk must advance
+        along that same single preferred path — never fold the stale
+        sibling's fresh heartbeat into the logical conversation's activity —
+        or a list row claims "active in the last 24h" while projecting a tip
+        whose own last_active is days old.
+        """
+        t0 = 1_800_000_000.0
+
+        def _stamp(session_id, *, started_at, active_at=None, ended_at=None):
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_activity_at=?,"
+                    " ended_at=? WHERE id=?",
+                    (started_at, active_at, ended_at, session_id),
+                )
+                db._conn.commit()
+
+        # Conversation A: old root, live tip (2h ago), and a closed stale
+        # sibling that orphaned 5 minutes ago.
+        db.create_session("root_a", "cli")
+        db.end_session("root_a", "compression")
+        db.create_session("tip_a", "cli", parent_session_id="root_a")
+        db.create_session("stale_sibling_a", "cli", parent_session_id="root_a")
+        db.end_session("stale_sibling_a", "ws_orphan_reap")
+        _stamp("root_a", started_at=t0 - 5 * 86400, active_at=t0 - 5 * 86400,
+               ended_at=t0 - 5 * 86400 + 60)
+        _stamp("tip_a", started_at=t0 - 2 * 3600, active_at=t0 - 2 * 3600)
+        _stamp("stale_sibling_a", started_at=t0 - 3600, active_at=t0 - 300,
+               ended_at=t0 - 290)
+
+        # Conversation B: plain recent session 1h ago — between the stale
+        # sibling's activity (5 min) and the live tip's (2h).
+        db.create_session("plain_b", "cli")
+        _stamp("plain_b", started_at=t0 - 3600, active_at=t0 - 3600)
+
+        # Conversation C: live tip is 3 DAYS stale, stale sibling is fresh —
+        # the membership case. Only the preferred path may decide the window.
+        db.create_session("root_c", "cli")
+        db.end_session("root_c", "compression")
+        db.create_session("tip_c", "cli", parent_session_id="root_c")
+        db.create_session("stale_sibling_c", "cli", parent_session_id="root_c")
+        db.end_session("stale_sibling_c", "ws_orphan_reap")
+        _stamp("root_c", started_at=t0 - 6 * 86400, active_at=t0 - 6 * 86400,
+               ended_at=t0 - 6 * 86400 + 60)
+        _stamp("tip_c", started_at=t0 - 3 * 86400, active_at=t0 - 3 * 86400)
+        _stamp("stale_sibling_c", started_at=t0 - 7200, active_at=t0 - 600,
+               ended_at=t0 - 590)
+
+        # Projection prefers the live tip over the closed stale sibling —
+        # the walk must agree with this choice.
+        assert db.get_compression_tip("root_a") == "tip_a"
+        assert db.get_compression_tip("root_c") == "tip_c"
+
+        cutoff = t0 - 86400
+        window = dict(active_since=cutoff, active_until=t0)
+        sessions = db.list_sessions_rich(order_by_last_active=True, **window)
+
+        # Membership: conversation C stays OUT — its preferred tip has been
+        # idle for days; the fresh stale sibling must not smuggle it in.
+        assert [s["id"] for s in sessions] == ["plain_b", "tip_a"]
+        assert db.session_count(exclude_children=True, include_hidden=False, **window) == 2
+
+        # Order + projection: A ranks by its TIP's activity (2h ago), below
+        # B (1h ago) — not by the stale sibling's 5-min heartbeat — and the
+        # returned row IS that tip with that same activity.
+        conversation_a = sessions[1]
+        assert conversation_a["id"] == "tip_a"
+        assert conversation_a["_lineage_root_id"] == "root_a"
+        assert conversation_a["last_active"] == t0 - 2 * 3600
+
+    def test_rich_list_active_since_bounds_activity_at_server_now(self, db):
+        """The window is ``[cutoff, now]`` — inclusive at both ends, nothing after."""
+        t0 = 1_800_000_000.0
+
+        def _stamp(session_id, active_at):
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_activity_at=?"
+                    " WHERE id=?",
+                    (active_at, active_at, session_id),
+                )
+                db._conn.commit()
+
+        cases = {
+            "at_cutoff": t0 - 86400,      # exactly now - 24h: in
+            "in_window": t0 - 3600,       # comfortably inside: in
+            "just_before_now": t0 - 1,    # one second before now: in
+            "at_now": t0,                 # exactly now: in
+            "just_after_now": t0 + 1,     # one second after now: out
+            "far_future": t0 + 7 * 86400, # a week ahead: out
+        }
+        for session_id, active_at in cases.items():
+            db.create_session(session_id, "cli")
+            _stamp(session_id, active_at)
+
+        expected = ["at_now", "just_before_now", "in_window", "at_cutoff"]
+        sessions = db.list_sessions_rich(
+            order_by_last_active=True, active_since=t0 - 86400, active_until=t0
+        )
+        assert [s["id"] for s in sessions] == expected
+        assert db.session_count(
+            exclude_children=True, include_hidden=False,
+            active_since=t0 - 86400, active_until=t0,
+        ) == 4
+
+        # Lower-bound-only callers keep the pre-existing behavior: no upper
+        # bound is imposed unless the caller passes one.
+        lower_only = db.list_sessions_rich(
+            order_by_last_active=True, active_since=t0 - 86400
+        )
+        assert [s["id"] for s in lower_only][:3] == [
+            "far_future", "just_after_now", "at_now",
+        ]
+        assert db.session_count(
+            exclude_children=True, active_since=t0 - 86400
+        ) == 6
+
+    def test_rich_list_active_since_created_order_pages_ties_without_gaps(self, db):
+        """``created`` order over the window ties-breaks on id across pages."""
+        t0 = 1_800_000_000.0
+        # 25 conversations started in the SAME instant — bulk-import shape.
+        for i in range(25):
+            session_id = f"tied-{i:02d}"
+            db.create_session(session_id, "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, last_activity_at=?"
+                " WHERE id LIKE 'tied-%'",
+                (t0 - 3600, t0 - 3600),
+            )
+            db._conn.commit()
+
+        window = dict(active_since=t0 - 86400, active_until=t0)
+        pages = [
+            db.list_sessions_rich(
+                order_by_last_active=False, limit=10, offset=offset, **window
+            )
+            for offset in (0, 10, 20)
+        ]
+        page_ids = [[s["id"] for s in page] for page in pages]
+
+        # Every tied row surfaces exactly once: no duplicates, no omissions,
+        # on any page — the tie-break makes OFFSET paging deterministic.
+        assert page_ids[0] == [f"tied-{i:02d}" for i in range(24, 14, -1)]
+        assert page_ids[1] == [f"tied-{i:02d}" for i in range(14, 4, -1)]
+        assert page_ids[2] == [f"tied-{i:02d}" for i in range(4, -1, -1)]
+        assert len({sid for ids in page_ids for sid in ids}) == 25
+        assert db.session_count(
+            exclude_children=True, include_hidden=False, **window
+        ) == 25
+
     @pytest.mark.parametrize(
         "end_reason",
         [
