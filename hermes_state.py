@@ -4382,6 +4382,44 @@ def classify_session_status(
     return SESSION_STATUS_COMPLETE
 
 
+# Recursive compression-chain walk shared by the effective-activity surfaces
+# (``list_sessions_rich``'s recent ordering / activity-window filter and
+# ``session_count``'s window-filtered total). Seeds from whatever rows the
+# caller's WHERE admits (roots + user-visible branch/reset children), then
+# follows compression-continuation edges forward and folds each chain into one
+# ``effective_last_active`` (freshest activity anywhere in the lineage). One
+# helper so the list query and its matching COUNT can never drift apart —
+# a divergence there is exactly how a filtered ``total`` stops agreeing with
+# the rows the endpoint returns.
+#
+# Do NOT require child.started_at >= parent.ended_at in the recursive arm:
+# real desktop/gateway races can insert the continuation row before the
+# parent's ended_at is written, while stale websocket siblings may satisfy
+# the timestamp test and hijack resume/list projection.
+def _compression_chain_cte_sql(where_sql: str) -> str:
+    return f"""
+    WITH RECURSIVE chain(root_id, cur_id) AS (
+        SELECT s.id, s.id FROM sessions s {where_sql}
+        UNION ALL
+        SELECT c.root_id, child.id
+        FROM chain c
+        JOIN sessions parent ON parent.id = c.cur_id
+        JOIN sessions child ON child.parent_session_id = c.cur_id
+        WHERE parent.end_reason = 'compression'
+          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+          AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+          AND COALESCE(child.source, '') != 'tool'
+    ),
+    chain_max AS (
+        SELECT
+            root_id,
+            MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
+        FROM chain
+        GROUP BY root_id
+    )
+"""
+
+
 class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
     """
     SQLite-backed session storage with FTS5 search.
@@ -10485,6 +10523,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         session_key: str = None,
         include_hidden: bool = False,
+        active_since: float = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -10539,6 +10578,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Pass ``session_key`` to restrict results to one stable gateway
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
+
+        Pass ``active_since`` (absolute unix seconds) to keep only
+        conversations whose EFFECTIVE last activity is at or after the
+        cutoff — boundary-inclusive, so activity exactly at the cutoff
+        qualifies. Effect is chain-projected like ``order_by_last_active``:
+        activity on a compression continuation counts as activity on its
+        logical root, so an old root continued recently still surfaces.
+        Callers should compute the cutoff once (e.g. ``time.time() - h *
+        3600``) and pass the same value to the matching ``session_count`` so
+        the filtered total agrees with these rows. Pinned back-fill is
+        suppressed while this is set: a pin must keep a conversation
+        reachable, not smuggle it past an activity window the caller asked
+        for.
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -10613,7 +10665,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
         search_needle = (search_query or "").strip().lower()
-        if order_by_last_active:
+        # ``active_since`` needs the same chain CTE the recent ordering builds
+        # (the window is defined on effective, chain-projected activity), so
+        # either flag selects this path.
+        if order_by_last_active or active_since is not None:
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
             # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
@@ -10622,11 +10677,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             #
             # The CTE seeds from rows the outer WHERE admits (roots +
             # user-visible branch/reset children), then recursively joins through
-            # compression-continuation edges. Do NOT require
-            # child.started_at >= parent.ended_at here: real desktop/gateway
-            # races can insert the continuation row before the parent's
-            # ended_at is written, while stale websocket siblings may satisfy
-            # the timestamp test and hijack resume/list projection.
+            # compression-continuation edges — see
+            # ``_compression_chain_cte_sql`` for why the recursive arm must not
+            # require child.started_at >= parent.ended_at.
             outer_where = where_sql
             id_params: List[Any] = []
             filter_clauses: List[str] = []
@@ -10669,6 +10722,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     id_params.append(_like_pattern(compact_needle))
                 filter_clauses.append(search_clause + "))")
+            if active_since is not None:
+                # Activity window on the SAME chain-projected recency the
+                # ORDER BY uses, so a root whose continuation is fresh
+                # qualifies while the root's own stale last_active would not.
+                # Boundary-inclusive: activity exactly at the cutoff counts.
+                # Like the id/search clauses this applies to the outer select
+                # only — filtering the CTE seed would drop old roots before
+                # their chain (and therefore their fresh tip) is ever walked.
+                filter_clauses.append(
+                    "COALESCE(cm.effective_last_active, s.started_at) >= ?"
+                )
+                id_params.append(active_since)
             if filter_clauses:
                 combined = " AND ".join(filter_clauses)
                 outer_where = (
@@ -10676,25 +10741,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
             _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
-                WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
-                    UNION ALL
-                    SELECT c.root_id, child.id
-                    FROM chain c
-                    JOIN sessions parent ON parent.id = c.cur_id
-                    JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
-                ),
-                chain_max AS (
-                    SELECT
-                        root_id,
-                        MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
-                    FROM chain
-                    GROUP BY root_id
-                )
+                {_compression_chain_cte_sql(where_sql)}
                 SELECT {_sel}{prompt_select},
                     COALESCE(
                         (SELECT {_PREVIEW_RAW_SELECT}
@@ -10710,7 +10757,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
                 {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                {"ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC"
+                 if order_by_last_active else
+                 "ORDER BY s.started_at DESC"}
                 LIMIT ? OFFSET ?
             """
             # WHERE params apply twice (CTE seed + outer select); the id filter
@@ -10752,7 +10801,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # back-filled root then projects to its live tip exactly like a row
         # that had made the page on its own. One extra query, bounded by the
         # number of pins (a handful), never N+1 per pin.
-        if include_pinned:
+        #
+        # Suppressed under ``active_since``: the back-fill would resurrect
+        # pinned conversations that the requested activity window excludes
+        # (and it can't evaluate chain-projected activity), smuggling old
+        # pins into a "last 24 hours"-style view. A pinned conversation that
+        # IS inside the window surfaces through the windowed query itself.
+        if include_pinned and active_since is None:
             seen_ids = {s["id"] for s in sessions}
             pinned_where = (
                 f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
@@ -13292,6 +13347,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived_only: bool = False,
         exclude_children: bool = False,
         exclude_sources: List[str] = None,
+        active_since: float = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -13306,6 +13362,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (e.g. ``["cron"]`` so the recents "load more" total matches a
         cron-excluded ``list_sessions_rich`` page and doesn't keep "load more"
         stuck on for buried scheduler sessions).
+
+        Pass ``active_since`` (absolute unix seconds, boundary-inclusive) to
+        count only conversations whose chain-projected effective activity is at
+        or after the cutoff — the same predicate ``list_sessions_rich`` applies,
+        over the same shared chain CTE, so a windowed count always equals the
+        number of rows the windowed list can paginate through. Compute the
+        cutoff once and hand the identical value to both methods.
         """
         where_clauses = []
         params = []
@@ -13339,8 +13402,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+        if active_since is not None:
+            # Window the count on effective (chain-projected) activity, using
+            # the exact CTE + predicate list_sessions_rich windows its rows
+            # with. The WHERE applies twice (CTE seed + outer count) exactly as
+            # it does in the list query, then the cutoff binds last.
+            window_clause = (
+                "COALESCE(cm.effective_last_active, s.started_at) >= ?"
+            )
+            outer_where = (
+                f"{where_sql} AND {window_clause}" if where_sql
+                else f" WHERE {window_clause}"
+            )
+            query = f"""
+                {_compression_chain_cte_sql(where_sql)}
+                SELECT COUNT(*)
+                FROM sessions s
+                LEFT JOIN chain_max cm ON cm.root_id = s.id
+                {outer_where}
+            """
+            count_params = params + params + [active_since]
+        else:
+            query = f"SELECT COUNT(*) FROM sessions s{where_sql}"
+            count_params = params
+
         with self._read_ctx() as conn:
-            cursor = conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
+            cursor = conn.execute(query, count_params)
             return cursor.fetchone()[0]
 
     def session_count_ge(self, n: int = 1) -> bool:

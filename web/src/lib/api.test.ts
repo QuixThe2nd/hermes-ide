@@ -119,6 +119,54 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("api.getSessions", () => {
+  it("sends the relative activity window while preserving profile and source params", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("worker");
+
+    const fetchMock = jsonFetchMock({
+      sessions: [],
+      total: 0,
+      limit: 20,
+      offset: 40,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessions(20, 40, {
+      order: "recent",
+      source: "cli",
+      excludeSources: ["cron"],
+      activeWithinHours: 24,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions?limit=20&offset=40&order=recent&source=cli" +
+        "&exclude_sources=cron&active_within_hours=24&profile=worker",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("omits the window param when the caller does not ask for one", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("");
+
+    const fetchMock = jsonFetchMock({
+      sessions: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessions(20, 0, { order: "created" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions?limit=20&offset=0&order=created",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
 describe("api OAuth helpers", () => {
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });

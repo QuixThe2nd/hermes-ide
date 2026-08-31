@@ -310,6 +310,10 @@ export interface SessionQueryOptions {
   source?: string | null;
   sources?: string[];
   excludeSources?: string[];
+  /** Keep only sessions whose effective last activity is within the rolling
+   *  window of this many hours, computed server-side (immune to client-clock
+   *  skew) and boundary-inclusive at the cutoff. */
+  activeWithinHours?: number;
 }
 
 function normalizeSessionQueryOptions(
@@ -334,6 +338,13 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
   }
   if (options.excludeSources && options.excludeSources.length > 0) {
     next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
+  }
+  if (options.activeWithinHours != null) {
+    next = appendQueryParam(
+      next,
+      "active_within_hours",
+      String(options.activeWithinHours),
+    );
   }
   return appendProfileParam(next, options.profile);
 }

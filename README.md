@@ -112,6 +112,8 @@ Steered follow-ups get a second "✅ Steer delivered" ack the moment the text ac
 
 Lifecycle broadcasts (shutdown/startup) can route to a dedicated per-platform notification channel, keeping home chats free (`/setnotify`, `/clearnotify`). The system prompt tells the agent its own name: the bot's platform display name (Discord server nickname/global name) renders as `**Your name:**` in the session context.
 
+The web dashboard's Sessions Overview lists every logical session active in the server-computed rolling last 24 hours — compression continuations count toward their root — paginated with a matching total.
+
 ### Discord session and UX details
 
 Sessions are keyed to your stable username, not your per-server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot (DMs unaffected). Threads rename once, after the first reply lands, never mid-turn. Progress updates respect each platform's real message limits.

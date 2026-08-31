@@ -67,6 +67,11 @@ def get_sessions(
     cwd_prefix: str = None,
     full: bool = False,
     profile: Optional[str] = None,
+    # Rolling activity window in hours (e.g. ``24`` = sessions whose
+    # effective last activity is within the past 24h). Server-computed so a
+    # skewed client clock can't shift the window; caps at a year of hours
+    # so a typo'd value can't ask for a meaningless window.
+    active_within_hours: Optional[float] = Query(None, gt=0, le=8784),
 ):
     """List sessions.
 
@@ -79,6 +84,15 @@ def get_sessions(
     start time) or ``recent`` (by latest activity across the compression
     chain). ``recent`` keeps a long-running conversation on the first page
     after it auto-compresses into a fresh continuation id.
+
+    ``active_within_hours`` filters to logical sessions whose EFFECTIVE last
+    activity (compression-chain projected, boundary-inclusive at the cutoff)
+    falls within the rolling window ending at this server's ``time.time()``.
+    The cutoff is computed once here and handed to both the row query and the
+    count, so ``total`` and the paginated rows always describe the same set.
+    Composes with ``source``/``sources``/``exclude_sources``/``archived``/
+    ``min_messages``/``order``; callers that omit it get the unwindowed
+    behavior unchanged.
 
     Rows omit ``system_prompt``/``model_config`` (the payload-dominating
     fields no list UI reads) unless ``full=1`` is passed.
@@ -96,6 +110,14 @@ def get_sessions(
     profile_name: Optional[str] = None
     if profile:
         profile_name, _ = _cron_profile_home(profile)
+    # One cutoff for both the row query and the count, frozen before the DB
+    # is opened, so a row sitting exactly on the boundary can't qualify for
+    # one and not the other across the two calls.
+    active_since = (
+        time.time() - active_within_hours * 3600.0
+        if active_within_hours is not None
+        else None
+    )
     try:
         # Auto-archive is the only configured write on this GET path. Run it
         # through a dedicated maintenance connection, close that writer, then
@@ -129,6 +151,7 @@ def get_sessions(
                 # with the API-level _strip_session_list_rows below).
                 compact_rows=not full,
                 include_pinned=True,
+                active_since=active_since,
             )
             total = db.session_count(
                 source=source or None,
@@ -139,6 +162,7 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
+                active_since=active_since,
             )
             now = time.time()
             # Same ownership contract as get_session_detail: rows are stamped

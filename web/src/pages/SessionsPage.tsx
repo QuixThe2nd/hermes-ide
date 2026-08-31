@@ -764,6 +764,11 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
+// Overview window: every logical session with effective activity in the
+// rolling last 24 hours. The cutoff is computed server-side
+// (`active_within_hours`), so a skewed client clock can't shift the window.
+const OVERVIEW_WINDOW_HOURS = 24;
+
 function SessionsPagination({
   className,
   compact = false,
@@ -827,7 +832,18 @@ export default function SessionsPage() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  // Overview (last-24-hours) list state. Kept entirely separate from the
+  // History list state above: the window is a different query with its own
+  // server-side total, page, loading and error, so neither view's pagination
+  // can bleed into the other.
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
+  const [overviewTotal, setOverviewTotal] = useState(0);
+  const [overviewPage, setOverviewPage] = useState(0);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  // Bumped by the overview card's Retry button; the load effect depends on
+  // it, so a retry re-runs the explicit (non-silent) fetch.
+  const [overviewRetryToken, setOverviewRetryToken] = useState(0);
   const [view, setView] = useState<SessionsView>("overview");
   const [sessionCategory, setSessionCategory] =
     useState<SessionFilterCategory>("chats");
@@ -992,20 +1008,54 @@ export default function SessionsPage() {
     lastClickedIndexRef.current = null;
   }, []);
 
+  // Refs for the overview poll's new-session detection. The poll effect
+  // below is mounted once with stable deps, so it reads the current page
+  // and the last-seen newest session id through refs instead of capturing
+  // stale values. ``newestSeenRef`` starts null so the first poll sets a
+  // baseline without triggering a redundant reload (mount already loads).
+  const newestSeenRef = useRef<string | null>(null);
+  const pageRef = useRef(page);
+  const overviewPageRef = useRef(overviewPage);
+  // Guards the in-flight overview request: an explicit load (mount, page
+  // change, retry) bumps the id, so a slower earlier response — including
+  // one from the page just navigated away from — can't overwrite fresher
+  // state.
+  const overviewRequestRef = useRef(0);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    overviewPageRef.current = overviewPage;
+  }, [overviewPage]);
+
+  const isSearching = Boolean(search.trim());
+  // The Overview owns an explicit "nothing was active in the last 24 hours"
+  // empty state, so — unlike the old recents card — it stays reachable with
+  // zero rows instead of collapsing into the History list.
+  const showOverview = view === "overview" && !isSearching;
+  const showList = view === "list" || isSearching;
+
+  // Header count badge mirrors the visible view: the 24-hour window total on
+  // the Overview, the filtered History total on the list.
+  const headerCount = showList ? total : overviewTotal;
+  const headerLoading = showList ? loading : overviewLoading;
+
   useLayoutEffect(() => {
-    if (loading) {
+    if (headerLoading) {
       setAfterTitle(null);
       return;
     }
     setAfterTitle(
       <Badge tone="secondary" className="text-xs tabular-nums">
-        {total}
+        {headerCount}
       </Badge>,
     );
     return () => {
       setAfterTitle(null);
     };
-  }, [loading, setAfterTitle, total]);
+  }, [headerCount, headerLoading, setAfterTitle]);
 
   useEffect(() => {
     setEnd(
@@ -1104,18 +1154,6 @@ export default function SessionsPage() {
     loadStats();
   }, [loadStats]);
 
-  // Refs for the overview poll's new-session detection. The poll effect
-  // below is mounted once with stable deps, so it reads the current page
-  // and the last-seen newest session id through refs instead of capturing
-  // stale values. ``newestSeenRef`` starts null so the first poll sets a
-  // baseline without triggering a redundant reload (mount already loads).
-  const newestSeenRef = useRef<string | null>(null);
-  const pageRef = useRef(page);
-
-  useEffect(() => {
-    pageRef.current = page;
-  }, [page]);
-
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -1128,9 +1166,28 @@ export default function SessionsPage() {
     };
   }, [loadSessions, page, refreshEmptyCount]);
 
+  // Overview poll: the last-24-hours page plus the gateway status. The
+  // windowing and its total both come from the server (`active_within_hours`
+  // + `order=recent`), so the card paginates honestly — it never fetches the
+  // whole DB to filter in React, isn't capped at an arbitrary first page,
+  // and spans every source under the selected management profile. The 5s
+  // poll keeps the visible page live and doubles as the cross-process "a new
+  // session appeared" signal for the History list below.
   useEffect(() => {
     let cancelled = false;
-    const loadOverview = () => {
+    const loadOverview = (silent: boolean) => {
+      // Silent ticks (the interval) keep whatever is rendered on screen and
+      // only swap in fresher data, so a background refresh never flickers
+      // the card or drops scroll position. Explicit loads (mount, page
+      // change, retry) show the loading state and clear the prior error.
+      const requestId = silent
+        ? overviewRequestRef.current
+        : overviewRequestRef.current + 1;
+      if (!silent) {
+        overviewRequestRef.current = requestId;
+        setOverviewLoading(true);
+        setOverviewError(null);
+      }
       api
         .getStatus()
         .then((nextStatus) => {
@@ -1138,32 +1195,48 @@ export default function SessionsPage() {
         })
         .catch(() => {});
       api
-        .getSessions(50, 0, sessionQueryOptions)
+        .getSessions(PAGE_SIZE, overviewPageRef.current * PAGE_SIZE, {
+          order: "recent",
+          activeWithinHours: OVERVIEW_WINDOW_HOURS,
+        })
         .then((r) => {
-          if (cancelled) return;
+          if (cancelled || requestId !== overviewRequestRef.current) return;
           setOverviewSessions(r.sessions);
-          // The dashboard server and a terminal CLI are separate
-          // processes sharing one session DB — there is no push channel,
-          // so we detect sessions created in another process here. The
-          // overview poll already fetches the 50 newest sessions, so we
-          // reuse its head id as a cheap change signal: when it changes,
-          // silently refresh the paginated list so the new session shows
-          // up in real time without a visible loading flicker.
+          setOverviewTotal(r.total);
+          // The dashboard server and a terminal CLI are separate processes
+          // sharing one session DB — there is no push channel, so we detect
+          // sessions created in another process here. The window is ordered
+          // by effective activity, so its head id is still the newest
+          // conversation: when it changes, silently refresh the paginated
+          // History list so the new session shows up without a flicker.
           const newest = r.sessions[0]?.id ?? null;
           if (shouldRefreshSessions(newestSeenRef.current, newest)) {
             loadSessions(pageRef.current, true);
           }
           newestSeenRef.current = newest;
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (cancelled || requestId !== overviewRequestRef.current) return;
+          // Rows already on screen stay up (stale beats blank); the banner
+          // carries a Retry.
+          setOverviewError(
+            err instanceof Error ? err.message : String(err ?? "request failed"),
+          );
+        })
+        .finally(() => {
+          if (cancelled || requestId !== overviewRequestRef.current) return;
+          if (!silent) setOverviewLoading(false);
+        });
     };
-    loadOverview();
-    const id = setInterval(loadOverview, 5000);
+    loadOverview(false);
+    const id = setInterval(() => loadOverview(true), 5000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [loadSessions, sessionQueryOptions]);
+    // ``overviewPage``/``overviewRetryToken`` re-run the effect so paging
+    // and Retry re-fetch immediately instead of waiting for the next tick.
+  }, [loadSessions, overviewPage, overviewRetryToken]);
 
   useEffect(() => {
     const el = logScrollRef.current;
@@ -1530,14 +1603,7 @@ export default function SessionsPage() {
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
     : [];
-  const recentSessions = overviewSessions
-    .filter((s) => !s.is_active)
-    .slice(0, 5);
 
-  const isSearching = Boolean(search.trim());
-  const showOverviewTab =
-    platformEntries.length > 0 || recentSessions.length > 0;
-  const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !isSearching && total > PAGE_SIZE;
 
   const alerts: { message: string; detail?: string }[] = [];
@@ -1800,106 +1866,114 @@ export default function SessionsPage() {
         </div>
       )}
 
-      {(showOverviewTab && !isSearching) || showList ? (
+      {showOverview || showList ? (
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
-            <Segmented
-              className="w-fit shrink-0"
-              size="md"
-              value={sessionCategory}
-              onChange={updateSessionCategory}
-              options={[
-                { value: "chats", label: t.sessions.filterChats },
-                { value: "automation", label: t.sessions.filterAutomation },
-                { value: "all", label: t.sessions.filterAll },
-              ]}
-            />
+            {/* Category + source filters scope only the History query (and
+                the search that shares it). The Overview spans every source
+                in the 24-hour window by design, so it never renders filter
+                controls it doesn't apply. */}
+            {showList && (
+              <>
+                <Segmented
+                  className="w-fit shrink-0"
+                  size="md"
+                  value={sessionCategory}
+                  onChange={updateSessionCategory}
+                  options={[
+                    { value: "chats", label: t.sessions.filterChats },
+                    { value: "automation", label: t.sessions.filterAutomation },
+                    { value: "all", label: t.sessions.filterAll },
+                  ]}
+                />
 
-            <div ref={sourceMenuRef} className="relative shrink-0">
-              <Button
-                outlined
-                size="sm"
-                prefix={<ListFilter />}
-                suffix={
-                  <ChevronDown
-                    className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
-                  />
-                }
-                className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
-                aria-label={t.sessions.sourceFilter}
-                aria-expanded={sourceMenuOpen}
-                onClick={() => setSourceMenuOpen((open) => !open)}
-              >
-                <span className="min-w-0 truncate">{sourceFilterLabel}</span>
-              </Button>
+                <div ref={sourceMenuRef} className="relative shrink-0">
+                  <Button
+                    outlined
+                    size="sm"
+                    prefix={<ListFilter />}
+                    suffix={
+                      <ChevronDown
+                        className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
+                      />
+                    }
+                    className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
+                    aria-label={t.sessions.sourceFilter}
+                    aria-expanded={sourceMenuOpen}
+                    onClick={() => setSourceMenuOpen((open) => !open)}
+                  >
+                    <span className="min-w-0 truncate">{sourceFilterLabel}</span>
+                  </Button>
 
-              {sourceMenuOpen && (
-                <div
-                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
-                >
-                  <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {sourceMenuTitle}
-                    </span>
-                    {selectedSources !== null && (
-                      <Button
-                        ghost
-                        size="xs"
-                        onClick={clearSourceFilters}
-                        className="shrink-0"
-                      >
-                        {t.common.clear}
-                      </Button>
-                    )}
-                  </div>
-                  <div className="max-h-64 overflow-y-auto p-1">
-                    {sourceOptions.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">
-                        {sourceMenuTitle}
-                      </div>
-                    ) : (
-                      sourceOptions.map(([source, count]) => {
-                        const selected = selectedSourceSet.has(source);
-                        const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
-                        const sourceColor =
-                          SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
-
-                        return (
-                          <div
-                            key={source}
-                            className="flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-secondary/40"
+                  {sourceMenuOpen && (
+                    <div
+                      className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
+                    >
+                      <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {sourceMenuTitle}
+                        </span>
+                        {selectedSources !== null && (
+                          <Button
+                            ghost
+                            size="xs"
+                            onClick={clearSourceFilters}
+                            className="shrink-0"
                           >
-                            <Checkbox
-                              checked={selected}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleSourceFilter(source);
-                              }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
-                            />
-                            <button
-                              type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
-                              onClick={() => toggleSourceFilter(source)}
-                            >
-                              <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
-                              <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
-                              </span>
-                              <span className="shrink-0 tabular-nums text-muted-foreground">
-                                {count}
-                              </span>
-                            </button>
+                            {t.common.clear}
+                          </Button>
+                        )}
+                      </div>
+                      <div className="max-h-64 overflow-y-auto p-1">
+                        {sourceOptions.length === 0 ? (
+                          <div className="px-2 py-2 text-xs text-muted-foreground">
+                            {sourceMenuTitle}
                           </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+                        ) : (
+                          sourceOptions.map(([source, count]) => {
+                            const selected = selectedSourceSet.has(source);
+                            const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
+                            const sourceColor =
+                              SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
 
-            {showOverviewTab && !isSearching && (
+                            return (
+                              <div
+                                key={source}
+                                className="flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-secondary/40"
+                              >
+                                <Checkbox
+                                  checked={selected}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleSourceFilter(source);
+                                  }}
+                                  aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                                />
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+                                  onClick={() => toggleSourceFilter(source)}
+                                >
+                                  <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
+                                  <span className="min-w-0 flex-1 truncate">
+                                    {sourceLabel(source)}
+                                  </span>
+                                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                                    {count}
+                                  </span>
+                                </button>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                    )}
+                </div>
+              </>
+            )}
+
+            {!isSearching && (
               <Segmented
                 className="w-fit shrink-0"
                 size="md"
@@ -2108,65 +2182,117 @@ export default function SessionsPage() {
             <PlatformsCard platforms={platformEntries} />
           )}
 
-          {recentSessions.length > 0 && (
-            <Card className="min-w-0 max-w-full overflow-hidden">
-              <CardHeader className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
-                </div>
-              </CardHeader>
+          <Card className="min-w-0 max-w-full overflow-hidden">
+            <CardHeader className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
+                <CardTitle className="min-w-0 truncate text-base">
+                  Active in the last {OVERVIEW_WINDOW_HOURS} hours
+                </CardTitle>
+                <Badge
+                  tone="secondary"
+                  className="shrink-0 text-xs tabular-nums"
+                >
+                  {overviewTotal}
+                </Badge>
+              </div>
+            </CardHeader>
 
-              <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+            <CardContent className="grid min-w-0 gap-3">
+              {overviewError && (
+                <div
+                  role="alert"
+                  className="flex flex-wrap items-center justify-between gap-2 border border-destructive/30 bg-destructive/[0.06] px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1 text-xs text-destructive">
+                    Failed to load sessions from the last{" "}
+                    {OVERVIEW_WINDOW_HOURS} hours: {overviewError}
+                  </span>
+                  <Button
+                    outlined
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => setOverviewRetryToken((n) => n + 1)}
                   >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span
-                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
-                      >
-                        {s.title ??
-                          (s.preview
-                            ? s.preview.slice(0, 60)
-                            : t.common.untitled)}
-                      </span>
+                    {t.common.retry}
+                  </Button>
+                </div>
+              )}
 
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        {s.model && (
-                          <>
-                            <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
-                            </span>{" "}
-                            ·{" "}
-                          </>
-                        )}
-                        {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
-                      </span>
-
-                      {s.preview && s.title && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
-                        </p>
-                      )}
-                    </div>
-
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
+              {overviewLoading ? (
+                <div className="flex items-center justify-center py-10">
+                  <Spinner className="text-xl text-primary" />
+                </div>
+              ) : overviewSessions.length === 0 && !overviewError ? (
+                <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+                  <Clock className="mb-3 h-8 w-8 opacity-40" />
+                  <p className="text-sm font-medium">
+                    No sessions were active in the last{" "}
+                    {OVERVIEW_WINDOW_HOURS} hours
+                  </p>
+                  <p className="mt-1 text-xs text-text-tertiary">
+                    Older conversations remain available in the{" "}
+                    {t.sessions.history} tab.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {overviewSessions.map((s) => (
+                    <div
+                      key={s.id}
+                      className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
                     >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
-                    </Badge>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
+                      <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span
+                          className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
+                        >
+                          {s.title ??
+                            (s.preview
+                              ? s.preview.slice(0, 60)
+                              : t.common.untitled)}
+                        </span>
+
+                        <span className="min-w-0 break-words text-xs text-muted-foreground">
+                          {s.model && (
+                            <>
+                              <span className="font-mono-ui">
+                                {s.model.split("/").pop()}
+                              </span>{" "}
+                              ·{" "}
+                            </>
+                          )}
+                          {s.message_count} {t.common.msgs} ·{" "}
+                          {timeAgo(s.last_active)}
+                        </span>
+
+                        {s.preview && s.title && (
+                          <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
+                            {s.preview}
+                          </p>
+                        )}
+                      </div>
+
+                      <Badge
+                        tone="outline"
+                        className="shrink-0 self-start text-xs sm:self-center"
+                      >
+                        <Database className="mr-1 h-3 w-3" />
+                        {s.source ? sourceLabel(s.source) : "local"}
+                      </Badge>
+                    </div>
+                  ))}
+
+                  {overviewTotal > PAGE_SIZE && (
+                    <SessionsPagination
+                      page={overviewPage}
+                      total={overviewTotal}
+                      onPageChange={setOverviewPage}
+                    />
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
         </div>
       )}
 

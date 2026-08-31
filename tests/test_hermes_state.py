@@ -2439,6 +2439,81 @@ class TestListSessionsRich:
         assert [session["id"] for session in sessions] == ["lane_tip"]
         assert sessions[0]["_lineage_root_id"] == "lane_root"
 
+    def test_rich_list_active_since_windows_on_effective_activity(self, db):
+        """``active_since`` qualifies a conversation by chain-projected activity."""
+        t0 = 1_800_000_000.0
+        db.create_session("old_idle", "cli")
+        db.create_session("old_root", "cli")
+        db.create_session("fresh", "cli")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 - 5 * 86400, "old_root"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 - 4 * 86400, "old_idle"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0 - 600, "fresh")
+            )
+            db._conn.commit()
+        # Compress the old root and continue it just now: the ROOT is the
+        # listable row, but the tip's fresh activity is what qualifies it.
+        db.end_session("old_root", "compression")
+        db.create_session("fresh_tip", "cli", parent_session_id="old_root")
+        db.append_message("fresh_tip", "user", "continuation activity")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (t0 - 60, "fresh_tip"),
+            )
+            db._conn.commit()
+
+        cutoff = t0 - 86400
+        for order_by_last_active, expected in ((True, ["fresh_tip", "fresh"]),
+                                               (False, ["fresh", "fresh_tip"])):
+            sessions = db.list_sessions_rich(
+                order_by_last_active=order_by_last_active, active_since=cutoff
+            )
+            # One row per logical conversation, projected to the live tip.
+            # Under ``recent`` the tip's t0-60 message ranks first; under
+            # ``created`` the projected row keeps the ROOT's start time, so
+            # the genuinely newer conversation leads.
+            assert [s["id"] for s in sessions] == expected
+            projected = next(s for s in sessions if s["id"] == "fresh_tip")
+            assert projected["_lineage_root_id"] == "old_root"
+            assert db.session_count(exclude_children=True, active_since=cutoff) == 2
+
+    def test_rich_list_active_since_suppresses_pinned_backfill(self, db):
+        """A pin must not smuggle a conversation past an activity window."""
+        t0 = 1_800_000_000.0
+        db.create_session("pinned_old", "cli")
+        db.create_session("recent", "cli")
+        db.set_session_pinned("pinned_old", True)
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 - 30 * 86400, "pinned_old"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0 - 60, "recent")
+            )
+            db._conn.commit()
+
+        windowed = db.list_sessions_rich(
+            order_by_last_active=True, limit=1, include_pinned=True,
+            active_since=t0 - 86400,
+        )
+        assert [s["id"] for s in windowed] == ["recent"]
+
+        # Without a window the same call still back-fills the pin — the
+        # window is what excluded it, not a broken pin back-fill.
+        unwindowed = db.list_sessions_rich(
+            order_by_last_active=True, limit=1, include_pinned=True
+        )
+        assert {s["id"] for s in unwindowed} == {"pinned_old", "recent"}
+
     @pytest.mark.parametrize(
         "end_reason",
         [
