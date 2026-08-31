@@ -428,15 +428,45 @@ def read_from_offset(path: Path, offset: int) -> tuple[int, list[dict[str, Any]]
         return offset, []
 
     complete = raw[: last_nl + 1]
-    new_offset = offset + len(complete)
-    text = complete.decode("utf-8", errors="replace")
+    full_offset = offset + len(complete)
 
-    parsed: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        obj = parse_json_line(line)
+    # Track each kept event's byte end so a capped page can stop the cursor
+    # exactly at the last returned event; the next poll then resumes at the
+    # first omitted event instead of dropping the omitted prefix forever.
+    kept: list[dict[str, Any]] = []
+    ends: list[int] = []
+    cursor = offset
+    for raw_line in complete.split(b"\n")[:-1]:
+        cursor += len(raw_line) + 1
+        obj = parse_json_line(raw_line.decode("utf-8", errors="replace"))
         if obj is not None and not is_noise_event(obj):
-            parsed.append(obj)
-    return new_offset, cap_lines_json(parsed)
+            kept.append(obj)
+            ends.append(cursor)
+
+    if not kept:
+        # Only noise/unparseable bytes past the cursor: nothing renders, so
+        # advancing through all complete bytes is safe.
+        return full_offset, []
+
+    if len(json.dumps({"lines": kept}).encode("utf-8")) <= MAX_RESPONSE_BYTES:
+        return full_offset, kept
+
+    # Cap reached: return the OLDEST fitting prefix (never the newest
+    # suffix) and stop the cursor at that prefix's last byte. Polling from
+    # there returns every omitted kept event in order, exactly once; noise
+    # lines in between are reread and dropped again, never rendered.
+    lo, hi = 1, len(kept)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = json.dumps({"lines": kept[:mid]})
+        if len(candidate.encode("utf-8")) <= MAX_RESPONSE_BYTES:
+            lo = mid
+        else:
+            hi = mid - 1
+    # One event larger than the cap still ships alone (soft page cap), so the
+    # cursor advances instead of returning empty pages forever.
+    count = max(lo, 1)
+    return ends[count - 1], kept[:count]
 
 
 def list_runs() -> dict[str, Any]:
