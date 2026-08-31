@@ -341,6 +341,30 @@ class TestResultGating:
         result = _call({"action": "result", "job_id": job_id})
         assert result["error"] == "not_completed" and result["state"] == "cancelled"
 
+    def test_cancel_never_claims_success_when_the_status_lock_is_refused(
+        self, profile_home: Path, launcher_stub, monkeypatch
+    ) -> None:
+        # Fail-closed lock: cancel must report the refusal as an error, not
+        # answer ok with a state it could not record.
+        fcntl = pytest.importorskip("fcntl")
+        result = _start(launcher_stub)
+        job_id, directory = result["job_id"], Path(result["job_dir"])
+        monkeypatch.setattr(jobs, "_JOB_LOCK_TIMEOUT_SECONDS", 0.2)
+        holder = open(directory / ".status.lock", "a+", encoding="utf-8")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            outcome = _call({"action": "cancel", "job_id": job_id})
+            assert outcome["ok"] is False
+            assert outcome["error"] == "status_lock_refused"
+            assert "could not" in outcome["note"]
+            # Nothing landed: the on-disk state is untouched.
+            assert jobs.read_status(directory)["state"] == jobs.STATE_QUEUED
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+        # Lock released: the same cancel records the terminal state.
+        assert _call({"action": "cancel", "job_id": job_id})["state"] == "cancelled"
+
 
 # ---------------------------------------------------------------------------
 # Areas 1/12: check_fn + real registration

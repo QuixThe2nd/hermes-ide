@@ -321,10 +321,15 @@ def _action_start(args: Dict[str, Any], session_id: Optional[str], task_id: Opti
     try:
         runner_info = launch_job(job_id, hermes_home, config, timeout_minutes)
     except Exception as exc:  # noqa: BLE001 — the job exists; report, never crash
-        jobs.mark_all_lanes_cancelled(directory)
-        jobs.finish_job(
-            directory, jobs.STATE_FAILED, error=f"runner launch failed: {exc}", phase="launch_failed"
-        )
+        try:
+            jobs.mark_all_lanes_cancelled(directory)
+            jobs.finish_job(
+                directory, jobs.STATE_FAILED, error=f"runner launch failed: {exc}", phase="launch_failed"
+            )
+        except jobs.StatusLockError:
+            # The failure is still reported; only the on-disk state write was
+            # refused, so report the state that is actually on disk.
+            pass
         return json.dumps(
             {
                 "ok": False,
@@ -332,7 +337,7 @@ def _action_start(args: Dict[str, Any], session_id: Optional[str], task_id: Opti
                 "message": _bounded(exc),
                 "job_id": job_id,
                 "job_dir": str(directory),
-                "state": jobs.STATE_FAILED,
+                "state": jobs.read_status(directory).get("state") or jobs.STATE_QUEUED,
             },
             ensure_ascii=True,
         )
@@ -396,10 +401,32 @@ def _action_cancel(args: Dict[str, Any]) -> str:
     from plugins.deep_research import launcher
 
     stopped = launcher.cancel_runner(status)
-    jobs.mark_all_lanes_cancelled(directory)
-    finished = jobs.finish_job(
-        directory, jobs.STATE_CANCELLED, error=None if stopped else "cancel: runner stop not confirmed"
-    )
+    try:
+        jobs.mark_all_lanes_cancelled(directory)
+        finished = jobs.finish_job(
+            directory, jobs.STATE_CANCELLED,
+            error=None if stopped else "cancel: runner stop not confirmed",
+        )
+    except jobs.StatusLockError as exc:
+        # Fail closed and say so: the runner stop may have happened, but the
+        # cancelled state was NOT recorded. Never report a cancel that did
+        # not land — the job stays recoverable by a later cancel or by stale
+        # recovery once the lock holder is done.
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "status_lock_refused",
+                "message": _bounded(exc),
+                "job_id": directory.name,
+                "runner_stopped": stopped,
+                "note": (
+                    "the runner was stopped but the cancellation could not be recorded "
+                    "(the job's status lock is held by another process); check status "
+                    "or retry cancel shortly"
+                ),
+            },
+            ensure_ascii=True,
+        )
     state = (finished or jobs.read_status(directory)).get("state")
     return _ok(job_id=directory.name, state=state, runner_stopped=stopped)
 

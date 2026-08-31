@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -156,7 +157,9 @@ def notify_pending(
     (limit+1)-th completion (the next tick picks it up). ``mark_notified`` is
     the single-winner flip, so a concurrent watcher (or a restart racing the
     old gateway) can never double-deliver. A queue that rejects the event
-    rolls the claim back, making delivery retryable.
+    rolls the claim back, making delivery retryable. A job whose status lock
+    is owned by another process is skipped unclaimed — never delivered, never
+    marked — so a later sweep retries it once the holder is done.
     """
     if queue_put is None:
         try:
@@ -175,15 +178,26 @@ def notify_pending(
         event = completion_event(directory, status, jobs.read_request(directory))
         if event is None:
             continue
-        if not jobs.mark_notified(directory):
-            continue  # someone else delivered it
+        try:
+            if not jobs.mark_notified(directory):
+                continue  # someone else delivered it
+        except jobs.StatusLockError:
+            logger.warning(
+                "deep research: status lock busy for job %s; deferring its notification", job_id
+            )
+            continue
         try:
             queue_put(event)
         except Exception:  # noqa: BLE001 — delivery must not take the watcher down
             # Roll the claim back so a later sweep retries this job instead of
             # permanently losing the completion behind a "notified" flag.
             logger.warning("deep research: completion queue rejected job %s; will retry", job_id)
-            jobs.unmark_notified(directory)
+            try:
+                jobs.unmark_notified(directory)
+            except jobs.StatusLockError:
+                logger.warning(
+                    "deep research: could not release the claim for job %s; lock busy", job_id
+                )
             continue
         sent.append(job_id)
     return sent
@@ -194,9 +208,34 @@ def notify_pending(
 # ---------------------------------------------------------------------------
 
 
+def _is_real_child_directory(entry: Path, resolved_root: Path) -> bool:
+    """True only for a real directory directly inside ``resolved_root``.
+
+    ``entry`` must be a plain directory reached under its own name — never
+    through a symlink — and the resolved candidate's parent must be the
+    resolved root itself, so a profile home can never resolve outside
+    ``profiles/``. The symlink test is ``lstat`` (it never follows), and the
+    ``stat``/``lstat`` inode pair catches a name swapped for a symlink between
+    the two calls. Broken links, races, and any OS error disqualify the entry;
+    nothing is ever followed.
+    """
+    try:
+        link_stat = entry.lstat()
+        if stat.S_ISLNK(link_stat.st_mode):
+            return False
+        followed = entry.stat()
+        if (followed.st_dev, followed.st_ino) != (link_stat.st_dev, link_stat.st_ino):
+            return False  # raced to a symlink; never follow the replacement
+        if not stat.S_ISDIR(followed.st_mode):
+            return False
+        return entry.resolve().parent == resolved_root
+    except OSError:
+        return False
+
+
 def watcher_hermes_homes(process_home: Optional[Path] = None) -> List[Path]:
     """Hermes homes the gateway watcher sweeps: the process home plus every
-    live named-profile home under it.
+    live named-profile home physically under ``<process home>/profiles/``.
 
     ``start`` writes jobs under the *active* :func:`hermes_constants.get_hermes_home`,
     and for a multiplexed/named-profile session that is a profile home
@@ -207,12 +246,31 @@ def watcher_hermes_homes(process_home: Optional[Path] = None) -> List[Path]:
     ``HERMES_HOME`` at a tmpdir for exactly that reason), skips tombstoned or
     missing profile homes, and ignores non-profile entries such as the
     ``.deleted`` tombstone directory.
+
+    Symlink confinement: every swept profile home is a real directory sitting
+    directly inside a non-symlink ``profiles/`` root. ``Path.is_dir()``
+    *follows* symlinks, so a ``profiles/alpha`` planted at another operator's
+    home would otherwise have the watcher read and deliver that home's jobs.
+    A symlinked entry is therefore skipped even when its name is valid and
+    its target is a real directory inside this process home, and a symlinked
+    ``profiles`` root refuses the enumeration outright.
     """
     home = Path(process_home) if process_home is not None else get_process_hermes_home()
     homes = [home]
     profiles_root = home / "profiles"
     try:
-        entries = sorted(child for child in profiles_root.iterdir() if child.is_dir())
+        root_stat = profiles_root.lstat()
+    except OSError:
+        return homes  # no profiles root: the process home only
+    if stat.S_ISLNK(root_stat.st_mode):
+        logger.warning(
+            "deep research: %s is a symlink; refusing to sweep profile homes through it",
+            profiles_root,
+        )
+        return homes
+    try:
+        resolved_root = profiles_root.resolve()
+        entries = sorted(profiles_root.iterdir())
     except OSError:
         return homes
     try:
@@ -232,6 +290,8 @@ def watcher_hermes_homes(process_home: Optional[Path] = None) -> List[Path]:
         return homes
     for entry in entries:
         if not _is_profile_home(entry):
+            continue
+        if not _is_real_child_directory(entry, resolved_root):
             continue
         if named_profile_is_deleted(entry) or not entry.exists():
             continue

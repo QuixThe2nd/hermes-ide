@@ -12,6 +12,7 @@ path parameters from the model are never joined onto the filesystem.
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import re
@@ -315,6 +316,11 @@ def update_status(
     is not in the allowed set the write is refused and ``None`` returned. This
     is what makes cancel-vs-complete races single-winner. ``guard`` is an
     additional predicate over the current status with the same refuse semantics.
+
+    A cross-process lock that cannot be owned raises :class:`StatusLockError`
+    (:class:`StatusLockTimeout` for the bounded wait) *before* anything is
+    read or written, so no caller can mistake a lock refusal for a refused
+    transition — or worse, land a write built on a stale snapshot.
     """
     path = directory / "status.json"
     with _job_lock(directory):
@@ -470,9 +476,10 @@ def mark_lanes_failed(directory: Path, error: str) -> None:
 # Locking
 # ---------------------------------------------------------------------------
 
-# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent
-# (or unusable on this filesystem), in which case _job_lock() degrades to
-# in-process locking only — the same shape as cron/jobs.py.
+# fcntl is Unix-only; on Windows fall back to msvcrt. A platform with neither
+# primitive is the one documented degraded mode: _job_lock() then provides
+# in-process locking only — the same shape as cron/jobs.py. Everywhere else
+# the cross-process lock is mandatory and fails closed (see StatusLockError).
 try:
     import fcntl  # windows-footgun: ok — msvcrt fallback below
 except ImportError:  # pragma: no cover — POSIX always provides fcntl
@@ -482,6 +489,23 @@ try:
 except ImportError:  # pragma: no cover — Windows-only module
     msvcrt = None
 
+
+class StatusLockError(RuntimeError):
+    """A status transaction was refused: the cross-process lock was not owned.
+
+    Raised before any read/guard/mutate/write runs, when a locking primitive
+    exists (POSIX ``fcntl`` or Windows ``msvcrt``) but the exclusive
+    ``.status.lock`` could not be taken. Callers must treat the transaction
+    as *not performed* — never as a refused transition (``None``) and never
+    as success. The kernel releases the flock when its holder dies, so a
+    crashed process cannot wedge the lock; retrying later is always safe.
+    """
+
+
+class StatusLockTimeout(StatusLockError):
+    """Bounded acquisition of the status lock timed out (another holder)."""
+
+
 _JOB_LOCKS: Dict[str, Any] = {}
 _LOCKS_GUARD: Any = None
 _LOCK_DEPTH = threading.local()
@@ -490,6 +514,10 @@ _LOCK_FILE_NAME = ".status.lock"
 # (#60703): an unbounded blocking lock held by a wedged process would freeze
 # every status write — cancel, finish, and the notify watcher alike.
 _JOB_LOCK_TIMEOUT_SECONDS = 10.0
+_LOCK_POLL_SECONDS = 0.1
+# flock contention is EWOULDBLOCK (EAGAIN alias); any other errno is a real
+# acquisition failure and fails closed immediately instead of polling.
+_FLOCK_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN})
 
 
 @contextlib.contextmanager
@@ -506,9 +534,13 @@ def _job_lock(directory: Path):
     file); the lock serializes the transaction, it does not replace the write.
 
     Mirrors the fcntl + msvcrt pattern in ``cron/jobs.py`` and
-    ``tools/memory_tool.py``. The flock poll is bounded: on timeout the write
-    proceeds under in-process locking only (a briefly racing cross-process
-    write is strictly better than a cancel or watcher thread frozen forever).
+    ``tools/memory_tool.py``. The flock poll is bounded and **fails closed**:
+    a timeout — or any other acquisition failure while a primitive exists —
+    raises :class:`StatusLockError` before the transaction starts, because
+    proceeding on a stale snapshot is exactly how one writer's update
+    silently overwrites another's. The only degraded mode is a platform with
+    neither ``fcntl`` nor ``msvcrt``. The kernel releases the flock when its
+    holder dies, so a crashed process can never wedge the lock permanently.
     Re-entrant per thread like the cron lock, so a nested acquisition reuses
     the held lock instead of deadlocking on its own flock.
     """
@@ -548,49 +580,44 @@ def _job_lock(directory: Path):
 
 
 def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
-    """Take the cross-process advisory lock; return its releaser or ``None``.
+    """Take the cross-process advisory lock; return its releaser.
 
-    ``None`` means "proceed under the in-process lock only" — unavailable
-    primitives, an unopenable path, or a bounded-acquisition timeout all
-    degrade the same way rather than blocking the caller forever.
+    Fails closed. When a locking primitive exists (POSIX ``fcntl``, Windows
+    ``msvcrt``) the caller may only run its read-modify-write transaction
+    *owning* this lock, so every refusal — a bounded-acquisition timeout, an
+    unopenable lock file, or an OS-level acquisition error — raises
+    :class:`StatusLockError` (a timeout raises :class:`StatusLockTimeout`)
+    instead of degrading to the in-process lock alone: that fail-open path is
+    how a writer holding a stale snapshot clobbered the other process's
+    update. ``None``, the documented degraded mode, is returned only on a
+    platform with neither primitive.
     """
     if fcntl is None and msvcrt is None:
         return None
+    lock_path = directory / _LOCK_FILE_NAME
     try:
-        handle = open(directory / _LOCK_FILE_NAME, "a+", encoding="utf-8")
-    except OSError:
-        return None
+        handle = open(lock_path, "a+", encoding="utf-8")
+    except OSError as exc:
+        raise StatusLockError(f"could not open the status lock {lock_path}: {exc}") from exc
+    acquired = False
     try:
         if fcntl is not None:
-            deadline = time.monotonic() + _JOB_LOCK_TIMEOUT_SECONDS
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        logger.error(
-                            "Timed out after %.0fs waiting for the status lock (%s) — "
-                            "another process is holding it. Proceeding with in-process "
-                            "locking only so this status write still lands.",
-                            _JOB_LOCK_TIMEOUT_SECONDS,
-                            directory / _LOCK_FILE_NAME,
-                        )
-                        handle.close()
-                        return None
-                    time.sleep(0.1)
+            _flock_exclusive(handle, lock_path)
         else:
-            handle.seek(0)
-            getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-    except OSError:
-        logger.warning(
-            "status cross-process lock unavailable; proceeding with in-process lock only",
-        )
-        try:
-            handle.close()
-        except OSError:
-            pass
-        return None
+            try:
+                handle.seek(0)
+                getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+            except OSError as exc:
+                raise StatusLockError(
+                    f"could not acquire the status lock {lock_path}: {exc}"
+                ) from exc
+        acquired = True
+    finally:
+        if not acquired:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     def _release() -> None:
         try:
@@ -605,6 +632,33 @@ def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
             handle.close()
 
     return _release
+
+
+def _flock_exclusive(handle: Any, lock_path: Path) -> None:
+    """Bounded exclusive flock: contention polls, anything else fails closed."""
+    deadline = time.monotonic() + _JOB_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in _FLOCK_CONTENTION_ERRNOS:
+                raise StatusLockError(
+                    f"the status lock {lock_path} could not be acquired (errno {exc.errno}): {exc}"
+                ) from exc
+            if time.monotonic() >= deadline:
+                logger.error(
+                    "Timed out after %.1fs waiting for the status lock (%s) — another "
+                    "process is holding it. Refusing this status transaction instead of "
+                    "writing on a stale snapshot.",
+                    _JOB_LOCK_TIMEOUT_SECONDS,
+                    lock_path,
+                )
+                raise StatusLockTimeout(
+                    f"the status lock {lock_path} was still held after the "
+                    f"{_JOB_LOCK_TIMEOUT_SECONDS:.1f}s bounded wait"
+                ) from None
+            time.sleep(min(_LOCK_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
 
 
 # ---------------------------------------------------------------------------
@@ -650,13 +704,21 @@ def recover_stale_jobs(
         alive = runner_alive(status)
         if alive is None or alive:
             continue
-        mark_all_lanes_cancelled(directory)
-        finished = finish_job(
-            directory,
-            STATE_FAILED,
-            error="interrupted: runner not running after restart",
-            phase="interrupted",
-        )
+        try:
+            mark_all_lanes_cancelled(directory)
+            finished = finish_job(
+                directory,
+                STATE_FAILED,
+                error="interrupted: runner not running after restart",
+                phase="interrupted",
+            )
+        except StatusLockError:
+            # Another process owns this job's status right now: skip it (no
+            # recovery is claimed) and let a later pass reconcile it.
+            logger.warning(
+                "deep research: status lock busy; not recovering %s this pass", directory.name
+            )
+            continue
         if finished is not None:
             recovered.append(directory.name)
     return recovered

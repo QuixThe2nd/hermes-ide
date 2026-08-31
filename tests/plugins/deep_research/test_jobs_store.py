@@ -7,6 +7,7 @@ Covers TASK.md test areas 2 (job ID/path traversal and private modes) and 3
 from __future__ import annotations
 
 import json
+import multiprocessing
 import time
 from pathlib import Path
 
@@ -264,6 +265,168 @@ class TestInterProcessLock:
         # still an atomic replace of status.json.
         assert (directory / ".status.lock").exists()
         assert json.loads((directory / "status.json").read_text(encoding="utf-8"))["state"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed status locking (fresh-review blocker: a lock that cannot be
+# owned must refuse the transaction, never write on a stale snapshot)
+# ---------------------------------------------------------------------------
+
+
+def _holder_child(directory_text: str, held, release) -> None:
+    """Process A: own the job's status lock, land A's update, wait for release."""
+    from plugins.deep_research import jobs
+
+    directory = Path(directory_text)
+    with jobs._job_lock(directory):
+        jobs.update_status(directory, mutate=lambda status: status.update(writer="A"))
+        held.set()
+        release.wait(timeout=60)
+
+
+class TestStatusLockFailClosed:
+    """A lock that cannot be owned must refuse the write, not degrade."""
+
+    def test_refusals_are_typed_status_lock_errors(self) -> None:
+        assert issubclass(jobs.StatusLockTimeout, jobs.StatusLockError)
+        assert issubclass(jobs.StatusLockError, RuntimeError)
+
+    def test_held_lock_refuses_the_write_and_lands_nothing(
+        self, home: Path, monkeypatch
+    ) -> None:
+        # A second open file description is exactly the view a separate
+        # process (runner transient unit vs gateway) has of the flock.
+        fcntl = pytest.importorskip("fcntl")
+        _job_id, directory = _make_job(home)
+        monkeypatch.setattr(jobs, "_JOB_LOCK_TIMEOUT_SECONDS", 0.3)
+        holder = open(directory / ".status.lock", "a+", encoding="utf-8")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with pytest.raises(jobs.StatusLockTimeout):
+                jobs.update_status(directory, mutate=lambda status: status.update(writer="B"))
+            # Nothing was written: no stale-snapshot clobber, no lost update.
+            status = jobs.read_status(directory)
+            assert status.get("writer") is None
+            assert status["state"] == jobs.STATE_QUEUED
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+    def test_cross_process_timeout_fails_closed_then_composes(
+        self, home: Path, monkeypatch
+    ) -> None:
+        # The exact fresh-review repro: process A holds ``.status.lock``
+        # mid-transaction; process B waits out the bounded timeout. B must
+        # fail closed — raise, write nothing — where the old fail-open path
+        # proceeded anyway and observed lost_writer_b_update=True.
+        pytest.importorskip("fcntl")
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:  # pragma: no cover — Windows has no fork
+            pytest.skip("the fork start method is unavailable on this platform")
+        _job_id, directory = _make_job(home)
+        held, release = context.Event(), context.Event()
+        holder = context.Process(target=_holder_child, args=(str(directory), held, release))
+        holder.start()
+        try:
+            assert held.wait(timeout=10), "holder process never acquired the lock"
+            snapshot = jobs.read_status(directory)
+            assert snapshot["writer"] == "A"
+            monkeypatch.setattr(jobs, "_JOB_LOCK_TIMEOUT_SECONDS", 0.3)
+            with pytest.raises(jobs.StatusLockTimeout):
+                jobs.update_status(directory, mutate=lambda status: status.update(writer="B"))
+            # A's update only: B's refused transaction changed nothing at all.
+            assert jobs.read_status(directory) == snapshot
+            release.set()
+            holder.join(timeout=10)
+            assert holder.exitcode == 0
+            # A released: B's later transaction succeeds and composes over
+            # A's snapshot instead of overwriting it.
+            assert (
+                jobs.update_status(
+                    directory,
+                    mutate=lambda status: status.update(writer="B", saw_a=status.get("writer")),
+                )
+                is not None
+            )
+            final = jobs.read_status(directory)
+            assert final["writer"] == "B"
+            assert final["saw_a"] == "A"
+        finally:
+            release.set()
+            holder.join(timeout=10)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(timeout=5)
+
+    def test_default_timeout_seam_bounds_the_real_wait(self, home: Path, monkeypatch) -> None:
+        # The production default is 10s; pinning the seam exercises the real
+        # bounded wait-then-refuse path without a 10-second test.
+        fcntl = pytest.importorskip("fcntl")
+        _job_id, directory = _make_job(home)
+        holder = open(directory / ".status.lock", "a+", encoding="utf-8")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        monkeypatch.setattr(jobs, "_JOB_LOCK_TIMEOUT_SECONDS", 0.4)
+        try:
+            started = time.monotonic()
+            with pytest.raises(jobs.StatusLockTimeout) as excinfo:
+                jobs.update_status(directory, mutate=lambda status: None)
+            waited = time.monotonic() - started
+            assert waited >= 0.3  # the bounded window was really waited out
+            assert waited < 10.0  # and never approached the production bound
+            assert ".status.lock" in str(excinfo.value)
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+        # Lock released: the same transaction goes through.
+        assert jobs.update_status(directory, mutate=lambda status: status.update(writer="B")) is not None
+        assert jobs.read_status(directory)["writer"] == "B"
+
+    def test_unopenable_lock_file_fails_closed_not_silently_degraded(
+        self, home: Path
+    ) -> None:
+        # fcntl exists here, so an unopenable lock file must refuse the write
+        # outright — quietly falling back to the in-process RLock is exactly
+        # the fail-open hole.
+        pytest.importorskip("fcntl")
+        _job_id, directory = _make_job(home)
+        (directory / ".status.lock").mkdir()  # open() on a directory fails
+        with pytest.raises(jobs.StatusLockError):
+            jobs.update_status(directory, mutate=lambda status: status.update(writer="B"))
+        assert jobs.read_status(directory).get("writer") is None
+
+    def test_degraded_mode_only_when_no_primitive_exists(
+        self, home: Path, monkeypatch
+    ) -> None:
+        # Neither fcntl nor msvcrt: the one documented degraded mode, where
+        # the in-process RLock still serializes same-process writers.
+        monkeypatch.setattr(jobs, "fcntl", None)
+        monkeypatch.setattr(jobs, "msvcrt", None)
+        _job_id, directory = _make_job(home)
+        assert jobs.update_status(directory, mutate=lambda status: status.update(writer="B")) is not None
+        assert jobs.read_status(directory)["writer"] == "B"
+
+    def test_mark_notified_cannot_claim_delivery_while_locked(
+        self, home: Path, monkeypatch
+    ) -> None:
+        # The single-winner flip must raise on lock refusal — returning False
+        # here would let a caller read "someone else delivered it" as success.
+        fcntl = pytest.importorskip("fcntl")
+        _job_id, directory = _make_job(home)
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        monkeypatch.setattr(jobs, "_JOB_LOCK_TIMEOUT_SECONDS", 0.3)
+        holder = open(directory / ".status.lock", "a+", encoding="utf-8")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with pytest.raises(jobs.StatusLockTimeout):
+                jobs.mark_notified(directory)
+            assert jobs.read_status(directory)["notified"] is False
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+        # Released: the claim succeeds exactly once.
+        assert jobs.mark_notified(directory) is True
+        assert jobs.mark_notified(directory) is False
 
 
 # ---------------------------------------------------------------------------

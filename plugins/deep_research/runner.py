@@ -147,6 +147,16 @@ class ResearchRunner:
     def run(self) -> str:
         """Drive the job to a terminal state and return that state."""
         directory = jobs.resolve_existing_job(self.job_id, self.hermes_home)
+        try:
+            return self._run(directory)
+        except jobs.StatusLockError as exc:
+            # Never claim a state we could not record: report what is
+            # actually on disk. The kernel releases the lock when its holder
+            # dies, so stale recovery reconciles the job soon after.
+            self.log.error("job %s could not record status: %s", self.job_id, exc)
+            return jobs.read_status(directory).get("state") or jobs.STATE_FAILED
+
+    def _run(self, directory: Path) -> str:
         request = jobs.read_request(directory)
         status = jobs.read_status(directory)
         if status.get("state") in jobs.TERMINAL_STATES:

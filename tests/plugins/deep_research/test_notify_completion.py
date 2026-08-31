@@ -154,6 +154,34 @@ class TestDeliveryRetry:
         assert jobs.read_status(directory)["notified"] is False
 
 
+class TestNotifyUnderLockRefusal:
+    """A locked job is skipped unclaimed; the sweep still delivers the rest."""
+
+    def test_locked_job_is_never_claimed_and_the_sweep_continues(
+        self, home: Path, monkeypatch
+    ) -> None:
+        fcntl = pytest.importorskip("fcntl")
+        locked_id, locked_dir = _make_job(home, origin={"session_id": "s-locked"})
+        jobs.finish_job(locked_dir, jobs.STATE_COMPLETED)
+        free_id, free_dir = _make_job(home, origin={"session_id": "s-free"})
+        jobs.finish_job(free_dir, jobs.STATE_COMPLETED)
+        monkeypatch.setattr(jobs, "_JOB_LOCK_TIMEOUT_SECONDS", 0.2)
+        holder = open(locked_dir / ".status.lock", "a+", encoding="utf-8")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        queue = Queue()
+        try:
+            # The free job is delivered; the locked one is neither claimed
+            # nor delivered — no success is invented for it.
+            assert notify.notify_pending(home, queue_put=queue.put) == [free_id]
+            assert jobs.read_status(locked_dir)["notified"] is False
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+        # Lock released: a later sweep delivers the deferred job exactly once.
+        assert notify.notify_pending(home, queue_put=queue.put) == [locked_id]
+        assert [event["research_job_id"] for event in queue.events] == [free_id, locked_id]
+
+
 class TestWatcherLifecycle:
     def test_watcher_refuses_to_start_under_test_isolation(self, monkeypatch) -> None:
         monkeypatch.setenv("HERMES_TEST_ISOLATION", "1")
@@ -258,6 +286,73 @@ class TestWatcherHomes:
     def test_missing_profiles_root_is_just_the_process_home(self, home: Path) -> None:
         assert notify.watcher_hermes_homes() == [home]
         assert notify.watcher_hermes_homes(home) == [home]
+
+
+class TestWatcherSymlinkConfinement:
+    """A planted symlink must never aim the sweep at a foreign home.
+
+    ``Path.is_dir()`` follows symlinks, so a ``profiles/alpha`` pointed at
+    another operator's home would otherwise have the watcher read and deliver
+    that home's jobs (fresh-review blocker 1).
+    """
+
+    def _completed_job(self, home_path: Path) -> tuple[str, Path]:
+        job_id, directory = _make_job(home_path, origin={"session_id": "foreign-session"})
+        jobs.finish_job(directory, jobs.STATE_COMPLETED)
+        return job_id, directory
+
+    def _sweep(self, process_home: Path) -> list[dict]:
+        """The watcher's exact sweep: notify every home it would enumerate."""
+        queue = Queue()
+        for sweep_home in notify.watcher_hermes_homes(process_home):
+            notify.notify_pending(sweep_home, queue_put=queue.put)
+        return queue.events
+
+    def test_symlinked_profile_to_a_foreign_home_is_excluded_and_never_notified(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        foreign = tmp_path / "foreign-operator-home"
+        _job_id, directory = self._completed_job(foreign)
+        (home / "profiles").mkdir(parents=True)
+        (home / "profiles" / "alpha").symlink_to(foreign)  # valid name, real target
+        assert notify.watcher_hermes_homes(home) == [home]
+        assert self._sweep(home) == []
+        # The foreign job was never claimed or touched.
+        assert jobs.read_status(directory)["notified"] is False
+
+    def test_symlinked_profiles_root_refuses_the_whole_enumeration(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        alpha = elsewhere / "profiles" / "alpha"
+        _job_id, directory = self._completed_job(alpha)
+        home.mkdir()  # only the link's parent must exist; the target is real too
+        (home / "profiles").symlink_to(elsewhere / "profiles")
+        assert notify.watcher_hermes_homes(home) == [home]
+        assert self._sweep(home) == []
+        assert jobs.read_status(directory)["notified"] is False
+
+    def test_symlink_with_a_target_inside_the_process_home_is_still_rejected(
+        self, home: Path
+    ) -> None:
+        real = home / "profiles" / "gamma"
+        real.mkdir(parents=True)
+        (home / "profiles" / "alpha").symlink_to(real)  # target IS under profiles/
+        assert notify.watcher_hermes_homes(home) == [home, real]
+
+    def test_broken_symlink_is_skipped_not_followed(self, home: Path) -> None:
+        (home / "profiles").mkdir(parents=True)
+        (home / "profiles" / "alpha").symlink_to(home / "profiles" / "gone")
+        assert notify.watcher_hermes_homes(home) == [home]
+
+    def test_real_profiles_are_still_swept_alongside_a_planted_symlink(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        (tmp_path / "foreign").mkdir()
+        alpha = home / "profiles" / "alpha"
+        alpha.mkdir(parents=True)
+        (home / "profiles" / "beta").symlink_to(tmp_path / "foreign")
+        assert notify.watcher_hermes_homes(home) == [home, alpha]
 
 
 class TestProfileHomeSweep:
