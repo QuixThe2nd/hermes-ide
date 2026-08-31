@@ -1268,7 +1268,7 @@ def _resolve_progress_thread_id(
         return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
-    if platform_key in {"slack", "mattermost"} and event_message_id:
+    if platform_key in {"slack", "mattermost", "buzz"} and event_message_id:
         return str(event_message_id)
     return None
 
@@ -2479,7 +2479,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         # Skip bridging when the YAML value is Python None (from `null` or bare
         # `key:`) — this preserves "absent = default" semantics downstream.
         # Without this guard, str(None) → "None" → resolve_turn_limit maps it
-        # to the unlimited sentinel instead of the default (90/500).
+        # to the unlimited sentinel instead of the default (256).
         if raw is not None:
             os.environ["HERMES_MAX_ITERATIONS"] = str(raw)
         elif "HERMES_MAX_ITERATIONS" in os.environ:
@@ -2729,7 +2729,7 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 # This env var is internal bridge plumbing, not a user-facing configuration
 # source. Initialize it from the canonical config default after dotenv loading
 # so an ambient process/.env value can never control lease safety on its own.
-from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG
+from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG, DEFAULT_MAX_TURNS as _DEFAULT_MAX_TURNS
 
 os.environ["HERMES_TURN_LEASE_TIMEOUT"] = str(
     _DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"]
@@ -3132,6 +3132,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    detached_restart_spawn_blocked,
     parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
@@ -13178,6 +13179,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import shutil
         import subprocess
 
+        if detached_restart_spawn_blocked():
+            logger.warning(
+                "Detached restart spawn skipped: HERMES_TEST_ISOLATION is set "
+                "(test run must not spawn a restart watcher)"
+            )
+            return
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             logger.error("Could not locate hermes binary for detached /restart")
@@ -14999,11 +15006,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "500"))
+            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", str(_DEFAULT_MAX_TURNS)))
             logger.info(
                 "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or HERMES_MAX_ITERATIONS from .env, or default 500)",
+                "or HERMES_MAX_ITERATIONS from .env, or default %d)",
                 _effective_max_iter,
+                _DEFAULT_MAX_TURNS,
             )
         except Exception:
             pass
@@ -32192,6 +32200,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception:
                     _progress_reply_in_thread = True
+        elif str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz":
+            # Buzz honours the same opt-out (reply_to_mode: off /
+            # extra.reply_in_thread: false). When the user asked for flat
+            # channel replies, progress must not synthesise a thread either.
+            _buzz_adapter_for_progress = self._adapter_for_source(source)
+            if _buzz_adapter_for_progress is not None:
+                try:
+                    _progress_reply_in_thread = (
+                        getattr(_buzz_adapter_for_progress, "_reply_to_mode", "first")
+                        != "off"
+                    )
+                except Exception:
+                    _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
             reply_in_thread=_progress_reply_in_thread,
@@ -32244,6 +32265,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.platform in (Platform.FEISHU, Platform.MATTERMOST)
                 and source.thread_id
                 and event_message_id
+            )
+            or (
+                # Buzz has no native thread_id; threading is always via reply-to
+                # the triggering event id (channel clutter otherwise). Skipped
+                # when the user opted out of threaded replies.
+                str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
+                and event_message_id
+                and _progress_reply_in_thread
             )
             or _relay_prospective_thread_id
             else None
@@ -34989,6 +35018,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             profile_homes = _multiplex_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
+                # Per-profile adapters so each profile's cron output is
+                # delivered via its own bot/adapter instead of the default
+                # profile's.
+                cron_start_kwargs["profile_adapters"] = getattr(
+                    runner, "_profile_adapters", None
+                )
+                # runner.adapters belongs to the default profile, which
+                # profiles_to_serve() names "default" in its multiplex list.
+                # Thread that identity so the ticker reserves the shared adapters
+                # for the default profile alone and never routes a secondary's
+                # cron through the default bot (even before its adapter connects,
+                # when profile_adapters[name] is still absent/empty).
+                cron_start_kwargs["default_profile"] = "default"
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s",
                     len(profile_homes),

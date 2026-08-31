@@ -174,11 +174,23 @@ def moa_ask(
                 success=False,
             )
 
-        report(
-            "advisors",
-            advisors=len(reference_models),
-            models=len({str(slot.get("model") or "") for slot in reference_models}),
-        )
+        advisor_total = len(reference_models)
+        model_count = len({str(slot.get("model") or "") for slot in reference_models})
+
+        def _report_advisors(completed: int) -> None:
+            # Live advisor progress: one non-terminal advisors stage per
+            # update, numeric counts only — the fan-out also hands its
+            # callback a provider:model label, and labels must never reach a
+            # stage payload.
+            report(
+                "advisors",
+                advisors=advisor_total,
+                models=model_count,
+                completed=completed,
+                total=advisor_total,
+            )
+
+        _report_advisors(0)
         ref_messages = _reference_messages([{"role": "user", "content": prompt}])
         try:
             outputs = _run_references_parallel(
@@ -186,6 +198,7 @@ def moa_ask(
                 ref_messages,
                 temperature=_preset_temperature(preset, "reference_temperature"),
                 max_tokens=preset.get("reference_max_tokens"),
+                progress_callback=lambda done, _total, _label: _report_advisors(done),
             )
         except Exception as exc:  # Defensive: individual references already fail soft.
             logger.warning("moa_ask reference fan-out failed: %s", exc)

@@ -1250,13 +1250,52 @@ _TOOL_STAGE_STATUS_MARKS: Dict[str, str] = {
     "failure": "❌ failed",
 }
 
+# The live advisor-progress fraction (``N/T advisors complete``) belongs to
+# moa_ask's non-terminal advisors stage alone — the only event that publishes
+# ``completed``/``total`` today. Those count names are generic, so the label
+# must be keyed to this exact (tool, stage) pair and to a running event: any
+# other tool or stage (or a terminal event) carrying the same counts renders
+# them as plain allowlisted counts, never as advisor progress.
+_TOOL_STAGE_ADVISOR_PROGRESS: tuple[str, str] = ("moa_ask", "advisors")
 
-def _tool_stage_count_summary(counts: Dict[str, Any]) -> str:
-    """Render the event's integer counts as a short ' · '-joined summary."""
-    parts = []
-    for key in ("advisors", "models", "usable", "failed", "rounds"):
+
+def _tool_stage_count_summary(
+    tool: str, stage: str, terminal: bool, counts: Dict[str, Any]
+) -> str:
+    """Render the event's integer counts as a short ' · '-joined summary.
+
+    ``completed`` + ``total`` on moa_ask's live advisors stage render as a
+    fraction — ``2/4 advisors complete`` — replacing the bare advisor count
+    the fraction already states; everywhere else every count stays
+    ``N <key>`` (``completed``/``total`` are not allowlisted keys, so on any
+    other event they simply do not render).
+    """
+
+    def _count(key: str) -> Optional[int]:
         value = counts.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
+    completed = _count("completed")
+    total = _count("total")
+    has_fraction = (
+        (tool, stage) == _TOOL_STAGE_ADVISOR_PROGRESS
+        and not terminal
+        and completed is not None
+        and total is not None
+        and total > 0
+        and completed <= total
+    )
+
+    parts: List[str] = []
+    if has_fraction:
+        parts.append(f"{completed}/{total} advisors complete")
+    for key in ("advisors", "models", "usable", "failed", "rounds"):
+        if has_fraction and key == "advisors":
+            continue
+        value = _count(key)
+        if value is not None:
             parts.append(f"{value} {key}")
     return " · ".join(parts)
 
@@ -1272,9 +1311,11 @@ def _tool_stage_appearance(
     """
     tool = str(tool or "tool")
     stage = str(stage or "stage")
-    summary = _tool_stage_count_summary(counts if isinstance(counts, dict) else {})
-
     terminal_mark = _TOOL_STAGE_STATUS_MARKS.get(str(status or ""), "")
+    summary = _tool_stage_count_summary(
+        tool, stage, bool(terminal_mark), counts if isinstance(counts, dict) else {}
+    )
+
     label = _TOOL_STAGE_LABELS.get((tool, stage), stage.replace("_", " "))
 
     if terminal_mark:
@@ -7646,6 +7687,27 @@ class DiscordAdapter(BasePlatformAdapter):
     def _discord_allowed_guild_ids(self) -> set:
         """This adapter's DISCORD_ALLOWED_GUILDS guild IDs (per-profile)."""
         return self._gate_csv_set(self._gate_raw("allowed_guilds", "DISCORD_ALLOWED_GUILDS"))
+
+    def resolved_allowlist_user_ids(self) -> set:
+        """Numeric user IDs from the connect-time username resolution.
+
+        ``_resolve_allowed_usernames`` turns username-shaped
+        ``DISCORD_ALLOWED_USERS`` entries into numeric IDs and keeps the
+        authoritative result in ``self._allowed_user_ids``. The env-var
+        mirror of that result does NOT survive the gateway's per-turn .env
+        hot-reload (``load_hermes_dotenv(override=True)`` restores the raw
+        usernames from the file), so the gateway authz layer
+        (``GatewayAuthorizationMixin._is_user_authorized``) calls this to
+        union the resolved IDs back into the allowlist it builds from env.
+
+        Returns only numeric entries: usernames are not comparable to
+        ``source.user_id`` and the ``"*"`` wildcard is env-file-persistent
+        already (resolution preserves it in the file's value), so passing it
+        through here would only widen access on the gateway layer beyond
+        what the operator's current .env says.
+        """
+        allowed = getattr(self, "_allowed_user_ids", None) or set()
+        return {str(uid) for uid in allowed if str(uid).isdigit()}
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""

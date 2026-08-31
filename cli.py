@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
@@ -476,7 +477,9 @@ def load_cli_config() -> Dict[str, Any]:
             "min_tail_user_messages": 1,  # Real user messages guaranteed in the tail (1 = existing single anchor)
         },
         "agent": {
-            "max_turns": 500,  # Default max tool-calling iterations (shared with subagents)
+            # Default turn budget; single source of truth is
+            # hermes_cli.config_defaults.DEFAULT_MAX_TURNS.
+            "max_turns": DEFAULT_MAX_TURNS,
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -2392,6 +2395,85 @@ def _worktree_branch_pr_merged(
         return False
 
 
+def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Dict[str, str]]:
+    """Return ``{branch_name: sha}`` for every branch on origin, or None.
+
+    One ``git ls-remote --heads origin`` call answers "is this branch pushed?"
+    for EVERY worktree in the sweep, so callers pay a single bounded network
+    round-trip instead of per-tree probes. Needed because managed installs
+    fetch with a single-branch refspec (``+refs/heads/main:...``), so
+    ``refs/remotes/origin/<branch>`` never exists for pushed PR branches and
+    ``git log HEAD --not --remotes`` misreports them as unpushed forever —
+    the dominant reason open-PR worktrees accumulate (Aug 2026: 24 of 33
+    preserved trees on a loaded box were pushed branches with open PRs).
+
+    Fails SAFE toward None (offline, no remote, timeout): callers must treat
+    None as "cannot verify — preserve".
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            return None
+        heads: Dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                heads[parts[1][len("refs/heads/"):].strip()] = parts[0].strip()
+        return heads
+    except Exception:
+        return None
+
+
+def _worktree_branch_pushed_exact(
+    worktree_path: str,
+    remote_heads: Optional[Dict[str, str]],
+    timeout: int = 10,
+) -> bool:
+    """Return whether the worktree's branch head is EXACTLY what origin holds.
+
+    True means the working tree contains nothing origin doesn't already have:
+    the checkout is redundant — the work lives on the remote (typically as an
+    open PR) and in the local branch ref. Reaping the TREE while keeping the
+    BRANCH loses nothing and is one ``git worktree add`` away from undone.
+
+    Exact-match is deliberately the only True case: a local head that is
+    ahead of (or diverged from) the pushed branch has commits origin lacks,
+    and without remote-tracking refs we cannot cheaply prove ancestry — so
+    anything but equality fails SAFE toward preserve.
+    """
+    import subprocess
+
+    if not remote_heads:
+        return False
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+        )
+        if head.returncode != 0:
+            return False
+        branch = head.stdout.strip()
+        if not branch or branch == "HEAD":
+            return False
+        remote_sha = remote_heads.get(branch)
+        if not remote_sha:
+            return False
+        local = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+        )
+        if local.returncode != 0:
+            return False
+        return local.stdout.strip() == remote_sha
+    except Exception:
+        return False
+
+
 def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):
     """Classify a worktree's git lock as live, dead, or absent.
 
@@ -2638,7 +2720,16 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     - unpushed commits — never removed, UNLESS every local-only commit is
       patch-equivalent to a commit already on upstream (``git cherry``): the
       squash-merged-PR case, which is the dominant ``.worktrees/`` leak since
-      those commits stay unreachable from ``refs/remotes/*`` forever.
+      those commits stay unreachable from ``refs/remotes/*`` forever;
+    - pushed-branch tier: when the tree's branch head EXACTLY matches what
+      origin holds (one ``git ls-remote`` per sweep, lazily), the checkout is
+      redundant — typically an open-PR lane. The TREE is reaped but its
+      BRANCH ref is kept (and shielded from the orphaned-branch pass), so
+      the lane is one ``git worktree add`` away from restored. Needed because
+      managed installs fetch with a single-branch refspec, leaving pushed PR
+      branches with no ``refs/remotes/*`` entry — they read as "unpushed"
+      forever and were the dominant survivor class (Aug 2026: 24 of 33
+      preserved trees, ~18GB).
 
     Lock handling (orthogonal to age): ``hermes -w`` locks each worktree with
     reason ``hermes pid=<pid>`` so a concurrent hermes process leaves an in-use
@@ -2735,6 +2826,22 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     cache_size_before = len(merge_cache)
     cache_lock = threading.Lock()
 
+    # Lazy, once-per-sweep ls-remote: answers "is this branch pushed as-is?"
+    # for every tree. Only paid when some tree actually reaches the
+    # pushed-tier check (the TUI path runs this pruner synchronously, so an
+    # unconditional network call would tax every launch; offline it costs
+    # one bounded timeout at most, and None degrades verdicts to preserve).
+    _remote_heads_memo: dict = {}
+    _remote_heads_lock = threading.Lock()
+
+    def _get_remote_heads():
+        with _remote_heads_lock:
+            if "heads" not in _remote_heads_memo:
+                _remote_heads_memo["heads"] = _fetch_remote_branch_heads(
+                    repo_root, timeout=10
+                )
+            return _remote_heads_memo["heads"]
+
     def _classify(item):
         entry, mtime, force = item
         # Never delete real work, regardless of age or tier. Uncommitted
@@ -2743,6 +2850,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # actually cause .worktrees/ bloat) are ever reaped.
         if _worktree_is_dirty(str(entry), timeout=5):
             return (entry, mtime, force, "dirty", None)
+        keep_branch = False
         if _worktree_has_unpushed_commits(str(entry), timeout=5):
             # Squash-merge escape hatch: commits unreachable from any remote
             # ref but patch-equivalent to upstream commits are merged work,
@@ -2763,7 +2871,17 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             with cache_lock:
                 merge_cache.update(snapshot)
             if not merged:
-                return (entry, mtime, force, "unpushed", None)
+                # Pushed-branch tier: single-branch fetch refspecs (the
+                # managed-install default) leave pushed PR branches with no
+                # refs/remotes/* entry, so they read as "unpushed" forever
+                # even though every byte is on origin. When the local head
+                # EXACTLY matches the remote branch, the checkout is
+                # redundant: reap the tree, keep the branch ref so the lane
+                # is one `git worktree add` from restored.
+                if _worktree_branch_pushed_exact(str(entry), _get_remote_heads(), timeout=10):
+                    keep_branch = True
+                else:
+                    return (entry, mtime, force, "unpushed", None)
 
         # Respect git-native session locks. A lock owned by a still-running
         # hermes process means the worktree is actively in use — never touch
@@ -2773,7 +2891,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         lock_state = _worktree_lock_is_live(repo_root, str(entry), timeout=5)
         if lock_state == "live":
             return (entry, mtime, force, "locked-live", None)
-        return (entry, mtime, force, "reap", lock_state)
+        return (entry, mtime, force,
+                "reap-keep-branch" if keep_branch else "reap", lock_state)
 
     # Bounded pool: enough to hide git's per-process startup latency without
     # spawning dozens of concurrent git processes on a small machine.
@@ -2795,6 +2914,9 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         _save_worktree_merge_cache(merge_cache)
 
     # ── Phase 3: mutate serially (unlock / remove / branch -D) ──────────────
+    # Branch refs deliberately preserved by the pushed tier — must survive
+    # the orphaned-branch pass even though their worktree is now gone.
+    kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
         if verdict == "dirty":
             if mtime <= stale_work_cutoff:
@@ -2837,7 +2959,14 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
                     entry.name, remove_result.stderr.strip(),
                 )
                 continue
-            if branch:
+            if branch and verdict == "reap-keep-branch":
+                # Pushed-tier trees keep their branch ref: the branch IS the
+                # work (an open PR's local anchor) — only the checkout was
+                # redundant. Also shield it from the orphaned-branch pass
+                # below, which would otherwise delete hermes/*- and pr-*
+                # named refs the moment their worktree is gone.
+                kept_branches.add(branch)
+            elif branch:
                 subprocess.run(
                     ["git", "branch", "-D", branch],
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=repo_root,
@@ -2853,7 +2982,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             len(preserved_stale), ", ".join(sorted(preserved_stale)),
         )
 
-    _prune_orphaned_branches(repo_root)
+    _prune_orphaned_branches(repo_root, protect=kept_branches)
 
     # Escalation notice: the startup pass is deliberately conservative, so
     # installs accumulate preserved trees it can never reclaim. Once the
@@ -2875,12 +3004,17 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         pass
 
 
-def _prune_orphaned_branches(repo_root: str) -> None:
+def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:
     """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree.
 
     These are auto-generated by ``hermes -w`` sessions and PR review
     workflows respectively.  Once their worktree is gone they serve no
     purpose and just accumulate.
+
+    ``protect``: branch names to never delete this pass — the pushed-tier
+    reap above removes a tree while deliberately keeping its branch (an open
+    PR's local anchor), and some of those carry ``hermes/hermes-*`` names
+    this sweep would otherwise collect immediately.
     """
     import subprocess
 
@@ -2924,6 +3058,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
     orphaned = [
         b for b in all_branches
         if b not in active_branches
+        and b not in (protect or ())
         and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
     ]
 
@@ -5086,7 +5221,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             reasoning: Reasoning effort override for this run (none|minimal|low|medium|high|xhigh|max|ultra). Wins over config.
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
-            max_turns: Maximum tool-calling iterations shared with subagents (default: 500)
+            max_turns: Maximum tool-calling iterations shared with subagents (default: 256)
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
@@ -17443,8 +17578,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
                 _api_calls = result.get("api_calls", 0)
-                if _api_calls >= getattr(self.agent, "max_iterations", 500):
-                    _max_iter = getattr(self.agent, "max_iterations", 500)
+                if _api_calls >= getattr(self.agent, "max_iterations", DEFAULT_MAX_TURNS):
+                    _max_iter = getattr(self.agent, "max_iterations", DEFAULT_MAX_TURNS)
                     _cprint(
                         f"\n{_DIM}⚠ Iteration budget reached "
                         f"({_api_calls}/{_max_iter}) — "

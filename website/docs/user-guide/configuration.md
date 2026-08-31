@@ -1070,19 +1070,19 @@ See [Memory Providers](/user-guide/features/memory-providers) for the analogous 
 
 ## Iteration Budget
 
-When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 500 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 256 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
 
-Instead, when the budget is actually exhausted (500/500), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
+Instead, when the budget is actually exhausted (256/256), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
 
 ```yaml
 agent:
-  max_turns: none              # Iterations per conversation turn (default: none = unlimited)
-                               # Set a positive integer to cap; "none"/"null"/
+  max_turns: 256               # Iterations per conversation turn (default: 256)
+                               # Set a positive integer to cap, or "none"/"null"/
                                # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = no limit
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
-`agent.max_turns` is **unlimited by default** — the turn cap caused more problems than it solved (silent mid-task truncation), so out of the box Hermes runs a conversation turn to completion. To impose a cap, set a positive integer. To be explicit about "no limit", any of these case-insensitive spellings work: `"none"`, `"null"`, `"unlimited"`, `"infinite"`, `"infinity"`, `"inf"`, `0`, `-1` (they resolve to a `sys.maxsize` sentinel so the loop never exits on a turn count).
+`agent.max_turns` defaults to **256 turns** — enough headroom for tool-heavy work while still bounding a runaway loop. To raise or lower the cap, set a positive integer. To remove the cap entirely, any of these case-insensitive spellings work: `"none"`, `"null"`, `"unlimited"`, `"infinite"`, `"infinity"`, `"inf"`, `0`, `-1` (they resolve to a `sys.maxsize` sentinel so the loop never exits on a turn count).
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
@@ -2343,7 +2343,7 @@ The `web_search` and `web_extract` tools support five backend providers. Configu
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | parallel | keenable | exa
 
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
@@ -2351,7 +2351,7 @@ web:
 
   # Keyless free-tier fallback (default: true). With no backend configured
   # and no API keys present, web tools rotate across the Exa/Parallel/
-  # Tavily/Firecrawl/Keenable free tiers. Set false to disable.
+  # Firecrawl/Keenable free tiers. Set false to disable.
   keyless_fallback: true
 
   # One-shot keyless rescue (default: true). When the chosen/keyed backend
@@ -2372,10 +2372,9 @@ web:
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
-| **Tavily** | `TAVILY_API_KEY` (optional — keyless when selected) | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
-**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Tavily / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Firecrawl or Keenable in `hermes tools` also works without a key.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 

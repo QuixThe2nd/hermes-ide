@@ -1008,7 +1008,7 @@ def _ensure_hermes_home_managed(home: Path):
 # Config loading/saving
 # =============================================================================
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: F401
+from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, DEFAULT_MAX_TURNS  # noqa: F401
 
 
 # =============================================================================
@@ -1022,7 +1022,6 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
-    10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
 }
 
@@ -1227,7 +1226,7 @@ def _is_env_config_key(key: str) -> bool:
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
+        'TOOL_GATEWAY_USER_TOKEN',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -3196,7 +3195,7 @@ _UNLIMITED_SPELLINGS = frozenset({
 })
 
 
-def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
     """Normalize a raw ``agent.max_turns`` value into an int iteration cap.
 
     Accepts:
@@ -3207,18 +3206,21 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
         (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
       - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
-        :data:`TURN_LIMIT_UNLIMITED` — max_turns is unlimited by default).
-      - Anything unparseable → ``default`` (with a debug log).
+        :data:`DEFAULT_MAX_TURNS` — 256 turns by default).
+      - Anything unparseable — including values whose numeric magnitude has no
+        finite int representation (``"1e309"``, ``"+inf"``, YAML ``.inf`` /
+        ``.nan``) — → ``default`` (with a debug log), never an exception.
 
     The returned int is always ≥ 1, so loop conditions like
     ``while api_call_count < agent.max_iterations`` behave correctly even when
-    the default (unlimited) path is taken.
+    the default path is taken.
 
     This is the single normalization point for the turn-limit value type.
     Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
     instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
-    becomes a first-class supported spelling of "unlimited". max_turns is
-    unlimited unless the user sets an explicit positive integer cap.
+    becomes a first-class supported spelling of "unlimited". max_turns
+    defaults to 256 turns unless the user sets an explicit cap or an
+    "unlimited" spelling.
     """
     if raw is None:
         return default
@@ -3227,7 +3229,15 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         # silently become 1/0.
         return default
     if isinstance(raw, (int, float)):
-        n = int(raw)
+        try:
+            n = int(raw)
+        except (ValueError, OverflowError):
+            # Non-finite float — YAML ``.inf`` / ``.nan`` (or a float too large
+            # for an int).  int() raises OverflowError for ±inf and ValueError
+            # for NaN; both mean "no usable integer limit", so fall back to the
+            # default rather than crashing the caller over a bad config value.
+            logger.debug("resolve_turn_limit: non-finite value %r → default %d", raw, default)
+            return default
         if n <= 0:
             return TURN_LIMIT_UNLIMITED
         return n
@@ -3242,7 +3252,11 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         except ValueError:
             try:
                 n = int(float(s))
-            except ValueError:
+            except (ValueError, OverflowError):
+                # ValueError: not a number at all.  OverflowError: parses as a
+                # float but overflows int() ("1e309", "+inf", "-1e309") — a
+                # magnitude with no usable limit, so treat it like garbage
+                # rather than letting it blow up the setup wizard / gateway.
                 logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
                 return default
         if n <= 0:
@@ -4389,8 +4403,12 @@ def _env_line_defines_key(
     assigned_key, separator, _value = stripped.partition("=")
     if not separator:
         return False
+    # load_env() strips whitespace around the parsed name, so `KEY = value`
+    # IS a live assignment. The writers must match the same shape, or a
+    # hand-edited spaced line is invisible to save (duplicate appended) and
+    # remove (line survives -> value resurrects on next load). #67488.
     return _env_var_policy_name(
-        assigned_key,
+        assigned_key.strip(),
         is_windows=is_windows,
     ) == _env_var_policy_name(key, is_windows=is_windows)
 
@@ -4828,7 +4846,6 @@ def show_config():
         ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
-        ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),

@@ -130,7 +130,7 @@ Common options:
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
 | `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, shell hooks, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
-| `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 500, or `agent.max_turns` in config). |
+| `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 256, or `agent.max_turns` in config). |
 
 Examples:
 
@@ -449,6 +449,9 @@ hermes send --list telegram         # filter by platform
 hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
 hermes peer list
 hermes peer dm <peer>[/<agent>] "message"
+hermes peer run <peer>[/<agent>] --idempotency-key <key> "message"
+hermes peer status <peer>[/<agent>] <run_id>
+hermes peer stop <peer>[/<agent>] <run_id>
 hermes peer remove <name>
 ```
 
@@ -468,6 +471,9 @@ its `/p/<profile>/` mirror).
 | `add <name> --url <URL> [--key <KEY>] [--note TEXT]` | Register or update a peer. The URL goes to `config.yaml` (`bot_peers`); the key is stored as `HERMES_PEER_<NAME>_KEY` in `~/.hermes/.env`. |
 | `list` | List peers and whether each has a key configured. |
 | `dm <peer>[/<agent>] [message]` | Message the peer agent's canonical Bot Chat and print the reply (`--json` for machine-readable output; message falls back to stdin). |
+| `run <peer>[/<agent>] [message]` | Start a long canonical Bot Chat turn asynchronously and return its `run_id`, session ID, and idempotency key (`--json` supported). Reuse `--idempotency-key` when retrying the same request. |
+| `status <peer>[/<agent>] <run_id>` | Poll an asynchronous peer run and print its final output when complete (`--json` supported). |
+| `stop <peer>[/<agent>] <run_id>` | Stop the exact asynchronous peer run without targeting another turn (`--json` supported). |
 | `remove <name>` | Remove a peer from the registry (the `.env` key entry is left in place). |
 
 When at least one peer is registered, the Bot Mode messaging protocol

@@ -1515,7 +1515,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Agent",
                 "rows": [
-                    ["Max Turns", str(_cfg_max_turns(cfg, 500))],
+                    ["Max Turns", str(_cfg_max_turns(cfg))],
                     ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
                     ["Verbose", str(cfg.get("verbose", False))],
                 ],

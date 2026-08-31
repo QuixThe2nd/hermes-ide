@@ -37,12 +37,20 @@ def test_moa_ask_uses_default_references_without_calling_aggregator(
 
     seen = {}
 
-    def fake_run(reference_models, ref_messages, *, temperature=None, max_tokens=None):
+    def fake_run(
+        reference_models,
+        ref_messages,
+        *,
+        temperature=None,
+        max_tokens=None,
+        progress_callback=None,
+    ):
         seen.update(
             reference_models=reference_models,
             ref_messages=ref_messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            progress_callback=progress_callback,
         )
         return [
             ("xai-oauth:grok-4.5", "challenge the assumption", CanonicalUsage()),
@@ -72,6 +80,8 @@ def test_moa_ask_uses_default_references_without_calling_aggregator(
         "reference_models"
     ]
     assert seen["max_tokens"] == 500
+    # Live advisor progress is wired: the fan-out receives a callable.
+    assert callable(seen["progress_callback"])
     rendered = seen["ref_messages"][0]["content"]
     assert "Which architecture should we use?" in rendered
     assert "existing reverse proxy" in rendered

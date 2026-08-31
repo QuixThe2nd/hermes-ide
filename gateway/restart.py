@@ -78,6 +78,23 @@ def is_gateway_supervisor_process(
     }
 
 
+def detached_restart_spawn_blocked(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Return whether detached restart spawns are forbidden in this process.
+
+    ``HERMES_TEST_ISOLATION`` is the hermetic-conftest marker (see
+    ``hermes_state._TEST_ISOLATION_MARKER_ENV``): its presence declares this
+    process tree a test run, and a test run must not leave its sandbox by
+    spawning detached gateway/restart helpers that outlive the test. Every
+    detached launcher consults this predicate before its latch or spawn and
+    no-ops with a warning when it holds. Any nonblank value counts — the
+    marker's value is the isolation root, not a boolean.
+    """
+    env = os.environ if environ is None else environ
+    return bool(str(env.get("HERMES_TEST_ISOLATION", "")).strip())
+
+
 def is_container_restart_context() -> bool:
     """Return whether the gateway is running inside a container for restart
     routing purposes (Docker/Podman ⇒ the detached setsid path dies with the

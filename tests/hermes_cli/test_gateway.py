@@ -340,6 +340,10 @@ def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway, "get_python_path", lambda: "/usr/bin/python3")
     monkeypatch.setattr(gateway, "_gateway_run_command", lambda: child_cmd)
     monkeypatch.setattr(gateway.subprocess, "Popen", fake_popen)
+    # This test asserts the real spawn path (Popen is a recording fake), so
+    # disarm the conftest's isolation marker that makes _spawn_detached_gateway
+    # no-op under test runs.
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
     assert gateway._spawn_detached_gateway() is True
 

@@ -53,7 +53,35 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert run_agent._is_destructive_command("cp .env.local .env") is True
 
 
+class TestMainMaxTurnsDefault:
+    """run_agent.main's turn budget: default derives from DEFAULT_MAX_TURNS."""
 
+    @staticmethod
+    def _run_main(**kwargs):
+        """Invoke main() with AIAgent mocked out; return its constructor kwargs."""
+        with patch("run_agent.AIAgent") as mock_agent:
+            mock_agent.return_value.run_conversation.return_value = {
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+                "final_response": "done",
+            }
+            run_agent.main(**kwargs)
+            return mock_agent.call_args.kwargs
+
+    def test_default_derives_from_default_max_turns(self):
+        # main() is the public entry point (fire.Fire(main)); a run with no
+        # explicit max_turns must land on DEFAULT_MAX_TURNS — the same
+        # 256-turn budget every other construction path shares — so the
+        # default tracks the constant instead of a private literal.
+        from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
+        assert DEFAULT_MAX_TURNS == 256
+        assert self._run_main(query="hi")["max_iterations"] == DEFAULT_MAX_TURNS
+
+    def test_explicit_max_turns_reach_agent_exactly(self):
+        # Explicit values pass through verbatim — no clamping, no defaulting.
+        assert self._run_main(query="hi", max_turns=7)["max_iterations"] == 7
 
 
 

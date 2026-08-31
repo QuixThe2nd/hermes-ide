@@ -49,6 +49,7 @@ from agent.tool_guardrails import (
     ToolGuardrailDecision,
 )
 from hermes_cli.config import cfg_get
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -544,7 +545,7 @@ def init_agent(
     command: str = None,
     args: list[str] | None = None,
     model: str = "",
-    max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
+    max_iterations: int = DEFAULT_MAX_TURNS,  # Default turn budget (shared with subagents); unlimited spellings → sys.maxsize
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     save_trajectories: bool = False,
@@ -625,7 +626,7 @@ def init_agent(
         requested_provider (str): Original provider identity before runtime canonicalization
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-        max_iterations (int): Maximum number of tool calling iterations (default: 90)
+        max_iterations (int): Maximum number of tool calling iterations (default: 256)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
         save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)

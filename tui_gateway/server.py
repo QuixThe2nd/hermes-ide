@@ -32,6 +32,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -3916,9 +3917,15 @@ def _ensure_session_db_row(session: dict) -> None:
             parent_session_id=parent_session_id,
             cwd=_persisted_session_cwd(session),
             # Self-describing rows: aggregators that merge multiple profile DBs
-            # into one list can't rely on which file a row came from alone. NULL
-            # means the launch/default profile (matches run_agent's convention).
-            profile_name=Path(profile_home).name if profile_home else None,
+            # into one list can't rely on which file a row came from alone.
+            # Stamp the launch profile explicitly instead of leaving NULL —
+            # NULL is exactly what the #94724 legacy-owner backfill exists to
+            # repair, and rows minted AFTER that one-shot backfill ran stayed
+            # NULL forever: profile-keyed matching then drops them from the
+            # sidebar and deep links can't resolve them (#99222).
+            profile_name=(
+                Path(profile_home).name if profile_home else _current_profile_name()
+            ),
         )
         # A session can be born hidden (session.create hidden=true, or a
         # session.set_hidden that arrived before the row existed): apply the
@@ -4430,7 +4437,9 @@ def _save_cfg(cfg: dict):
 
     from utils import atomic_roundtrip_yaml_save
 
-    path = _hermes_home / "config.yaml"
+    override = get_hermes_home_override()
+    home = Path(override) if isinstance(override, str) and override else _hermes_home
+    path = Path(home) / "config.yaml"
     # Comment-, ordering-, and Unicode-preserving full-state write.
     # Replaces the previous `yaml.safe_dump(cfg, f)` (and later
     # `atomic_config_write`, which is not comment-preserving) which clobbered
@@ -8404,7 +8413,7 @@ def _apply_personality_to_session(
     return False, None
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
+def _cfg_max_turns(cfg: dict, default: int = DEFAULT_MAX_TURNS) -> int:
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     # Env var override (highest priority)
     env_val = os.environ.get("HERMES_TUI_MAX_TURNS")
@@ -8467,7 +8476,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
-        "max_iterations": _cfg_max_turns(cfg, 25),
+        "max_iterations": _cfg_max_turns(cfg),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         # Detached background tasks declare platform="tui" below: they have no
         # UI session id, so a renderer-routed event has nowhere to land. Resolve
@@ -8945,7 +8954,7 @@ def _make_agent(
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
-        max_iterations=_cfg_max_turns(cfg, 500),
+        max_iterations=_cfg_max_turns(cfg),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -13919,6 +13928,7 @@ def _respond(rid, params, key, *, allow_expired=False):
 # opt/model-resolution-core PR touches its body; move it to methods_config.py
 # in a follow-up once that PR lands.
 @method("config.set")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))

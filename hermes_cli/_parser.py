@@ -526,7 +526,7 @@ def build_top_level_parser():
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+        help="Maximum tool-calling iterations per conversation turn (default: 256, or agent.max_turns in config)",
     )
     chat_parser.add_argument(
         "--run-budget",

@@ -92,6 +92,13 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
     }
 )
 
+# Cooldown armed when a compression SPLIT fails (session_split_failed /
+# rotation rollback, #97948 symptom B). Deliberately the FIRST rung of the
+# timeout ladder (60/300/900 in context_compressor.py), not the 600s
+# _SUMMARY_FAILURE_COOLDOWN_SECONDS: a split failure is usually a transient
+# lease/DB condition, unlike a persistent summary-provider fault.
+_SPLIT_FAILURE_COOLDOWN_SECONDS = 60
+
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
 # drivers like the desktop app can show an explicit "Summarizing…" indicator
@@ -4715,6 +4722,8 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
+                        require_lease_refresh=_lock_holder is not None,
+                        lease_ttl_seconds=_lock_ttl,
                         watermark=(
                             _commit_watermark
                             if _foreign_tail_ceiling is not None
@@ -4993,6 +5002,21 @@ def compress_context(
                     )
                 else:
                     logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                # Arm the failure cooldown so the next turn cannot immediately
+                # re-run the identical doomed compression (#97948 symptom B).
+                # try/except mirrors the sibling record_rejected_compaction
+                # call above: this runs inside the split-failure handler, and
+                # a stub compressor must not mask the original error.
+                try:
+                    agent.context_compressor._record_compression_failure_cooldown(
+                        _SPLIT_FAILURE_COOLDOWN_SECONDS,
+                        f"session_split_failed: {e}",
+                    )
+                except Exception:
+                    logger.debug(
+                        "could not record split-failure cooldown",
+                        exc_info=True,
+                    )
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

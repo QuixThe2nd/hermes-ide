@@ -250,6 +250,9 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
         return MagicMock()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # Popen is a recording fake here, so run the real (non-isolated) watcher
+    # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
     await runner._launch_detached_restart_command()
 
@@ -298,6 +301,9 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
         return MagicMock()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # Popen is a recording fake here, so run the real (non-isolated) watcher
+    # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
     await runner._launch_detached_restart_command()
 

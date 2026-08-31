@@ -2,6 +2,8 @@
 
 import random
 
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
 
 # ---------------------------------------------------------------------------
 # Tip corpus — one-liners covering slash commands, CLI flags, config,
@@ -69,7 +71,7 @@ TIPS = [
     "hermes chat -t web,terminal enables only specific toolsets for a focused session.",
     "hermes chat -s github-pr-workflow preloads a skill at launch.",
     "hermes chat -q \"query\" runs a single non-interactive query and exits.",
-    "hermes chat --max-turns 1000 overrides the default 500-iteration limit per turn.",
+    f"hermes chat --max-turns 1000 overrides the default {DEFAULT_MAX_TURNS}-iteration limit per turn.",
     "hermes chat --checkpoints enables filesystem snapshots before every destructive file change.",
     "hermes --yolo bypasses all dangerous command approval prompts for the entire session.",
     "hermes chat --source telegram tags the session for filtering in hermes sessions list.",

@@ -7639,6 +7639,28 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
     assert created[0]["db_path"] == profile_home / "state.db"
 
 
+def test_ensure_session_db_row_stamps_launch_profile_name(monkeypatch):
+    """A launch-profile session row is stamped with the ACTUAL profile name,
+    never NULL. NULL-as-launch-profile rows vanish from the desktop sidebar
+    (profile-keyed matching) and break @session:<profile>/<id> deep links, and
+    the #94724 one-shot backfill cannot keep repairing rows minted after it
+    ran (#99222)."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, **kwargs):
+            created.append({"key": key, "profile_name": kwargs.get("profile_name")})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+
+    server._ensure_session_db_row({"session_key": "k1"})
+
+    assert created and created[0]["key"] == "k1"
+    assert created[0]["profile_name"] == "default"
+
+
 def test_session_title_clears_pending_after_persist(monkeypatch):
     class _FakeDB:
         def __init__(self):
@@ -17097,13 +17119,15 @@ def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
     assert mock_agent.call_args.kwargs["max_iterations"] == 400
 
 
-def test_make_agent_defaults_to_500(monkeypatch):
+def test_make_agent_defaults_to_default_max_turns(monkeypatch):
     _setup_make_agent_mocks(monkeypatch, {})
 
     with patch("run_agent.AIAgent") as mock_agent:
         server._make_agent("sid1", "key1")
 
-    assert mock_agent.call_args.kwargs["max_iterations"] == 500
+    from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == DEFAULT_MAX_TURNS
 
 
 def test_make_agent_uses_session_runtime_overrides(monkeypatch):
@@ -17192,12 +17216,14 @@ def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
     assert kwargs["max_iterations"] == 50
 
 
-def test_background_agent_kwargs_defaults_to_25(monkeypatch):
+def test_background_agent_kwargs_defaults_to_default_max_turns(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
-    assert kwargs["max_iterations"] == 25
+    from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
+    assert kwargs["max_iterations"] == DEFAULT_MAX_TURNS
 
 
 def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):
