@@ -821,7 +821,10 @@ def _run_references_parallel(
     If ``progress_callback`` is provided it is invoked as each reference
     completes: ``progress_callback(refs_done, refs_total, label)``. The total
     matches ``len(reference_models)`` so listeners can render a status-bar
-    progress like ``MOA: 2/3 refs done``. Best-effort — failures are logged
+    progress like ``MOA: 2/3 refs done``. Recursion-guarded slots (presets
+    referencing another preset) count as completed the moment their skip note
+    is written, so the final event always reports
+    ``refs_done == refs_total``. Best-effort — failures are logged
     but never break the fan-out (display must never block a turn).
 
     Each element is ``(label, text, accounting)`` where accounting is a
@@ -873,6 +876,18 @@ def _run_references_parallel(
     # the fan-out stops regressing 1h → 5m (#84733); the destination-aware
     # clamp (Qwen → 5m) runs inside _maybe_apply_moa_cache_control.
     cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
+
+    def _report_progress(label: str) -> None:
+        # One fail-soft emit per resolved slot. Callers forwarding this to the
+        # stage-event bus must keep the payload numeric — the label is for
+        # status-bar consumers only.
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(completed, total, label)
+        except Exception as exc:  # pragma: no cover - display must never break
+            logger.debug("MoA progress_callback failed: %s", exc)
+
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -881,6 +896,12 @@ def _run_references_parallel(
                     "[skipped: MoA presets cannot recursively reference MoA]",
                     _RefAccounting(CanonicalUsage()),
                 )
+                # The slot is resolved (as a skip note) without a call, so it
+                # counts as complete immediately — otherwise a preset that
+                # references another preset could never reach
+                # refs_done == refs_total and visible progress stalls.
+                completed += 1
+                _report_progress(_slot_label(slot))
                 continue
             futures[
                 executor.submit(
@@ -907,12 +928,7 @@ def _run_references_parallel(
                 idx = futures[future]
                 results[idx] = future.result()
                 completed += 1
-                if progress_callback is not None:
-                    try:
-                        label = _slot_label(reference_models[idx])
-                        progress_callback(completed, total, label)
-                    except Exception as exc:  # pragma: no cover - display must never break
-                        logger.debug("MoA progress_callback failed: %s", exc)
+                _report_progress(_slot_label(reference_models[idx]))
             if not pending:
                 break
             if agent is not None and getattr(agent, "_interrupt_requested", False):

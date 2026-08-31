@@ -192,7 +192,7 @@ Z.AI silent default is GLM-5.3, with GLM-5.3-Flash as fallback. `security.allow_
   - WhatsApp — allowlisted groups can observe unmentioned chatter (`observe_unmentioned_group_messages` with `require_mention`, off by default): stored as shared-session context, replied to only on the next ping/mention
   - Memory — Hindsight `bank_id_template` supports `{chat}` so one profile can keep a separate bank per messaging chat
   - Discord — typing indicator stays lit while a background delegated task is still running
-  - Discord — MoA consult/debate progress renders as one self-editing embed per call
+  - Discord — MoA consult/debate progress renders as one self-editing embed per call, with live N/T advisor counts on `moa_ask`
   - Cron — lifecycle guard blocks cron-spawned commands that would restart the gateway or rewrite the live checkout (quote-aware)
   - Memory — per-turn injection skips lines already delivered earlier in the session
   - Config — API retry backoff timing
