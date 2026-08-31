@@ -39,6 +39,7 @@ from gateway.restart import (
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    detached_restart_spawn_blocked,
     is_gateway_supervisor_process,
     parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
@@ -5136,6 +5137,13 @@ def _spawn_detached_gateway() -> bool:
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
+    if detached_restart_spawn_blocked():
+        logger.warning(
+            "Detached gateway spawn skipped: HERMES_TEST_ISOLATION is set "
+            "(test run must not leave the sandbox)"
+        )
+        return False
+
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path = log_dir / "gateway.log"
@@ -8578,6 +8586,19 @@ def _gateway_command_inner(args):
                 print(f"✓ Stopped {get_service_name()} service")
 
     elif subcmd == "restart":
+        # Defense: never restart the gateway from inside a test run.
+        # Must precede every restart mechanism below (service-manager
+        # dispatch, systemd/launchd/windows operations, PID kills,
+        # signals, fallback spawns) so an isolated test cannot escape
+        # the sandbox via `hermes gateway restart`.
+        if detached_restart_spawn_blocked():
+            print_error(
+                "Refusing to run `hermes gateway restart`: HERMES_TEST_ISOLATION is set.\n"
+                "Restarting or killing gateway processes is disabled during test runs\n"
+                "so the test cannot spawn or signal processes outside its sandbox."
+            )
+            sys.exit(1)
+
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
         # The supervised probe also PASSES a plain foreground `hermes gateway run`
