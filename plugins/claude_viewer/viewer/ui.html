@@ -450,6 +450,15 @@ body {
     renderTimer: null,
     newCount: 0,
     userNearBottom: true,
+    // Every selection/load gets a unique, monotonically increasing generation
+    // token: filename equality cannot tell a stale A→B→A load apart from the
+    // current one, but a superseded generation can.
+    loadGen: 0,
+    // Pending initial head flush, bound to the generation that owns it:
+    // { gen, resolve } while a loadHead() waits for its batch to paint. A
+    // stale load can therefore never overwrite or resolve the current load's
+    // waiter, and the waiter is released (never inherited) on a run switch.
+    headFlush: null,
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -930,12 +939,30 @@ body {
     appendWelcomeBox();
   }
 
+  /* The pending initial head flush is over: its batch actually painted
+     (flushRender) or its load was superseded (clearTranscript). Releases
+     loadHead(), which waits for the paint before revealing the prompt.
+     Completion-driven, so a stalled requestAnimationFrame (hidden,
+     background, or busy tab) can neither reveal early nor let the head batch
+     be misclassified as live output. */
+  function releaseHeadFlush() {
+    const pending = state.headFlush;
+    state.headFlush = null;
+    if (pending && pending.resolve) pending.resolve();
+  }
+
   function flushRender() {
     state.renderScheduled = false;
     if (state.renderTimer) {
       clearTimeout(state.renderTimer);
       state.renderTimer = null;
     }
+    // The first flush after a run load is the head/history batch: it is
+    // existing content, not live output, so it must never feed newCount even
+    // when it renders off-tail (prompt-first mode). The pending state is
+    // generation-bound and only cleared by the flush that actually paints
+    // that batch (releaseHeadFlush), never by a no-op flush.
+    const isHeadFlush = state.headFlush !== null;
 
     if (state.bufferDirty) {
       // Older events were prepended: replay the whole buffer so tool_use ↔
@@ -949,9 +976,14 @@ body {
       trimRows();
       updateStatus();
       if (wasNear) scrollToBottom();
+      if (isHeadFlush) releaseHeadFlush();
       return;
     }
 
+    // Nothing painted — e.g. a stale timer from a superseded load firing
+    // after clearTranscript() reset the buffer: keep the head-flush
+    // classification (and any loadHead waiter) armed for the flush that
+    // actually renders the head batch.
     if (state.renderedCount >= state.buffer.length) return;
     const wasNear = state.userNearBottom;
     const batch = state.buffer.slice(state.renderedCount);
@@ -963,13 +995,14 @@ body {
 
     if (wasNear) {
       scrollToBottom();
-    } else {
+    } else if (!isHeadFlush) {
       state.newCount += batch.length;
       if (state.newCount > 0) {
         setText(newPill, '↓ ' + state.newCount + ' new lines — press G to jump');
         newPill.classList.add('visible');
       }
     }
+    if (isHeadFlush) releaseHeadFlush();
   }
 
   function scheduleRender(events, opts) {
@@ -1001,6 +1034,14 @@ body {
     state.bufferDirty = false;
     state.renderedCount = 0;
     state.eventCount = 0;
+    // A superseded loadHead() may still be awaiting its generation's head
+    // flush: release it so its generation recheck fires and it bails, instead
+    // of parking forever on a promise that can no longer resolve. The new
+    // run's pending head flush is not armed here but by its own loadHead()
+    // once the head response lands — nothing can schedule a render in
+    // between (the tail loop is dead until then), so no flush can be
+    // misclassified in that window.
+    releaseHeadFlush();
     resetDerivedState();
     updateStatus();
   }
@@ -1108,8 +1149,11 @@ body {
     if (state.selectedFile === file && !state.paused) return;
     // Invalidate any in-flight tail at once: it bails on its next tick when
     // it sees the generation changed, so no settle delay is needed before
-    // the head fetch and first paint.
+    // the head fetch and first paint. The load generation bumps alongside:
+    // every selection is a new load identity, so a stale A→B→A loadHead()
+    // can never pass for the current one on filename equality alone.
     state.tailGen++;
+    state.loadGen++;
 
     state.selectedFile = file;
     // Reflect the selection in the URL without adding a history entry, so
@@ -1130,30 +1174,67 @@ body {
   }
 
   async function loadHead(file) {
+    // This load's identity: the generation captured at entry. It is
+    // re-checked after every await below — a superseded load (including a
+    // stale A→B→A load for the same file) must never touch shared state,
+    // reveal, fetch the size, or start tail polling on behalf of a run that
+    // is no longer current.
+    const gen = state.loadGen;
     // First page of a run: also ask for the line total (total=1 is only paid
     // here — every older page skips it).
     try {
       const res = await fetch('/api/head?file=' + encodeURIComponent(file) +
         '&lines=200&total=1');
+      if (gen !== state.loadGen) return;   // generation recheck: /api/head fetch
       const data = await res.json();
-      if (state.selectedFile !== file) return;  // superseded by a newer selection
+      if (gen !== state.loadGen) return;   // generation recheck: /api/head payload
       state.totalLines = data.total_lines != null ? data.total_lines : null;
       state.historyBefore = data.has_more ? data.before : null;
       state.prompt = data.prompt || '';
       renderPromptCard();
-      // With a prompt, the run opens at its original question, not the live
-      // tail: leave tail-follow BEFORE the first scheduled flush so that
-      // flushRender() renders the head batch without scrollToBottom(), then
-      // aim the scroller at the card once that batch is in the DOM.
+      // Follow mode is chosen explicitly on every head load, never inherited
+      // from the previously selected run: a prompt-bearing run opens on its
+      // original question (off-tail), any other run opens at and follows the
+      // tail. Set BEFORE the first scheduled flush so that flushRender()
+      // renders the head batch without scrollToBottom(), then aim the
+      // scroller at the card once that batch is in the DOM.
       const revealPrompt = !!state.prompt;
-      if (revealPrompt) state.userNearBottom = false;
-      scheduleRender(data.lines || []);
-      await new Promise((r) => setTimeout(r, RENDER_INTERVAL_MS + 20));
-      if (state.selectedFile !== file) return;
+      state.userNearBottom = !revealPrompt;
+      const lines = data.lines || [];
+      // Completion-driven, never a fixed delay: the reveal and the end of
+      // the initial-history window wait for the scheduled head flush to
+      // actually paint, however long requestAnimationFrame is stalled. An
+      // empty head schedules no flush, so there is nothing to wait for; a
+      // flush already pending from earlier coalescing still resolves the
+      // waiter when it paints this batch. The waiter is owned by this
+      // generation, and only a current load can reach this line — a stale
+      // load can neither overwrite nor resolve another load's waiter.
+      let headFlushed = null;
+      if (lines.length) {
+        headFlushed = new Promise((resolve) => {
+          state.headFlush = { gen, resolve };   // generation-bound head-flush ownership
+        });
+      }
+      scheduleRender(lines);
+      if (headFlushed) await headFlushed;
+      if (gen !== state.loadGen) return;   // generation recheck: head flush painted
       if (revealPrompt) revealPromptCard();
-      state.tailOffset = await getFileSize(file);
-      if (!state.paused && state.selectedFile === file) tailLoop();
+      // The tail starts from the cursor captured with the head snapshot, so
+      // bytes appended between that snapshot and now are polled, not skipped
+      // (a later size probe would jump past them; a stalled frame widens the
+      // gap). Only a legacy head payload without the field falls back to the
+      // post-flush size probe.
+      if (typeof data.tail_offset === 'number') {
+        state.tailOffset = data.tail_offset;
+      } else {
+        state.tailOffset = await getFileSize(file);
+        if (gen !== state.loadGen) return;   // generation recheck: file-size probe
+      }
+      if (!state.paused) tailLoop();
     } catch (_) {
+      // A superseded load must not paint its failure into the newer run's
+      // transcript.
+      if (gen !== state.loadGen) return;
       const msg = el('div', 'empty-msg');
       setText(msg, 'Failed to load run');
       transcript.appendChild(msg);
@@ -1166,12 +1247,21 @@ body {
     if (!file || before == null || state.historyLoading) return;
     if (state.buffer.length >= HISTORY_LIMIT) return;
 
+    // This history load's identity, like loadHead()'s: re-checked after
+    // every await and before every shared-state mutation. A stale A1 history
+    // response surviving A→B→A2 must not prepend into A2, mutate A2's
+    // history cursor/loading state, flush (which would release A2's
+    // generation-bound head waiter early), or adjust the viewport — filename
+    // equality cannot tell A1 apart from A2, only the generation can.
+    const gen = state.loadGen;
     state.historyLoading = true;
     updateHistoryChip();
     try {
       const res = await fetch('/api/head?file=' + encodeURIComponent(file) +
         '&lines=200&before=' + before);
+      if (gen !== state.loadGen) return;   // generation recheck: history fetch
       const data = await res.json();
+      if (gen !== state.loadGen) return;   // generation recheck: history payload
       if (state.selectedFile !== file) return;
       const lines = data.lines || [];
       if (!lines.length) {
@@ -1183,9 +1273,18 @@ body {
         flushRender();                // synchronous so the viewport math below is exact
         transcript.scrollTop += transcript.scrollHeight - prevHeight;
       }
-    } catch (_) { /* keep historyBefore; scrolling up again retries */ }
-    state.historyLoading = false;
-    updateStatus();
+    } catch (_) {
+      // A stale load keeps its hands off A2's paging state; a current load
+      // keeps historyBefore so scrolling up again retries.
+      if (gen !== state.loadGen) return;
+    } finally {
+      // Only the current generation may stand down the loading flag it set —
+      // a stale load clearing it would corrupt A2's in-flight history page.
+      if (gen === state.loadGen) {
+        state.historyLoading = false;
+        updateStatus();
+      }
+    }
   }
 
   async function getFileSize(file) {
@@ -1228,6 +1327,7 @@ body {
         await new Promise((r) => setTimeout(r, 50));
         state.tailAbort = false;
         state.tailGen++;
+        state.loadGen++;      // the resume reload is a new load generation too
         state.tailOffset = 0;
         clearTranscript();      // resets buffer + history paging state too
         await loadHead(state.selectedFile);

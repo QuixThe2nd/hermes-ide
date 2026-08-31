@@ -116,23 +116,30 @@ RAW_SCAN_CAP_BYTES = 8 * 1024 * 1024
 
 def read_last_n_lines(
     path: Path, n: int, before: int = 0
-) -> tuple[list[dict[str, Any]], int, bool]:
+) -> tuple[list[dict[str, Any]], int, bool, int]:
     """Read up to n KEPT JSON events from a window ending `before` bytes before EOF.
 
     Noise events are dropped at parse time (they never render), so n counts
     kept lines only — a 200-line page renders ~200 lines, not ~6. `before`
     pages backwards: it is the value a previous call returned, so the window
     ends exactly where the older page's lines began. Returns (lines,
-    next_before, has_more) — next_before is what the next older call passes
-    and has_more is False once the file start has been reached.
+    next_before, has_more, tail_offset) — next_before is what the next older
+    call passes and has_more is False once the file start has been reached.
+
+    tail_offset is the live-tail cursor captured from the SAME file snapshot
+    this read used (one stat(), no later re-probe): the byte offset just past
+    the last complete newline, so a tail reader starting there can never skip
+    bytes appended after this snapshot. When the snapshot ends mid-line (a
+    live tail mid-append), the partial line is excluded from the page and
+    tail_offset points at its start, so tail polling rereads it once complete.
     """
     n = max(1, min(n, 1000))
     try:
         size = path.stat().st_size
     except OSError:
-        return [], 0, False
+        return [], 0, False, 0
     if size == 0:
-        return [], 0, False
+        return [], 0, False, 0
 
     try:
         before = int(before)
@@ -155,6 +162,10 @@ def read_last_n_lines(
     kept: list[tuple[dict[str, Any], int]] = []  # newest-first
     drop_tail = False
     first_chunk = True
+    # Tail cursor for THIS snapshot: just past the window's last complete
+    # newline. A partial line at the snapshot's right edge moves it back to
+    # that line's start so tail polling rereads the line once completed.
+    tail_offset = end
     with open(path, "rb") as fh:
         if end > 0:
             fh.seek(end - 1)
@@ -169,6 +180,7 @@ def read_last_n_lines(
             if drop_tail and complete:
                 tail = complete.pop()
                 cursor -= len(tail)
+                tail_offset = end - len(tail)
                 drop_tail = False
             elif first_chunk and complete and complete[-1] == b"":
                 complete.pop()  # split artifact of the window's trailing newline
@@ -191,13 +203,18 @@ def read_last_n_lines(
     kept.reverse()
     lines = cap_lines_json([obj for obj, _ in kept])
     kept = kept[-len(lines):] if lines else []
+    if drop_tail:
+        # The whole scanned window held no newline, so the partial line's
+        # start was never seen (pathological: a single line larger than the
+        # scan). Re-read from the file start rather than guess a mid-line cut.
+        tail_offset = 0
     # The first kept line's start (not the raw chunk-read position) becomes
     # the next page boundary, so paging never splits or repeats an event —
     # even when noise lines sit between pages. has_more tracks whether the
     # scan itself reached the file start: leading noise must not fake more
     # pages, and a cap-stopped scan (pos > 0) must advertise one.
     first_start = kept[0][1] if kept else pos
-    return [obj for obj, _ in kept], size - first_start, pos > 0
+    return [obj for obj, _ in kept], size - first_start, pos > 0, tail_offset
 
 
 def count_kept_lines(path: Path) -> int:
@@ -576,7 +593,7 @@ class ClaudeViewerHandler(BaseHTTPRequestHandler):
         except ValueError:
             before = 0
 
-        lines, next_before, has_more = read_last_n_lines(path, n, before)
+        lines, next_before, has_more, tail_offset = read_last_n_lines(path, n, before)
         # `prompt` rides on every page (not `lines`) so history paging to the
         # start never duplicates it.
         payload: dict[str, Any] = {
@@ -585,6 +602,13 @@ class ClaudeViewerHandler(BaseHTTPRequestHandler):
             "has_more": has_more,
             "prompt": read_run_prompt(path),
         }
+        if before == 0:
+            # First page doubles as the live-tail anchor: the cursor comes
+            # from the same snapshot as `lines`, so bytes appended between
+            # this response and the client's first tail poll are never
+            # skipped. Older pages (before > 0) are mid-file windows and
+            # carry no tail cursor.
+            payload["tail_offset"] = tail_offset
         # total_lines re-reads the whole file, so only the first (uncapped)
         # request pays for it.
         if qs.get("total", ["0"])[0] in ("1", "true", "True"):
