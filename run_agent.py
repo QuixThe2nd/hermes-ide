@@ -119,6 +119,7 @@ from agent.interrupt_compat import request_hard_interrupt
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
@@ -455,7 +456,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
+        max_iterations: int = DEFAULT_MAX_TURNS,  # Default turn budget (shared with subagents); unlimited spellings → sys.maxsize
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -9334,7 +9335,7 @@ def main(
     model: str = "",
     api_key: str = None,
     base_url: str = "",
-    max_turns: int = 10,
+    max_turns: int = DEFAULT_MAX_TURNS,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
@@ -9351,7 +9352,8 @@ def main(
         model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
-        max_turns (int): Maximum number of API call iterations. Defaults to 10.
+        max_turns (int): Maximum number of API call iterations. Defaults to
+                         DEFAULT_MAX_TURNS (256); explicit values are used exactly.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"

@@ -83,6 +83,21 @@ class TestBlankSlateMinimizeConfig:
         assert cfg["smart_model_routing"]["enabled"] is False
         assert cfg["session_reset"]["mode"] == "none"
 
+    def test_max_turns_is_standard_default(self):
+        """Blank Slate writes the same turn budget as every other path.
+
+        It used to hardcode 90 while ordinary setup wrote 150 and the
+        runtime resolved 500 — three "defaults" for one key. Blank Slate
+        minimizes optional *features*, not the iteration budget.
+        """
+        from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
+        cfg = {}
+        _blank_slate_minimize_config(cfg)
+
+        assert cfg["agent"]["max_turns"] == DEFAULT_MAX_TURNS
+        assert DEFAULT_MAX_TURNS == 256
+
 
 class TestBlankSlateFork:
     """The post-baseline fork: finish now vs walk through configurations."""

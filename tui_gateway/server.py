@@ -32,6 +32,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -8404,7 +8405,7 @@ def _apply_personality_to_session(
     return False, None
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
+def _cfg_max_turns(cfg: dict, default: int = DEFAULT_MAX_TURNS) -> int:
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     # Env var override (highest priority)
     env_val = os.environ.get("HERMES_TUI_MAX_TURNS")
@@ -8467,7 +8468,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
-        "max_iterations": _cfg_max_turns(cfg, 25),
+        "max_iterations": _cfg_max_turns(cfg),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         # Detached background tasks declare platform="tui" below: they have no
         # UI session id, so a renderer-routed event has nowhere to land. Resolve
@@ -8945,7 +8946,7 @@ def _make_agent(
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
-        max_iterations=_cfg_max_turns(cfg, 500),
+        max_iterations=_cfg_max_turns(cfg),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
