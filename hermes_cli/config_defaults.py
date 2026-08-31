@@ -4,6 +4,15 @@ Pure-data leaf module: DEFAULT_CONFIG and OPTIONAL_ENV_VARS, extracted
 verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 """
 
+# Default value of ``agent.max_turns`` — the per-run turn budget a user gets
+# when they never set the key. Single source of truth: every construction
+# path (CLI defaults, resolve_turn_limit, AIAgent/agent_init, TUI gateway)
+# imports it from here so the same user resolves the same number everywhere.
+# Explicit "unlimited" spellings ("none"/"unlimited"/"inf"/"null"/0/-1) still
+# resolve to the sys.maxsize sentinel — see resolve_turn_limit. (A YAML null
+# value is "unset", not "unlimited": it falls back to this default.)
+DEFAULT_MAX_TURNS = 256
+
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
@@ -43,11 +52,11 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
-        # Unlimited by default. The agent turn cap caused more problems than
-        # it solved (silent mid-task truncation). null = unlimited; set a
-        # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
-        # all normalized by hermes_cli.config.resolve_turn_limit.
-        "max_turns": None,
+        # Default turn budget per conversation run. 256 headroom for
+        # tool-heavy work while still bounding a runaway loop; raise it or
+        # use "none"/"unlimited"/"inf"/"null"/0/-1 for no limit — all
+        # normalized by hermes_cli.config.resolve_turn_limit.
+        "max_turns": DEFAULT_MAX_TURNS,
         # Optional wall-clock budget in seconds per conversation run.
         # null/absent = feature fully off (zero behavior change). When set,
         # the agent gets a one-time wrap-up notice at 80% elapsed and

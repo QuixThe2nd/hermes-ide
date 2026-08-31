@@ -152,7 +152,10 @@ from hermes_cli.config import (
     remove_env_value,
     get_env_value,
     ensure_hermes_home,
+    resolve_turn_limit,
+    TURN_LIMIT_UNLIMITED,
 )
+from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 # display_hermes_home imported lazily at call sites (stale-module safety during hermes update)
 
 from hermes_cli.colors import Colors, color
@@ -1769,7 +1772,7 @@ def setup_terminal_backend(config: dict):
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    config.setdefault("agent", {})["max_turns"] = 150
+    config.setdefault("agent", {})["max_turns"] = DEFAULT_MAX_TURNS
     # config.yaml is the authoritative source for max_turns; the gateway
     # bridges it into HERMES_MAX_ITERATIONS at startup. We no longer write
     # to .env to avoid the dual-source inconsistency that caused the
@@ -1788,7 +1791,7 @@ def _apply_default_agent_settings(config: dict):
 
     save_config(config)
     print_success("Applied recommended defaults:")
-    print_info("  Max iterations: 150")
+    print_info(f"  Max iterations: {DEFAULT_MAX_TURNS}")
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
     print_info("  Session reset: never (use /reset or compression)")
@@ -1806,27 +1809,39 @@ def setup_agent_settings(config: dict):
     # config.yaml is authoritative; read from there. If a legacy .env
     # entry is still around (from pre-PR#18413 setups), prefer the
     # config value so we don't surface a stale number to the user.
-    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
+    current_max = str(cfg_get(config, "agent", "max_turns", default=DEFAULT_MAX_TURNS))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info(
-        f"Press Enter to keep {current_max}. Use 90 for most tasks or 150+ for open exploration."
+        f"Press Enter to keep {current_max}. Use {DEFAULT_MAX_TURNS} for most tasks or higher "
+        f"for open exploration; 'none'/'unlimited'/0 = unlimited."
     )
 
     max_iter_str = prompt("Max iterations", current_max)
-    try:
-        max_iter = int(max_iter_str)
-        if max_iter > 0:
-            # Write to config.yaml (authoritative) only. Also clean up any
-            # stale .env entry from earlier setup runs — the gateway's
-            # bridge in gateway/run.py now unconditionally derives
-            # HERMES_MAX_ITERATIONS from agent.max_turns at startup.
-            config.setdefault("agent", {})["max_turns"] = max_iter
-            config.pop("max_turns", None)
-            remove_env_value("HERMES_MAX_ITERATIONS")
-            print_success(f"Max iterations set to {max_iter}")
-    except ValueError:
+    # Single parse point: the shared turn-limit resolver, so every spelling
+    # it accepts ("none"/"null"/"unlimited"/"inf"/0/-1/… = unlimited, ints
+    # kept exact) works here too. Passing default=None makes the resolver
+    # return None exactly when the input carries no usable limit, which is
+    # the "keep current value" path — None is never a valid parse result.
+    max_iter = resolve_turn_limit(max_iter_str, default=None)
+    if max_iter is None:
         print_warning("Invalid number, keeping current value")
+    else:
+        # Persist "none" for unlimited — the spelling the prompt advertises
+        # and the one the gateway bridge round-trips to unlimited. ("null"
+        # would serialize back to a YAML null, which reads as "unset".)
+        if max_iter == TURN_LIMIT_UNLIMITED:
+            stored, label = "none", "none (unlimited)"
+        else:
+            stored, label = max_iter, str(max_iter)
+        # Write to config.yaml (authoritative) only. Also clean up any
+        # stale .env entry from earlier setup runs — the gateway's
+        # bridge in gateway/run.py now unconditionally derives
+        # HERMES_MAX_ITERATIONS from agent.max_turns at startup.
+        config.setdefault("agent", {})["max_turns"] = stored
+        config.pop("max_turns", None)
+        remove_env_value("HERMES_MAX_ITERATIONS")
+        print_success(f"Max iterations set to {label}")
 
     # ── Tool Progress Display ──
     print_info("")
@@ -2548,7 +2563,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"backend: {backend}"
 
     elif section_key == "agent":
-        max_turns = cfg_get(config, "agent", "max_turns", default=90)
+        max_turns = cfg_get(config, "agent", "max_turns", default=DEFAULT_MAX_TURNS)
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
@@ -3531,7 +3546,7 @@ def _blank_slate_minimize_config(config: dict):
     Everything here is opt-in afterwards via ``hermes setup agent`` /
     ``hermes config set``. We keep only what's needed to run.
     """
-    config.setdefault("agent", {})["max_turns"] = 90
+    config.setdefault("agent", {})["max_turns"] = DEFAULT_MAX_TURNS
 
     # Compression off — minimal footprint; user opts in if they want long sessions.
     config.setdefault("compression", {})["enabled"] = False

@@ -73,14 +73,14 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 
-    def test_default_max_turns_is_unlimited(self):
-        # Default is now unlimited (max_turns caused more problems than it
-        # solved). Still a positive int (the sys.maxsize sentinel), so loop
-        # conditions like `count < max_iterations` keep working.
-        import sys
+    def test_default_max_turns_is_256(self):
+        # A user with no explicit override resolves agent.max_turns to the
+        # standard 256-turn budget (unlimited is opt-in via "none"/0/-1/...).
+        from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
         cli = _make_cli()
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == sys.maxsize
+        assert cli.max_turns == DEFAULT_MAX_TURNS
+        assert DEFAULT_MAX_TURNS == 256
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)

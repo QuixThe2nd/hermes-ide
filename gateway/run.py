@@ -2478,7 +2478,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         # Skip bridging when the YAML value is Python None (from `null` or bare
         # `key:`) — this preserves "absent = default" semantics downstream.
         # Without this guard, str(None) → "None" → resolve_turn_limit maps it
-        # to the unlimited sentinel instead of the default (90/500).
+        # to the unlimited sentinel instead of the default (256).
         if raw is not None:
             os.environ["HERMES_MAX_ITERATIONS"] = str(raw)
         elif "HERMES_MAX_ITERATIONS" in os.environ:
@@ -2728,7 +2728,7 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 # This env var is internal bridge plumbing, not a user-facing configuration
 # source. Initialize it from the canonical config default after dotenv loading
 # so an ambient process/.env value can never control lease safety on its own.
-from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG
+from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG, DEFAULT_MAX_TURNS as _DEFAULT_MAX_TURNS
 
 os.environ["HERMES_TURN_LEASE_TIMEOUT"] = str(
     _DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"]
@@ -14535,11 +14535,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "500"))
+            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", str(_DEFAULT_MAX_TURNS)))
             logger.info(
                 "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or HERMES_MAX_ITERATIONS from .env, or default 500)",
+                "or HERMES_MAX_ITERATIONS from .env, or default %d)",
                 _effective_max_iter,
+                _DEFAULT_MAX_TURNS,
             )
         except Exception:
             pass

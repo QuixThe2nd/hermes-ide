@@ -9,7 +9,7 @@ import os
 import sys
 import pytest
 
-from hermes_cli.config import resolve_turn_limit, TURN_LIMIT_UNLIMITED
+from hermes_cli.config import resolve_turn_limit, TURN_LIMIT_UNLIMITED, DEFAULT_MAX_TURNS
 
 
 class TestNumericValues:
@@ -60,40 +60,45 @@ class TestUnlimitedSpellings:
 
 class TestAbsentAndDefault:
     def test_none_returns_default(self):
-        # Default is now unlimited (max_turns caused more problems than it solved).
-        assert resolve_turn_limit(None) == TURN_LIMIT_UNLIMITED
+        # Absent/null resolves to the standard turn budget (256), not unlimited —
+        # unlimited is opt-in via an explicit spelling (see TestUnlimitedSpellings).
+        assert resolve_turn_limit(None) == DEFAULT_MAX_TURNS
+
+    def test_default_is_256(self):
+        # Pin the product decision: a user with no explicit override gets 256 turns.
+        assert DEFAULT_MAX_TURNS == 256
 
     def test_none_custom_default(self):
         assert resolve_turn_limit(None, default=500) == 500
 
     def test_empty_string_returns_default(self):
-        assert resolve_turn_limit("") == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit("") == DEFAULT_MAX_TURNS
 
     def test_whitespace_only_returns_default(self):
-        assert resolve_turn_limit("   ") == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit("   ") == DEFAULT_MAX_TURNS
 
     def test_absent_env_var_returns_default(self):
         """Simulates os.getenv() returning None when HERMES_MAX_ITERATIONS unset."""
-        assert resolve_turn_limit(None) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit(None) == DEFAULT_MAX_TURNS
 
 
 class TestInvalidInputs:
     def test_bool_rejected(self):
         # bool is an int subclass — must not silently become 1/0
-        assert resolve_turn_limit(True) == TURN_LIMIT_UNLIMITED
-        assert resolve_turn_limit(False) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit(True) == DEFAULT_MAX_TURNS
+        assert resolve_turn_limit(False) == DEFAULT_MAX_TURNS
 
     def test_garbage_string_returns_default(self):
-        assert resolve_turn_limit("garbage") == TURN_LIMIT_UNLIMITED
-        assert resolve_turn_limit("not_a_number") == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit("garbage") == DEFAULT_MAX_TURNS
+        assert resolve_turn_limit("not_a_number") == DEFAULT_MAX_TURNS
 
     def test_list_returns_default(self):
-        assert resolve_turn_limit([]) == TURN_LIMIT_UNLIMITED
-        assert resolve_turn_limit([90]) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit([]) == DEFAULT_MAX_TURNS
+        assert resolve_turn_limit([90]) == DEFAULT_MAX_TURNS
 
     def test_dict_returns_default(self):
-        assert resolve_turn_limit({}) == TURN_LIMIT_UNLIMITED
-        assert resolve_turn_limit({"max_turns": 90}) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit({}) == DEFAULT_MAX_TURNS
+        assert resolve_turn_limit({"max_turns": 90}) == DEFAULT_MAX_TURNS
 
 
 class TestSentinelProperties:

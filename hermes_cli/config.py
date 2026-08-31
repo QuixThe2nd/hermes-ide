@@ -1008,7 +1008,7 @@ def _ensure_hermes_home_managed(home: Path):
 # Config loading/saving
 # =============================================================================
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: F401
+from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, DEFAULT_MAX_TURNS  # noqa: F401
 
 
 # =============================================================================
@@ -3196,7 +3196,7 @@ _UNLIMITED_SPELLINGS = frozenset({
 })
 
 
-def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
     """Normalize a raw ``agent.max_turns`` value into an int iteration cap.
 
     Accepts:
@@ -3207,18 +3207,19 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
         (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
       - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
-        :data:`TURN_LIMIT_UNLIMITED` — max_turns is unlimited by default).
+        :data:`DEFAULT_MAX_TURNS` — 256 turns by default).
       - Anything unparseable → ``default`` (with a debug log).
 
     The returned int is always ≥ 1, so loop conditions like
     ``while api_call_count < agent.max_iterations`` behave correctly even when
-    the default (unlimited) path is taken.
+    the default path is taken.
 
     This is the single normalization point for the turn-limit value type.
     Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
     instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
-    becomes a first-class supported spelling of "unlimited". max_turns is
-    unlimited unless the user sets an explicit positive integer cap.
+    becomes a first-class supported spelling of "unlimited". max_turns
+    defaults to 256 turns unless the user sets an explicit cap or an
+    "unlimited" spelling.
     """
     if raw is None:
         return default

@@ -17097,13 +17097,15 @@ def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
     assert mock_agent.call_args.kwargs["max_iterations"] == 400
 
 
-def test_make_agent_defaults_to_500(monkeypatch):
+def test_make_agent_defaults_to_default_max_turns(monkeypatch):
     _setup_make_agent_mocks(monkeypatch, {})
 
     with patch("run_agent.AIAgent") as mock_agent:
         server._make_agent("sid1", "key1")
 
-    assert mock_agent.call_args.kwargs["max_iterations"] == 500
+    from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == DEFAULT_MAX_TURNS
 
 
 def test_make_agent_uses_session_runtime_overrides(monkeypatch):
@@ -17192,12 +17194,14 @@ def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
     assert kwargs["max_iterations"] == 50
 
 
-def test_background_agent_kwargs_defaults_to_25(monkeypatch):
+def test_background_agent_kwargs_defaults_to_default_max_turns(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
-    assert kwargs["max_iterations"] == 25
+    from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+
+    assert kwargs["max_iterations"] == DEFAULT_MAX_TURNS
 
 
 def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):

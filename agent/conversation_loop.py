@@ -8884,7 +8884,7 @@ def run_conversation(
             # Local processing errors are deterministic — stop immediately
             # rather than retrying until the budget is exhausted. Repeated
             # outer-loop errors stop after a small per-turn cap: with
-            # max_iterations now unlimited by default, a permanent failure
+            # max_iterations unlimited (opt-in), a permanent failure
             # would otherwise spin forever and overwrite the rotated log
             # history within minutes (#92450).
             _outer_error_cap = min(_MAX_OUTER_LOOP_ERRORS, max(1, agent.max_iterations))
