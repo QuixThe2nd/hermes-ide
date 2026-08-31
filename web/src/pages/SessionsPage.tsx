@@ -1021,6 +1021,9 @@ export default function SessionsPage() {
   // one from the page just navigated away from — can't overwrite fresher
   // state.
   const overviewRequestRef = useRef(0);
+  // Tracks which explicit request turned loading on, so silent polls that
+  // complete while an explicit load is in flight cannot leave it stuck true.
+  const overviewExplicitRequestRef = useRef(0);
 
   useEffect(() => {
     pageRef.current = page;
@@ -1176,15 +1179,17 @@ export default function SessionsPage() {
   useEffect(() => {
     let cancelled = false;
     const loadOverview = (silent: boolean) => {
-      // Silent ticks (the interval) keep whatever is rendered on screen and
-      // only swap in fresher data, so a background refresh never flickers
-      // the card or drops scroll position. Explicit loads (mount, page
-      // change, retry) show the loading state and clear the prior error.
-      const requestId = silent
-        ? overviewRequestRef.current
-        : overviewRequestRef.current + 1;
+      // Every request — silent poll or explicit load — gets its own id so an
+      // older in-flight response can never overwrite a newer one. Only the
+      // latest id may apply rows/total/error/loading. Explicit loads (mount,
+      // page change, retry) show the loading state and clear the prior error;
+      // silent ticks keep whatever is rendered and only swap in fresher data
+      // so the background refresh never flickers the card or drops scroll
+      // position.
+      const requestId = overviewRequestRef.current + 1;
+      overviewRequestRef.current = requestId;
       if (!silent) {
-        overviewRequestRef.current = requestId;
+        overviewExplicitRequestRef.current = requestId;
         setOverviewLoading(true);
         setOverviewError(null);
       }
@@ -1235,15 +1240,25 @@ export default function SessionsPage() {
         })
         .catch((err) => {
           if (cancelled || requestId !== overviewRequestRef.current) return;
-          // Rows already on screen stay up (stale beats blank); the banner
-          // carries a Retry.
           setOverviewError(
             err instanceof Error ? err.message : String(err ?? "request failed"),
           );
+          // Explicit failures are for a new page the user already navigated
+          // to; keeping stale rows would paint them under the wrong page
+          // number. Silent polls may still preserve on-screen rows.
+          if (!silent) {
+            setOverviewSessions([]);
+            setOverviewTotal(0);
+          }
         })
         .finally(() => {
-          if (cancelled || requestId !== overviewRequestRef.current) return;
-          if (!silent) setOverviewLoading(false);
+          if (cancelled) return;
+          // Only the explicit request that toggled loading on may toggle it
+          // off. Silent polls must not flicker loading, and a stale explicit
+          // response must not clear loading for a newer explicit load.
+          if (requestId === overviewExplicitRequestRef.current) {
+            setOverviewLoading(false);
+          }
         });
     };
     loadOverview(false);

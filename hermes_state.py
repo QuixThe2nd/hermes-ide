@@ -4393,6 +4393,9 @@ def _compression_child_eligible_sql(child: str) -> str:
         f" '$._branched_from') IS NULL"
         f" AND json_extract(COALESCE({child}.model_config, '{{}}'),"
         f" '$._delegate_from') IS NULL"
+        f" AND json_extract(COALESCE({child}.model_config, '{{}}'),"
+        f" '$._reset_from') IS NULL"
+        f" AND NOT {_legacy_reset_child_sql(child, _RESET_END_REASONS_SQL)}"
         f" AND COALESCE({child}.source, '') != 'tool'"
     )
 

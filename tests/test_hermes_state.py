@@ -2647,6 +2647,82 @@ class TestListSessionsRich:
         assert conversation_a["_lineage_root_id"] == "root_a"
         assert conversation_a["last_active"] == t0 - 2 * 3600
 
+    def test_rich_list_active_since_excludes_reset_children_from_compression_chain(
+        self, db,
+    ):
+        """Reset children are separate conversations, not compression continuations.
+
+        A compressed root R with a live real continuation C must project to C
+        even when a newer reset child X hangs off the same parent. Without this
+        exclusion X can win the preferred-child tie-break and become R's
+        continuation, producing duplicate listable IDs and a total that no
+        longer matches the rows.
+        """
+        t0 = 1_800_000_000.0
+
+        def _stamp(
+            session_id, *, started_at, active_at=None, ended_at=None,
+            end_reason=None,
+        ):
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=?, last_activity_at=?,"
+                    " ended_at=?, end_reason=? WHERE id=?",
+                    (started_at, active_at, ended_at, end_reason, session_id),
+                )
+                db._conn.commit()
+
+        lane = "agent:main:telegram:dm:lane"
+
+        # Compressed root with a real continuation and a newer reset sibling.
+        db.create_session("root_r", "telegram", session_key=lane)
+        db.end_session("root_r", "compression")
+        db.create_session(
+            "cont_c",
+            "telegram",
+            session_key=lane,
+            parent_session_id="root_r",
+        )
+        db.create_session(
+            "reset_x",
+            "telegram",
+            session_key=lane,
+            parent_session_id="root_r",
+            model_config={"_reset_from": "root_r"},
+        )
+
+        # reset_x is fresher than cont_c, so it would win without the reset
+        # exclusion. Both are live (no ended_at).
+        _stamp(
+            "root_r",
+            started_at=t0 - 5 * 86400,
+            active_at=t0 - 5 * 86400,
+            ended_at=t0 - 5 * 86400 + 60,
+            end_reason="compression",
+        )
+        _stamp("cont_c", started_at=t0 - 2 * 3600, active_at=t0 - 2 * 3600)
+        _stamp("reset_x", started_at=t0 - 3600, active_at=t0 - 3600)
+
+        # Projection must ignore the reset child.
+        assert db.get_compression_tip("root_r") == "cont_c"
+
+        cutoff = t0 - 86400
+        window = dict(active_since=cutoff, active_until=t0)
+        sessions = db.list_sessions_rich(order_by_last_active=True, **window)
+        ids = [s["id"] for s in sessions]
+
+        # One row for the compressed chain (projected to cont_c) and one row
+        # for the reset child as its own conversation.
+        assert ids == ["reset_x", "cont_c"]
+        assert len(set(ids)) == len(ids)
+        assert (
+            db.session_count(exclude_children=True, include_hidden=False, **window)
+            == 2
+        )
+
+        cont_row = next(s for s in sessions if s["id"] == "cont_c")
+        assert cont_row["_lineage_root_id"] == "root_r"
+
     def test_rich_list_active_since_bounds_activity_at_server_now(self, db):
         """The window is ``[cutoff, now]`` — inclusive at both ends, nothing after."""
         t0 = 1_800_000_000.0

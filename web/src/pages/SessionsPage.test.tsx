@@ -555,6 +555,134 @@ describe("SessionsPage overview (last 24 hours)", () => {
     expect(text()).not.toContain("No sessions were active");
     expect(text()).not.toContain("No sessions yet");
   });
+
+  it("does not render previous-page rows under a failed explicit page change", async () => {
+    apiMocks.getSessions.mockImplementation(
+      async (limit: number, offset: number, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          if (offset === 0) {
+            return {
+              sessions: [sessionRow("s-0", "Row 0")],
+              total: 45,
+              limit,
+              offset,
+            };
+          }
+          // Any explicit page change fails.
+          throw new Error("page failed");
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      },
+    );
+
+    await renderPage();
+
+    expect(text()).toContain("Row 0");
+    expect(text()).toContain("Page 1 of 3");
+
+    await act(async () => {
+      iconButton("Next page").click();
+    });
+
+    // The card shows the error and Retry, but must not keep the page-one rows
+    // painted under the new page number.
+    expect(text()).toContain("Failed to load sessions from the last 24 hours");
+    expect(text()).toContain("page failed");
+    expect(text()).toContain("Retry");
+    expect(text()).not.toContain("Row 0");
+    expect(text()).not.toContain("Page 2 of");
+  });
+
+  it("ignores an older silent poll that returns empty after a newer one", async () => {
+    let overviewCall = 0;
+    const deferred: {
+      resolve: (value: { sessions: unknown[]; total: number; limit: number; offset: number }) => void;
+      reject: (reason?: unknown) => void;
+    }[] = [];
+    apiMocks.getSessions.mockImplementation(
+      async (limit: number, offset: number, options) => {
+        if (
+          options &&
+          (options as { activeWithinHours?: number }).activeWithinHours != null
+        ) {
+          overviewCall += 1;
+          if (overviewCall === 1) {
+            // Initial explicit load.
+            return {
+              sessions: [sessionRow("s-initial", "Initial row")],
+              total: 1,
+              limit,
+              offset,
+            };
+          }
+          if (overviewCall === 2) {
+            // First silent poll: hangs, will resolve empty later.
+            return new Promise((resolve, reject) => {
+              deferred.push({ resolve, reject });
+            });
+          }
+          // Second silent poll: returns fresher rows immediately.
+          return {
+            sessions: [sessionRow("s-newer", "Newer row")],
+            total: 1,
+            limit,
+            offset,
+          };
+        }
+        return { sessions: [], total: 0, limit: 20, offset: 0 };
+      },
+    );
+
+    // Stats resolving changes ``loadSessions``'s identity and re-runs the
+    // overview effect with a second explicit load. Keep stats pending in this
+    // test so the only explicit load is the initial mount, then fire silent
+    // polls manually.
+    apiMocks.getSessionStats.mockImplementation(() => new Promise(() => {}));
+
+    // Capture the Overview poll callback so we can fire silent polls without
+    // waiting for the real 5-second interval.
+    const intervalCallbacks: (() => void)[] = [];
+    const intervalSpy = vi
+      .spyOn(global, "setInterval")
+      .mockImplementation((callback: TimerHandler) => {
+        if (typeof callback === "function") {
+          intervalCallbacks.push(callback as () => void);
+        }
+        return 0 as unknown as ReturnType<typeof setInterval>;
+      });
+
+    try {
+      await renderPage();
+      expect(text()).toContain("Initial row");
+      expect(intervalCallbacks.length).toBeGreaterThan(0);
+
+      // Fire the first silent poll; it returns a pending promise.
+      await act(async () => {
+        intervalCallbacks[intervalCallbacks.length - 1]();
+      });
+      expect(text()).toContain("Initial row");
+
+      // Fire the second silent poll; it resolves immediately with newer rows.
+      await act(async () => {
+        intervalCallbacks[intervalCallbacks.length - 1]();
+      });
+      expect(text()).toContain("Newer row");
+      expect(text()).not.toContain("Initial row");
+
+      // The older silent poll finally resolves with empty data; it must not
+      // wipe the newer rows.
+      await act(async () => {
+        deferred[0].resolve({ sessions: [], total: 0, limit: 20, offset: 0 });
+      });
+      expect(text()).toContain("Newer row");
+      expect(text()).not.toContain("No sessions were active");
+    } finally {
+      intervalSpy.mockRestore();
+    }
+  });
 });
 
 /** Lazy import so the module-level vi.mock calls are installed first. */
