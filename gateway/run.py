@@ -3131,6 +3131,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    detached_restart_spawn_blocked,
     parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
@@ -13136,6 +13137,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import shutil
         import subprocess
 
+        if detached_restart_spawn_blocked():
+            logger.warning(
+                "Detached restart spawn skipped: HERMES_TEST_ISOLATION is set "
+                "(test run must not spawn a restart watcher)"
+            )
+            return
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             logger.error("Could not locate hermes binary for detached /restart")

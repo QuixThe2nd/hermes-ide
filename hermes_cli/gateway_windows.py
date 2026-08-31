@@ -912,6 +912,15 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     Returns the spawned PID so callers can verify the process actually
     came up.
     """
+    from gateway.restart import detached_restart_spawn_blocked
+
+    if detached_restart_spawn_blocked():
+        logger.warning(
+            "Detached gateway spawn skipped: HERMES_TEST_ISOLATION is set "
+            "(test run must not leave the sandbox)"
+        )
+        return 0
+
     _assert_windows()
     argv, working_dir, env_overlay = _build_gateway_argv()
 

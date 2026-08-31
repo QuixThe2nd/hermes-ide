@@ -727,6 +727,10 @@ def test_rename_response_lost_after_discord_applied_it_still_restores(
     runner.adapters = {Platform.DISCORD: adapter}
     runner._gateway_loop = gateway_loop
     real_begin = runner.begin_user_restart
+    # The spy below must wrap the REAL begin_user_restart (it is the unit
+    # under observation), but its request_restart call stays a mock so the
+    # test never queues an actual drain/restart.
+    runner.request_restart = MagicMock(return_value=True)
     observed: list[str] = []
 
     async def _begin_spy(**kwargs):
@@ -756,6 +760,9 @@ def test_rename_response_lost_after_discord_applied_it_still_restores(
     # keeps it — the pending title never outlived the confirm wait.
     assert observed == ["Deploy check"]
     assert thread.name == "Deploy check"
+    # The real begin_user_restart ran to completion and queued exactly one
+    # restart — not zero (the gate never opened) and not two.
+    assert runner.request_restart.call_count == 1
 
 
 def test_rename_submit_race_never_bypasses_the_confirm_cleanup(

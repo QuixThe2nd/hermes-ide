@@ -1128,6 +1128,7 @@ class TestGatewaySystemServiceRouting:
         on a real macOS host only ``launchd_restart`` is stubbed (it would touch
         the user's real launchd domain).
         """
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("plist\n", encoding="utf-8")
 
@@ -1152,6 +1153,93 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError("Expected gateway_command to exit when service restart fails")
 
         assert run_calls == []
+
+    @pytest.mark.parametrize(
+        "restart_all", [False, True], ids=["single-profile", "all-profiles"]
+    )
+    def test_gateway_restart_refused_under_test_isolation(
+        self, monkeypatch, capsys, restart_all
+    ):
+        """`hermes gateway restart` must no-op under HERMES_TEST_ISOLATION.
+
+        The hermetic conftest exports the marker for the whole session, so a
+        test that reaches the restart branch could otherwise kill gateway
+        processes, poke systemd/launchd/s6, or spawn detached helpers outside
+        the sandbox. The guard must fire before every restart mechanism —
+        including the supervised-process probe — so each callable the branch
+        can reach afterwards is stubbed as a recorder and asserted untouched,
+        for the ordinary single-profile restart and for `--all` alike: the
+        s6 service-manager dispatch, the systemd/launchd/Windows
+        stop-start-restart arms and their platform detection, the linger
+        probe, the PID kill, the exit wait, SIGUSR1 graceful restart /
+        SIGTERM, the detached fallback spawn, and the foreground run_gateway
+        last resort.
+        """
+        monkeypatch.setenv("HERMES_TEST_ISOLATION", "1")
+
+        dangerous_calls: list[str] = []
+
+        def recorder(name):
+            return lambda *a, **kw: dangerous_calls.append(name) or 0
+
+        monkeypatch.setattr(
+            "tools.process_registry._is_supervised_gateway_process",
+            recorder("_is_supervised_gateway_process"),
+        )
+        for name in (
+            # s6 service-manager dispatch — the first decision in the branch
+            "_dispatch_via_service_manager_if_s6",
+            "_dispatch_all_via_service_manager_if_s6",
+            # platform/service detection that picks the restart mechanism
+            "supports_systemd_services",
+            "get_systemd_unit_path",
+            "is_macos",
+            "get_launchd_plist_path",
+            "is_windows",
+            # systemd and launchd lifecycle arms (stop/start/restart)
+            "systemd_stop",
+            "systemd_start",
+            "systemd_restart",
+            "launchd_stop",
+            "launchd_start",
+            "launchd_restart",
+            "get_systemd_linger_status",
+            # PID kill and exit-wait arms
+            "kill_gateway_processes",
+            "stop_profile_gateway",
+            "_wait_for_gateway_exit",
+            # signal / graceful-restart arms
+            "terminate_pid",
+            "_graceful_restart_via_sigusr1",
+            # detached fallback spawn and foreground last resort
+            "_spawn_detached_gateway",
+            "run_gateway",
+        ):
+            monkeypatch.setattr(gateway_cli, name, recorder(name))
+
+        # The Windows arm imports this module locally after the guard; its
+        # callables must stay equally untouched.
+        from hermes_cli import gateway_windows
+
+        for name in ("is_installed", "stop", "start", "restart", "_spawn_detached"):
+            monkeypatch.setattr(
+                gateway_windows, name, recorder(f"gateway_windows.{name}")
+            )
+
+        with pytest.raises(SystemExit) as excinfo:
+            gateway_cli.gateway_command(
+                SimpleNamespace(
+                    gateway_command="restart", system=False, all=restart_all
+                )
+            )
+        assert excinfo.value.code == 1
+
+        assert dangerous_calls == [], (
+            f"guard let restart (all={restart_all}) reach: {dangerous_calls}"
+        )
+        out = capsys.readouterr().out
+        assert "HERMES_TEST_ISOLATION" in out
+        assert "Refusing to run" in out
 
 
 class TestDetectVenvDir:
