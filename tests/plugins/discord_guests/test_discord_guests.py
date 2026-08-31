@@ -99,6 +99,8 @@ class MockDiscordRouter:
             {"id": "role-admin", "name": "Admins", "permissions": "8"},
             {"id": "role-mod", "name": "Mods", "permissions": "1088"},
         ]
+        # A pre-rename guild by default: the lounge parent is still named
+        # Chat, so the shared fixtures exercise the legacy resolution path.
         self.channels: List[Dict[str, Any]] = [
             {"id": "cat-chat", "name": "Chat", "type": 4, "parent_id": None},
             {"id": "cat-other", "name": "Other", "type": 4, "parent_id": None},
@@ -292,6 +294,15 @@ def _requested_members_at_me(router: MockDiscordRouter) -> bool:
     return any("/members/@me" in url for _, url in _endpoints(router))
 
 
+def _drop_lounge_parent_categories(router: MockDiscordRouter) -> None:
+    """Remove every category the plugin can auto-resolve by name."""
+    router.channels = [
+        ch
+        for ch in router.channels
+        if not (ch.get("type") == 4 and str(ch.get("name", "")).strip().lower() in ("chat", "lounges"))
+    ]
+
+
 class TestCheckRequirements:
     def test_missing_env(self, discord_guests_module, _isolate_env):
         assert discord_guests_module.check_requirements() is False
@@ -341,6 +352,84 @@ class TestSlugAndNaming:
 
     def test_default_host_slug_is_agent(self, discord_guests_module):
         assert discord_guests_module._DEFAULT_HOST_SLUG == "agent"
+
+
+class TestCategoryResolution:
+    """Lounges is the canonical lounge-parent name; legacy Chat still resolves."""
+
+    def test_canonical_lounges_resolved_case_insensitively(
+        self, discord_guests_module
+    ):
+        for name in ("Lounges", "lounges", "LOUNGES"):
+            channels = [
+                {"id": "cat-lounges", "name": name, "type": 4, "parent_id": None}
+            ]
+            resolved = discord_guests_module._find_chat_category(
+                channels, chat_category_id="", guild_id="guild-1"
+            )
+            assert resolved == "cat-lounges", name
+
+    def test_legacy_chat_still_resolved(self, discord_guests_module):
+        channels = [
+            {"id": "cat-chat", "name": "Chat", "type": 4, "parent_id": None}
+        ]
+        resolved = discord_guests_module._find_chat_category(
+            channels, chat_category_id="", guild_id="guild-1"
+        )
+        assert resolved == "cat-chat"
+
+    def test_canonical_beats_legacy_in_any_channel_order(
+        self, discord_guests_module
+    ):
+        legacy = {"id": "cat-chat", "name": "Chat", "type": 4, "parent_id": None}
+        canonical = {
+            "id": "cat-lounges",
+            "name": "Lounges",
+            "type": 4,
+            "parent_id": None,
+        }
+        for channels in ([legacy, canonical], [canonical, legacy]):
+            resolved = discord_guests_module._find_chat_category(
+                channels, chat_category_id="", guild_id="guild-1"
+            )
+            assert resolved == "cat-lounges", [ch["name"] for ch in channels]
+
+    def test_only_categories_with_a_known_name_match(
+        self, discord_guests_module
+    ):
+        channels = [
+            # Right name, wrong type — never a candidate.
+            {"id": "chan-lounges", "name": "Lounges", "type": 0, "parent_id": None},
+            {"id": "cat-other", "name": "Other", "type": 4, "parent_id": None},
+        ]
+        resolved = discord_guests_module._find_chat_category(
+            channels, chat_category_id="", guild_id="guild-1"
+        )
+        assert resolved == ""
+
+    def test_add_creates_lounge_under_canonical_category(
+        self, discord_guests_module, token_env, discord_router, _isolate_env
+    ):
+        # Both categories present, legacy listed first: the lounge still lands
+        # under the canonical one, and the persisted field keeps its name.
+        discord_router.channels = [
+            {"id": "cat-chat", "name": "Chat", "type": 4, "parent_id": None},
+            {"id": "cat-lounges", "name": "Lounges", "type": 4, "parent_id": None},
+        ]
+
+        added = _call(discord_guests_module, {"action": "add", "user_id": "333"})
+
+        assert added["success"] is True
+        assert added["chat_category_id"] == "cat-lounges"
+        create_body = json.loads(
+            next(
+                call["body"]
+                for call in discord_router.calls
+                if call["method"] == "POST" and call["url"].endswith("/channels")
+            )
+        )
+        assert create_body["parent_id"] == "cat-lounges"
+        assert _read_state(_isolate_env)["chat_category_id"] == "cat-lounges"
 
 
 class TestSetup:
@@ -394,23 +483,19 @@ class TestSetup:
         assert explicit["lockdown"] is True
         assert explicit["everyone_denied_view_on"] == ["cat-chat", "cat-other", "chan-top"]
 
-    def test_setup_without_chat_category_errors(
+    def test_setup_without_resolvable_category_errors(
         self, discord_guests_module, token_env, discord_router
     ):
-        discord_router.channels = [
-            ch for ch in discord_router.channels if ch["name"].lower() != "chat"
-        ]
+        _drop_lounge_parent_categories(discord_router)
         result = _call(discord_guests_module, {"action": "setup"})
         assert result["success"] is False
-        assert "no Chat category" in result["error"]
+        assert "no Lounges category" in result["error"]
         assert discord_router.overwrites == {}
 
     def test_setup_with_explicit_category_id_skips_name_lookup(
         self, discord_guests_module, token_env, discord_router, _isolate_env
     ):
-        discord_router.channels = [
-            ch for ch in discord_router.channels if ch["name"].lower() != "chat"
-        ]
+        _drop_lounge_parent_categories(discord_router)
         result = _call(
             discord_guests_module,
             {"action": "setup", "chat_category_id": "cat-42", "lockdown": False},
@@ -621,15 +706,13 @@ class TestAdd:
         assert result["success"] is False
         assert "no guild member matches" in result["error"]
 
-    def test_add_without_chat_category_errors(
+    def test_add_without_resolvable_category_errors(
         self, discord_guests_module, token_env, discord_router
     ):
-        discord_router.channels = [
-            ch for ch in discord_router.channels if ch["name"].lower() != "chat"
-        ]
+        _drop_lounge_parent_categories(discord_router)
         result = _call(discord_guests_module, {"action": "add", "user_id": "333"})
         assert result["success"] is False
-        assert "no Chat category" in result["error"]
+        assert "no Lounges category" in result["error"]
         assert discord_router.overwrites == {}
 
 

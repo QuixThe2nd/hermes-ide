@@ -9,6 +9,13 @@ of starting a new turn). Only then does it call
 drain first, then the gateway bounces and comes back online. The
 shell/systemctl path stays blocked by the lifecycle guard — that path SIGTERMs
 the gateway and kills whatever child was running the command.
+
+On Discord, the calling thread is temporarily retitled ``Restart Pending``
+while the tool waits, then restored to its exact original name on every exit —
+via a small optional adapter capability, so the tool itself stays
+platform-safe. The original name is captured by a read-only phase before the
+renaming edit is submitted, so even a rename whose response is lost after
+Discord applied it cannot lose the restore.
 """
 
 from __future__ import annotations
@@ -94,7 +101,7 @@ def _source_from_session_context() -> Optional[object]:
     """
     from gateway.config import Platform
     from gateway.session import SessionSource
-    from gateway.session_context import get_session_env
+    from gateway.session_context import delivered_via_upstream_relay, get_session_env
 
     platform_name = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
     chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
@@ -111,6 +118,14 @@ def _source_from_session_context() -> Optional[object]:
         thread_id=get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None,
         user_id=get_session_env("HERMES_SESSION_USER_ID", "").strip() or None,
         scope_id=get_session_env("HERMES_SESSION_SCOPE_ID", "").strip() or None,
+        # Relay provenance has to survive this rebuild: a relay-delivered
+        # Discord thread carries platform=discord, and without the flag
+        # adapter resolution would reach the native Discord adapter —
+        # retitling a thread this process may not own the bot for — or find
+        # no adapter at all and refuse the confirmation. With it, the relay
+        # adapter is selected, which has no title capability: a no-op, and
+        # the prompt still goes out over the relay socket.
+        delivered_via_upstream_relay=delivered_via_upstream_relay(),
     )
 
 
@@ -170,6 +185,24 @@ def _drop_pending_confirm(clarify_mod: Any, clarify_id: str) -> None:
         logger.debug("Failed to drop pending restart confirm", exc_info=True)
 
 
+def _submit_to_loop(coro: Any, loop: Any) -> tuple[Any, Optional[Exception]]:
+    """Schedule *coro* on the gateway loop; ``(future, None)`` or ``(None, exc)``.
+
+    ``asyncio.run_coroutine_threadsafe`` RAISES outright when the submission
+    itself fails — a loop that closed between the caller's liveness check and
+    this hop — and the coroutine it was handed never runs, so it would leak
+    un-awaited. Closing it here and returning the error instead keeps every
+    caller on its logged-cosmetic path: a dead-loop race is an ordinary
+    failure to deliver/retitle, never an exception escaping the restart gate
+    past a registered confirm prompt.
+    """
+    try:
+        return asyncio.run_coroutine_threadsafe(coro, loop), None
+    except Exception as exc:
+        coro.close()
+        return None, exc
+
+
 def _deliver_confirm_prompt(
     adapter: Any,
     loop: Any,
@@ -204,7 +237,11 @@ def _deliver_confirm_prompt(
     else:
         coro = adapter.send(source.chat_id, content, metadata=metadata or None)
 
-    send_future = asyncio.run_coroutine_threadsafe(coro, loop)
+    send_future, submit_error = _submit_to_loop(coro, loop)
+    if submit_error is not None:
+        # The loop closed before the send could be scheduled — nothing was
+        # delivered, so the caller cancels and disarms the registration.
+        return f"Failed to deliver the restart confirmation prompt: {submit_error}"
     try:
         send_result = send_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:
@@ -224,10 +261,11 @@ def _deliver_confirm_prompt(
         return error
 
     # The embed never landed — one plain prompt, requester mention included.
-    fallback_future = asyncio.run_coroutine_threadsafe(
-        adapter.send(source.chat_id, content, metadata=metadata or None),
-        loop,
+    fallback_future, submit_error = _submit_to_loop(
+        adapter.send(source.chat_id, content, metadata=metadata or None), loop
     )
+    if submit_error is not None:
+        return f"Failed to deliver the restart confirmation prompt: {submit_error}"
     try:
         fallback_result = fallback_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:
@@ -242,6 +280,119 @@ def _deliver_confirm_prompt(
             f"{getattr(fallback_result, 'error', None) or 'send failed'}"
         )
     return None
+
+
+def _begin_restart_pending_thread_title(adapter: Any, loop: Any, source: Any) -> Any:
+    """Retitle the calling Discord thread before the prompt can land.
+
+    Two round trips, because one is not enough to be robust: first the
+    adapter's read-only ``capture_...`` resolves the exact thread and hands
+    back its exact original name — so this thread HOLDS the restore state
+    before anything is mutated — and only then is the mutating edit
+    submitted as its own round trip. A rename Discord applied whose
+    response then stalls past the round-trip bound times out here with an
+    unknowable outcome, and the captured state survives it: the exit-time
+    restore below still fires (idempotent if the edit never landed), where
+    dropping the name on that timeout is what would queue the restart over
+    a thread stuck on ``Restart Pending``.
+
+    Returns the invocation-scoped restore state, or ``None`` when nothing
+    was renamed: no capability (every non-Discord adapter and the Discord
+    relay), no thread bound, or a cosmetic capture failure — all logged and
+    none fatal to the restart gate. Every failure mode, including a
+    submission that cannot be scheduled at all, is a logged cosmetic outcome;
+    a rename that was never scheduled still returns the captured state so the
+    idempotent exit-time restore runs anyway.
+    """
+    from gateway.config import Platform
+
+    if source is None:
+        return None
+    capture = getattr(adapter, "capture_restart_pending_thread_title", None)
+    begin = getattr(adapter, "begin_restart_pending_thread_title", None)
+    thread_id = str(getattr(source, "thread_id", "") or "").strip()
+    if (
+        not thread_id
+        or getattr(source, "platform", None) != Platform.DISCORD
+        or not callable(capture)
+        or not callable(begin)
+    ):
+        return None
+
+    future, submit_error = _submit_to_loop(capture(thread_id=thread_id), loop)
+    if submit_error is not None:
+        logger.warning(
+            "restart tool: temporary thread title capture could not be "
+            "submitted (cosmetic): %s",
+            submit_error,
+        )
+        return None
+    try:
+        restore = future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception as exc:
+        future.cancel()
+        logger.warning(
+            "restart tool: temporary thread title capture failed (cosmetic): %s", exc
+        )
+        return None
+    if restore is None:
+        return None
+
+    edit_future, submit_error = _submit_to_loop(begin(restore), loop)
+    if submit_error is not None:
+        # The edit was never scheduled, so nothing was mutated — keep the
+        # captured state anyway: the exit-time restore is idempotent, and
+        # discarding it here on a submit race is the same
+        # stranded-"Restart Pending" bug as losing it on a stalled response.
+        logger.warning(
+            "restart tool: temporary thread title rename could not be "
+            "submitted (cosmetic): %s",
+            submit_error,
+        )
+        return restore
+    try:
+        edit_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception as exc:
+        # The edit may already be applied on Discord's side — keep the
+        # captured state so the restore still runs; losing it here is the
+        # stranded-"Restart Pending" bug, and a redundant restore is inert.
+        edit_future.cancel()
+        logger.warning(
+            "restart tool: temporary thread title rename outcome unknown "
+            "(cosmetic): %s",
+            exc,
+        )
+    return restore
+
+
+def _restore_thread_title(adapter: Any, loop: Any, restore: Any) -> None:
+    """Restore the thread title captured before the wait; cosmetic, non-fatal.
+
+    Runs on every exit from the confirm wait and completes before the caller
+    can queue the restart, so ``Restart Pending`` never outlives the wait.
+    A failed restore is logged here, never raised — it must not cancel,
+    gate, or queue the restart by itself.
+    """
+    if restore is None:
+        return
+    end = getattr(adapter, "end_restart_pending_thread_title", None)
+    if not callable(end):
+        return
+    future, submit_error = _submit_to_loop(end(restore), loop)
+    if submit_error is not None:
+        logger.warning(
+            "restart tool: temporary thread title restore could not be "
+            "submitted (cosmetic): %s",
+            submit_error,
+        )
+        return
+    try:
+        future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception as exc:
+        future.cancel()
+        logger.warning(
+            "restart tool: temporary thread title restore failed (cosmetic): %s", exc
+        )
 
 
 def _confirm_restart_with_requester(
@@ -307,12 +458,26 @@ def _confirm_restart_with_requester(
         choices=None,
     )
 
-    deliver_error = _deliver_confirm_prompt(adapter, loop, source, content, metadata)
-    if deliver_error is not None:
-        _drop_pending_confirm(clarify_gateway, clarify_id)
-        return deliver_error
+    # The thread itself becomes the pending indicator: retitled before the
+    # prompt can land, restored on every exit below — and always before the
+    # caller can queue the restart. The setup runs INSIDE the guarded region
+    # so even an unexpected failure there cannot jump past the restore (and
+    # every submission failure it can hit is already a logged cosmetic no-op
+    # inside the helper).
+    title_restore = None
+    try:
+        title_restore = _begin_restart_pending_thread_title(adapter, loop, source)
+        deliver_error = _deliver_confirm_prompt(
+            adapter, loop, source, content, metadata
+        )
+        if deliver_error is not None:
+            _drop_pending_confirm(clarify_gateway, clarify_id)
+            return deliver_error
 
-    response = clarify_gateway.wait_for_response(clarify_id, 0)
+        response = clarify_gateway.wait_for_response(clarify_id, 0)
+    finally:
+        _restore_thread_title(adapter, loop, title_restore)
+
     if str(response or "").strip() == _CONFIRM_WORD:
         return None
     return (
@@ -338,7 +503,11 @@ def handle_restart(args: dict, **_: Any) -> str:
        ``/restart`` inside ``begin_user_restart``, with the requester's
        routing persisted to ``.restart_notify.json`` for the comeback
        notice. Anything else or empty cancels with
-       ``{"success": false, "status": "cancelled"}``.
+       ``{"success": false, "status": "cancelled"}``. While the tool waits,
+       a Discord thread is temporarily retitled ``Restart Pending`` and
+       restored to its exact original name on every exit — before the
+       restart can be queued, and cosmetically (a rename or restore failure
+       is logged, never fatal).
     5. On confirmation, returns once the restart is queued — the bounce
        happens after this turn ends.
     """
@@ -403,7 +572,12 @@ def handle_restart(args: dict, **_: Any) -> str:
 
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip() or None
     begin = runner.begin_user_restart(source=source, message_id=message_id)
-    future = asyncio.run_coroutine_threadsafe(begin, loop)
+    future, submit_error = _submit_to_loop(begin, loop)
+    if submit_error is not None:
+        logger.warning(
+            "restart tool: begin_user_restart could not be submitted: %s", submit_error
+        )
+        return _error_json(f"Failed to begin gateway restart: {submit_error}")
     try:
         status = future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:

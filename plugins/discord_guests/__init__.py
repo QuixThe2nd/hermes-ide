@@ -1,8 +1,8 @@
 """Discord Guests — private lounge channels for invited guests.
 
 Registers one action-based tool, ``discord_guests``, that provisions a private
-lounge channel under the Chat category when a guest (a bot or a friend) is
-invited. Only that member — plus the people who already see Chat, i.e. the
+lounge channel under the Lounges category when a guest (a bot or a friend) is
+invited. Only that member — plus the people who already see Lounges, i.e. the
 owner and bots with admin — can view the lounge. @everyone stays view-denied
 everywhere. Access is per-channel overwrites only; nothing beyond the channel
 itself is ever created or assigned.
@@ -55,7 +55,12 @@ _WRITE_PACE_SECONDS = 0.3
 _MAX_RATE_LIMIT_RETRIES = 3
 _MAX_RETRY_AFTER_SECONDS = 60.0
 
-_CHAT_CATEGORY_NAME = "chat"  # matched case-insensitively
+# The lounge-parent category is auto-resolved by name, canonical first: a
+# category named Lounges (the home-server template's name) wins, with the
+# pre-rename Chat still honoured as a legacy fallback. Both are matched
+# case-insensitively, and the canonical name wins regardless of channel order.
+_LOUNGES_CATEGORY_NAME = "lounges"
+_LEGACY_CATEGORY_NAME = "chat"
 _DEFAULT_HOST_SLUG = "agent"  # last-resort fallback only
 _LOUNGE_SUFFIX = "lounge"
 _MAX_SLUG_LEN = 80
@@ -69,9 +74,10 @@ DISCORD_GUESTS_SCHEMA = {
     "description": (
         "Manage guest lounges on Discord: adding a guest (bot or friend) "
         "auto-creates a private text channel named #<guest>-<host>-lounge under "
-        "the Chat category, visible only to that guest plus whoever already "
-        "sees Chat (the owner and bots with admin). @everyone stays view-denied "
-        "everywhere. Use action='setup' once to pin the guild and Chat category "
+        "the Lounges category, visible only to that guest plus whoever already "
+        "sees Lounges (the owner and bots with admin). @everyone stays "
+        "view-denied everywhere. Use action='setup' once to pin the guild and "
+        "Lounges category "
         "(and, on first setup, deny @everyone view on every category and "
         "top-level channel), action='add' to invite a guest, action='remove' to "
         "revoke a guest's access (the lounge and its history are kept), and "
@@ -121,8 +127,10 @@ DISCORD_GUESTS_SCHEMA = {
             "chat_category_id": {
                 "type": "string",
                 "description": (
-                    "Explicit Chat category ID (setup action). Without it the "
-                    "category named Chat is resolved case-insensitively."
+                    "Explicit Lounges category ID (setup action). Without it "
+                    "the category named Lounges is resolved "
+                    "case-insensitively, with the legacy name Chat as a "
+                    "fallback."
                 ),
             },
             "lockdown": {
@@ -434,13 +442,19 @@ def _find_chat_category(
     chat_category_id: str,
     guild_id: str,
 ) -> str:
-    """Explicit id wins; else the category named Chat (case-insensitive)."""
+    """Explicit id wins; else Lounges, else the legacy Chat.
+
+    Names are tried in priority order over the whole channel list, so a
+    canonical Lounges category beats a legacy Chat one no matter which comes
+    first in the list. Both match case-insensitively.
+    """
     if chat_category_id:
         return chat_category_id
-    for channel in channels:
-        if channel.get("type") == _CHANNEL_TYPE_GUILD_CATEGORY:
-            if str(channel.get("name") or "").strip().lower() == _CHAT_CATEGORY_NAME:
-                return str(channel.get("id") or "")
+    for name in (_LOUNGES_CATEGORY_NAME, _LEGACY_CATEGORY_NAME):
+        for channel in channels:
+            if channel.get("type") == _CHANNEL_TYPE_GUILD_CATEGORY:
+                if str(channel.get("name") or "").strip().lower() == name:
+                    return str(channel.get("id") or "")
     return ""
 
 
@@ -594,8 +608,8 @@ def _handle_setup(args: Dict[str, Any], token: str) -> str:
                 {
                     "success": False,
                     "error": (
-                        "no Chat category found; pass chat_category_id or "
-                        "create a category named Chat"
+                        "no Lounges category found; pass chat_category_id or "
+                        "create a category named Lounges"
                     ),
                 }
             )
@@ -703,8 +717,8 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
             {
                 "success": False,
                 "error": (
-                    "no Chat category found; run action='setup' or create a "
-                    "category named Chat"
+                    "no Lounges category found; run action='setup' or create a "
+                    "category named Lounges"
                 ),
             }
         )
@@ -716,7 +730,8 @@ def _handle_add(args: Dict[str, Any], token: str) -> str:
     host_slug = _resolve_host_slug(token, resolved_guild_id, host_override, bot_user)
     channel_name = _lounge_channel_name(guest_slug, host_slug)
 
-    # Idempotent: reuse a lounge of this exact name under Chat when present.
+    # Idempotent: reuse a lounge of this exact name under the category when
+    # present.
     channel_id = ""
     for channel in channels:
         if str(channel.get("parent_id") or "") != chat_category_id:

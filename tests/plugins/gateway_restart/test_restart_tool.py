@@ -11,7 +11,9 @@ shell/systemctl path, and the ``/restart`` slash command stays ungated.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import logging
 import sys
 import threading
 import time
@@ -756,6 +758,663 @@ def test_rich_path_is_discord_only(gateway_loop, monkeypatch):
     assert len(adapter.sent_calls) == 1
     _chat_id, content, _metadata = adapter.sent_calls[0]
     assert content.startswith("Gateway restart requested")
+
+
+# ── the temporary Restart Pending thread title ──────────────────────────────
+#
+# While the confirm gate waits, the calling Discord thread is retitled
+# "Restart Pending" and restored to its exact original name on every exit —
+# confirmation, cancellation, delivery failure, exception — always before
+# the restart itself can be queued. The original name is captured by a
+# read-only phase BEFORE the mutating rename runs, so a rename whose
+# response is lost after Discord applied it still leaves the tool holding
+# what to restore. The capability is optional adapter surface held in
+# invocation-scoped state: adapters without it, DMs (no thread), and
+# non-Discord platforms are untouched, and a failed rename or restore is
+# cosmetic, never a gate on the restart.
+
+
+class _TitleCapability:
+    """A recording stand-in for the adapter's pending-title capability.
+
+    Mirrors the two-phase lifecycle: ``capture`` is the read-only phase
+    that hands the tool its restore token, ``begin`` the mutating rename,
+    and ``end`` the restore.
+    """
+
+    def __init__(
+        self,
+        order,
+        *,
+        token="restore-token",
+        capture_error=None,
+        begin_error=None,
+    ):
+        self.order = order
+        self.token = token
+        self.capture_error = capture_error
+        self.begin_error = begin_error
+        self.capture_calls: list[str] = []
+        self.begin_calls: list[object] = []
+        self.end_calls: list[object] = []
+
+    async def capture(self, thread_id):
+        self.order.append("capture")
+        self.capture_calls.append(thread_id)
+        if self.capture_error is not None:
+            raise self.capture_error
+        return self.token
+
+    async def begin(self, restore):
+        self.order.append("rename")
+        self.begin_calls.append(restore)
+        if self.begin_error is not None:
+            raise self.begin_error
+
+    async def end(self, restore):
+        self.order.append("restore")
+        self.end_calls.append(restore)
+
+    def attach(self, adapter):
+        adapter.capture_restart_pending_thread_title = self.capture
+        adapter.begin_restart_pending_thread_title = self.begin
+        adapter.end_restart_pending_thread_title = self.end
+        return adapter
+
+
+def _rich_ok(order):
+    from gateway.platforms.base import SendResult
+
+    async def _rich(**kwargs):
+        order.append("rich")
+        return SendResult(success=True, message_id="e1")
+
+    return _rich
+
+
+def _request_restart_recording(runner, order):
+    """Wrap request_restart so the restart queues visibly last."""
+    inner = MagicMock(return_value=True)
+
+    def _spy(**kwargs):
+        order.append("request_restart")
+        return inner(**kwargs)
+
+    runner.request_restart = MagicMock(side_effect=_spy)
+    return runner
+
+
+def test_thread_renamed_before_the_prompt_and_restored_before_the_restart(
+    gateway_loop, monkeypatch
+):
+    """Retitle lands before the confirmation; restoration beats the queueing."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+    adapter.send_restart_confirmation = _rich_ok(order)
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    _request_restart_recording(runner, order)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    # Armed, then the original name captured, then the rename, then the
+    # prompt, then the reply-resolved restore, and only then the restart.
+    assert order == [
+        "register",
+        "capture",
+        "rename",
+        "rich",
+        "restore",
+        "request_restart",
+    ]
+    # The exact calling thread, and only it — renamed and restored by its
+    # own invocation-scoped token.
+    assert title.capture_calls == ["999"]
+    assert title.begin_calls == [title.token]
+    assert title.end_calls == [title.token]
+
+
+def test_cancelling_reply_restores_the_thread_title(gateway_loop, monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+    adapter.send_restart_confirmation = _rich_ok(order)
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    _request_restart_recording(runner, order)
+    _spy_confirm(monkeypatch, order, reply="stop")
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert order == ["register", "capture", "rename", "rich", "restore"]
+    assert title.end_calls == [title.token]
+    runner.request_restart.assert_not_called()
+
+
+def test_ambiguous_send_error_restores_the_thread_title(gateway_loop, monkeypatch):
+    """A raising rich send cancels the restart but still restores the name."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+
+    async def _rich(**kwargs):
+        order.append("rich")
+        raise asyncio.TimeoutError("response lost")
+
+    adapter.send_restart_confirmation = _rich
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert "confirmation prompt" in result["error"]
+    assert order == ["register", "capture", "rename", "rich", "restore"]
+    assert title.end_calls == [title.token]
+
+
+def test_delivery_failure_restores_the_thread_title(gateway_loop, monkeypatch):
+    """Rich failure whose plain fallback also fails: cancelled, still restored."""
+    from gateway.platforms.base import SendResult
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+
+    async def _rich(**kwargs):
+        order.append("rich")
+        return SendResult(success=False, error="no embed for you")
+
+    async def _failing_plain(chat_id, content, reply_to=None, metadata=None):
+        order.append("plain")
+        return SendResult(success=False, error="plain blew up too")
+
+    adapter.send_restart_confirmation = _rich
+    adapter.send = _failing_plain
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert "confirmation prompt" in result["error"]
+    assert order == ["register", "capture", "rename", "rich", "plain", "restore"]
+    assert title.end_calls == [title.token]
+    runner.request_restart.assert_not_called()
+
+
+def test_exception_while_waiting_still_restores_the_thread_title(
+    gateway_loop, monkeypatch
+):
+    """The restore is a finally — it runs even when the wait itself raises."""
+    import tools.clarify_gateway as cg
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+    adapter.send_restart_confirmation = _rich_ok(order)
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    register = MagicMock(return_value=None)
+    wait = MagicMock(side_effect=RuntimeError("worker thread died"))
+    monkeypatch.setattr(cg, "register", register)
+    monkeypatch.setattr(cg, "wait_for_response", wait)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        with pytest.raises(RuntimeError, match="worker thread died"):
+            handle_restart({})
+    finally:
+        clear_session_vars(None)
+        cg.clear_session("discord-55")
+
+    assert order == ["capture", "rename", "rich", "restore"]
+    assert title.end_calls == [title.token]
+
+
+def test_rename_capture_failure_is_non_fatal(gateway_loop, monkeypatch):
+    """A failing capture never blocks the confirm gate or the restart."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+    adapter.send_restart_confirmation = _rich_ok(order)
+    title = _TitleCapability(order, capture_error=RuntimeError("no perms"))
+    title.attach(adapter)
+    _request_restart_recording(runner, order)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    # The read-only capture failed, so nothing was renamed and there is
+    # nothing to restore — and the restart proceeds anyway: the title is
+    # cosmetic, never a gate.
+    assert order == ["register", "capture", "rich", "request_restart"]
+    assert title.begin_calls == []
+    assert title.end_calls == []
+    runner.request_restart.assert_called_once()
+
+
+def test_rename_edit_failure_still_restores_the_title(gateway_loop, monkeypatch):
+    """The mutating rename failing leaves the captured name in hand.
+
+    The edit runs as its own round trip AFTER the capture returned, so its
+    failure (or a response lost after Discord applied it — same class)
+    cannot also lose the state: the restore still runs — idempotent if the
+    edit never landed — and the restart is never gated by it.
+    """
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+    adapter.send_restart_confirmation = _rich_ok(order)
+    title = _TitleCapability(order, begin_error=RuntimeError("edit exploded"))
+    title.attach(adapter)
+    _request_restart_recording(runner, order)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(**_DISCORD_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert order == [
+        "register",
+        "capture",
+        "rename",
+        "rich",
+        "restore",
+        "request_restart",
+    ]
+    assert title.end_calls == [title.token]
+    runner.request_restart.assert_called_once()
+
+
+def test_no_thread_bound_means_no_rename(gateway_loop, monkeypatch):
+    """A Discord DM has no thread to retitle — the capability never fires."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner, adapter = _discord_runner(gateway_loop, monkeypatch)
+    order: list[str] = []
+    adapter.send_restart_confirmation = _rich_ok(order)
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(
+        platform="discord",
+        chat_id="55",
+        chat_type="dm",
+        user_id="123456789012345678",
+        session_key="discord-55",
+    )
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert title.capture_calls == []
+    assert title.begin_calls == []
+    assert title.end_calls == []
+
+
+def test_pending_title_capability_is_discord_only(gateway_loop, monkeypatch):
+    """A non-Discord adapter never retitles, capability or not."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    adapter = next(iter(runner.adapters.values()))
+    order: list[str] = []
+    title = _TitleCapability(order)
+    title.attach(adapter)
+    _spy_confirm(monkeypatch, order)
+
+    _bind_session(thread_id="topic-7", **_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert title.capture_calls == []
+    assert title.begin_calls == []
+    assert title.end_calls == []
+
+
+# ── relay-delivered Discord threads keep their provenance ───────────────────
+#
+# The relay transport stamps inbound Discord events with the UNDERLYING
+# platform plus delivered_via_upstream_relay=True — platform stays ``discord``
+# for session keying while adapter resolution must pick the one relay adapter
+# that owns the authenticated connector socket. The restart tool rebuilds its
+# SessionSource from session context, so that flag has to survive the bridge:
+# without it the rebuilt source defaults to False and, in a process running
+# both adapters, the retitle capability would fire through the native Discord
+# adapter for a thread the connector fronted — or, in a relay-only process,
+# no adapter resolves at all and the confirmation is refused outright.
+
+
+def _bind_session_via_the_gateway_bridge(runner, source, session_key="discord-55"):
+    """Bind session context through the real GatewayRunner._set_session_env.
+
+    That bridge (not a hand-rolled set_session_vars) is the path production
+    takes from a relay-stamped SessionSource to the tool's session env, so
+    it is the path the provenance has to survive.
+    """
+    from gateway.session import SessionContext
+
+    tokens = runner._set_session_env(
+        SessionContext(
+            source=source,
+            connected_platforms=list(runner.adapters),
+            home_channels={},
+            session_key=session_key,
+        )
+    )
+    return tokens
+
+
+def test_relay_provenance_survives_the_session_context_rebuild():
+    """Real chain: relay source → session env → rebuilt source → adapter."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from plugins.gateway_restart.tool import _source_from_session_context
+    from tests.gateway.restart_test_helpers import RestartTestAdapter
+
+    runner, _telegram = make_restart_runner()
+    native = RestartTestAdapter()
+    relay = RestartTestAdapter()
+    runner.adapters = {Platform.DISCORD: native, Platform.RELAY: relay}
+
+    def _discord_thread_source(**extra):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="55",
+            chat_type="thread",
+            thread_id="999",
+            user_id="123456789012345678",
+            **extra,
+        )
+
+    relay_source = _discord_thread_source(delivered_via_upstream_relay=True)
+    tokens = _bind_session_via_the_gateway_bridge(runner, relay_source)
+    try:
+        rebuilt = _source_from_session_context()
+        assert rebuilt is not None
+        assert rebuilt.delivered_via_upstream_relay is True
+        assert runner._adapter_for_source(rebuilt) is relay
+    finally:
+        runner._clear_session_env(tokens)
+
+    # Control: the same Discord thread WITHOUT relay delivery keeps resolving
+    # the native adapter — the flag is what selects, nothing else.
+    native_source = _discord_thread_source()
+    tokens = _bind_session_via_the_gateway_bridge(runner, native_source)
+    try:
+        rebuilt = _source_from_session_context()
+        assert rebuilt is not None
+        assert rebuilt.delivered_via_upstream_relay is False
+        assert runner._adapter_for_source(rebuilt) is native
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_relay_delivered_discord_thread_takes_the_noop_retitle_path(
+    gateway_loop, monkeypatch
+):
+    """Both adapters live: the relay one delivers, the native one is untouched."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from plugins.gateway_restart.tool import handle_restart
+    from tests.gateway.restart_test_helpers import RestartTestAdapter
+
+    runner, _telegram = make_restart_runner()
+    native = RestartTestAdapter()
+    relay = RestartTestAdapter()
+    runner.adapters = {Platform.DISCORD: native, Platform.RELAY: relay}
+    runner._gateway_loop = gateway_loop
+    runner._background_tasks = set()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    # The native adapter HAS the retitle capability — reaching it through the
+    # rebuilt source is exactly the wrong-adapter bug.
+    order: list[str] = []
+    title = _TitleCapability(order)
+    title.attach(native)
+    _mock_confirm(monkeypatch, "restart")
+
+    relay_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="55",
+        chat_type="thread",
+        thread_id="999",
+        user_id="123456789012345678",
+        delivered_via_upstream_relay=True,
+    )
+    tokens = _bind_session_via_the_gateway_bridge(runner, relay_source)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert result["success"] is True
+    # The retitle never fired: the relay adapter has no title capability.
+    assert title.capture_calls == []
+    assert title.begin_calls == []
+    assert title.end_calls == []
+    # The prompt went out over the relay socket, not the native adapter.
+    assert native.sent_calls == []
+    assert len(relay.sent_calls) == 1
+    chat_id, content, metadata = relay.sent_calls[0]
+    assert chat_id == "55"
+    assert content.startswith("<@123456789012345678> ")
+    assert (metadata or {}).get("thread_id") == "999"
+    runner.request_restart.assert_called_once()
+
+
+def test_relay_only_gateway_still_confirms_through_the_relay_adapter(
+    gateway_loop, monkeypatch
+):
+    """No native Discord adapter registered — the relay adapter still resolves.
+
+    Without the preserved flag the rebuilt source looked up the (absent)
+    native adapter and the tool refused to confirm at all.
+    """
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from plugins.gateway_restart.tool import handle_restart
+    from tests.gateway.restart_test_helpers import RestartTestAdapter
+
+    runner, _telegram = make_restart_runner()
+    relay = RestartTestAdapter()
+    runner.adapters = {Platform.RELAY: relay}
+    runner._gateway_loop = gateway_loop
+    runner._background_tasks = set()
+    runner.request_restart = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+    _mock_confirm(monkeypatch, "restart")
+
+    relay_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="55",
+        chat_type="thread",
+        thread_id="999",
+        user_id="123456789012345678",
+        delivered_via_upstream_relay=True,
+    )
+    tokens = _bind_session_via_the_gateway_bridge(runner, relay_source)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert result["success"] is True
+    assert "no live adapter" not in result.get("error", "").lower()
+    assert len(relay.sent_calls) == 1
+    runner.request_restart.assert_called_once()
+
+
+# ── the submission boundary: a loop that closed mid-flight ──────────────────
+#
+# asyncio.run_coroutine_threadsafe RAISES — instead of returning a failed
+# future — when the submission itself fails (a gateway loop that closed
+# between the tool's liveness check and the threadsafe hop), and the
+# coroutine it was handed never runs. Those submissions sit around the
+# confirm gate, so a raise there must not escape past the registration or
+# the restore: it is a logged cosmetic failure like every other title
+# problem, and the coroutine is disposed rather than leaked un-awaited.
+
+
+class _TrackingTitleCapability:
+    """The pending-title capability, recording the coroutines it hands out.
+
+    A submission that never schedules a coroutine would leave it un-awaited
+    (a RuntimeWarning at GC and a half-armed call); recording the objects
+    lets the test prove they were CLOSED.
+    """
+
+    def __init__(self, order, token="restore-token"):
+        self.order = order
+        self.token = token
+        self.submitted: list = []
+        self.capture_calls: list[str] = []
+        self.begin_calls: list[object] = []
+        self.end_calls: list[object] = []
+
+    async def _capture(self, thread_id):
+        self.order.append("capture")
+        self.capture_calls.append(thread_id)
+        return self.token
+
+    async def _begin(self, restore):
+        self.order.append("rename")
+        self.begin_calls.append(restore)
+
+    async def _end(self, restore):
+        self.order.append("restore")
+        self.end_calls.append(restore)
+
+    def capture(self, thread_id):
+        coro = self._capture(thread_id)
+        self.submitted.append(coro)
+        return coro
+
+    def begin(self, restore):
+        coro = self._begin(restore)
+        self.submitted.append(coro)
+        return coro
+
+    def end(self, restore):
+        coro = self._end(restore)
+        self.submitted.append(coro)
+        return coro
+
+    def attach(self, adapter):
+        adapter.capture_restart_pending_thread_title = self.capture
+        adapter.begin_restart_pending_thread_title = self.begin
+        adapter.end_restart_pending_thread_title = self.end
+        return adapter
+
+
+def test_capture_submit_failure_on_a_closed_loop_is_cosmetic(caplog):
+    """The closed-loop probe: the submit itself raises, nothing else happens."""
+    from gateway.config import Platform
+    from plugins.gateway_restart.tool import _begin_restart_pending_thread_title
+
+    loop = asyncio.new_event_loop()
+    loop.close()  # the race: the loop died before the hop landed
+
+    order: list[str] = []
+    title = _TrackingTitleCapability(order)
+    adapter = title.attach(SimpleNamespace())
+    source = SimpleNamespace(platform=Platform.DISCORD, thread_id="999")
+
+    with caplog.at_level(logging.WARNING, logger="plugins.gateway_restart.tool"):
+        restore = _begin_restart_pending_thread_title(adapter, loop, source)
+
+    assert restore is None
+    # Neither phase ever ran — and no exception escaped the helper.
+    assert order == []
+    assert any(
+        "capture could not be submitted" in r.getMessage() for r in caplog.records
+    )
+    # The never-scheduled coroutine was disposed, not leaked un-awaited.
+    assert [inspect.getcoroutinestate(c) for c in title.submitted] == [
+        inspect.CORO_CLOSED
+    ]
+
+
+def test_rename_submit_failure_keeps_the_captured_restore_state(
+    gateway_loop, monkeypatch, caplog
+):
+    """The same race one hop later: the token is retained, not dropped."""
+    from gateway.config import Platform
+    from plugins.gateway_restart.tool import _begin_restart_pending_thread_title
+
+    real_submit = asyncio.run_coroutine_threadsafe
+    submitted: list = []
+
+    def _second_submit_fails(coro, loop):
+        submitted.append(coro)
+        if len(submitted) == 2:  # the mutating rename hop
+            raise RuntimeError("Event loop is closed")
+        return real_submit(coro, loop)
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", _second_submit_fails)
+
+    order: list[str] = []
+    title = _TrackingTitleCapability(order)
+    adapter = title.attach(SimpleNamespace())
+    source = SimpleNamespace(platform=Platform.DISCORD, thread_id="999")
+
+    with caplog.at_level(logging.WARNING, logger="plugins.gateway_restart.tool"):
+        restore = _begin_restart_pending_thread_title(adapter, gateway_loop, source)
+
+    # The captured state survives the failed submission so the idempotent
+    # exit-time restore still runs.
+    assert restore is title.token
+    assert order == ["capture"]  # the rename itself never ran
+    assert any(
+        "rename could not be submitted" in r.getMessage() for r in caplog.records
+    )
+    assert inspect.getcoroutinestate(submitted[1]) is inspect.CORO_CLOSED
 
 
 # ── /restart keeps using the shared path (and never waits for the word) ─────

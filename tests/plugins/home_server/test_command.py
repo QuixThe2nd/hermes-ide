@@ -80,8 +80,8 @@ def stub_reconcile(monkeypatch):
             "success": True,
             "enabled": True,
             "guild_id": "g1",
-            "created": ["category:Chat", "channel:inbox"],
-            "embeds_posted": ["Chat/inbox"],
+            "created": ["category:Lounges", "channel:inbox"],
+            "embeds_posted": ["Lounges/inbox"],
             "wired": {"hermes_starts": "wired", "quota_channels": True},
             "home_channel": "set",
             "notification_channel": "set",
@@ -165,7 +165,7 @@ async def test_discord_runs_provisioning_and_reports(runner, hermes, stub_reconc
     )
     assert len(stub_reconcile) == 1
     assert "900000000000000001" in result
-    assert "Chat" in result and "inbox" in result
+    assert "Lounges" in result and "inbox" in result
     assert "hermes_starts" in result
 
     import yaml

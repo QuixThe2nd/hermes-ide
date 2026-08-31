@@ -13544,6 +13544,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not message_id:
                 return False
 
+            if in_flight.get("abandoned"):
+                # A valid reaction waited out this send, timed out, and was
+                # answered ``no_offer`` — which already retired the prompt on
+                # the adapter. Registering now would resurrect an actionable
+                # offer behind a message the requester has been told is spent,
+                # and a second ⏸️ on it would steer a wind-down the first one
+                # never ran. The reaction path made the terminal edit, so this
+                # side only refuses.
+                logger.info(
+                    "Restart wind-down offer landed after its reaction had "
+                    "already been answered offer-less; leaving the prompt "
+                    "unregistered"
+                )
+                return False
+
             # The send awaited above, so the drain may have finalized the cycle
             # while the embed was in flight. Registering it now would resurrect
             # an actionable prompt for a cycle that is already over — retire it
@@ -13626,6 +13641,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "channel_id": str(channel_id),
             "requester_user_id": str(requester_user_id),
             "done": asyncio.Event(),
+            "abandoned": False,
         }
         self._restart_wind_down_send_in_flight = record
         return record
@@ -13668,6 +13684,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             await asyncio.wait_for(done.wait(), RESTART_WIND_DOWN_SEND_WAIT_SECONDS)
         except asyncio.TimeoutError:
+            # This attempt is terminal, not merely late. The caller is about
+            # to answer the reaction ``no_offer``, and its adapter has already
+            # retired the prompt — so a send that completes from here on must
+            # not register an actionable offer for a message nobody is waiting
+            # on any more. Flagging the record makes that refusal follow the
+            # send instead of racing it, and releasing ``done`` stops any
+            # concurrent waiter from burning the whole bound again.
+            record["abandoned"] = True
+            if not done.is_set():
+                done.set()
             logger.debug(
                 "Restart wind-down offer send did not land within %ss; "
                 "answering the reaction as offer-less",
@@ -27688,6 +27714,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            # Relay provenance must survive the context bridge: the source's
+            # flag is what makes adapter resolution pick the relay adapter
+            # over the underlying platform's native one, and a source rebuilt
+            # from session context (the restart tool) reads it back here.
+            delivered_via_upstream_relay=(
+                getattr(context.source, "delivered_via_upstream_relay", False) is True
+            ),
         )
 
     def _clear_session_env(self, tokens: list) -> None:
