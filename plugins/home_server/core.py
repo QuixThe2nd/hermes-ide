@@ -5,7 +5,7 @@ and keeps in sync the whole structure:
 
 * ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
   ``other`` (first: pinned to the top of the guild)
-* ``Chat``            — text channels ``inbox``, ``outbox``
+* ``Lounges``         — text channels ``inbox``, ``outbox``
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
 * ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
@@ -124,6 +124,12 @@ class ModuleSpec:
     # empty for every module that never changed name, so matching for
     # unrelated categories is not weakened.
     legacy_categories: Tuple[str, ...] = ()
+    # The subset of those former names a poller relabels dynamically
+    # ("Quotas • 25/8 3:30pm"), so migration also tolerates a prefix match on
+    # them. Every other legacy name must match exactly: it never carried a
+    # suffix, so a prefix rule there would claim an unrelated user-made
+    # category ("Chat Archive") and rename it out from under the user.
+    legacy_dynamic_categories: Tuple[str, ...] = ()
 
 
 TEMPLATE: Dict[str, ModuleSpec] = {
@@ -146,18 +152,19 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             "agents-N while the gateway is up and restarting-N-agents "
             "while it drains; model-fallback shows when the "
             "primary model was abandoned for a fallback, and other catches "
-            "everything else worth flagging. Conversation belongs in Chat — "
+            "everything else worth flagging. Conversation belongs in Lounges — "
             "nothing here needs a reply."
         ),
     ),
     "chat": ModuleSpec(
         key="chat",
-        category="Chat",
+        category="Lounges",
         channels=(
             ChannelSpec("inbox", CHANNEL_TYPE_TEXT, "inbox"),
             ChannelSpec("outbox", CHANNEL_TYPE_TEXT, "outbox"),
         ),
-        embed_title="💬 Chat",
+        legacy_categories=("Chat",),
+        embed_title="💬 Lounges",
         embed_description=(
             "This inbox is where Hermes starts conversations when it has "
             "something to tell you. The outbox is for messages you hand off "
@@ -194,6 +201,7 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             ChannelSpec("Grok", CHANNEL_TYPE_VOICE, "grok"),
         ),
         legacy_categories=("Quotas",),
+        legacy_dynamic_categories=("Quotas",),
         embed_title="📊 Models",
         embed_description=(
             "Each voice channel is named after how much of that subscription's "
@@ -229,9 +237,10 @@ def template_fingerprint() -> str:
     """Stable sha256 of the canonical TEMPLATE, order included.
 
     Covers exactly what reconcile provisions: module keys in order, category
-    name (and its legacy names), and each channel's name/kind/key/alias
-    prefixes. Embed copy and wiring are excluded — they are not guild
-    structure. Stored on state.json after a successful reconcile and compared
+    name (and its legacy names — and which of those tolerate a dynamic
+    suffix), and each channel's name/kind/key/alias prefixes. Embed copy and
+    wiring are excluded — they are not guild structure. Stored on state.json
+    after a successful reconcile and compared
     by ``should_sync`` so an in-code template change re-syncs provisioned
     guilds immediately instead of waiting out the hourly debounce.
     """
@@ -249,6 +258,7 @@ def template_fingerprint() -> str:
                 for channel in spec.channels
             ],
             "legacy_categories": list(spec.legacy_categories),
+            "legacy_dynamic_categories": list(spec.legacy_dynamic_categories),
         }
         for key, spec in TEMPLATE.items()
     ]
@@ -1006,8 +1016,9 @@ def _reconcile_module(
     prefix matches against dynamically-labelled channels. Channels that exist
     elsewhere in the guild under the right name/type are ADOPTED (moved under
     the module's category) instead of duplicated. The one rename reconcile
-    performs is the declared legacy-category migration (Quotas -> Models),
-    which patches the category name in place. Nothing is ever deleted.
+    performs is the declared legacy-category migration (Quotas -> Models,
+    Chat -> Lounges), which patches the category name in place. Nothing is
+    ever deleted.
     """
     category_id = _find_channel(
         channels, name=spec.category, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
@@ -1030,15 +1041,17 @@ def _reconcile_module(
             adopted_category = True
     if category_id is None:
         # Migration: a guild provisioned before a category rename still
-        # carries the legacy name (exact, or dynamically labelled by the
-        # poller). Rename it IN PLACE so the children keep their IDs and
-        # only genuinely missing channels get created — never a second
-        # category. Checked only for modules that declared a legacy name.
+        # carries the legacy name. Rename it IN PLACE so the children keep
+        # their IDs and only genuinely missing channels get created — never a
+        # second category. Checked only for modules that declared a legacy
+        # name. Only a legacy name the poller relabels dynamically is matched
+        # by prefix too; the rest must match exactly, so a category that
+        # merely shares the prefix ("Chat Archive") stays the user's.
         for legacy in spec.legacy_categories:
             candidate = _find_channel(
                 channels, name=legacy, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
             )
-            if candidate is None:
+            if candidate is None and legacy in spec.legacy_dynamic_categories:
                 candidate = _prefix_match_channel(
                     channels,
                     name=legacy,
