@@ -66,6 +66,8 @@ Sometimes you want the whole coding process handed off, including the paperwork.
 
 Planning normally uses a consult; `delegate_development plan_mode=debate` runs the multi-round adversarial council instead. Reviews use a Russian-language kimi and grok pair, and `open_pr=false` skips the draft PR when you do not want one. `delegate_development` itself is currently parked and not registered, while `dev_pipeline_status` remains live.
 
+Research has a lane of its own. `delegate_research` hands a substantial research brief to durable `researcher`-profile lanes (transient systemd user service) and returns one citation-checked report; every cited URL must have been fetched during the job.
+
 Agents are very good at ignoring the nice coding lane you built and editing the source anyway. The code-lane-gate plugin blocks in-context source edits everywhere by default, inside a git repo or not. Set `CODE_LANE_GATE_E2E=0` to opt out. Terminal writes are still a known v1 bypass.
 
 One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you multi-model consults and debates without leaving the chat. Both tools were restored from the archive.
