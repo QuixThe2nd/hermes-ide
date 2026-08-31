@@ -1051,6 +1051,9 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             return MagicMock()
 
         monkeypatch.setattr("subprocess.Popen", fake_popen)
+        # Popen is a recording fake here, so run the real (non-isolated) watcher
+        # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
         self._drive(gr)
 
@@ -1108,6 +1111,9 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         )
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
+        # Popen is a recording fake here, so run the real (non-isolated) watcher
+        # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
         self._drive(gr)
 
@@ -1130,6 +1136,9 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         monkeypatch.setattr("subprocess.Popen", always_fail)
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
+        # Popen is a recording fake here, so run the real (non-isolated) watcher
+        # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
         # Deterministic sentinel in the environment the watcher inherits
         # (watcher_env = os.environ.copy()); the warning must never echo it.
