@@ -377,7 +377,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     patch_calls = _count_tool(tool_sequence, "patch")
     file_reads_searches = _count_tool(tool_sequence, "read_file", "search_files")
     file_tool_calls = _count_tool(tool_sequence, "read_file", "write_file", "patch", "search_files")
-    delegate_calls = _count_tool(tool_sequence, "delegate_task")
+    delegate_calls = _count_tool(tool_sequence, "delegate_agent")
     process_calls = _count_tool(tool_sequence, "process") + len(re.findall(r"background\s*=\s*true", full_text, re.I))
     cron_calls = _count_tool(tool_sequence, "cronjob")
     image_vision_calls = _count_tool(tool_sequence, "image", "vision")
@@ -500,7 +500,7 @@ METRIC_LABELS = {
     "max_web_browser_calls_in_session": "web search/extract or browser calls in one session",
     "max_messages_in_session": "messages in one session",
     "max_files_touched_in_session": "files touched in one session",
-    "total_delegate_calls": "lifetime delegate_task calls",
+    "total_delegate_calls": "lifetime delegate_agent calls",
     "total_process_calls": "lifetime background process operations",
     "total_cron_calls": "lifetime scheduled-job operations",
     "total_errors": "error/failed/traceback messages observed",

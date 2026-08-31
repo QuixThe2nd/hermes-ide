@@ -319,7 +319,7 @@ Round 3 (Targeted): Fill specific gaps
 
 **When to stop**: If a round returns >80% papers already in your collection, the search is saturated. Typically 2-3 rounds suffice. For survey papers, expect 4-5 rounds.
 
-**For agent-based workflows**: Delegate each round's queries in parallel via `delegate_task`. Collect results, deduplicate, then generate the next round's queries from the combined learnings.
+**For agent-based workflows**: Delegate each round's queries in parallel via `delegate_agent`. Collect results, deduplicate, then generate the next round's queries from the combined learnings.
 
 ### Step 1.3: Verify Every Citation
 
@@ -1411,7 +1411,7 @@ Compose this skill with other Hermes skills for specific phases:
 | **`read_file`** / **`write_file`** / **`patch`** | Paper editing, experiment scripts, result files. Use `patch` for targeted edits to large .tex files. |
 | **`web_search`** | Literature discovery: `web_search("transformer attention mechanism 2024")` |
 | **`web_extract`** | Fetch paper content, verify citations: `web_extract("https://arxiv.org/abs/2303.17651")` |
-| **`delegate_task`** | **Parallel section drafting** — spawn isolated subagents for each section. Also for concurrent citation verification. |
+| **`delegate_agent`** | **Parallel section drafting** — spawn isolated subagents for each section. Also for concurrent citation verification. |
 | **`todo`** | Primary state tracker across sessions. Update after every phase transition. |
 | **`memory`** | Persist key decisions across sessions: contribution framing, venue choice, reviewer feedback. |
 | **`cronjob`** | Schedule experiment monitoring, deadline countdowns, automated arXiv checks. |
@@ -1432,14 +1432,14 @@ terminal("ps aux | grep <pattern>")
 
 **Parallel section drafting** (using delegation):
 ```
-delegate_task("Draft the Methods section based on these experiment scripts and configs. 
+delegate_agent("Draft the Methods section based on these experiment scripts and configs.
   Include: pseudocode, all hyperparameters, architectural details sufficient for 
   reproduction. Write in LaTeX using the neurips2025 template conventions.")
 
-delegate_task("Draft the Related Work section. Use web_search and web_extract to 
+delegate_agent("Draft the Related Work section. Use web_search and web_extract to
   find papers. Verify every citation via Semantic Scholar. Group by methodology.")
 
-delegate_task("Draft the Experiments section. Read all result files in results/. 
+delegate_agent("Draft the Experiments section. Read all result files in results/.
   State which claim each experiment supports. Include error bars and significance.")
 ```
 

@@ -1,6 +1,6 @@
 """Live, tail-able transcripts for delegated subagents.
 
-Every ``delegate_task`` dispatch creates one append-only, human-readable log
+Every ``delegate_agent`` dispatch creates one append-only, human-readable log
 per child under::
 
     <hermes_home>/cache/delegation/live/<delegation_id>/task-<n>.log
@@ -8,7 +8,7 @@ per child under::
 The files are pre-created with a header at dispatch time (so ``tail -f``
 attaches immediately) and then stream one line per child event: assistant
 text, thinking, tool calls, tool results, and lifecycle markers. The paths
-are returned from ``delegate_task`` so the parent agent (or the user) can
+are returned from ``delegate_agent`` so the parent agent (or the user) can
 watch a child work instead of waiting blind for the consolidated summary.
 
 Placement under ``cache/delegation`` is deliberate: that directory is

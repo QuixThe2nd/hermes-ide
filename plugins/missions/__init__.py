@@ -64,6 +64,36 @@ _MAX_GOAL = 2_000
 _MAX_PERSONA = 2_000
 _MAX_OUTCOME = 4_000
 
+# Uniform delegation lifecycle: the public name of the origin-side dispatch
+# tool (the Phase 7 rename of ``dispatch_assistant``). Stamped on the mission's
+# terminal event so the completion block labels the unit with the tool that
+# commissioned it.
+DELEGATE_ASSISTANT_TOOL = "delegate_assistant"
+
+# ── Foreground mission wait (uniform delegation lifecycle) ──────────────────
+#
+# ``delegate_assistant`` with ``background`` omitted/false BLOCKS this tool
+# thread until the mission reaches a terminal state — which for a human
+# conversation can legitimately take hours or days. The gateway runs every
+# agent turn on one shared ThreadPoolExecutor (default 10 workers) and the
+# mission's own completion depends on the assistant profile's turns drawing
+# from that SAME pool, so N concurrent foreground waits starve the very turns
+# that would finish them; at N == max_workers the gateway self-deadlocks.
+# Bounding the waits BEFORE any mission is created turns that deadlock into a
+# clear, side-effect-free capacity error.
+_DEFAULT_MAX_FOREGROUND_WAITS = 3
+_FOREGROUND_WAIT_LOCK = threading.Lock()
+_foreground_wait_count = 0
+
+# How often the waiter wakes on its Event between interrupt checks, and how
+# often it re-reads the mission file as a cross-process safety net (another
+# process may terminalize the mission — its publish cannot see this process's
+# inline record, so the file is the only shared truth). Never tight-loop:
+# find_active_mission_for_chat does a directory scan on inbound-message hot
+# paths, and this wait can legitimately run for days.
+_FOREGROUND_POLL_SECONDS = 1.0
+_FOREGROUND_DISK_RECHECK_SECONDS = 30.0
+
 # Outcome journal cap: keep the last N completed/cancelled outcomes so the
 # store cannot grow unbounded.
 _OUTCOME_JOURNAL_MAX = 500
@@ -398,23 +428,56 @@ def _append_outcome(entry: Dict[str, Any]) -> None:
 
 
 
-def _notify_origin_session(mission: Dict[str, Any]) -> bool:
-    """Wake the dispatching session the same way delegate_task does.
+def _mission_created_epoch(mission: Dict[str, Any]) -> float:
+    """Dispatch time for a mission's completion event: when it was started.
 
-    Pushes an async_delegation-shaped event onto process_registry.completion_queue
-    so the origin Discord/CLI turn is resumed with the outcome. No Discord tool
-    is required on the assistant profile.
+    The durable row and the completion block both prefer the real start over
+    "now" — a mission can run for hours, and reporting its dispatch as its
+    completion time would misstate both the run duration and the replay-age
+    basis (``restore_undelivered_completions``).
+    """
+    raw = str(mission.get("created_at") or "")
+    try:
+        return datetime.fromisoformat(raw).timestamp() if raw else time.time()
+    except ValueError:
+        return time.time()
+
+
+def _notify_origin_session(mission: Dict[str, Any]) -> bool:
+    """Wake the dispatching session the same way delegate_agent does.
+
+    Publishes an async_delegation-shaped terminal event through
+    ``publish_terminal_event`` — the one delivery chokepoint — so the origin
+    Discord/CLI turn is resumed with the outcome AND the completion is durable
+    like any other background delegation: a claimable ``async_delegations``
+    row (``claim_completion_delivery`` dedup) that replays after a restart
+    (``restore_undelivered_completions``). The row is created idempotently
+    here because the closing process is usually not the one that accepted the
+    delegation. No Discord tool is required on the assistant profile.
     """
     session_key = str(mission.get("created_by_session") or "").strip()
     parent_session_id = str(
         mission.get("origin_parent_session_id") or mission.get("origin_session_id") or ""
     ).strip()
+    origin_session_id = str(mission.get("origin_session_id") or "").strip()
     if not session_key and not parent_session_id:
         logger.warning(
             "missions: no origin session on %s; outcome not queued",
             mission.get("mission_id"),
         )
         return False
+    try:
+        from tools.async_delegation import (
+            RESULT_KIND_MISSION,
+            ensure_durable_delegation,
+            finalize_external_delegation,
+            inline_wait_pending,
+            publish_terminal_event,
+        )
+    except Exception as exc:
+        logger.warning("missions: failed to queue outcome: %s", exc)
+        return False
+
     chat = mission.get("chat_name") or mission.get("chat_id") or "contact"
     summary = (
         f"WhatsApp assistant mission {mission.get('mission_id')} "
@@ -422,31 +485,68 @@ def _notify_origin_session(mission: Dict[str, Any]) -> bool:
         f"Goal: {mission.get('goal')}\n"
         f"Outcome: {mission.get('outcome') or '(none)'}"
     )
+    status = "completed" if mission.get("status") == "completed" else "error"
+    delegation_id = f"mission-{mission.get('mission_id')}"
     evt = {
         "type": "async_delegation",
-        "delegation_id": f"mission-{mission.get('mission_id')}",
+        "delegation_id": delegation_id,
         "session_key": session_key,
-        "origin_session_id": str(mission.get("origin_session_id") or ""),
+        "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         "goal": mission.get("goal") or "",
-        "status": "completed" if mission.get("status") == "completed" else "error",
+        "status": status,
         "summary": summary,
-        "error": None if mission.get("status") == "completed" else (mission.get("outcome") or mission.get("status")),
+        "error": None if status == "completed" else (mission.get("outcome") or mission.get("status")),
         "completed_at": time.time(),
-        "dispatched_at": time.time(),
+        "dispatched_at": _mission_created_epoch(mission),
         "mission_id": mission.get("mission_id"),
         "reply_target": mission.get("reply_target") or "",
+        # Uniform delegation lifecycle provenance: which tool commissioned
+        # this work and what kind of result it carries, so renderers label it
+        # (see RESULT_KIND_* in tools.async_delegation).
+        "tool": DELEGATE_ASSISTANT_TOOL,
+        "result_kind": RESULT_KIND_MISSION,
+        "background": True,
+    }
+    result = {
+        "status": status,
+        "summary": summary,
+        "error": evt["error"],
+        "mission_id": mission.get("mission_id"),
     }
     try:
-        from tools.process_registry import process_registry
-
-        process_registry.completion_queue.put(evt)
-        logger.info(
-            "missions: queued outcome for %s to session %s",
-            mission.get("mission_id"),
-            session_key or parent_session_id,
+        ensure_durable_delegation(
+            delegation_id=delegation_id,
+            session_key=session_key,
+            origin_session_id=origin_session_id,
+            parent_session_id=parent_session_id or None,
+            goal=mission.get("goal") or "",
+            tool=DELEGATE_ASSISTANT_TOOL,
+            result_kind=RESULT_KIND_MISSION,
+            dispatched_at=evt["dispatched_at"],
         )
-        return True
+        published = publish_terminal_event(evt, result)
+        if published:
+            # Rail delivery: retire this process's record for the delegation
+            # (the background-mission registration, or an abandoned foreground
+            # wait that was flipped back to event mode) — an externally-driven
+            # record has no worker to finalize it, and a phantom "running"
+            # unit would pin capacity accounting and scale-to-zero forever.
+            # When the event went to a live inline waiter instead, the WAITER
+            # retires the record as it claims the result.
+            finalize_external_delegation(delegation_id, status)
+        # False means "not on the completion rail": either the outcome was
+        # handed to a live foreground waiter (delegate_assistant
+        # background=false — a delivered outcome, not a failure) or the
+        # publish genuinely failed.
+        delivered = published or inline_wait_pending(delegation_id)
+        if delivered:
+            logger.info(
+                "missions: queued outcome for %s to session %s",
+                mission.get("mission_id"),
+                session_key or parent_session_id,
+            )
+        return delivered
     except Exception as exc:
         logger.warning("missions: failed to queue outcome: %s", exc)
         return False
@@ -781,8 +881,15 @@ def _handle_start(args: Dict[str, Any], **kwargs: Any) -> str:
         # this profile (scoped tools/credentials/persona) by run.py.
         "profile": profile,
         "created_at": now,
-        "created_by_session": str(kwargs.get("session_key") or ""),
-        "origin_session_id": str(kwargs.get("session_id") or ""),
+        # Trusted origin capture. ``registry.dispatch`` never forwards a
+        # ``session_key`` kwarg, so reading it directly here left this empty
+        # in production and the completion wake silently bailed — the fix is
+        # the same trusted ladder ``handle_end_session`` uses (see
+        # ``_trusted_session_key``).
+        "created_by_session": _trusted_session_key(**kwargs),
+        # Raw session id of the ORIGINATING api_server request (the wake
+        # self-post target), distinct from the turn's own session id below.
+        "origin_session_id": _origin_env_session_id() or str(kwargs.get("session_id") or ""),
         "origin_parent_session_id": str(
             kwargs.get("parent_session_id") or kwargs.get("session_id") or ""
         ),
@@ -857,6 +964,59 @@ def _handle_status(args: Dict[str, Any], **kwargs: Any) -> str:
     return json.dumps({"ok": True, "active_missions": active, "recent_outcomes": recent}, indent=2)
 
 
+# Serializes mission terminalization. Two closers can race for one mission
+# (the assistant profile's end_session vs. an origin-side
+# dispatch_agent action='cancel'): the load-check-write must be ONE critical
+# section or both publish an outcome for the same mission. Never held across
+# the origin notification — that runs after the mission is durably terminal.
+_MISSIONS_TERMINAL_LOCK = threading.Lock()
+
+
+def _terminalize_mission(
+    mission: Dict[str, Any], new_status: str, outcome: str
+) -> Optional[Dict[str, Any]]:
+    """Move an ACTIVE mission to *new_status* exactly once. Publish nothing.
+
+    The re-read under ``_MISSIONS_TERMINAL_LOCK`` is the linearization point:
+    a racing closer that got there first leaves a non-active mission on disk
+    and this call returns ``None``. The outcome journal append and the DM
+    pairing revoke ride inside the same critical section so a mission is
+    never terminal-on-disk while still paired, and never journaled twice.
+
+    Delivery (inline hand-off OR completion rail) is deliberately OUTSIDE —
+    see ``_notify_origin_session``.
+    """
+    with _MISSIONS_TERMINAL_LOCK:
+        fresh = _load_mission(str(mission.get("mission_id") or ""))
+        if fresh is None or fresh.get("status") != "active":
+            return None
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        fresh["status"] = new_status
+        fresh["completed_at"] = now
+        fresh["outcome"] = outcome[:_MAX_OUTCOME] or None
+        _save_mission(fresh)
+        _append_outcome(
+            {
+                "mission_id": fresh["mission_id"],
+                "platform": fresh.get("platform"),
+                "chat_id": fresh.get("chat_id"),
+                "chat_name": fresh.get("chat_name"),
+                "status": new_status,
+                "goal": fresh.get("goal"),
+                "outcome": fresh.get("outcome"),
+                "reply_target": fresh.get("reply_target"),
+                "completed_at": now,
+            }
+        )
+        # Only a DM mission ever granted a DM pairing (see _handle_start), so
+        # only a DM mission revokes one on close — a group start granted
+        # nothing, and touching the DM pairing store for a group JID would be
+        # the same category error the start path avoids.
+        if _mission_chat_type(fresh) == "dm":
+            _revoke_mission_pairing(fresh)
+        return fresh
+
+
 def _close_mission(
     args: Dict[str, Any], new_status: str, require_outcome: bool, **kwargs: Any
 ) -> str:
@@ -884,37 +1044,17 @@ def _close_mission(
     if require_outcome and not outcome:
         return _error("missing_outcome", "outcome summary is required when completing a mission.")
 
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    mission["status"] = new_status
-    mission["completed_at"] = now
-    mission["outcome"] = outcome[:_MAX_OUTCOME] or None
-    _save_mission(mission)
-
-    _append_outcome(
-        {
-            "mission_id": mission["mission_id"],
-            "platform": mission.get("platform"),
-            "chat_id": mission.get("chat_id"),
-            "chat_name": mission.get("chat_name"),
-            "status": new_status,
-            "goal": mission.get("goal"),
-            "outcome": mission.get("outcome"),
-            "reply_target": mission.get("reply_target"),
-            "completed_at": now,
-        }
-    )
-    # Only a DM mission ever granted a DM pairing (see _handle_start), so
-    # only a DM mission revokes one on close — a group start granted nothing,
-    # and touching the DM pairing store for a group JID would be the same
-    # category error the start path avoids.
-    if _mission_chat_type(mission) == "dm":
-        _revoke_mission_pairing(mission)
-    delivered = _notify_origin_session(mission)
-    target = mission.get("reply_target") or mission.get("created_by_session") or "the dispatching thread"
+    fresh = _terminalize_mission(mission, new_status, outcome)
+    if fresh is None:
+        # A racing closer won (end_session vs. cancel): exactly one outcome
+        # will be published, by them.
+        return _error("already_closed", f"Mission {mission['mission_id']} is already closed.")
+    delivered = _notify_origin_session(fresh)
+    target = fresh.get("reply_target") or fresh.get("created_by_session") or "the dispatching thread"
     return json.dumps(
         {
             "ok": True,
-            "mission_id": mission["mission_id"],
+            "mission_id": fresh["mission_id"],
             "status": new_status,
             "notified": delivered,
             "message": (
@@ -1024,14 +1164,19 @@ def check_requirements() -> bool:
         return False
 
 
-DISPATCH_ASSISTANT_SCHEMA = {
-    "name": "dispatch_assistant",
+DELEGATE_ASSISTANT_SCHEMA = {
+    "name": "delegate_assistant",
     "description": (
-        "Start a sandboxed WhatsApp assistant conversation with a contact or "
-        "group. You (the main thread) keep this tool. The chat is answered by "
-        "the locked-down assistant profile until the goal is hit; complete/"
-        "cancel then wakes THIS session with the outcome. Do not put the "
-        "contact on WHATSAPP_ALLOWED_USERS. One active mission per chat."
+        "Delegate a goal to a messaging assistant: the contact's chat (WhatsApp "
+        "DM, or a group JID ending @g.us) is answered by the locked-down "
+        "assistant profile until the goal is hit, then the outcome comes back "
+        "here. Blocking by default: THIS tool call waits — possibly for hours "
+        "or days, since the other side is a human — and returns the mission's "
+        "final outcome inline. Pass background=true to get a handle "
+        "immediately instead and keep working; the outcome then re-enters the "
+        "conversation as a new message later. The mode depends only on this "
+        "argument. Do not put the contact on WHATSAPP_ALLOWED_USERS. One "
+        "active mission per chat."
     ),
     "parameters": {
         "type": "object",
@@ -1059,10 +1204,40 @@ DISPATCH_ASSISTANT_SCHEMA = {
                 "type": "string",
                 "description": "Serving profile. Default: assistant.",
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Blocking by default: omitted or false creates the "
+                    "mission and waits — possibly for hours or days — until "
+                    "it completes or is cancelled, then returns the outcome "
+                    "inline. Pass true to return a background handle "
+                    "immediately and keep working; the outcome re-enters the "
+                    "conversation as a new message when the mission "
+                    "finishes. The mode depends only on this argument. "
+                    "Fails before creating anything when this session cannot "
+                    "receive a late completion."
+                ),
+                "default": False,
+            },
         },
         "required": ["chat_id", "goal"],
     },
 }
+
+# Hidden (advertise=False) registry alias: ``dispatch_assistant`` was renamed
+# to ``delegate_assistant`` (uniform delegation lifecycle). The old name stays
+# DISPATCHABLE forever — replayed transcripts, cached tool schemas, user
+# prompts, third-party scripts — but is never advertised, so it costs no
+# schema tokens. It forwards every argument, including ``background``,
+# verbatim, so the mode stays decided by the argument alone.
+DISPATCH_ASSISTANT_ALIAS_DESCRIPTION = (
+    "Deprecated alias for delegate_assistant. Kept dispatchable so old "
+    "transcripts and scripts keep working; new calls should use "
+    "delegate_assistant."
+)
+
+# Back-compat module alias for direct Python callers of the old constant.
+DISPATCH_ASSISTANT_SCHEMA = DELEGATE_ASSISTANT_SCHEMA
 
 
 END_SESSION_SCHEMA = {
@@ -1269,6 +1444,21 @@ def _trusted_session_key(**kwargs: Any) -> str:
     if not session_key:
         session_key = str(os.environ.get("HERMES_SESSION_KEY") or "").strip()
     return session_key
+
+
+def _origin_env_session_id() -> str:
+    """Raw session id the gateway bound around THIS request, or ``""``.
+
+    The wake self-post target for a detached completion. Distinct from the
+    executor-passed ``session_id`` kwarg: this one comes from the gateway's
+    own env mirror, which no tool argument can influence.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        return str(get_session_env("HERMES_SESSION_ID", "") or "").strip()
+    except Exception:
+        return ""
 
 
 def _parse_assistant_whatsapp_session_key(session_key: str) -> tuple[str, str]:
@@ -1532,14 +1722,466 @@ _ESCALATE_ACK_MESSAGE = (
 )
 
 
+def _max_foreground_waits() -> int:
+    """``missions.max_foreground_waits`` from config.yaml, clamped to >= 1.
+
+    Read at acquire time (not cached at import) so an operator can retune a
+    running gateway, and so tests can pin the limit without rewriting config.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        raw = (cfg.get("missions") or {}).get("max_foreground_waits")
+        if raw is None:
+            return _DEFAULT_MAX_FOREGROUND_WAITS
+        return max(1, int(raw))
+    except Exception:
+        return _DEFAULT_MAX_FOREGROUND_WAITS
+
+
+def _acquire_foreground_wait_slot() -> bool:
+    """Reserve one foreground-wait slot, or fail when the bound is hit.
+
+    MUST be called before the mission is created: the bound exists to keep
+    the shared gateway executor alive (see the module notes above), and a
+    wait admitted after the mission exists could not be refused without
+    either cancelling live work or breaking the blocking contract.
+    """
+    global _foreground_wait_count
+    with _FOREGROUND_WAIT_LOCK:
+        if _foreground_wait_count >= _max_foreground_waits():
+            return False
+        _foreground_wait_count += 1
+        return True
+
+
+def _release_foreground_wait_slot() -> None:
+    global _foreground_wait_count
+    with _FOREGROUND_WAIT_LOCK:
+        _foreground_wait_count = max(0, _foreground_wait_count - 1)
+
+
+def _mission_completed_epoch(mission: Dict[str, Any]) -> Optional[float]:
+    raw = str(mission.get("completed_at") or "")
+    try:
+        return datetime.fromisoformat(raw).timestamp() if raw else None
+    except ValueError:
+        return None
+
+
+def _foreground_mission_result(
+    mission: Dict[str, Any], *, delivery: str, note: str
+) -> str:
+    """The inline terminal payload a foreground ``delegate_assistant`` returns.
+
+    ``delivery`` is ``"inline"`` when the outcome was claimed from the
+    delivery chokepoint in THIS process — directly, or via the atomic
+    cross-process takeover when the disk re-check won ownership of a
+    terminalized-elsewhere mission — or ``"delivered_elsewhere"`` when the
+    completion rail owns the outcome (a consumer claimed it) and this return
+    carries final STATE only, never the outcome body.
+    """
+    status = str(mission.get("status") or "").strip() or "completed"
+    completed = _mission_completed_epoch(mission)
+    started = _mission_created_epoch(mission)
+    duration = (
+        round(completed - started, 1)
+        if completed is not None and started is not None and completed >= started
+        else None
+    )
+    return json.dumps(
+        {
+            "ok": status == "completed",
+            "mission_id": mission.get("mission_id"),
+            "status": status,
+            "delivery_mode": delivery,
+            "goal": mission.get("goal") or "",
+            "outcome": mission.get("outcome") or "",
+            "completed_at": mission.get("completed_at"),
+            "duration_seconds": duration,
+            "message": note,
+        },
+        indent=2,
+    )
+
+
+def _mission_control_hint(mission_id: str) -> str:
+    return (
+        "The assistant keeps answering the chat in the background. Check it "
+        f"with dispatch_agent(action='status', mission_id='{mission_id}'), or "
+        f"end it with dispatch_agent(action='cancel', mission_id='{mission_id}')."
+    )
+
+
+def _abandon_foreground_wait(mission_id: str) -> str:
+    """/stop, turn abandon, or gateway shutdown: give up the WAIT, not the mission.
+
+    Silently cancelling a live conversation with a human would be destructive
+    and hard to reverse, so the mission stays exactly as it was:
+
+    - If the outcome had already been parked for this waiter, it is published
+      on the completion rail here (the mission is finished; dropping the
+      result would lose it) — still exactly one delivery channel.
+    - Otherwise the inline claim is released and flipped back to event mode,
+      so the mission's own terminalization delivers through the rail later.
+    """
+    from tools.async_delegation import abandon_inline_wait, publish_terminal_event
+
+    delegation_id = f"mission-{mission_id}"
+    mission = _load_mission(mission_id) or {}
+    parked = abandon_inline_wait(delegation_id)
+    if parked is not None:
+        try:
+            publish_terminal_event(
+                parked,
+                {
+                    "status": parked.get("status"),
+                    "summary": parked.get("summary"),
+                    "error": parked.get("error"),
+                    "mission_id": parked.get("mission_id"),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "missions: failed to publish parked outcome for abandoned "
+                "wait on %s",
+                mission_id,
+                exc_info=True,
+            )
+        mission = _load_mission(mission_id) or mission
+    still_active = str(mission.get("status") or "active") == "active"
+    who = mission.get("chat_name") or mission.get("chat_id") or "the contact"
+    if still_active:
+        note = (
+            "The wait was interrupted, so this tool call is returning now. "
+            f"The mission is STILL ACTIVE and {who} is still being answered "
+            "by the assistant profile. Call "
+            f"dispatch_agent(action='cancel', mission_id='{mission_id}') to "
+            "end it, or action='status' to check on it. Its outcome will be "
+            "delivered to this conversation as a new message when it "
+            "finishes."
+        )
+    else:
+        note = (
+            "The wait was interrupted at the same moment the mission "
+            f"finished ({mission.get('status')}); its outcome is being "
+            "delivered to this conversation as a new message."
+        )
+    return json.dumps(
+        {
+            "ok": True,
+            "mission_id": mission_id,
+            "status": "wait_abandoned",
+            "mission_state": str(mission.get("status") or "active"),
+            "delivery_mode": "inline",
+            "note": note,
+        },
+        indent=2,
+    )
+
+
+def _wait_for_mission_terminal(mission_id: str) -> str:
+    """Block the calling tool thread until mission *mission_id* is terminal.
+
+    Uniform delegation lifecycle, foreground half: the caller explicitly
+    declined a background handle, so this turn WAITS — possibly for hours or
+    days — and the terminal outcome is returned INLINE, with exactly ZERO
+    completion events emitted for it in this process.
+
+    Delivery is linearized at the shared chokepoint: the inline claim was
+    registered before the wait started, so a terminalizing
+    ``_notify_origin_session`` in THIS process hands the outcome to this
+    waiter (no queue put, no second turn). The loop only ever:
+
+    - polls the waiter Event (1 s) — no hot-path mission scans;
+    - checks this thread's interrupt bit, so /stop and gateway shutdown
+      unwind the wait (see _abandon_foreground_wait);
+    - re-reads the mission file every 30 s as a cross-process safety net:
+      another process may terminalize the mission, and its publish cannot
+      see this process's inline record.
+    """
+    from tools.async_delegation import (
+        RESULT_KIND_MISSION,
+        claim_inline_result,
+        claim_inline_takeover,
+        drop_inline_wait,
+        finalize_external_delegation,
+        finalize_inline_delivery,
+        register_inline_wait,
+    )
+    from tools.interrupt import is_interrupted
+
+    delegation_id = f"mission-{mission_id}"
+    mission = _load_mission(mission_id) or {}
+    waiter = register_inline_wait(
+        delegation_id,
+        session_key=str(mission.get("created_by_session") or ""),
+        origin_session_id=str(mission.get("origin_session_id") or ""),
+        parent_session_id=str(mission.get("origin_parent_session_id") or "") or None,
+        goal=str(mission.get("goal") or ""),
+        tool=DELEGATE_ASSISTANT_TOOL,
+        result_kind=RESULT_KIND_MISSION,
+    )
+
+    # Check the file on the FIRST loop pass, not after a full recheck
+    # interval: the mission may have terminalized (and rail-published) in
+    # the window before this wait registered its inline claim — the
+    # registration race the immediate check closes.
+    next_disk_check = 0.0
+    while True:
+        if waiter.wait(_FOREGROUND_POLL_SECONDS):
+            evt = claim_inline_result(delegation_id)
+            if evt is not None:
+                # Retire the delegation record (no worker will): a terminal
+                # record stops counting against capacity and scale-to-zero.
+                status = str(evt.get("status") or "completed")
+                finalize_external_delegation(delegation_id, status)
+                # And the durable row the terminal side inserted before the
+                # chokepoint chose inline — it was delivered, just not on the
+                # rail, so it must stop being replay/recovery bait.
+                finalize_inline_delivery(delegation_id, status)
+                fresh = _load_mission(mission_id) or mission
+                return _foreground_mission_result(
+                    fresh,
+                    delivery="inline",
+                    note=(
+                        "The mission finished while this call waited; this is "
+                        "its final result."
+                    ),
+                )
+            # Woken with nothing claimable: the claim was dropped or its
+            # outcome repossessed (an abandon racing this wake — see
+            # _abandon_foreground_wait / drop_inline_wait). Nothing will set
+            # this Event again, so clear the stale bit and re-read the mission
+            # NOW instead of spinning on a set Event for a whole disk-check
+            # interval.
+            waiter.clear()
+            next_disk_check = 0
+        if is_interrupted():
+            return _abandon_foreground_wait(mission_id)
+        now = time.monotonic()
+        if now >= next_disk_check:
+            next_disk_check = now + _FOREGROUND_DISK_RECHECK_SECONDS
+            fresh = _load_mission(mission_id)
+            if fresh is None or str(fresh.get("status") or "") != "active":
+                # Terminalized by another process: it published the outcome
+                # on its own completion rail (it could not see this inline
+                # record), so drop the claim — keeping it would pin a
+                # phantom running delegation in THIS process forever.
+                drop_inline_wait(delegation_id)
+                status = str((fresh or {}).get("status") or "completed")
+                if claim_inline_takeover(delegation_id, status):
+                    # Atomic ownership won: THIS return is the one delivery.
+                    # The durable row is acknowledged delivered with the
+                    # claim, so the closing process's rail consumer and any
+                    # later restart replay both find it already delivered —
+                    # no second turn can carry this outcome.
+                    return _foreground_mission_result(
+                        fresh or {},
+                        delivery="inline",
+                        note=(
+                            "The mission finished (closed outside this "
+                            "process) and this wait claimed its outcome; "
+                            "this is its final result and it will not be "
+                            "delivered again."
+                        ),
+                    )
+                # A rail consumer already owns the outcome (it claimed or
+                # delivered the durable row), so the result is on its way
+                # here as a new-message turn. Return STATE only — never the
+                # outcome body, or the model would see the same result
+                # twice.
+                scrubbed = dict(fresh or {})
+                scrubbed["outcome"] = ""
+                return _foreground_mission_result(
+                    scrubbed,
+                    delivery="delivered_elsewhere",
+                    note=(
+                        "The mission finished and its outcome is being "
+                        "delivered to this conversation as a new message "
+                        "(the completion rail owns it); this is its final "
+                        "state."
+                    ),
+                )
+
+
+def _rollback_mission(mission: Optional[Dict[str, Any]]) -> None:
+    """Undo a just-created mission whose background registration was refused.
+
+    The mission file IS the side effect (pairing grant + active-mission
+    record): without this rollback the chat would keep being answered for a
+    delegation nobody holds. The DM-history seed is deliberately NOT undone
+    — it copied the contact's own real history forward, which stays valid for
+    any later mission. Idempotent, best-effort.
+    """
+    if not mission:
+        return
+    mission_id = str(mission.get("mission_id") or "")
+    if not mission_id:
+        return
+    if _mission_chat_type(mission) == "dm":
+        try:
+            _revoke_mission_pairing(mission)
+        except Exception:
+            logger.debug("missions: rollback pairing revoke failed", exc_info=True)
+    try:
+        _mission_path(mission_id).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("missions: rollback failed for %s: %s", mission_id, exc)
+    else:
+        logger.info(
+            "missions: rolled back mission %s (background dispatch refused)",
+            mission_id,
+        )
+
+
+def handle_delegate_assistant(args: Dict[str, Any], **kwargs: Any) -> str:
+    """Origin-side start under the uniform delegation lifecycle.
+
+    The mode comes ONLY from the explicit ``background`` argument — never
+    from platform, session type, nesting, or delivery capability:
+
+    - omitted/false creates the mission and then BLOCKS this tool thread
+      until the mission is terminal, returning the outcome inline (see
+      ``_wait_for_mission_terminal``);
+    - true fails clearly BEFORE the mission exists when this session cannot
+      receive a late completion, and otherwise returns the shared background
+      acceptance envelope immediately.
+
+    In both cases the mission itself is identical; only the delivery of its
+    outcome differs, and exactly one channel is ever used.
+    """
+    from utils import is_truthy_value
+
+    args = dict(args or {})
+    background = is_truthy_value(args.get("background"), default=False)
+
+    if background:
+        from tools.async_delegation import background_delivery_supported
+
+        bg_ok, bg_reason = background_delivery_supported()
+        if not bg_ok:
+            logger.info(
+                "delegate_assistant: background=true rejected before the "
+                "mission was created: %s",
+                bg_reason,
+            )
+            return _error("background_unsupported", bg_reason)
+    elif not _acquire_foreground_wait_slot():
+        limit = _max_foreground_waits()
+        return _error(
+            "foreground_wait_capacity",
+            (
+                f"This gateway is already holding {limit} foreground "
+                "delegate_assistant wait(s) (missions.max_foreground_waits="
+                f"{limit}). NO mission was created and nothing was sent. "
+                "Each foreground wait occupies a gateway worker thread for "
+                "as long as its mission runs, so the count is bounded to "
+                "keep the shared executor from deadlocking. Wait for one of "
+                "them to finish, or pass background=true to get a handle "
+                "immediately and keep working."
+            ),
+        )
+
+    try:
+        start_args = dict(args)
+        start_args["action"] = "start"
+        if not str(start_args.get("reply_to") or "").strip():
+            # Prefer the live gateway session so completion_queue can wake us.
+            # Trusted ladder, NOT the raw kwarg: ``registry.dispatch`` never
+            # forwards ``session_key``, so reading it directly always left the
+            # reply target empty in production.
+            start_args["reply_to"] = _trusted_session_key(**kwargs)
+        started_raw = _handle_start(start_args, **kwargs)
+        try:
+            started = json.loads(started_raw)
+        except ValueError:  # pragma: no cover — _handle_start always JSON-encodes
+            return started_raw
+        if not started.get("ok"):
+            return started_raw
+        mission_id = str(started.get("mission_id") or "")
+        goal = str(start_args.get("goal") or "")
+
+        if background:
+            return _register_background_mission(mission_id, goal)
+        return _wait_for_mission_terminal(mission_id)
+    finally:
+        if not background:
+            _release_foreground_wait_slot()
+
+
+def _register_background_mission(mission_id: str, goal: str) -> str:
+    """Register the just-created mission as a background delegation.
+
+    The mission record is registered live in the shared async-delegation
+    registry (capacity accounting, typing supervisor, scale-to-zero) with a
+    durable row, then the shared acceptance envelope is returned. A refusal
+    rolls the mission back — see ``_rollback_mission``.
+    """
+    from tools.async_delegation import (
+        RESULT_KIND_MISSION,
+        build_background_acceptance_envelope,
+        register_background_delegation,
+    )
+
+    mission = _load_mission(mission_id) or {}
+    delegation_id = f"mission-{mission_id}"
+    registered = register_background_delegation(
+        delegation_id=delegation_id,
+        session_key=str(mission.get("created_by_session") or ""),
+        origin_session_id=str(mission.get("origin_session_id") or ""),
+        parent_session_id=str(mission.get("origin_parent_session_id") or "") or None,
+        goal=goal,
+        tool=DELEGATE_ASSISTANT_TOOL,
+        result_kind=RESULT_KIND_MISSION,
+    )
+    if registered.get("status") != "dispatched":
+        _rollback_mission(mission)
+        return _error(
+            "background_rejected",
+            (
+                "background=true was rejected and the mission was rolled "
+                "back — nothing is running and the chat is untouched. "
+                f"Reason: {registered.get('error', 'registration refused')}. "
+                "Omit `background` (or pass background=false) to create the "
+                "mission and wait for it in the foreground this turn instead."
+            ),
+        )
+    logger.info(
+        "missions: background delegation %s registered for mission %s",
+        delegation_id,
+        mission_id,
+    )
+    return json.dumps(
+        build_background_acceptance_envelope(
+            tool=DELEGATE_ASSISTANT_TOOL,
+            result_kind=RESULT_KIND_MISSION,
+            delegation_id=delegation_id,
+            count=1,
+            goals=[goal] if goal else None,
+            note=(
+                "The assistant mission is underway in the background. You "
+                "and the user can keep working; the outcome re-enters the "
+                "conversation as a new message when the mission completes "
+                "or is cancelled. Do not wait or poll — just continue."
+            ),
+            control_hint=_mission_control_hint(mission_id),
+        ),
+        indent=2,
+    )
+
+
 def handle_dispatch_assistant(args: Dict[str, Any], **kwargs: Any) -> str:
-    """Origin-side start. Forces action=start and captures this session as reply target."""
-    start_args = dict(args or {})
-    start_args["action"] = "start"
-    if not str(start_args.get("reply_to") or "").strip():
-        # Prefer the live gateway session so completion_queue can wake us.
-        start_args["reply_to"] = str(kwargs.get("session_key") or "")
-    return _handle_start(start_args, **kwargs)
+    """Back-compat module alias for :func:`handle_delegate_assistant`.
+
+    The registered tool was renamed (uniform delegation lifecycle); the old
+    spelling stays dispatchable through a hidden registry alias, and this
+    module-level name keeps direct Python callers (and the tests that predate
+    the rename) working. It forwards every argument — including
+    ``background`` — verbatim.
+    """
+    return handle_delegate_assistant(args, **kwargs)
 
 
 def register(ctx) -> None:
@@ -1552,12 +2194,25 @@ def register(ctx) -> None:
         emoji="\U0001F3AF",
     )
     ctx.register_tool(
-        name="dispatch_assistant",
+        name="delegate_assistant",
         toolset="missions",
-        schema=DISPATCH_ASSISTANT_SCHEMA,
-        handler=handle_dispatch_assistant,
+        schema=DELEGATE_ASSISTANT_SCHEMA,
+        handler=handle_delegate_assistant,
         check_fn=check_requirements,
         emoji="\U0001F4AC",
+    )
+    ctx.register_tool(
+        name="dispatch_assistant",
+        toolset="missions",
+        schema={
+            "name": "dispatch_assistant",
+            "description": DISPATCH_ASSISTANT_ALIAS_DESCRIPTION,
+            "parameters": {"type": "object", "properties": {}},
+        },
+        handler=handle_delegate_assistant,
+        check_fn=check_requirements,
+        emoji="\U0001F4AC",
+        advertise=False,
     )
     ctx.register_tool(
         name="end_session",

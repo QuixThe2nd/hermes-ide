@@ -317,6 +317,172 @@ def test_interrupt_all_signals_running_children():
     assert evt["status"] == "interrupted"
 
 
+def test_recycled_worker_thread_starts_next_delegation_uninterrupted():
+    """A cancelled delegation must not poison the pooled worker thread.
+
+    ``_signal_runner_interrupt`` sets the worker thread's process-global
+    interrupt bit (the ``runner_tid`` channel) in addition to the tool's
+    ``interrupt_fn``. The daemon pool RECYCLES that thread for later
+    delegations, so a bit left set after a cancel made the next runner
+    begin already interrupted. The worker now clears the CURRENT thread's
+    bit immediately before invoking the runner and again in ``finally``
+    — never touching another runner's thread.
+    """
+    from tools.interrupt import is_interrupted
+
+    started1 = threading.Event()
+    release = threading.Event()
+    first_saw_interrupt = {}
+    threads_seen = []
+
+    def first_runner():
+        threads_seen.append(threading.current_thread().ident)
+        started1.set()
+        # Wakes only because interrupt_fn fired; by then _signal_runner_
+        # interrupt has already set THIS thread's bit, so the cancellation
+        # is observable here — that set bit is exactly the poison the
+        # second delegation must NOT inherit.
+        release.wait(timeout=30)
+        first_saw_interrupt["value"] = is_interrupted()
+        return {"status": "interrupted", "summary": None,
+                "error": "cancelled"}
+
+    def second_runner():
+        threads_seen.append(threading.current_thread().ident)
+        return {
+            "status": "completed",
+            "summary": f"entry_interrupted={is_interrupted()}",
+        }
+
+    # One worker: both delegations are guaranteed to share the thread.
+    r1 = ad.dispatch_async_delegation(
+        goal="first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="recycle-test", runner=first_runner,
+        interrupt_fn=release.set, max_async_children=1,
+    )
+    assert r1["status"] == "dispatched"
+    assert started1.wait(timeout=5), "first runner never started"
+
+    n = ad.interrupt_for_session(
+        session_key="recycle-test", reason="test-cancel"
+    )
+    assert n == 1
+    evt1 = _drain_for(r1["delegation_id"])
+    assert evt1 is not None
+    assert evt1["status"] == "interrupted"
+    # The cancellation really did set the worker thread's interrupt bit.
+    assert first_saw_interrupt.get("value") is True
+
+    r2 = ad.dispatch_async_delegation(
+        goal="second", context=None, toolsets=None, role="leaf", model="m",
+        session_key="recycle-test", runner=second_runner,
+        max_async_children=1,
+    )
+    assert r2["status"] == "dispatched"
+    evt2 = _drain_for(r2["delegation_id"])
+    assert evt2 is not None
+
+    # Same recycled worker thread, and the second runner began clean.
+    assert len(threads_seen) == 2
+    assert threads_seen[1] == threads_seen[0]
+    assert evt2["summary"] == "entry_interrupted=False"
+
+
+def test_finalization_failure_still_clears_recycled_worker_interrupt(monkeypatch):
+    """A raising finalize must not strand the interrupt bit on the pooled thread.
+
+    The single-task ``_worker`` ran ``_finalize`` and then the current-thread
+    interrupt wipe in ONE flat ``finally`` block, so a ``_finalize`` that
+    raised (durable store failure mid-finalization) skipped the wipe and the
+    recycled worker carried a set bit into its NEXT delegation. The nested
+    ``try/finally`` guarantees the wipe regardless. Same shape for the batch
+    worker's ``_finalize_batch``.
+    """
+    from tools.interrupt import is_interrupted, is_thread_interrupted, set_interrupt
+
+    real_push = ad._push_completion_event
+    pushes = {"n": 0}
+
+    def exploding_push(record, result, status):
+        pushes["n"] += 1
+        if pushes["n"] == 1:
+            # Fail the FIRST finalization after it has claimed the record
+            # (stranding it in 'finalizing') but before its event publish.
+            raise RuntimeError("durable store exploded mid-finalization")
+        return real_push(record, result, status)
+
+    monkeypatch.setattr(ad, "_push_completion_event", exploding_push)
+
+    bit_set = threading.Event()
+    release = threading.Event()
+    threads_seen = []
+
+    def first_runner():
+        threads_seen.append(threading.current_thread().ident)
+        # A /stop-style signal lands after the runner's last interrupt check
+        # — exactly the set bit the post-finalize wipe exists for. Held
+        # until the test has observed it so the True window cannot be missed.
+        set_interrupt(True)
+        bit_set.set()
+        release.wait(timeout=30)
+        return {"status": "interrupted", "summary": None, "error": "cancelled"}
+
+    def second_runner():
+        threads_seen.append(threading.current_thread().ident)
+        return {
+            "status": "completed",
+            "summary": f"entry_interrupted={is_interrupted()}",
+        }
+
+    # One worker: both delegations are guaranteed to share the thread.
+    r1 = ad.dispatch_async_delegation(
+        goal="first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="finalize-fail-test", runner=first_runner,
+        max_async_children=1,
+    )
+    assert r1["status"] == "dispatched"
+
+    deadline = time.monotonic() + 5
+    tid = None
+    while time.monotonic() < deadline:
+        with ad._records_lock:
+            tid = ad._records.get(r1["delegation_id"], {}).get("runner_tid")
+        if tid:
+            break
+        time.sleep(0.02)
+    assert tid, "runner_tid was never captured"
+
+    assert bit_set.wait(timeout=5), "first runner never set its interrupt bit"
+    assert is_thread_interrupted(tid) is True
+    release.set()
+
+    # The raising finalize's nested finally must still wipe the bit (this is
+    # the assertion a flat finally block fails).
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and is_thread_interrupted(tid):
+        time.sleep(0.02)
+    assert is_thread_interrupted(tid) is False, (
+        "interrupt bit survived a raising _finalize on the recycled worker"
+    )
+    with ad._records_lock:
+        # Finalization really did raise mid-way: the record is stranded in
+        # 'finalizing' (claimed, never finished) — not silently completed.
+        assert ad._records[r1["delegation_id"]]["status"] == "finalizing"
+
+    # The next task on the same one-worker pool starts un-interrupted.
+    r2 = ad.dispatch_async_delegation(
+        goal="second", context=None, toolsets=None, role="leaf", model="m",
+        session_key="finalize-fail-test", runner=second_runner,
+        max_async_children=1,
+    )
+    assert r2["status"] == "dispatched"
+    evt2 = _drain_for(r2["delegation_id"])
+    assert evt2 is not None
+    assert len(threads_seen) == 2
+    assert threads_seen[1] == threads_seen[0]
+    assert evt2["summary"] == "entry_interrupted=False"
+
+
 def _fast_stale_monitor(monkeypatch, *, idle=0.15, in_tool=0.3, grace=0.15):
     """Shrink the stale-monitor cadence so tests run in milliseconds."""
     monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
@@ -612,11 +778,11 @@ assert ad.mark_completion_delivered({delegation_id!r})
 
 
 # ---------------------------------------------------------------------------
-# Integration: delegate_task(background=True) routing
+# Integration: delegate_agent(background=True) routing
 # ---------------------------------------------------------------------------
 
-def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
-    """delegate_task(background=True) returns a handle without running the
+def test_delegate_agent_background_routes_async_and_does_not_block(monkeypatch):
+    """delegate_agent(background=True) returns a handle without running the
     child synchronously, and the child completes on the background thread.
     A single task is dispatched as a one-item background batch unit."""
     from unittest.mock import MagicMock, patch
@@ -635,7 +801,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     gate = threading.Event()
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=60)  # a sync impl would hang delegate_task here
+        gate.wait(timeout=60)  # a sync impl would hang delegate_agent here
         return {
             "task_index": 0, "status": "completed", "summary": f"done: {goal}",
             "api_calls": 1, "duration_seconds": 0.1, "model": "m",
@@ -646,12 +812,12 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
         "model": "m", "provider": None, "base_url": None, "api_key": None,
         "api_mode": None, "command": None, "args": None,
     }
-    # monkeypatch (not `with`) so patches outlive delegate_task's return and
+    # monkeypatch (not `with`) so patches outlive delegate_agent's return and
     # remain active while the background worker runs.
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", slow_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    out = dt.delegate_task(
+    out = dt.delegate_agent(
         goal="the real task", context="ctx",
         background=True, parent_agent=parent,
     )
@@ -661,7 +827,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert parsed["status"] == "dispatched"
     assert parsed["mode"] == "background"
     assert parsed["delegation_id"].startswith("deleg_")
-    # Non-blocking invariant: delegate_task returned while the child is STILL
+    # Non-blocking invariant: delegate_agent returned while the child is STILL
     # blocked on the closed gate, so no completion event exists yet.
     assert process_registry.completion_queue.empty()
     assert ad.active_count() == 1  # one background batch unit, not finished
@@ -679,10 +845,10 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
-def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
+def test_delegate_agent_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
-    Regression: delegate_task captured the stale approval/session context key
+    Regression: delegate_agent captured the stale approval/session context key
     after compression rotated parent_agent.session_id. The resulting completion
     was orphaned and could be consumed by an unrelated desktop session poller.
     """
@@ -728,7 +894,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
         ui_session_id="origin-tab",
     )
     try:
-        out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
+        out = dt.delegate_agent(goal="bg task", background=True, parent_agent=parent)
         assert json.loads(out)["status"] == "dispatched"
         evt = _drain_one()
     finally:

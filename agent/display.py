@@ -414,7 +414,7 @@ def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | No
     return args
 
 
-def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
+def _delegate_agent_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
     if not isinstance(tasks, list):
         return 0, []
     goals: list[str] = []
@@ -463,7 +463,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
-        "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
+        "execute_code": "code", "browser_exec": "code",
+        "delegate_agent": "goal", "delegate_agent": "goal",
         "clarify": "question", "skill_manage": "name",
     }
 
@@ -475,8 +476,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         preview = _oneline(str(args.get("code", "") or ""))
         return _truncate_preview(preview, max_len) if preview else None
 
-    # delegate_task: show goal (single) or individual task goals (batch)
-    if tool_name == "delegate_task":
+    # delegate_agent: show goal (single) or individual task goals (batch).
+    # The legacy ``delegate_agent`` spelling renders identically (replayed
+    # transcripts).
+    if tool_name in _DELEGATE_TOOL_NAMES:
         action = str(args.get("action") or "").strip().lower()
         if action in ("list", "steer", "stop"):
             sid = str(args.get("subagent_id") or "").strip()
@@ -484,7 +487,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             return _truncate_preview(preview, max_len)
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=40)
+            task_count, goals = _delegate_agent_goal_parts(tasks, per_goal_len=40)
             preview = (
                 f"{task_count} tasks: " + " | ".join(goals)
                 if goals else f"{len(tasks)} parallel tasks"
@@ -656,7 +659,9 @@ _TOOL_VERBS: dict[str, str] = {
     "skill_view": "Reading skill",
     "skills_list": "Listing skills",
     "skill_manage": "Updating skill",
-    "delegate_task": "Delegating",
+    "delegate_agent": "Delegating",
+    # Hidden registry alias — replayed old-name calls keep the same verb.
+    "delegate_agent": "Delegating",
     "cronjob": "Scheduling",
     "clarify": "Asking",
     "memory": "Updating memory",
@@ -708,6 +713,23 @@ def tool_verb_connector(tool_name: str) -> str:
     return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
 
 
+# Delegation verbs are mode-aware: the default blocks on the child and reads
+# "Delegating", while background=true hands back a handle and reads
+# "Dispatching". Without the split, a CLI/TUI spinner shows "Delegating" for
+# an instantaneous background dispatch and "nothing happened" for a long
+# blocking one.
+_DELEGATE_TOOL_NAMES = frozenset({"delegate_agent", "delegate_agent"})
+
+
+def _delegate_mode_verb(tool_name: str, args: dict | None) -> str | None:
+    if tool_name not in _DELEGATE_TOOL_NAMES or not isinstance(args, dict):
+        return None
+    flag = args.get("background")
+    if isinstance(flag, str):
+        return "Dispatching" if flag.strip().lower() in ("1", "true", "yes", "on") else None
+    return "Dispatching" if flag else None
+
+
 def verb_drops_preview(tool_name: str) -> bool:
     """Whether the verb should render alone, without the argument preview."""
     return tool_name in _TOOL_VERBS_NO_PREVIEW
@@ -736,7 +758,7 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     if not _friendly_tool_labels:
         return None
 
-    verb = _TOOL_VERBS.get(tool_name)
+    verb = _delegate_mode_verb(tool_name, args) or _TOOL_VERBS.get(tool_name)
     if verb:
         head = f"is {verb[0].lower()}{verb[1:]}"
     else:
@@ -771,7 +793,7 @@ def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> 
     if not _friendly_tool_labels:
         return build_tool_preview(tool_name, args, max_len=max_len)
 
-    verb = _TOOL_VERBS.get(tool_name)
+    verb = _delegate_mode_verb(tool_name, args) or _TOOL_VERBS.get(tool_name)
     if not verb:
         return build_tool_preview(tool_name, args, max_len=max_len)
 
@@ -1554,14 +1576,14 @@ def _get_cute_tool_message(
             return _wrap(f"┊ 🌐 browser   {label}  {dur}")
         code = " ".join(str(args.get("code", "") or "").split())
         return _wrap(f"┊ 🌐 browser   {_trunc(code, 35)}  {dur}")
-    if tool_name == "delegate_task":
+    if tool_name in _DELEGATE_TOOL_NAMES:
         _action = str(args.get("action") or "").strip().lower()
         if _action in ("list", "steer", "stop"):
             _sid = str(args.get("subagent_id") or "").strip()
             return _wrap(f"┊ 🔀 delegate  {_trunc(f'{_action} {_sid}'.strip(), 35)}  {dur}")
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
+            task_count, goals = _delegate_agent_goal_parts(tasks, per_goal_len=30)
             detail = " | ".join(goals) if goals else "parallel"
             count_label = task_count or len(tasks)
             return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")

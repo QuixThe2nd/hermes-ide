@@ -19,7 +19,7 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
-This is the shape that covers the workloads `delegate_task` can't:
+This is the shape that covers the workloads `delegate_agent` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.
 - **Scheduled ops** — recurring daily briefs that build a journal over weeks.
@@ -29,11 +29,11 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 For the full design rationale, comparative analysis against Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise, and the eight canonical collaboration patterns, see `docs/hermes-kanban-v1-spec.pdf` in the repository.
 
-## Kanban vs. `delegate_task`
+## Kanban vs. `delegate_agent`
 
 They look similar; they are not the same primitive.
 
-| | `delegate_task` | Kanban |
+| | `delegate_agent` | Kanban |
 |---|---|---|
 | Shape | RPC call (fork → join) | Durable message queue + state machine |
 | Parent | Blocks until child returns | Fire-and-forget after `create` |
@@ -44,13 +44,13 @@ They look similar; they are not the same primitive.
 | Audit trail | Lost on context compression | Durable rows in SQLite forever |
 | Coordination | Hierarchical (caller → callee) | Peer — any profile reads/writes any task |
 
-**One-sentence distinction:** `delegate_task` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
+**One-sentence distinction:** `delegate_agent` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
 
-**Use `delegate_task` when** the parent agent needs a short reasoning answer before continuing, no humans involved, result goes back into the parent's context.
+**Use `delegate_agent` when** the parent agent needs a short reasoning answer before continuing, no humans involved, result goes back into the parent's context.
 
 **Use Kanban when** work crosses agent boundaries, needs to survive restarts, might need human input, might be picked up by a different role, or needs to be discoverable after the fact.
 
-They coexist: a kanban worker may call `delegate_task` internally during its run.
+They coexist: a kanban worker may call `delegate_agent` internally during its run.
 
 ## Core concepts
 
@@ -1164,7 +1164,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 ## Out of scope
 
-Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_agent` / a message queue to bridge them.
 
 ## Design spec
 

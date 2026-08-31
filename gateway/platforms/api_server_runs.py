@@ -256,7 +256,7 @@ def _make_run_event_callback(
         # _thinking, subagent.tool, and subagent_progress are intentionally
         # not forwarded on the /v1/runs stream: they are high-volume UI
         # noise. Lifecycle boundaries (start/complete) still need to land
-        # so clients can observe delegate_task timeouts and failures.
+        # so clients can observe delegate_agent timeouts and failures.
 
     return _callback
 

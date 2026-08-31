@@ -1,7 +1,7 @@
 """Tests that the background review agent restricts tools at runtime, not at schema time.
 
 Regression coverage for issue #15204 (the background skill-review agent must
-not perform non-skill side effects like terminal, send_message, delegate_task)
+not perform non-skill side effects like terminal, send_message, delegate_agent)
 combined with issue #25322 / PR #17276 (the review fork must hit the parent's
 Anthropic/OpenRouter prefix cache).
 
@@ -90,7 +90,7 @@ def test_background_review_installs_thread_local_whitelist():
 
     The schema-level toolset narrowing was lifted (for prefix-cache parity),
     so #15204's safety contract now relies on the runtime whitelist gate to
-    deny terminal/send_message/delegate_task at dispatch time. Verify the
+    deny terminal/send_message/delegate_agent at dispatch time. Verify the
     whitelist is set with exactly the memory+skills tool names.
     """
     import run_agent
@@ -137,7 +137,7 @@ def test_background_review_installs_thread_local_whitelist():
     assert "patch" not in whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
-    assert "delegate_task" not in whitelist
+    assert "delegate_agent" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
     # The deny message must name the correct substitutes so a single denial

@@ -1373,7 +1373,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'subagent.tool': {
         const line = formatToolCall(
-          ev.payload.tool_name ?? 'delegate_task',
+          ev.payload.tool_name ?? 'delegate_agent',
           ev.payload.tool_preview ?? ev.payload.text ?? ''
         )
 

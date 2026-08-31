@@ -5835,8 +5835,9 @@ def run_job(
         # os.environ HERMES_SESSION_KEY, which risks routing a cron subagent's output
         # into an unrelated user chat.)
         #
-        # Declaring the channel stateless routes delegate_task to its existing
-        # inline/synchronous path, so results return within the job's own turn.
+        # Declaring the channel stateless makes an explicit background=true fail
+        # before any work starts, while the default foreground mode keeps
+        # returning results within the job's own turn.
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
         cwd=_job_workdir or "",

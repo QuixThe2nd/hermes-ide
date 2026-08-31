@@ -104,7 +104,7 @@ def _patch_process_registry(monkeypatch, count: int) -> None:
 
 # ── Background/async subagent indicator (⛓ N) ─────────────────────────────
 # Source of truth is tools.async_delegation.active_count() — the count of
-# delegate_task delegations (batch + background single) still in the
+# delegate_agent delegations (batch + background single) still in the
 # "running" state. Distinct from ▶ (/bg agent threads) and ⚙ (shell
 # processes); all three can be active at once.
 

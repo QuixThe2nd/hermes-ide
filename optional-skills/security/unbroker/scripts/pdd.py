@@ -486,7 +486,7 @@ def cmd_fanout(args) -> None:
         "batch_count": len(batches),
         "batches": batches,
         "instruction": (
-            "If should_fanout is true you MUST spawn ONE delegate_task subagent per batch IN PARALLEL, "
+            "If should_fanout is true you MUST spawn ONE delegate_agent subagent per batch IN PARALLEL, "
             "passing each batch's `brief`; do not scan all brokers yourself sequentially. Wait for every "
             "report, consolidate, then proceed to opt-outs. If false, just scan the brokers inline."
         ),
@@ -812,7 +812,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters")
     s.set_defaults(func=cmd_plan)
 
-    s = sub.add_parser("fanout", help="batch brokers into parallel delegate_task subagents (large runs)")
+    s = sub.add_parser("fanout", help="batch brokers into parallel delegate_agent subagents (large runs)")
     s.add_argument("subject")
     s.add_argument("--priority", action="append", choices=["crucial", "high", "standard", "long_tail"])
     s.add_argument("--size", type=int, default=5, help="brokers per subagent batch (default 5; 8+ times out)")

@@ -888,7 +888,7 @@ For `update`, pass `skills=[]` to remove all attached skills.
 ### Manual runs are asynchronous
 
 `cronjob(action="run")` fires the job immediately **in the background** (like
-`delegate_task`): the tool call returns at once with a handle, and the job's
+`delegate_agent(background=true)`): the tool call returns at once with a handle, and the job's
 outcome — success/failure, delivery target, next scheduled run, and an output
 excerpt — re-enters the conversation as a new message when the run finishes.
 The agent (and you) can keep working in the meantime, and a job that is

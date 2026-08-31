@@ -52,7 +52,8 @@ function toolCategory(toolName: string): RunCategory {
     return 'run'
   }
 
-  if (toolName === 'delegate_task') {
+  // Legacy `delegate_task` transcripts render through the same branch.
+  if (toolName === 'delegate_agent' || toolName === 'delegate_task') {
     return 'delegate'
   }
 

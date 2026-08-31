@@ -136,7 +136,7 @@ run_agent.py agent loop
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓
-[Agent-loop tools?] → handled directly by agent loop (todo, memory, session_search, delegate_task)
+[Agent-loop tools?] → handled directly by agent loop (todo, memory, session_search, delegate_agent)
     ↓
 [Plugin pre-hook] → invoke_hook("pre_tool_call", ...)
     ↓
@@ -169,7 +169,7 @@ Four tools are intercepted before registry dispatch because they need agent-leve
 - `todo` — planning/task tracking
 - `memory` — persistent memory writes
 - `session_search` — cross-session recall
-- `delegate_task` — spawns subagent sessions
+- `delegate_agent` — spawns subagent sessions
 
 These tools' schemas are still registered in the registry (for `get_tool_definitions`), but their handlers return a stub error if dispatch somehow reaches them directly.
 

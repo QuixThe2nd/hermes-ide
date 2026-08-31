@@ -291,7 +291,7 @@ def _detect_environment(env: str) -> bool:
     """Return True when the named runtime environment is currently active.
 
     Cached per process, EXCEPT ``kanban``: that verdict is context-dependent
-    (a delegate_task child or an in-process cron job sees the worker's
+    (a delegate_agent child or an in-process cron job sees the worker's
     HERMES_KANBAN_* vars without owning them), so caching it process-wide would
     freeze whichever context asked first and leak it to the others.
     """
@@ -308,7 +308,7 @@ def _detect_environment(env: str) -> bool:
         # tool availability.
         if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
             # ...but only when this execution actually owns the dispatcher's
-            # task. A delegate_task child or a cron job fired in-process from a
+            # task. A delegate_agent child or a cron job fired in-process from a
             # worker sees the worker's vars without being that worker.
             try:
                 from agent.delegation_context import (

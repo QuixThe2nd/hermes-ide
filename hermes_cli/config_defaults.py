@@ -2156,7 +2156,7 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
-    # Subagent delegation — override the provider:model used by delegate_task
+    # Subagent delegation — override the provider:model used by delegate_agent
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
@@ -2178,7 +2178,7 @@ DEFAULT_CONFIG = {
         # these explicit values merge OVER runtime/parent-derived overrides
         # (explicit keys win; extra_body deep-merged one level).
         "request_overrides": {},
-        # When delegate_task narrows child toolsets explicitly, preserve any
+        # When delegate_agent narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
         # extras" without silently stripping MCP tools the parent already has.
@@ -2189,7 +2189,7 @@ DEFAULT_CONFIG = {
         # Subagent summaries return to the parent's context verbatim. A batch
         # fan-out (N children) returns N summaries at once, which can exceed
         # the parent's context window and trigger a compression/429 death
-        # spiral. delegate_task sizes each summary against the parent's
+        # spiral. delegate_agent sizes each summary against the parent's
         # remaining context headroom (split across the batch); when it must
         # trim, the full text is spilled to ~/.hermes/cache/delegation/
         # (mounted into remote backends) and the in-context summary becomes a
@@ -2255,6 +2255,19 @@ DEFAULT_CONFIG = {
             "public_host": "",   # empty = auto-detect (Tailscale → LAN)
             "extra_hosts": [],
         },
+    },
+
+    # Assistant missions (plugins/missions) — goal-bound delegated
+    # conversations with a messaging contact.
+    "missions": {
+        # How many foreground delegate_assistant waits (background omitted
+        # or false) may be blocked at once. Each wait occupies one worker
+        # thread of the gateway's shared executor for as long as its mission
+        # runs — possibly hours or days — and the mission's own completion
+        # needs a thread from that same pool, so an unbounded count
+        # deadlocks the gateway. A wait admitted beyond this bound fails
+        # BEFORE creating any mission.
+        "max_foreground_waits": 3,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

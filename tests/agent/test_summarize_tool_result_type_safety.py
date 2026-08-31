@@ -110,7 +110,7 @@ class TestBackstopWrapper:
         hostile_values = [None, True, 42, 3.14, ["a"], {"k": "v"}]
         tools = [
             "terminal", "read_file", "write_file", "search_files", "patch",
-            "browser_navigate", "web_search", "web_extract", "delegate_task",
+            "browser_navigate", "web_search", "web_extract", "delegate_agent",
             "execute_code", "skill_view", "vision_analyze", "memory",
             "cronjob", "process", "totally_unknown_tool",
         ]

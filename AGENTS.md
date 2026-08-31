@@ -1045,7 +1045,7 @@ violate them.
    capability, point at the proper tool by name in backticks
    (`` `terminal` ``, `` `web_extract` ``, `` `read_file` ``,
    `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``,
-   `` `browser_navigate` ``, `` `delegate_task` ``, etc.). Do NOT
+   `` `browser_navigate` ``, `` `delegate_agent` ``, etc.). Do NOT
    name shell utilities the agent already has wrapped — `grep` →
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` →
    `patch`, `find`/`ls` → `search_files target='files'`. If the skill
@@ -1122,7 +1122,7 @@ Enable/disable per platform via `hermes tools` (the curses UI) or the
 
 ---
 
-## Delegation (`delegate_task`)
+## Delegation (`delegate_agent`)
 
 `tools/delegate_tool.py` spawns a subagent with an isolated
 context + terminal session. By default the parent waits for the
@@ -1139,10 +1139,10 @@ Two shapes:
 
 Roles:
 
-- `role="leaf"` (default) — focused worker. Cannot call `delegate_task`,
+- `role="leaf"` (default) — focused worker. Cannot call `delegate_agent`,
   `clarify`, `memory`, `send_message`, `cronjob`. Retains `execute_code`
   (programmatic tool calling).
-- `role="orchestrator"` — retains `delegate_task` so it can spawn its
+- `role="orchestrator"` — retains `delegate_agent` so it can spawn its
   own workers. Gated by `delegation.orchestrator_enabled` (default true)
   and bounded by `delegation.max_spawn_depth` (default 2).
 
@@ -1151,7 +1151,7 @@ Key config knobs (under `delegation:` in `config.yaml`):
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
 `max_iterations`.
 
-Durability rule: background `delegate_task` is detached from the current
+Durability rule: background `delegate_agent` is detached from the current
 turn but still process-local. For work that must survive process restart, use
 `cronjob` or `terminal(background=True, notify_on_complete=True)` instead.
 

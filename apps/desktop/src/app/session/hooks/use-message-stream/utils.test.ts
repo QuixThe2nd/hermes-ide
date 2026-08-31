@@ -47,7 +47,7 @@ describe('delegateTaskPayloads', () => {
 
   it('maps a running tool.start to a subagent.start spec', () => {
     const [spec] = delegateTaskPayloads(
-      payload({ name: 'delegate_task', tool_id: 't1', args: { goal: 'do it' } }),
+      payload({ name: 'delegate_agent', tool_id: 't1', args: { goal: 'do it' } }),
       'running',
       'tool.start'
     )
@@ -57,7 +57,7 @@ describe('delegateTaskPayloads', () => {
 
   it('maps completion (with error) to a failed subagent.complete', () => {
     const [spec] = delegateTaskPayloads(
-      payload({ name: 'delegate_task', error: 'boom', result: { summary: 'failed run' } }),
+      payload({ name: 'delegate_agent', error: 'boom', result: { summary: 'failed run' } }),
       'complete'
     )
 
@@ -68,7 +68,7 @@ describe('delegateTaskPayloads', () => {
     'maps completion with result.status=%s to a failed subagent.complete',
     resultStatus => {
       const [spec] = delegateTaskPayloads(
-        payload({ name: 'delegate_task', result: { status: resultStatus, summary: 'timed out' } }),
+        payload({ name: 'delegate_agent', result: { status: resultStatus, summary: 'timed out' } }),
         'complete'
       )
 
@@ -78,7 +78,7 @@ describe('delegateTaskPayloads', () => {
 
   it('maps a successful completion to completed', () => {
     const [spec] = delegateTaskPayloads(
-      payload({ name: 'delegate_task', result: { status: 'success', summary: 'done' } }),
+      payload({ name: 'delegate_agent', result: { status: 'success', summary: 'done' } }),
       'complete'
     )
 

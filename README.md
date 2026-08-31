@@ -62,7 +62,9 @@ You can hand real coding work to machines from chat instead of babysitting a ter
 
 Claude Code gets a headless `/goal` mode: pass a `/goal <condition>` task and the run loops until a model judge confirms the condition is met (verified with the claude-glm wrapper). Overlong `/goal` conditions are auto-spilled to a workdir brief so Claude Code's 4000-character cap does not abort the run. The lane rule is deliberate: `delegate_cursor_agent` for small/medium work, `delegate_claude_agent` with default `/goal` for medium/large. `delegate_claude_agent` writes stream-json run logs, so claude-runs logs are live-tailable for progress reporting.
 
-Delegate coding tools run with no stall watchdog and no default wall-clock limit; an optional positive `timeout_seconds` still applies. When you need visibility, `delegate_task action='list'` surfaces per-child liveness — current tool, iteration, seconds since activity, stalled flag — so a wedged subagent is distinguishable from a slow one. One shared agent-CLI runner powers both delegate tools and the dev-pipeline build lanes.
+Delegate coding tools run with no stall watchdog and no default wall-clock limit; an optional positive `timeout_seconds` still applies. When you need visibility, `delegate_agent action='list'` surfaces per-child liveness — current tool, iteration, seconds since activity, stalled flag — so a wedged subagent is distinguishable from a slow one. One shared agent-CLI runner powers both delegate tools and the dev-pipeline build lanes.
+
+All four delegate tools (`delegate_agent`, `delegate_claude_agent`, `delegate_cursor_agent`, `delegate_assistant`) share one lifecycle: omitted/false `background` blocks the calling turn until the work is terminal and returns the final result inline, while `background=true` returns a handle immediately and delivers exactly one completion later. `delegate_task`/`dispatch_assistant` still dispatch as hidden aliases of the renamed tools.
 
 ### Dev pipeline
 
@@ -124,7 +126,7 @@ The typing indicator stays lit while a background delegated task is still runnin
 
 ### WhatsApp missions
 
-Assistant WhatsApp chats expose mission-aware `end_session` or one-way `escalate_task`. Goal-bound WhatsApp missions (missions plugin: `dispatch_assistant`/`end_session`) support mission-only DMs (`platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`, off by default) that are answered only while an assistant-mission is bound to the chat. A mission on a `@g.us` group admits exactly that group — no mention required, all members in one shared session; profile-scoped pairing no longer mirrors into the global allowlist.
+Assistant WhatsApp chats expose mission-aware `end_session` or one-way `escalate_task`. Goal-bound WhatsApp missions (missions plugin: `delegate_assistant`/`end_session`) support mission-only DMs (`platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`, off by default) that are answered only while an assistant-mission is bound to the chat. A mission on a `@g.us` group admits exactly that group — no mention required, all members in one shared session; profile-scoped pairing no longer mirrors into the global allowlist.
 
 Allowlisted groups can observe unmentioned chatter (`observe_unmentioned_group_messages` with `require_mention`, off by default): stored as shared-session context, replied to only on the next ping/mention.
 

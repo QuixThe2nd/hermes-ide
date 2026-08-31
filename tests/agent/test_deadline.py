@@ -636,6 +636,41 @@ class TestUnboundedToolsResolver:
         assert "delegate_claude_agent" in names
         assert "restart" in names
 
+    def test_default_covers_all_four_public_names_and_legacy_aliases(
+        self, monkeypatch
+    ):
+        """Every delegation tool blocks by default, so every name is exempt.
+
+        The hidden registry aliases stay dispatchable forever, and a replayed
+        old-name call is exactly as long-running as a new-name one.
+        """
+        from agent import tool_executor
+
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        names = tool_executor._resolve_unbounded_tools()
+        assert {"delegate_agent", "delegate_claude_agent"} <= names
+        assert {"delegate_cursor_agent", "delegate_assistant"} <= names
+        assert {"delegate_task", "dispatch_assistant"} <= names
+
+    def test_user_override_normalizes_legacy_spellings(self, monkeypatch):
+        """A pre-rename override list must keep exempting the renamed tools."""
+        from agent import tool_executor
+
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {
+                "tools": {"unbounded_tools": ["delegate_task", "dispatch_assistant"]}
+            },
+        )
+        assert tool_executor._resolve_unbounded_tools() == frozenset(
+            {
+                "delegate_task",
+                "dispatch_assistant",
+                "delegate_agent",
+                "delegate_assistant",
+            }
+        )
+
     def test_config_override_replaces_default(self, monkeypatch):
         from agent import tool_executor
 

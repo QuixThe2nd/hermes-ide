@@ -213,11 +213,11 @@ class TestParseConfig:
                 {
                     "url": "https://example.com",
                     "events": ["post_tool_call"],
-                    "matcher": "terminal|delegate_task",
+                    "matcher": "terminal|delegate_agent",
                 }
             )
         )
-        assert targets[0].matcher == "terminal|delegate_task"
+        assert targets[0].matcher == "terminal|delegate_agent"
 
     def test_secret_env_wins_over_literal(self, monkeypatch):
         monkeypatch.setenv("MY_HOOK_SECRET", "from-env")
@@ -263,9 +263,9 @@ class TestMatcher:
         assert self._target(None).matches_tool(None)
 
     def test_regex_fullmatch(self):
-        t = self._target("terminal|delegate_task")
+        t = self._target("terminal|delegate_agent")
         assert t.matches_tool("terminal")
-        assert t.matches_tool("delegate_task")
+        assert t.matches_tool("delegate_agent")
         assert not t.matches_tool("terminal_extra")
         assert not t.matches_tool(None)
 

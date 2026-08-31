@@ -1,4 +1,4 @@
-"""Regression tests for delegate_task isolation from parent Kanban workers."""
+"""Regression tests for delegate_agent isolation from parent Kanban workers."""
 from __future__ import annotations
 
 import json
@@ -61,7 +61,7 @@ def _make_running_kanban_task(monkeypatch, tmp_path):
 
 
 def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, tmp_path):
-    """A delegate_task child must not inherit the parent's Kanban tool schema.
+    """A delegate_agent child must not inherit the parent's Kanban tool schema.
 
     The parent process may be a dispatcher worker with HERMES_KANBAN_TASK set;
     the child is only a subagent, not the run owner.
@@ -135,7 +135,7 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
 ):
     """The real execute_code child-env builder must bridge ContextVar lineage.
 
-    Regression coverage for the vulnerable path: delegate_task marks child
+    Regression coverage for the vulnerable path: delegate_agent marks child
     execution with a ContextVar, while execute_code used to scrub plain
     ``os.environ`` and therefore never wrote HERMES_DELEGATED_CHILD_CONTEXT into
     the sandbox env.
@@ -204,7 +204,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
         env.cleanup()
 
     assert result["returncode"] == 1
-    assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]
+    assert "delegate_agent child contexts cannot mutate Kanban tasks" in result["output"]
     assert kb.board_exists("victim")
     assert kb.board_dir("victim").is_dir()
 
@@ -228,7 +228,7 @@ def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_
 
     payload = json.loads(raw)
     assert payload["error"]
-    assert "delegate_task child" in payload["error"]
+    assert "delegate_agent child" in payload["error"]
 
     conn = kb.connect()
     try:
@@ -292,7 +292,7 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
         conn.close()
 
     assert result["status"] == "completed"
-    assert "delegate_task child" in result["summary"]
+    assert "delegate_agent child" in result["summary"]
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()

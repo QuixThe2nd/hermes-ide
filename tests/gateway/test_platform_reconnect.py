@@ -476,7 +476,7 @@ class TestSpawnSupervised:
         """Already-running ticks copy the caller task context into to_thread.
 
         Issue #91958 is a dispatcher that was spawned at boot, then a later
-        ``delegate_task`` leaves the worker copy marked as a child. Spawn
+        ``delegate_agent`` leaves the worker copy marked as a child. Spawn
         isolation does not rewrite that frozen task context; the offload
         helper must scrub it at the tick boundary. The in-task child guard
         stays closed.
@@ -490,7 +490,7 @@ class TestSpawnSupervised:
 
         with delegated_child_context():
             assert is_delegated_child_context() is True
-            with pytest.raises(PermissionError, match="delegate_task child"):
+            with pytest.raises(PermissionError, match="delegate_agent child"):
                 _assert_not_delegated_child_mutation()
             await _to_thread_process_service(_assert_not_delegated_child_mutation)
             assert is_delegated_child_context() is True

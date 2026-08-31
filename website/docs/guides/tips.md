@@ -141,7 +141,7 @@ Long sessions accumulate tokens. When you notice responses slowing down or getti
 
 ### Delegate for Parallel Work
 
-Need to research three topics at once? Ask the agent to use `delegate_task` with parallel subtasks. Each subagent runs independently with its own context, and only the final summaries come back — massively reducing your main conversation's token usage.
+Need to research three topics at once? Ask the agent to use `delegate_agent` with parallel subtasks. Each subagent runs independently with its own context, and only the final summaries come back — massively reducing your main conversation's token usage.
 
 ### Use execute_code for Batch Operations
 

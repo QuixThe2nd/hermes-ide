@@ -10331,7 +10331,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _scale_to_zero_has_live_background_work(self) -> bool:
         """Live background work that must block a suspend (D3/F7).
 
-        Backgrounded delegate_task / kanban / terminal(background=true) are NOT
+        Backgrounded delegate_agent / kanban / terminal(background=true) are NOT
         counted by _running_agent_count(), but suspending mid-flight loses them.
         Checks the runner's own tracked tasks + the process registry's running
         processes + any pending process-completion watchers.
@@ -11741,7 +11741,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _agent_has_active_subagents(running_agent: Any) -> bool:
         """Return True when *running_agent* is currently driving subagents
-        via the ``delegate_task`` tool.
+        via the ``delegate_agent`` tool.
 
         Background (#30170): ``AIAgent.interrupt()`` cascades through the
         parent's ``_active_children`` list and calls ``interrupt()`` on
@@ -12200,7 +12200,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False  # let default path handle it
 
         # --- Internal synthetic events must never interrupt/steer ---
-        # Async-delegation completions (delegate_task(background=true)) and
+        # Async-delegation completions (delegate_agent(background=true)) and
         # background-process completions (terminal notify_on_complete) re-enter
         # the originating session as internal MessageEvents. When the session
         # is busy, treating them like a user TEXT message means interrupt-mode
@@ -12233,7 +12233,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # to queue semantics so nothing is lost.
         # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
         # to every entry in the parent's ``_active_children`` list and
-        # aborts in-flight ``delegate_task`` work. Demote ``interrupt``
+        # aborts in-flight ``delegate_agent`` work. Demote ``interrupt``
         # to ``queue`` when the parent is currently driving subagents so
         # a conversational follow-up doesn't destroy minutes of subagent
         # work. Explicit ``/stop`` and ``/new`` slash commands go through
@@ -13054,7 +13054,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> bool:
         """Only emit the heartbeat while this task still owns the live run.
 
-        Guards against a stale ``running: delegate_task`` heartbeat outliving the
+        Guards against a stale ``running: delegate_agent`` heartbeat outliving the
         run that started it: stop once the executor finishes, the agent is gone,
         or the session key has been rebound to a different live agent (e.g. the
         user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
@@ -16182,7 +16182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
 
         # Start background async-delegation watcher — drains completion events
-        # from delegate_task(background=true) subagents and injects each
+        # from delegate_agent(background=true) subagents and injects each
         # result back into its originating session as a new turn, covering the
         # idle case where the subagent finishes with no agent turn running.
         self._spawn_supervised(self._async_delegation_watcher, "async_delegation_watcher")
@@ -17818,6 +17818,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as _e:
                     logger.debug("async interrupt_all (%s) error: %s", phase, _e)
+                try:
+                    # Foreground delegation waits (delegate_assistant
+                    # background=false) block tool threads inside running
+                    # turns; those threads die with the process, so release
+                    # each inline claim without losing its outcome — a parked
+                    # result is published durably (it replays after the
+                    # restart), a pending one flips back to the completion
+                    # rail for the work's own terminalization.
+                    from tools.async_delegation import (
+                        abandon_all_inline_waits as _abandon_inline,
+                    )
+                    _inline_n = _abandon_inline(
+                        reason=f"gateway shutdown ({phase})"
+                    )
+                    if _inline_n:
+                        logger.info(
+                            "Shutdown (%s): abandoned %d foreground delegation wait(s)",
+                            phase, _inline_n,
+                        )
+                except Exception as _e:
+                    logger.debug(
+                        "abandon_all_inline_waits (%s) error: %s", phase, _e
+                    )
                 try:
                     from tools.terminal_tool import cleanup_all_environments
                     cleanup_all_environments()
@@ -20655,7 +20678,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
             # cascades through ``_active_children`` and aborts in-flight
-            # delegate_task work. Demote to queue semantics when the
+            # delegate_agent work. Demote to queue semantics when the
             # parent is currently driving subagents so a conversational
             # follow-up doesn't destroy minutes of subagent progress.
             # /stop reaches its dedicated handler above, so the operator
@@ -21401,7 +21424,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # plugin, not a skill, not a known-inactive skill. Warn
                     # the user instead of silently forwarding it to the LLM
                     # as free text (which leads to silent-failure behavior
-                    # like the model inventing a delegate_task call).
+                    # like the model inventing a delegate_agent call).
                     # Normalize to hyphenated form before checking known
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
@@ -28542,7 +28565,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from gateway.session_context import set_session_vars
         # Propagate the adapter's async-delivery capability so async tools
-        # (terminal notify_on_complete / watch_patterns, delegate_task
+        # (terminal notify_on_complete / watch_patterns, delegate_agent
         # background=True) know whether this channel can wake a later turn.
         # Default True keeps CLI / unknown paths working; stateless adapters
         # (api_server) declare supports_async_delivery=False. Use getattr so
@@ -29918,7 +29941,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.
 
-        Background subagents (``delegate_task(background=true)``) run on the
+        Background subagents (``delegate_agent(background=true)``) run on the
         async-delegation daemon executor — they have no per-process watcher
         task, so their completion events would only be seen by the post-turn
         queue drain. This watcher covers the IDLE case: when a background
@@ -33141,7 +33164,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 # Stop heartbeating once this run no longer owns the session
                 # slot or the executor has finished — otherwise a stale
-                # "running: delegate_task" bubble can outlive the run that
+                # "running: delegate_agent" bubble can outlive the run that
                 # spawned it (#12029). _executor_task is a closure var bound
                 # just after this task is scheduled; tolerate the brief window
                 # before then (the first wake is _NOTIFY_INTERVAL away anyway).

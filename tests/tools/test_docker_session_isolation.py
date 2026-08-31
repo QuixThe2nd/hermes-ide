@@ -104,7 +104,7 @@ class TestSessionIsolationKeying:
             terminal_tool.clear_task_env_overrides("bench-env")
 
     def test_subagent_alias_resolves_to_parent(self, monkeypatch):
-        """delegate_task children share the PARENT session's container."""
+        """delegate_agent children share the PARENT session's container."""
         _enable_isolation(monkeypatch)
         terminal_tool.register_container_alias("subagent-1", "tui:sess-a")
         assert terminal_tool._resolve_container_task_id("subagent-1") == "tui:sess-a"

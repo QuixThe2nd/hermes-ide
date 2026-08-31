@@ -154,7 +154,9 @@ export function delegateTaskPayloads(
   phase: 'running' | 'complete',
   sourceEventType?: string
 ): Record<string, unknown>[] {
-  if (payload?.name !== 'delegate_task') {
+  // Accept both spellings: live events say delegate_agent, replayed
+  // transcripts may still say delegate_task.
+  if (payload?.name !== 'delegate_agent' && payload?.name !== 'delegate_task') {
     return []
   }
 
@@ -165,7 +167,7 @@ export function delegateTaskPayloads(
   const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
   const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
   const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
-  const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
+  const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_agent'
   const progressText = firstString(payload.preview, payload.message, payload.context)
 
   const eventType =
@@ -189,13 +191,13 @@ export function delegateTaskPayloads(
       task_count: tasks.length,
       task_index: index,
       text: eventType === 'subagent.progress' ? progressText || goal : undefined,
-      tool_name: eventType === 'subagent.start' ? 'delegate_task' : undefined,
+      tool_name: eventType === 'subagent.start' ? 'delegate_agent' : undefined,
       tool_preview: eventType === 'subagent.start' ? progressText : undefined,
       toolsets: Array.isArray(task.toolsets) ? task.toolsets : Array.isArray(args.toolsets) ? args.toolsets : [],
       event_type: eventType,
       output_tail:
         phase === 'complete' && summary
-          ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_task' }]
+          ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_agent' }]
           : undefined
     }
   })

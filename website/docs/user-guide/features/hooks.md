@@ -1048,7 +1048,7 @@ See the **[Build a Plugin guide](/developer-guide/plugins)** for the full walkth
 
 ### `subagent_start`
 
-Fires **once per child agent** after `delegate_task` has constructed the child `AIAgent` and before that child is run. Whether you delegate a single task or a batch of three, this hook fires once for each child.
+Fires **once per child agent** after `delegate_agent` has constructed the child `AIAgent` and before that child is run. Whether you delegate a single task or a batch of three, this hook fires once for each child.
 
 This hook is specific to delegation/subagent lifecycle. It is not a universal "before any agent invocation" gate for gateway, CLI, cron, batch, MoA, or other runner-originated agent executions.
 
@@ -1112,14 +1112,14 @@ def register(ctx):
 ```
 
 :::info
-`subagent_start` is useful for delegation observability, but it is not a blocking policy hook. To block delegation before a child is built, use [`pre_tool_call`](#pre_tool_call) to block the `delegate_task` tool call.
+`subagent_start` is useful for delegation observability, but it is not a blocking policy hook. To block delegation before a child is built, use [`pre_tool_call`](#pre_tool_call) to block the `delegate_agent` tool call.
 :::
 
 ---
 
 ### `subagent_stop`
 
-Fires **once per child agent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child. Dispatch is serialised on the parent thread after child futures drain, and each Python callback body runs on that same caller thread (not on a timeout worker).
+Fires **once per child agent** after `delegate_agent` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child. Dispatch is serialised on the parent thread after child futures drain, and each Python callback body runs on that same caller thread (not on a timeout worker).
 
 **Callback signature:**
 
@@ -1422,7 +1422,7 @@ The full payload also includes `session_id`, `tool_call_id`, `turn_id`, `api_req
 
 **Return value:** The first `str` replaces the result (including an empty string); `None` leaves it unchanged.
 
-**Use cases:** Redact organization-specific PII from `web_extract` output, wrap long JSON tool responses in a summary header, inject retrieval-augmented hints into `read_file` results, rewrite `delegate_task` subagent reports into a project-specific schema.
+**Use cases:** Redact organization-specific PII from `web_extract` output, wrap long JSON tool responses in a summary header, inject retrieval-augmented hints into `read_file` results, rewrite `delegate_agent` subagent reports into a project-specific schema.
 
 ```python
 import re
@@ -1868,7 +1868,7 @@ hooks:
     - name: tool-monitor
       url: https://metrics.example.com/hooks/hermes
       events: [post_tool_call]
-      matcher: "terminal|delegate_task"     # regex, tool-scoped events only
+      matcher: "terminal|delegate_agent"     # regex, tool-scoped events only
 ```
 
 Any event from the plugin-hook set is valid (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `subagent_start`, `subagent_stop`, ...). Malformed entries warn and are skipped — a broken webhook never crashes the agent. Changes take effect on the next CLI session / gateway restart.

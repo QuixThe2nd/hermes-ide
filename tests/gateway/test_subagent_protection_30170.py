@@ -1,6 +1,6 @@
 """Regression tests for #30170.
 
-#30170: Sending a message while ``delegate_task`` is running killed the
+#30170: Sending a message while ``delegate_agent`` is running killed the
 subagent because the gateway always called ``running_agent.interrupt()``
 on the parent, which then cascaded synchronously through
 ``AIAgent._active_children`` and aborted every in-flight subagent. The
@@ -113,7 +113,7 @@ def _make_parent_with_subagents(
     parent.get_activity_summary.return_value = {
         "api_call_count": 7,
         "max_iterations": 60,
-        "current_tool": "delegate_task",
+        "current_tool": "delegate_agent",
     }
     return parent
 

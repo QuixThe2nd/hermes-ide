@@ -1432,7 +1432,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     prevent duplicate sandbox creation from concurrent tool calls.
 
     Note: subagent task_ids are collapsed to "default" via
-    ``_resolve_container_task_id`` so delegate_task children share the
+    ``_resolve_container_task_id`` so delegate_agent children share the
     parent's container and its cached file_ops. RL/benchmark task_ids with
     a registered env override keep their isolation.
     """

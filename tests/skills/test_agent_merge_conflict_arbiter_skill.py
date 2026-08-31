@@ -77,7 +77,7 @@ def test_body_size_within_bundled_norms():
 
 def test_references_native_hermes_tools():
     _, body = _frontmatter_and_body()
-    for tool in ("`terminal`", "`read_file`", "`patch`", "`delegate_task`"):
+    for tool in ("`terminal`", "`read_file`", "`patch`", "`delegate_agent`"):
         assert tool in body, f"body must reference native tool {tool}"
 
 

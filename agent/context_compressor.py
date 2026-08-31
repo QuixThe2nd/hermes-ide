@@ -2133,11 +2133,11 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             url_desc += f" (+{len(urls) - 1} more)"
         return f"[web_extract] {url_desc} ({content_len:,} chars)"
 
-    if tool_name == "delegate_task":
+    if tool_name == "delegate_agent":
         goal = _str_arg(args, "goal")
         if len(goal) > 60:
             goal = goal[:57] + "..."
-        return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
+        return f"[delegate_agent] '{goal}' ({content_len:,} chars result)"
 
     if tool_name == "execute_code":
         code_str = _str_arg(args, "code")

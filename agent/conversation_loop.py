@@ -7611,7 +7611,7 @@ def run_conversation(
                 agent._invalid_json_retries = 0
 
                 # ── Post-call guardrails ──────────────────────────
-                assistant_message.tool_calls = agent._cap_delegate_task_calls(
+                assistant_message.tool_calls = agent._cap_delegate_agent_calls(
                     assistant_message.tool_calls
                 )
                 assistant_message.tool_calls = agent._deduplicate_tool_calls(

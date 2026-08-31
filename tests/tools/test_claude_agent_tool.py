@@ -1106,7 +1106,8 @@ def _patch_spawn(monkeypatch, captured: dict) -> None:
     from tools import claude_agent_tool
 
     def _fake_run_and_stream(
-        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp, on_spawn=None
+        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp,
+        on_spawn=None, on_proc=None,
     ):
         captured["cmd"] = list(cmd)
         captured["workdir"] = workdir

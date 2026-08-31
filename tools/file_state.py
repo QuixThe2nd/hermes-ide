@@ -224,7 +224,7 @@ class FileStateRegistry:
         """Return ``{writer_task_id: [paths]}`` for writes done after
         ``since_ts`` by agents OTHER than ``exclude_task_id``.
 
-        Used by delegate_task to append a "subagent modified files the
+        Used by delegate_agent to append a "subagent modified files the
         parent previously read" reminder to the delegation result.
         """
         if _disabled():

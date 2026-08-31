@@ -20,7 +20,7 @@ class TestHermesApiServerToolset:
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze", "image_generate",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
             "todo", "memory", "session_search", "cronjob",
         ]
         for tool in expected:

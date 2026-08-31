@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-development
-description: "Execute plans via delegate_task subagents (2-stage review)."
+description: "Execute plans via delegate_agent subagents (2-stage review)."
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
@@ -59,10 +59,10 @@ For EACH task in the plan:
 
 #### Step 1: Dispatch Implementer Subagent
 
-Use `delegate_task` with complete context:
+Use `delegate_agent` with complete context:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Implement Task 1: Create User model with email and password_hash fields",
     context="""
     TASK FROM PLAN:
@@ -94,7 +94,7 @@ delegate_task(
 After the implementer completes, verify against the original spec:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Review if implementation matches the spec from the plan",
     context="""
     ORIGINAL TASK SPEC:
@@ -123,7 +123,7 @@ delegate_task(
 After spec compliance passes:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Review code quality for Task 1 implementation",
     context="""
     FILES TO REVIEW:
@@ -161,7 +161,7 @@ todo([{"id": "task-1", "content": "Create User model with email field", "status"
 After ALL tasks are complete, dispatch a final integration reviewer:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Review the entire implementation for consistency and integration issues",
     context="""
     All tasks from the plan are complete. Review the full implementation:

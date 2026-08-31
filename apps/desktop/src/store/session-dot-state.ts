@@ -40,7 +40,7 @@ import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remot
 import { $subagentsBySession, activeSubagentCount } from './subagents'
 
 // Sessions parked in async delegation: the parent turn has ended (busy=false —
-// delegate_task(background=true) returns its handle the moment the children
+// delegate_agent(background=true) returns its handle the moment the children
 // are spawned) while those subagents keep working for minutes. Without this
 // input the sidebar row dropped to a plain idle dot mid-delegation, reading as
 // "done" while work was still running in child sessions. Same runtime→stored

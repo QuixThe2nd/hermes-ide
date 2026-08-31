@@ -67,7 +67,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_agent",
     # Cursor My Machines Cloud Agent (gated via check_fn on the agent binary)
     "delegate_cursor_agent",
     # Claude Code CLI delegation via the claude-glm wrapper (gated via
@@ -298,7 +298,7 @@ TOOLSETS = {
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "tools": ["delegate_agent"],
         "includes": []
     },
 
@@ -460,7 +460,7 @@ TOOLSETS = {
             "browser_exec",
             "todo", "memory",
             "session_search", "clarify",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
         ],
         "includes": [],
         # Posture toolset: selected per-session by agent/coding_context.py,
@@ -493,7 +493,7 @@ TOOLSETS = {
             "browser_exec",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
         ],
         "includes": []
     },
@@ -522,7 +522,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

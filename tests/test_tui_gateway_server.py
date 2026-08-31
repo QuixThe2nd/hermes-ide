@@ -5672,7 +5672,7 @@ def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(mo
     """A detached desktop session with live background delegation is parked.
 
     Regression for Desktop session switches / transient WS detaches: the parent
-    turn is idle, but a background delegate_task still owns the session's
+    turn is idle, but a background delegate_agent still owns the session's
     return address. Reaping immediately interrupts the child and turns its
     completion into an unowned orphan.
     """

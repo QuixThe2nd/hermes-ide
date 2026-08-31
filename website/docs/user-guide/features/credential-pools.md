@@ -196,7 +196,7 @@ Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd 
 
 ## Delegation & Subagent Sharing
 
-When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
+When the agent spawns subagents via `delegate_agent`, the parent's credential pool is automatically shared with children:
 
 - **Same provider** — the child receives the parent's full pool, enabling key rotation on rate limits
 - **Different provider** — the child loads that provider's own pool (if configured)

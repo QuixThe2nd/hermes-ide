@@ -161,7 +161,7 @@ export const ResponseLoadingIndicator: FC = () => {
   )
 }
 
-// Parked-background affordance: a top-level delegate_task runs in the
+// Parked-background affordance: a top-level delegate_agent runs in the
 // background, so the parent turn ends and the app goes idle while the subagent
 // keeps working and its result re-enters as a fresh turn later. Instead of a
 // spinner (reads as "stuck"), reuse the same compact, centered system-note

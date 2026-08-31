@@ -1497,6 +1497,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `session.terminal_continue` is the only schema-surfaced session field —
     # fold it into general rather than spawning a one-field orphan category.
     "session": "general",
+    # `missions.max_foreground_waits` is the only schema-surfaced missions
+    # field — fold it into the agent tab (next to the other delegation
+    # controls) rather than spawning a one-field orphan category.
+    "missions": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -19772,7 +19776,7 @@ def start_server(
     # proxy in front. uvicorn's ws keepalive ping runs ON the same event loop
     # as agent turns, and a single synchronous GIL-holding call on a worker
     # thread (e.g. a regex/scrub over a large model output, or a long
-    # delegate_task subagent turn) can starve that loop for *minutes* — the
+    # delegate_agent subagent turn) can starve that loop for *minutes* — the
     # loop cannot process the incoming pong, so uvicorn declares the socket
     # dead and closes it, dropping an otherwise-healthy local connection
     # (#53773: "event loop stalled 226.3s"; #48445/#50005). A longer timeout

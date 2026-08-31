@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Cadence for the heartbeat that keeps the calling agent's inactivity watchdog
 # at bay while a manual `cronjob(action="run")` executes the job synchronously
 # in-process (#76502). Mirrors the 10s cadence of
-# tools/environments/base.py::touch_activity_if_due (delegate_task's heartbeat
+# tools/environments/base.py::touch_activity_if_due (delegate_agent's heartbeat
 # uses 30s) — comfortably below the 1800s default HERMES_AGENT_TIMEOUT.
 _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 
@@ -1051,7 +1051,7 @@ def _run_claimed_job(
         # hung and kills the parent turn (#76502). Fire a heartbeat into the
         # caller's activity tracker (the same signal tool progress uses) while
         # the job runs, so the watchdog sees a working tool instead of a
-        # silent one — mirrors the delegate_task heartbeat pattern. Best-effort:
+        # silent one — mirrors the delegate_agent heartbeat pattern. Best-effort:
         # if no activity callback is registered (direct Python callers, tests),
         # behavior is unchanged.
         try:
@@ -1201,7 +1201,7 @@ def _try_dispatch_background_run(
     call the whole time: uninterruptible (the interrupt flag is only checked
     between loop iterations) and serial (a batch of runs executed one by one).
 
-    This dispatches the run like ``delegate_task``'s background mode: the tool
+    This dispatches the run like ``delegate_agent``'s background mode: the tool
     returns immediately with a handle, the run executes on the shared async
     daemon executor, and a ``type="async_delegation"`` completion event
     re-enters the conversation as a fresh turn when the job finishes — riding
@@ -1229,7 +1229,7 @@ def _try_dispatch_background_run(
         was already taken and must not be stranded).
     """
     # Finite sessions cannot route a detached result back after the turn
-    # ends — mirror delegate_task's gate and fall back to sync execution.
+    # ends — mirror delegate_agent's gate and fall back to sync execution.
     try:
         from gateway.session_context import async_delivery_supported
 
@@ -1753,7 +1753,7 @@ def cronjob(
             # concurrent tick from double-firing.
             #
             # Preferred path: dispatch the run to the background like
-            # delegate_task — the tool returns a handle immediately and the
+            # delegate_agent — the tool returns a handle immediately and the
             # job's outcome re-enters the conversation as a completion event.
             # A cron job is a full agent run (minutes to hours); executing it
             # inline made the parent turn uninterruptible and serialized

@@ -100,7 +100,7 @@ class TestDispatcherOwnedPredicate:
         assert is_dispatcher_owned_worker_context() is True
 
     def test_delegated_child_still_not_dispatcher_owned(self, monkeypatch):
-        """The pre-existing delegate_task flag keeps its meaning."""
+        """The pre-existing delegate_agent flag keeps its meaning."""
         import agent.delegation_context as dc
 
         token = dc._DELEGATED_CHILD_CONTEXT.set(True)
@@ -380,7 +380,7 @@ class TestRunJobKanbanIsolation:
 
 def test_every_dispatcher_kanban_var_is_identity_gated():
     """Invariant: every HERMES_KANBAN_* var the dispatcher injects is covered by
-    the canonical KANBAN_ENV_KEYS, so the delegate_task subprocess scrubber and
+    the canonical KANBAN_ENV_KEYS, so the delegate_agent subprocess scrubber and
     any future consumer stay in sync with ``_default_spawn``.
 
     Fails loudly if a new dispatcher var is added without registering it.

@@ -18,7 +18,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import delegate_task
+from tools.delegate_tool import delegate_agent
 
 
 def _make_mock_parent(depth=0):
@@ -68,7 +68,7 @@ class TestCostInResultEntry(unittest.TestCase):
         parent = _make_mock_parent()
         with patch("run_agent.AIAgent", return_value=child):
             result = json.loads(
-                delegate_task(goal="Test per-delegation cost", parent_agent=parent)
+                delegate_agent(goal="Test per-delegation cost", parent_agent=parent)
             )
         return parent, result
 

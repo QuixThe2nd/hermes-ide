@@ -396,7 +396,7 @@ KANBAN_GUIDANCE = (
     "task surfaces on the board as needing input.\n"
     "- Do not assign follow-up work to yourself. Assign it to the right "
     "specialist profile.\n"
-    "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
+    "- Do not call `delegate_agent` as a board substitute. `delegate_agent` is "
     "for short reasoning subtasks inside your own run; board tasks are for "
     "cross-agent handoffs that outlive one API loop."
 )

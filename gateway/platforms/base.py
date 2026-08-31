@@ -3058,7 +3058,7 @@ class BasePlatformAdapter(ABC):
     supports_status_text: bool = False
 
     # Opt-in async-delegation typing supervisor.  Discord enables this so the
-    # typing bubble stays visible while background delegate_task work runs.
+    # typing bubble stays visible while background delegate_agent work runs.
     # Slack and other adapters keep the default False — Slack typing blocks
     # the compose box, so this must never be enabled generically.
     _delegation_typing_enabled: bool = False
@@ -3084,7 +3084,7 @@ class BasePlatformAdapter(ABC):
     # Whether this adapter can deliver an ASYNC notification back to the agent
     # AFTER a turn ends — i.e. wake a fresh turn to surface a background
     # process completion (terminal notify_on_complete / watch_patterns) or a
-    # detached subagent result (delegate_task background=True).
+    # detached subagent result (delegate_agent background=True).
     #
     # True for adapters that hold a persistent outbound channel (Telegram,
     # Discord, Slack, ... — they have a real ``send()`` and the gateway runs

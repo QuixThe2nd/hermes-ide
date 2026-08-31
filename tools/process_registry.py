@@ -3069,6 +3069,45 @@ def _delegation_model_not_found_notice(results) -> "list[str] | None":
     return lines
 
 
+def _async_delegation_header(evt: dict) -> "tuple[str, str]":
+    """``(banner, lead)`` describing WHAT finished, keyed on ``result_kind``.
+
+    Legacy events (and subagent batches) keep the original wording so old
+    transcripts and the batch formatter are untouched.
+    """
+    kind = str(evt.get("result_kind") or "")
+    tool = str(evt.get("tool") or "")
+    if kind == "cli_agent" or tool == "delegate_claude_agent":
+        return (
+            "ASYNC CLAUDE CODE RUN COMPLETE",
+            "A background claude-code run you dispatched earlier has finished. "
+            "You may have moved on since dispatching it; the full task source "
+            "is below so you can act on the result or re-dispatch if things "
+            "have changed.",
+        )
+    if kind == "cloud_agent" or tool == "delegate_cursor_agent":
+        return (
+            "ASYNC CURSOR CLOUD RUN COMPLETE",
+            "A background Cursor cloud run you dispatched earlier has finished. "
+            "You may have moved on since dispatching it; the full task source "
+            "is below so you can act on the result or re-dispatch if things "
+            "have changed.",
+        )
+    if kind == "mission" or tool == "delegate_assistant":
+        return (
+            "ASSISTANT MISSION COMPLETE",
+            "An assistant mission you delegated earlier has reached a terminal "
+            "outcome. You may have moved on since dispatching it; the mission "
+            "source and outcome are below so you can act on the result.",
+        )
+    return (
+        "ASYNC DELEGATION COMPLETE",
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.",
+    )
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -3078,6 +3117,11 @@ def _format_async_delegation(evt: dict) -> str:
     may be deep in unrelated context and won't remember why the subagent
     existed, so the block is written to stand entirely on its own — enough to
     use the result OR re-dispatch if the world has moved on.
+
+    ``result_kind`` (uniform delegation lifecycle) widens the vocabulary: a
+    claude-code run, a Cursor cloud run, or an assistant mission renders with
+    its own header and lead sentence instead of subagent phrasing. Absent on
+    legacy events, which degrade to the original subagent wording.
     """
     import time as _time
 
@@ -3095,9 +3139,10 @@ def _format_async_delegation(evt: dict) -> str:
     truncated = evt.get("truncated") or evt.get("exit_reason") == "max_iterations"
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
+    header, lead = _async_delegation_header(evt)
 
     # ----- Batch (fan-out) completion: consolidated multi-task block -----
-    # A whole delegate_task fan-out dispatched as one background unit finishes
+    # A whole delegate_agent fan-out dispatched as one background unit finishes
     # together and carries a per-task `results` list. Render every subagent's
     # summary in one block so the model gets the consolidated outcome at once.
     batch_results = evt.get("results")
@@ -3186,10 +3231,8 @@ def _format_async_delegation(evt: dict) -> str:
         age = f" ({_format_age(completed_at - dispatched_at)} ago)"
 
     lines = [
-        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
-        "A background subagent you dispatched earlier has finished. You may "
-        "have moved on since dispatching it; the full task source is below so "
-        "you can act on the result or re-dispatch if things have changed.",
+        f"[{header} — {deleg_id}]",
+        lead,
         "",
     ]
     if isinstance(dispatched_at, (int, float)):
@@ -3200,7 +3243,12 @@ def _format_async_delegation(evt: dict) -> str:
         lines.append(f"Context you provided: {context}")
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
-    lines.append(f"Role: {role}   Model: {model}")
+    # Subagent batches carry role/model/api_calls; cli/cloud/mission units
+    # generally do not — render only what the event actually provided.
+    if role:
+        lines.append(f"Role: {role}   Model: {model}")
+    elif model != "?":
+        lines.append(f"Model: {model}")
     _notice = _delegation_model_not_found_notice([evt])
     if _notice:
         lines.append("")
@@ -3218,16 +3266,23 @@ def _format_async_delegation(evt: dict) -> str:
         lines.append(summary)
     elif status == "interrupted":
         lines.append(
-            "The subagent was interrupted before completing"
+            "The delegated work was interrupted before completing"
             + (f": {error}" if error else ".")
         )
         if summary:
             lines.append("Partial output:")
             lines.append(summary)
-    else:
-        # error / timeout / failed
+    elif status == "cancelled":
         lines.append(
-            f"The subagent did not complete successfully (status={status})."
+            "The delegated work was cancelled."
+            + (f"\n{error}" if error else "")
+        )
+        if summary:
+            lines.append(summary)
+    else:
+        # error / timeout / failed / unknown
+        lines.append(
+            f"The delegated work did not complete successfully (status={status})."
             + (f"\n{error}" if error else "")
         )
         if summary:
@@ -3261,7 +3316,7 @@ def _delegation_attribution_line(evt: dict) -> "str | None":
     if not info:
         # The task_id shape says "subagent" even when the registry entry has
         # aged out — still attribute generically rather than anonymously.
-        return f"Started by subagent {task_id} (delegate_task)."
+        return f"Started by subagent {task_id} (delegate_agent)."
     goal = str(info.get("goal") or "").strip()
     if len(goal) > 120:
         goal = goal[:117] + "..."

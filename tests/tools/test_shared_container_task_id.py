@@ -1,7 +1,7 @@
 """
 Regression tests for the shared-container task_id mapping.
 
-The top-level agent and all delegate_task subagents share a single
+The top-level agent and all delegate_agent subagents share a single
 terminal sandbox keyed by ``"default"``.  ``_resolve_container_task_id``
 is the sole gatekeeper for which tool-call task_ids go to the shared
 container vs. get their own isolated sandbox.  RL / benchmark

@@ -1,4 +1,4 @@
-"""delegate_task children must never trigger the interactive sudo prompt.
+"""delegate_agent children must never trigger the interactive sudo prompt.
 
 Subagents run on worker threads of the parent process and inherit
 process-wide interactivity signals (``HERMES_INTERACTIVE=1`` set by the CLI

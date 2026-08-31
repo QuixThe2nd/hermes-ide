@@ -7345,7 +7345,7 @@ def _get_usage(agent) -> dict:
     except Exception:
         # A status-bar readout must never break usage reporting.
         pass
-    # Live count of background/async subagents still running (delegate_task
+    # Live count of background/async subagents still running (delegate_agent
     # batches + background single delegations). Mirrors the classic CLI status
     # bar's ⛓ indicator; sourced from the same async_delegation registry.
     try:
@@ -12828,7 +12828,7 @@ def _run_prompt_submit(
         # The conversation runs on a fresh thread, so ContextVars from the RPC
         # dispatcher do not follow automatically. Rebind the exact transport
         # stored on this session generation before any tool can commission a
-        # child; delegate_task then captures it as non-serializable authority.
+        # child; delegate_agent then captures it as non-serializable authority.
         transport_token = bind_transport(session.get("transport"))
         runtime_session_token = _current_runtime_session_record.set(session)
         # Bound eagerly so the except/finally paths below always have an agent
@@ -16094,7 +16094,7 @@ def _format_live_review_output(session: Optional[dict], arg: str) -> str:
     notification poller already drains async-delegation completions for the
     owning session, so the finished review re-enters this chat as a normal
     completion turn. The dispatch stamps the parent agent's durable
-    session_id as the completion's session_key (the delegate_task CLI-path
+    session_id as the completion's session_key (the delegate_agent CLI-path
     fallback), which is exactly what ``_session_owns_notification_event``
     matches against.
     """

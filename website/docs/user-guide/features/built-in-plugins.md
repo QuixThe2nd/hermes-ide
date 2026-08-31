@@ -138,7 +138,7 @@ The file is still written. The model reads the warning in the next turn's tool m
 
 **Disabling again:** `hermes plugins disable security-guidance`.
 
-**What it does not do (yet):** the upstream Anthropic plugin has two more layers — an LLM diff review on each agent turn that touched files, and an agentic commit-time review that traces data flow across files. Neither is ported. The agent can already run those reviews on demand via `delegate_task`.
+**What it does not do (yet):** the upstream Anthropic plugin has two more layers — an LLM diff review on each agent turn that touched files, and an agentic commit-time review that traces data flow across files. Neither is ported. The agent can already run those reviews on demand via `delegate_agent`.
 
 ### observability/langfuse
 

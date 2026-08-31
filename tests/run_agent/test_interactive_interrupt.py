@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Interactive interrupt test that mimics the exact CLI flow.
 
-Starts an agent in a thread with a mock delegate_task that takes a while,
+Starts an agent in a thread with a mock delegate_agent that takes a while,
 then simulates the user typing a message via _interrupt_queue.
 
 Logs every step to stderr (which isn't affected by redirect_stdout)

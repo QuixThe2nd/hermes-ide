@@ -54,6 +54,8 @@ MUTATING_TOOL_NAMES = frozenset(
         "browser_navigate",
         "send_message",
         "cronjob",
+        "delegate_agent",
+        # Hidden legacy alias — same write class as the renamed tool.
         "delegate_task",
         "process",
     }
@@ -692,7 +694,9 @@ class ToolCallGuardrailController:
             self._turn_web_search_count += 1
             return None
 
-        if tool_name == "delegate_task":
+        # Legacy alias included: a replayed ``delegate_task`` call must not
+        # bypass the subagent cap.
+        if tool_name in ("delegate_agent", "delegate_task"):
             cap = caps.max_subagents
             if not cap:
                 return None
@@ -707,7 +711,7 @@ class ToolCallGuardrailController:
                     action="block",
                     code="loop_subagent_cap",
                     message=(
-                        f"Blocked delegate_task: this turn has already spawned "
+                        f"Blocked {tool_name}: this turn has already spawned "
                         f"{self._turn_subagent_count} subagents (limit {cap}). "
                         "This looks like a runaway delegation loop. Finish the "
                         "work with the results you have and answer the user."
@@ -828,12 +832,12 @@ def _non_negative_int(value: Any, default: int) -> int:
 
 
 def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
-    """How many subagents a single delegate_task call spawns.
+    """How many subagents a single delegate_agent call spawns.
 
-    delegate_task runs in one of two modes: a batch (``tasks`` is a non-empty
+    delegate_agent runs in one of two modes: a batch (``tasks`` is a non-empty
     list, one child per item) or a single task (``goal``). Count the batch size
     when present, otherwise 1, so the session subagent cap reflects real spawns
-    rather than delegate_task invocations. Control actions (list/steer/stop)
+    rather than delegate_agent invocations. Control actions (list/steer/stop)
     spawn nothing and must not consume the cap.
     """
     if isinstance(args, Mapping):

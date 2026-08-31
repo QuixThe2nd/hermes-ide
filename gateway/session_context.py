@@ -82,7 +82,7 @@ _SESSION_USER_ID_ALT: ContextVar = ContextVar("HERMES_SESSION_USER_ID_ALT", defa
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 # Platform-neutral scope discriminator (Discord guild / Slack workspace /
 # Matrix server) of the originating chat. Captured at session-bind time so
-# async producers (delegate_task background=True, terminal watchers) can
+# async producers (delegate_agent background=True, terminal watchers) can
 # persist a completion's full routing origin — on a relay-fronted deployment
 # the connector's fail-closed egress guard needs scope_id (or a user binding)
 # to resolve the tenant for a scoped reply after a restart.
@@ -125,7 +125,7 @@ _CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
 #         stateless API-server requests and dispatcher-spawned Kanban workers.
 #
 # Tools that promise async delivery (terminal notify_on_complete /
-# watch_patterns, delegate_task background=True) read this via
+# watch_patterns, delegate_agent background=True) read this via
 # ``async_delivery_supported()`` and refuse to hand out a promise the channel
 # can't keep — turning a silent no-op into an explicit contract.
 #
@@ -527,10 +527,12 @@ def declare_stateless_channel() -> None:
     Callers that already build a full session context (cron's ``run_job``) get
     the same state by passing ``async_delivery=False`` to ``set_session_vars``.
 
-    A session that cannot take a late completion makes ``delegate_task`` fall
-    through to its existing inline/synchronous path, so subagent results are
-    returned within the turn instead of being dispatched to a channel that will
-    never deliver them.
+    A session that cannot take a late completion makes an explicit
+    ``background=true`` fail clearly BEFORE any work starts (see
+    ``tools.async_delegation.background_delivery_supported``): dispatching a
+    result to a channel that will never deliver it would silently lose it. The
+    default foreground mode is unaffected — it blocks and returns the result
+    within the turn, which is exactly what a finite runner wants.
 
     See NousResearch/hermes-agent#53027 and #63142.
     """
@@ -550,7 +552,7 @@ def async_delivery_supported() -> bool:
     and any other path that never bound the contextvar return ``True``.
 
     Tools that promise async delivery (``terminal`` notify_on_complete /
-    watch_patterns, ``delegate_task`` background=True) consult this before
+    watch_patterns, ``delegate_agent`` background=True) consult this before
     registering a watcher / dispatching a detached child, so they can refuse a
     promise the channel can't keep instead of silently no-op'ing.
     """

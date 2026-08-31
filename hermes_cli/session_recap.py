@@ -14,7 +14,7 @@ Differences from Claude Code:
       Discord, Slack, …) because both call into the same ``build_recap``
       helper. Claude Code only shows this on the CLI.
     - Tailored to hermes-agent's tool vocabulary (``terminal``, ``patch``,
-      ``write_file``, ``delegate_task``, ``browser_*``, ``web_*``) — the
+      ``write_file``, ``delegate_agent``, ``browser_*``, ``web_*``) — the
       recap surfaces which classes of work were most active.
 """
 from __future__ import annotations

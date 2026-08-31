@@ -38,7 +38,7 @@ Config schema (``~/.hermes/config.yaml``)::
           # secret literal (discouraged) or env var name (preferred):
           secret_env: HERMES_OUTBOUND_WEBHOOK_SECRET
           # optional regex, honored for pre/post_tool_call only:
-          matcher: "terminal|delegate_task"
+          matcher: "terminal|delegate_agent"
           timeout: 10       # per-attempt seconds, clamped to [1, 60]
           name: ci-notify   # optional label for logs / `hermes hooks list`
 

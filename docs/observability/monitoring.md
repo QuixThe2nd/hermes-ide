@@ -30,11 +30,11 @@ exporting account/profile identity or the raw install identifier.
 `hermes.gateway.background_delegations` are complementary. `active_agents`
 counts foreground message turns plus in-flight cron jobs plus API runs — the
 work the gateway drains on shutdown. `background_work` counts detached work that
-`active_agents` never includes: backgrounded `delegate_task` subagents,
+`active_agents` never includes: backgrounded `delegate_agent` subagents,
 `terminal(background=true)` processes, and kanban workers; it is
 **task-granular** — a fan-out batch of N subagents counts as N — so it reflects
 real concurrent subagent load. `background_delegations` counts only async
-delegation **units** (each `delegate_task` dispatch is one, a fan-out batch is
+delegation **units** (each `delegate_agent` dispatch is one, a fan-out batch is
 one), matching the async pool's capacity accounting; alert it against
 `delegation.max_concurrent_children` to see slot pressure. Sum `active_agents`
 and `background_work` for total live work per instance; use

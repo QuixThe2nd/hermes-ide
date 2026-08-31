@@ -123,7 +123,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
 }
 
 /**
- * A `delegate_task` call, as the fan-out it is.
+ * A `delegate_agent` call, as the fan-out it is.
  *
  * The generic tool row can only say "Delegated 2 tasks" and hand over a blob
  * of JSON — the work itself happens in child sessions the transcript never

@@ -1,7 +1,7 @@
 """Gateway /review command — direct handler tests.
 
 Drives the REAL GatewayRunner._handle_review_command on a bare runner with a
-cached agent, dispatching through the REAL delegate_task background rail
+cached agent, dispatching through the REAL delegate_agent background rail
 (child build/run stubbed at the delegate_tool seam, same pattern as
 tests/tools/test_async_delegation.py).
 """

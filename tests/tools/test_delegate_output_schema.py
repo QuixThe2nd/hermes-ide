@@ -1,4 +1,4 @@
-"""T1-24: structured-output schema on delegate_task.
+"""T1-24: structured-output schema on delegate_agent.
 
 Per-task ``output_schema`` (JSON Schema object): the child receives the
 schema as an explicit output contract, the parent validates the child's
@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
-    delegate_task,
+    delegate_agent,
 )
 from tools.delegation_output_schema import (
     append_output_contract,
@@ -311,7 +311,7 @@ class TestRunSingleChildSchemaValidation:
 
 
 # ---------------------------------------------------------------------------
-# delegate_task dispatch-time schema handling
+# delegate_agent dispatch-time schema handling
 # ---------------------------------------------------------------------------
 
 
@@ -338,7 +338,7 @@ class TestDelegateTaskDispatch:
                 },
             ),
         ):
-            out = delegate_task(
+            out = delegate_agent(
                 tasks=[
                     {"goal": "Summarize the release notes for module A", "output_schema": "not-a-dict"},
                     {"goal": "Summarize the release notes for module B"},
@@ -363,7 +363,7 @@ class TestDelegateTaskDispatch:
                 },
             ),
         ):
-            out = delegate_task(
+            out = delegate_agent(
                 tasks=[
                     {"goal": "Summarize the release notes for module A", "output_schema": {"type": 42}},
                     {"goal": "Summarize the release notes for module B"},
@@ -401,7 +401,7 @@ class TestDelegateTaskDispatch:
                 side_effect=fake_build,
             ),
         ):
-            out = delegate_task(
+            out = delegate_agent(
                 goal="produce the address",
                 context="base context",
                 output_schema=ADDRESS_SCHEMA,

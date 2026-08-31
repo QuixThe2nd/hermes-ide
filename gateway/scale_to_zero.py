@@ -149,7 +149,7 @@ def is_idle(
     Idle iff: no counted active work (in-flight agent turns + cron jobs +
     API-server runs — the caller aggregates every foreground work source),
     no inbound within the timeout window, and no live background work
-    (backgrounded delegate_task / kanban / bg terminal). Any active work
+    (backgrounded delegate_agent / kanban / bg terminal). Any active work
     keeps the gateway awake — suspending mid-flight would lose it.
 
     ``active_work_count`` deliberately names the BROAD aggregate, not just

@@ -45,7 +45,7 @@ repo: load the skill, then follow the Procedure top to bottom.
 
 **Spawned neutral agent** — the preferred shape in multi-agent campaigns:
 
-- `delegate_task`: spawn a subagent whose task message contains the repo path,
+- `delegate_agent`: spawn a subagent whose task message contains the repo path,
   both branch names, and both sides' intent summaries verbatim, plus an
   instruction to follow this skill.
 - Kanban-native: create a reconciliation card assigned to a **third profile**

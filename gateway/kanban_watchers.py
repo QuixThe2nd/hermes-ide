@@ -102,7 +102,7 @@ def _run_in_fresh_context(func: Callable[..., Any], /, *args: Any) -> Any:
 
     ``asyncio.to_thread`` copies the calling task's context onto the worker
     thread. Supervised Kanban ticks are process-owned writers; if that copy
-    still carries a ``delegate_task`` child marker, ``write_txn``
+    still carries a ``delegate_agent`` child marker, ``write_txn``
     false-trips. Since watchers spawn from a fresh ``Context``
     (``_spawn_supervised``), this offload-boundary scrub is defense in
     depth: it covers non-supervised spawn paths and any task context frozen

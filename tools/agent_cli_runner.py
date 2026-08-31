@@ -153,6 +153,7 @@ def run_agent_cli(
     log_path: Optional[Path] = None,
     env: Optional[Mapping[str, str]] = None,
     on_spawn: Optional[Callable[[Path], None]] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
 
@@ -177,6 +178,11 @@ def run_agent_cli(
     it raises is logged at debug level and swallowed, so a broken callback
     can never affect the run itself.
 
+    ``on_proc`` is the same best-effort hook for the ``Popen`` itself, fired
+    right after spawn. A background delegation uses it to keep a handle for
+    ``interrupt_fn``, so an explicit stop can kill the process group even if
+    the monitoring thread is briefly descheduled.
+
     Returns ``(error_code, log_path, log_text, duration_seconds, returncode)``.
     """
     start_mono = time.monotonic()
@@ -199,6 +205,12 @@ def run_agent_cli(
         pgid = os.getpgid(proc.pid)
     except (OSError, ProcessLookupError):
         pgid = None
+
+    if on_proc is not None:
+        try:
+            on_proc(proc)
+        except Exception:
+            logger.debug("on_proc callback failed for pid %s", proc.pid, exc_info=True)
 
     if log_path is None:
         assert log_dir is not None and run_timestamp is not None, (

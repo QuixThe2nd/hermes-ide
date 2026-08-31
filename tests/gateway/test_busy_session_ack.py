@@ -628,7 +628,7 @@ class TestBusySessionOnboardingHint:
 class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the
     session slot or the executor finished — otherwise a stale
-    'running: delegate_task' bubble outlives the run that spawned it (#12029).
+    'running: delegate_agent' bubble outlives the run that spawned it (#12029).
     """
 
     def test_notification_stops_after_session_ownership_moves(self):

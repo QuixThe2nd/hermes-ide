@@ -51,19 +51,27 @@ def missions_home(tmp_path, monkeypatch):
 
 
 def _start_group_mission(pm, chat_id=GROUP, *, profile="assistant"):
+    # background=true: the origin-side tool now BLOCKS on its foreground
+    # default (uniform delegation lifecycle) and these tests only need a
+    # started mission.
     result = json.loads(
         pm.handle_dispatch_assistant(
             {
                 "chat_id": chat_id,
                 "chat_name": "Picnic Crew",
                 "goal": "Agree a picnic date",
+                "background": True,
                 **({"profile": profile} if profile else {}),
             },
             session_key="agent:main:discord:thread:abc:abc",
             session_id="sess-1",
         )
     )
-    assert result["ok"] is True, result
+    assert result["status"] == "dispatched", result
+    mission = pm.find_active_mission_for_chat(chat_id)
+    assert mission is not None
+    result["ok"] = True
+    result["mission_id"] = mission["mission_id"]
     return result
 
 
@@ -224,7 +232,7 @@ class TestGroupMissionAuthorization:
             monkeypatch.delenv(var, raising=False)
         json.loads(
             missions_home.handle_dispatch_assistant(
-                {"chat_id": MEMBER, "goal": "dm mission"},
+                {"chat_id": MEMBER, "goal": "dm mission", "background": True},
                 session_key="agent:main:discord:thread:abc:abc",
                 session_id="sess-1",
             )

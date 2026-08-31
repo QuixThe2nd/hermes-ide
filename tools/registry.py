@@ -207,12 +207,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "advertise",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 advertise=True):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -225,12 +226,18 @@ class ToolEntry:
         self.max_result_size_chars = max_result_size_chars
         # Optional zero-arg callable returning a dict of schema overrides
         # applied at get_definitions() time. Use for fields that depend on
-        # runtime config (e.g. delegate_task's description must reflect the
+        # runtime config (e.g. delegate_agent's description must reflect the
         # user's current delegation.max_concurrent_children / max_spawn_depth
         # so the model isn't told the wrong limits). The callable is invoked
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Hidden (advertise=False) entries stay DISPATCHABLE forever but are
+        # excluded from get_definitions(), so the model never sees them. Used
+        # for renamed tools' legacy aliases: a replayed or hand-written call
+        # with the old name keeps working without paying the schema cost of a
+        # second advertised tool.
+        self.advertise = advertise
 
 
 class _PluginOverridePolicy:
@@ -257,7 +264,7 @@ class _PluginOverridePolicy:
 # A single ``subprocess.run([docker, "version"], timeout=5)`` that times out
 # under load returns False for one call, which would silently strip the entire
 # terminal+file toolset from whatever agent is being built at that instant —
-# most visibly a delegate_task subagent, which then reports "Tool read_file
+# most visibly a delegate_agent subagent, which then reports "Tool read_file
 # does not exist". To absorb such flakes WITHOUT pinning a permanently-stale
 # "available" verdict, we remember the last time each check returned True and,
 # when a fresh probe fails within a short grace window of that last success,
@@ -775,6 +782,7 @@ class ToolRegistry:
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
         scope: Optional[str] = None,
+        advertise: bool = True,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -870,6 +878,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                advertise=advertise,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -1062,6 +1071,11 @@ class ToolRegistry:
             entry = entries_by_name.get(name)
             if not entry:
                 continue
+            # Hidden aliases (advertise=False) are dispatch-only: they exist so
+            # a renamed tool's old name keeps working, but never spend schema
+            # tokens in a model-facing definitions list.
+            if entry.advertise is False:
+                continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
                     check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
@@ -1071,7 +1085,7 @@ class ToolRegistry:
                     continue
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}
-            # Apply runtime-dynamic overrides (e.g. delegate_task description
+            # Apply runtime-dynamic overrides (e.g. delegate_agent description
             # depends on current delegation.max_concurrent_children /
             # max_spawn_depth). Caller side (model_tools.get_tool_definitions)
             # already keys its memo on config.yaml mtime + size, so changes

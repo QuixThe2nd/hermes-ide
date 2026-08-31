@@ -46,7 +46,7 @@ from typing import List, Optional
 # fallback whenever no explicit ``session_id`` is passed.
 #
 # ContextVar (not a module global) so concurrent agents in one process —
-# gateway sessions, delegate_task subagents, batch runners — never see each
+# gateway sessions, delegate_agent subagents, batch runners — never see each
 # other's conversation id. Worker threads spawned via
 # ``tools.thread_context.propagate_context_to_thread`` (background review,
 # MoA fan-out, tool executor) inherit it through the copied Context; bare

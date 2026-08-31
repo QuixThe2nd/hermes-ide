@@ -1034,7 +1034,7 @@ def should_use_direct_api_call(agent) -> bool:
         return False
     if getattr(agent, "platform", None) == "cron":
         return True
-    # Delegated child (delegate_task sync or background) — detected via the
+    # Delegated child (delegate_agent sync or background) — detected via the
     # execution ContextVar set by _run_single_child, with the agent's own
     # platform stamp as a fallback for callers that bypass the runner.
     try:

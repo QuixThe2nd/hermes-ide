@@ -595,7 +595,7 @@ class MemoryManager:
         self._providers.append(provider)
 
         # Core tool names are reserved — a memory provider must never register
-        # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
+        # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_agent``).
         # Built-ins always win, so such a tool is dropped at agent init and
         # would otherwise linger in ``_tool_to_provider`` and hijack dispatch
         # (#40466). Reject it here, at the door, so it never enters the routing
@@ -1005,7 +1005,7 @@ class MemoryManager:
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
         """Collect tool schemas from all providers.
 
-        Reserved core tool names (``clarify``, ``delegate_task``, etc.) are
+        Reserved core tool names (``clarify``, ``delegate_agent``, etc.) are
         skipped — they are rejected from the routing table in
         :meth:`add_provider`, so the manager must not advertise a schema it
         will never route. Built-ins always win (#40466).

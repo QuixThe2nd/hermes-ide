@@ -1,6 +1,6 @@
-"""delegate_task(action=...) — model-facing live orchestration of subagents.
+"""delegate_agent(action=...) — model-facing live orchestration of subagents.
 
-Covers the control plane added to delegate_task: action='list' /
+Covers the control plane added to delegate_agent: action='list' /
 'steer' / 'stop' resolve against the module-level _active_subagents
 registry, scoped by the _delegate_parent_ref ownership chain so a
 conversation can only control its own spawn tree. Also pins the two
@@ -17,7 +17,7 @@ from tools.delegate_tool import (
     _owns_subagent_record,
     _register_subagent,
     _unregister_subagent,
-    delegate_task,
+    delegate_agent,
     get_subagent_attribution,
 )
 
@@ -315,43 +315,43 @@ def test_stop_unknown_id_mentions_completion_path():
 
 
 # ---------------------------------------------------------------------------
-# delegate_task() entrypoint routing
+# delegate_agent() entrypoint routing
 # ---------------------------------------------------------------------------
 
 
-def test_delegate_task_routes_control_action_before_spawn_machinery():
+def test_delegate_agent_routes_control_action_before_spawn_machinery():
     """action='list' must return synchronously without touching spawn paths
     (no goal/tasks required, no pause gate, no depth checks)."""
     parent = _StubParent()
-    out = json.loads(delegate_task(action="list", parent_agent=parent))
+    out = json.loads(delegate_agent(action="list", parent_agent=parent))
     assert out["action"] == "list"
 
 
-def test_delegate_task_control_action_bypasses_spawn_pause():
+def test_delegate_agent_control_action_bypasses_spawn_pause():
     from tools.delegate_tool import set_spawn_paused
 
     parent = _StubParent()
     set_spawn_paused(True)
     try:
-        out = json.loads(delegate_task(action="list", parent_agent=parent))
+        out = json.loads(delegate_agent(action="list", parent_agent=parent))
         assert out["action"] == "list"
     finally:
         set_spawn_paused(False)
 
 
-def test_delegate_task_unknown_action_is_an_error():
-    out = delegate_task(action="pause", goal="g", parent_agent=_StubParent())
+def test_delegate_agent_unknown_action_is_an_error():
+    out = delegate_agent(action="pause", goal="g", parent_agent=_StubParent())
     assert "Unknown action" in out
 
 
-def test_delegate_task_spawn_action_still_validates_goal():
-    out = delegate_task(action="spawn", parent_agent=_StubParent())
+def test_delegate_agent_spawn_action_still_validates_goal():
+    out = delegate_agent(action="spawn", parent_agent=_StubParent())
     assert "No tasks provided" in out
     assert "one-entry" in out  # teaching error carries the canonical shape
 
 
-def test_delegate_task_requires_parent_agent_for_control():
-    out = delegate_task(action="list", parent_agent=None)
+def test_delegate_agent_requires_parent_agent_for_control():
+    out = delegate_agent(action="list", parent_agent=None)
     assert "requires a parent agent" in out
 
 
@@ -359,7 +359,7 @@ def test_empty_tasks_array_with_goal_is_single_task_not_batch_error():
     """Small models emit tasks=[] alongside goal; that must not trip a
     batch-count gate (observed live with gpt-5.4-mini on Nous Portal) —
     it falls through to the no-tasks teaching error."""
-    out = delegate_task(tasks=[], goal="", parent_agent=_StubParent())
+    out = delegate_agent(tasks=[], goal="", parent_agent=_StubParent())
     assert "No tasks provided" in out
     assert "at least 2 tasks" not in out
 
@@ -862,20 +862,20 @@ def test_control_action_not_blocked_at_spawn_cap():
     cfg = ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=1))
     ctl = ToolCallGuardrailController(cfg)
     # Exhaust the cap with a spawn
-    assert ctl.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    assert ctl.before_call("delegate_agent", {"goal": "a"}).action == "allow"
     # A second spawn is blocked
-    assert ctl.before_call("delegate_task", {"goal": "b"}).action == "block"
+    assert ctl.before_call("delegate_agent", {"goal": "b"}).action == "block"
     # Control actions still pass on a fresh controller after cap exhaustion
     ctl2 = ToolCallGuardrailController(cfg)
-    assert ctl2.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    assert ctl2.before_call("delegate_agent", {"goal": "a"}).action == "allow"
     assert (
         ctl2.before_call(
-            "delegate_task", {"action": "stop", "subagent_id": "x"}
+            "delegate_agent", {"action": "stop", "subagent_id": "x"}
         ).action
         == "allow"
     )
     assert (
-        ctl2.before_call("delegate_task", {"action": "list"}).action == "allow"
+        ctl2.before_call("delegate_agent", {"action": "list"}).action == "allow"
     )
     # And spawns remain blocked afterwards — the control call didn't reset it
-    assert ctl2.before_call("delegate_task", {"goal": "c"}).action == "block"
+    assert ctl2.before_call("delegate_agent", {"goal": "c"}).action == "block"

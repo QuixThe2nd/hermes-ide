@@ -430,7 +430,7 @@ def _validate_workdir(workdir: str) -> str | None:
 
 
 def _in_delegated_child_context() -> bool:
-    """Return True while running inside a delegate_task child.
+    """Return True while running inside a delegate_agent child.
 
     Subagents execute on worker threads of the parent process, so they
     inherit process-wide interactivity signals (``HERMES_INTERACTIVE=1`` set
@@ -454,7 +454,7 @@ def _in_delegated_child_context() -> bool:
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for headless contexts
-    (messaging gateway sessions and delegate_task subagents).
+    (messaging gateway sessions and delegate_agent subagents).
 
     Returns enhanced output if sudo failed in such a context, else original.
     """
@@ -1093,7 +1093,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         return command, None
 
     has_sudo_prompt_callback = _get_sudo_password_callback() is not None
-    # delegate_task children inherit the parent's process-wide
+    # delegate_agent children inherit the parent's process-wide
     # HERMES_INTERACTIVE=1 (and, on a recycled worker thread, potentially a
     # stale thread-local callback), but there is no user on the other side of
     # this execution context: prompting from a subagent thread fights the
@@ -1335,7 +1335,7 @@ def clear_task_env_overrides(task_id: str):
         _container_aliases.pop(task_id, None)
 
 
-# Subagent → parent container aliasing.  delegate_task children get their own
+# Subagent → parent container aliasing.  delegate_agent children get their own
 # task_id (file-state tracking, TUI events) but must share the PARENT
 # session's container — one bash, one /workspace, one set of installed
 # packages.  With per-session container isolation active (docker +
@@ -1348,7 +1348,7 @@ _container_alias_lock = threading.Lock()
 def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) -> None:
     """Make *child_task_id* resolve to *parent_task_id*'s container.
 
-    Called by ``delegate_task`` at child spawn so subagents share the parent
+    Called by ``delegate_agent`` at child spawn so subagents share the parent
     session's sandbox under per-session container isolation. A missing/empty
     parent id aliases the child to ``"default"`` (top-level CLI parent).
     """
@@ -1461,7 +1461,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     ``_active_environments``.
 
     The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
+    ``delegate_agent`` children pass their own subagent ID so that
     file-state tracking, the active-subagents registry, and TUI events stay
     distinct per child -- but we deliberately collapse that ID back to
     ``"default"`` here so subagents share the parent's long-lived container
@@ -1483,7 +1483,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     false``): each session's task_id is its own container key, so a fresh
     chat gets a fresh sandbox with only ITS mounts — a previous session's
     workspace can no longer appear in a new session's container.
-    ``delegate_task`` children keep sharing the parent's container via the
+    ``delegate_agent`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
     """
     if task_id and _has_isolation_overrides(task_id):
@@ -2888,7 +2888,7 @@ def terminal_tool(
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
-        # every delegate_task child share one container; only task_ids with
+        # every delegate_agent child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
         if _host_local:

@@ -1947,6 +1947,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
+        advertise: bool = True,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
@@ -1962,6 +1963,12 @@ class PluginContext:
         any enabled plugin could silently replace a privileged built-in
         like ``shell_exec`` or ``write_file`` and exfiltrate everything
         the model invokes through it.
+
+        ``advertise=False`` registers a hidden alias: the name stays
+        DISPATCHABLE forever (replayed transcripts, cached tool schemas,
+        third-party scripts) but never appears in ``get_definitions()``,
+        so it costs no schema tokens. Used by renamed tools to keep the
+        old spelling working (uniform delegation lifecycle).
         """
         if override and not self._tool_override_allowed(name):
             plugin_id = self.manifest.key or self.manifest.name
@@ -1996,6 +2003,7 @@ class PluginContext:
             emoji=emoji,
             override=override,
             scope=scope,
+            advertise=advertise,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         if (
@@ -2420,12 +2428,12 @@ class PluginContext:
         """Dispatch a tool call through the registry, with parent agent context.
 
         This is the public interface for plugin slash commands that need to call
-        tools like ``delegate_task`` without reaching into framework internals.
+        tools like ``delegate_agent`` without reaching into framework internals.
         The parent agent (if available) is resolved automatically — plugins never
         need to access the agent directly.
 
         Args:
-            tool_name: Registry name of the tool (e.g. ``"delegate_task"``).
+            tool_name: Registry name of the tool (e.g. ``"delegate_agent"``).
             args: Tool arguments dict (same as what the model would pass).
             **kwargs: Extra keyword args forwarded to the registry dispatch.
 

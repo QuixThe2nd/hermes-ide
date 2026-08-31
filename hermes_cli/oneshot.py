@@ -259,9 +259,11 @@ def run_oneshot(
     # for a detached subagent's completion to re-enter, and nothing here drains
     # process_registry.completion_queue (only cli.py's interactive process_loop
     # and the gateway watchers do). Left unbound, async_delivery_supported()
-    # defaults True, delegate_task is forced background, and every subagent
-    # result is discarded. Declaring the channel stateless routes delegate_task
-    # to its inline/synchronous path. See declare_stateless_channel().
+    # defaults True, so an explicit background=true would dispatch a result that
+    # is silently discarded. Declaring the channel stateless makes
+    # background=true fail up front instead, while the default foreground mode
+    # keeps blocking and returning results within this turn.
+    # See declare_stateless_channel().
     declare_stateless_channel()
 
     # Redirect stderr AND stdout to devnull for the entire call tree.
