@@ -180,6 +180,27 @@ def record_skip(name: str, reason: str) -> None:
         logger.debug("Could not record update skip %s: %s", name, exc)
 
 
+def record_prepared_generation(generation: str, expected_sha: str) -> None:
+    """Bind the active receipt to the prepared generation it publishes.
+
+    ``hermes update --defer-restart`` records the generation identity here
+    *before* finalizing the receipt, so the durable receipt and the
+    ``fleet_restart_pending`` marker it publishes can be cross-checked at
+    activation time: same schema, same generation id, same target SHA.
+    Never raises.
+    """
+    try:
+        if _current is not None:
+            _current.data["prepared_generation"] = {
+                "schema": 1,
+                "generation": str(generation),
+                "expected_sha": str(expected_sha),
+                "restart": "pending",
+            }
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not record prepared generation: %s", exc)
+
+
 def record_gateway_restart(**kwargs: Any) -> None:
     """Record the gateway restart phase outcome (see UpdateReceipt)."""
     try:
@@ -214,15 +235,26 @@ def finalize_update_receipt(
         directory.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         path = directory / f"update_{stamp}_{os.getpid()}.json"
-        path.write_text(
-            json.dumps(receipt.data, indent=2, default=str), encoding="utf-8"
-        )
-        # Stable pointer for the dashboard/desktop: latest receipt.
+        # The receipt a prepared generation binds is evidence activation
+        # later trusts, so publication is the same durable transaction as
+        # the prepared record itself: serialized up front, exclusive temp
+        # file, full-write loop, file fsync, atomic replace, directory
+        # fsync on POSIX, exact read-back. A receipt that cannot be proven
+        # on disk is NOT written — returning None fails the publication
+        # closed instead of claiming success over a truncated file.
+        from hermes_cli.durable_state import durable_publish_bytes
+
+        payload = json.dumps(receipt.data, indent=2, default=str).encode("utf-8")
+        try:
+            durable_publish_bytes(path, payload)
+        except OSError as exc:
+            logger.debug("Could not durably publish update receipt: %s", exc)
+            return None
+        # Stable pointer for the dashboard/desktop: latest receipt. A
+        # best-effort copy — the named receipt above is the durable record.
         latest = directory / "latest.json"
         try:
-            latest.write_text(
-                json.dumps(receipt.data, indent=2, default=str), encoding="utf-8"
-            )
+            latest.write_text(payload.decode("utf-8"), encoding="utf-8")
         except OSError:
             pass
         _prune_old_receipts(directory)
@@ -296,11 +328,95 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
         return None
 
 
+def read_named_receipt(name: str) -> Optional[dict[str, Any]]:
+    """Read one receipt file from the receipt directory by exact name.
+
+    The prepared-generation marker binds the receipt file a ``--defer-restart``
+    run finalized, so activation can re-read *that* record instead of
+    ``latest.json`` (which any later update run overwrites). The name must be
+    a bare file name — a path would let a hand-edited marker point the
+    activation at arbitrary JSON outside the receipt directory. Returns None
+    for a missing/unreadable/malformed receipt; never raises.
+    """
+    if not name or Path(name).name != name:
+        return None
+    try:
+        path = _receipt_dir() / name
+        if not path.is_file():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def amend_receipt_outcome(
+    path: Path, *, outcome: str, error: str = ""
+) -> bool:
+    """Rewrite one finalized receipt with a corrected outcome.
+
+    Used by the deferred-prepare publish sequence when the receipt was made
+    durable (step 1) but publishing the prepared marker over it failed
+    (step 2): the run must exit nonzero, and the receipt it already wrote
+    must not keep claiming a success the marker disproves. Best-effort;
+    returns whether the rewrite landed.
+    """
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return False
+        payload["outcome"] = str(outcome)
+        if error:
+            payload["stop_reason"] = str(error)
+        from hermes_cli.durable_state import durable_publish_bytes
+
+        durable_publish_bytes(
+            Path(path),
+            json.dumps(payload, indent=2, default=str).encode("utf-8"),
+        )
+        # latest.json is a separate file holding the same run's payload, so
+        # an inode comparison never matches — identify the run instead. When
+        # a later update has already replaced it, leave that newer record be.
+        latest = _receipt_dir() / "latest.json"
+        try:
+            current = json.loads(latest.read_text(encoding="utf-8"))
+        except Exception:
+            current = None
+        if isinstance(current, dict) and (
+            current.get("pid") == payload.get("pid")
+            and current.get("started_at") == payload.get("started_at")
+        ):
+            latest.write_text(
+                json.dumps(payload, indent=2, default=str), encoding="utf-8"
+            )
+        return True
+    except Exception as exc:
+        logger.debug("Could not amend update receipt %s: %s", path, exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Fleet version verification
 # ---------------------------------------------------------------------------
 
 def collect_fleet_versions(
+    *, pre_restart_pids: Optional[list[int]] = None
+) -> list[dict[str, Any]]:
+    """Degrading wrapper around :func:`collect_fleet_versions_strict`.
+
+    Historical contract: never raises, a probe failure yields a (possibly
+    empty) list. Fail-closed callers (the auto-update activation) must use
+    the strict variant — for them "probe returned nothing" and "probe
+    failed" must never look alike.
+    """
+    try:
+        return collect_fleet_versions_strict(pre_restart_pids=pre_restart_pids)
+    except Exception as exc:
+        logger.debug("Fleet version probe failed: %s", exc)
+        return []
+
+
+def collect_fleet_versions_strict(
     *, pre_restart_pids: Optional[list[int]] = None
 ) -> list[dict[str, Any]]:
     """Snapshot every profile's gateway code identity vs. the current tree.
@@ -328,7 +444,15 @@ def collect_fleet_versions(
     kill weeks ago) must NOT fail every future update. Callers that don't
     have a pre-restart snapshot (``None``/empty) get the historical
     behavior: dead PIDs are skipped.
-    Never raises; a probe failure yields an empty list.
+
+    Raises when the profile/homes enumeration itself fails — use
+    :func:`collect_fleet_versions` for the historical never-raises wrapper.
+    A per-runtime probe that breaks degrades the same way it always has: the
+    rows collected so far survive and the remaining profiles are still
+    probed, so the stock updater's post-restart matrix keeps its partial-row
+    behavior. Fail-closed callers cross-check the returned rows against the
+    runtime plan, so a profile that silently vanished is their failure, not
+    a pass.
     """
     # Runtime-status states that mean "this record does not describe a
     # gateway that should be running now" — no down row for these.
@@ -359,8 +483,15 @@ def collect_fleet_versions(
             for entry in sorted(profiles_root.iterdir()):
                 if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name):
                     homes.append((entry.name, entry))
+    except Exception as exc:
+        logger.debug("Fleet version probe could not enumerate profiles: %s", exc)
+        # Nothing was inspected yet — "the probe broke" is the only truth
+        # this call can report, and the never-raises wrapper's [] matches
+        # the historical outcome for this failure.
+        raise
 
-        for profile, home in homes:
+    for profile, home in homes:
+        try:
             # Prefer the gateway-owned control socket (#92091): a live
             # `identify` answer is authoritative — no PID-reuse or stale-file
             # heuristics. Fall back to gateway_state.json for gateways that
@@ -453,8 +584,10 @@ def collect_fleet_versions(
                     "state": state,
                 }
             )
-    except Exception as exc:
-        logger.debug("Fleet version probe failed: %s", exc)
+        except Exception as exc:
+            logger.debug("Fleet version probe for profile %s failed: %s", profile, exc)
+            continue
+
     return results
 
 

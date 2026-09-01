@@ -16,8 +16,10 @@ def register(ctx) -> None:
         setup_fn=register_cli,
         handler_fn=auto_update_command,
         description=(
-            "Install and manage an independent systemd timer that runs the stock "
-            "`hermes update --check` / `hermes update --yes` flow when Hermes is idle."
+            "Install and manage an independent systemd timer that prepares every "
+            "available update on each tick (`hermes update --yes --defer-restart`) "
+            "and restarts the fleet onto it only once Hermes is idle and the "
+            "preparation is proven complete (`hermes auto_update activate`)."
         ),
     )
 
