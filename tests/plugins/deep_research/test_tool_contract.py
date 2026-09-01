@@ -435,3 +435,43 @@ class TestRealRegistration:
         assert manifest["default_enabled"] is True
         assert "delegate_research" in manifest["provides_tools"]
         assert "post_tool_call" in manifest["provides_hooks"]
+
+
+class TestWriterToolsetRegistration:
+    """The plugin owns the empty sealed ``research_writer`` toolset.
+
+    It is registered through the plugin context's register_toolset API at
+    plugin load — never hard-coded in the core toolset catalog — so disabling
+    the plugin makes the toolset invalid everywhere at once.
+    """
+
+    def test_plugin_discovery_registers_the_sealed_writer_toolset(self) -> None:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        import toolsets as toolsets_mod
+        from toolsets import get_toolset, resolve_toolset, validate_toolset
+
+        assert "research_writer" not in toolsets_mod.TOOLSETS
+        assert validate_toolset("research_writer") is True
+        ts = get_toolset("research_writer")
+        assert ts is not None
+        assert ts["tools"] == [] and ts["includes"] == []
+        assert ts["sealed"] is True
+        assert resolve_toolset("research_writer") == []
+
+    def test_oneshot_validation_accepts_the_plugin_toolset(self) -> None:
+        """One-shot ``-t research_writer`` validation succeeds: the first
+        validate miss triggers plugin discovery, which registers the
+        plugin-owned toolset before validation finishes."""
+        from hermes_cli.oneshot import _validate_explicit_toolsets
+
+        valid, error = _validate_explicit_toolsets("research_writer")
+        assert error is None
+        assert valid == ["research_writer"]
+
+    def test_runner_constant_matches_the_registered_toolset(self) -> None:
+        from plugins.deep_research import WRITER_NO_FILE_TOOLSET
+        from plugins.deep_research.runner import NO_FILE_WRITER_TOOLSETS
+
+        assert NO_FILE_WRITER_TOOLSETS == WRITER_NO_FILE_TOOLSET == "research_writer"

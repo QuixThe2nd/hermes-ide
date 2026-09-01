@@ -2629,3 +2629,148 @@ class TestDefaultEnabledForkPlugins:
         assert "user_mgmt" not in mgr._cli_commands
         assert loaded.hooks_registered == []
         assert loaded.module is None
+
+
+# ── TestPluginToolsetRegistration ───────────────────────────────────────────
+
+
+class TestPluginToolsetRegistration:
+    """Tests for PluginContext.register_toolset — plugin-owned toolset defs.
+
+    A plugin can own a toolset BY NAME even when no tool is registered into
+    it (the canonical case: a deliberately empty, sealed boundary toolset).
+    The definition lives in the tool registry under the manager's profile
+    scope, so it is valid/advertised exactly like a tool-backed plugin
+    toolset and disappears with the plugin.
+    """
+
+    def _ctx(self, tmp_path, monkeypatch, name="toolset_plugin"):
+        home = tmp_path / "hermes_test"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        mgr = PluginManager()
+        manifest = PluginManifest(name=name, source="user")
+        return mgr, PluginContext(manager=mgr, manifest=manifest)
+
+    def test_empty_sealed_toolset_becomes_valid_and_resolves_empty(
+        self, tmp_path, monkeypatch
+    ):
+        from toolsets import get_toolset, resolve_toolset, validate_toolset
+
+        _mgr, ctx = self._ctx(tmp_path, monkeypatch)
+        handle = ctx.register_toolset(
+            "plugin_boundary",
+            description="Zero-tool boundary",
+            tools=[],
+            includes=[],
+            sealed=True,
+        )
+        assert handle is not None
+        try:
+            assert validate_toolset("plugin_boundary") is True
+            ts = get_toolset("plugin_boundary")
+            assert ts is not None
+            assert ts["tools"] == [] and ts["includes"] == []
+            assert ts["sealed"] is True
+            assert resolve_toolset("plugin_boundary") == []
+            # The plugin-owned definition has no static counterpart.
+            assert get_toolset("plugin_boundary", include_registry=False) is None
+        finally:
+            handle.dispose()
+
+    def test_unsealed_toolset_merges_overlay_tools(self, tmp_path, monkeypatch):
+        from tools.registry import registry
+        from toolsets import get_toolset
+
+        _mgr, ctx = self._ctx(tmp_path, monkeypatch)
+        handle = ctx.register_toolset(
+            "plugin_lane", description="Lane", tools=["lane_base"], includes=[]
+        )
+        assert handle is not None
+        registry.register(
+            name="lane_overlay_tool",
+            toolset="plugin_lane",
+            schema={
+                "name": "lane_overlay_tool",
+                "description": "overlay",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **kw: "{}",
+        )
+        try:
+            assert set(get_toolset("plugin_lane")["tools"]) == {
+                "lane_base",
+                "lane_overlay_tool",
+            }
+        finally:
+            registry.deregister("lane_overlay_tool")
+            handle.dispose()
+
+    def test_core_toolset_name_is_refused(self, tmp_path, monkeypatch, caplog):
+        from toolsets import TOOLSETS, get_toolset
+
+        _mgr, ctx = self._ctx(tmp_path, monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            handle = ctx.register_toolset("web", description="hijack", sealed=True)
+        assert handle is None
+        # The core definition is untouched and unsealed.
+        assert set(TOOLSETS["web"]["tools"]) <= set(get_toolset("web")["tools"])
+        assert "sealed" not in get_toolset("web")
+
+    def test_registration_is_profile_scoped(self, tmp_path, monkeypatch):
+        from tools.registry import registry
+
+        mgr, ctx = self._ctx(tmp_path, monkeypatch)
+        handle = ctx.register_toolset("scoped_lane", description="scoped")
+        assert handle is not None
+        try:
+            assert registry.get_toolset_definition(
+                "scoped_lane", scope=mgr.scope_key
+            ) is not None
+            # Other profiles and the process-global slot stay empty.
+            assert (
+                registry.get_toolset_definition("scoped_lane", scope="/other/home")
+                is None
+            )
+            assert "scoped_lane" not in registry._toolset_definitions
+        finally:
+            handle.dispose()
+
+    def test_manager_unload_removes_the_toolset(self, tmp_path, monkeypatch):
+        from toolsets import validate_toolset
+
+        mgr, ctx = self._ctx(tmp_path, monkeypatch)
+        assert ctx.register_toolset("unloadable_lane", description="x") is not None
+        assert validate_toolset("unloadable_lane") is True
+
+        mgr.unload()
+
+        assert validate_toolset("unloadable_lane") is False
+
+    def test_dispose_restores_a_displaced_previous_definition(
+        self, tmp_path, monkeypatch
+    ):
+        """Two plugins claiming one name: unloading the newer registration
+        restores the older definition rather than emptying the slot."""
+        from tools.registry import registry
+        from toolsets import get_toolset
+
+        _mgr, first = self._ctx(tmp_path, monkeypatch, name="first_plugin")
+        second = PluginContext(
+            manager=_mgr, manifest=PluginManifest(name="second_plugin", source="user")
+        )
+        first_handle = first.register_toolset("shared_lane", description="first")
+        second_handle = second.register_toolset("shared_lane", description="second")
+        assert first_handle is not None and second_handle is not None
+        try:
+            assert get_toolset("shared_lane")["description"] == "second"
+            second_handle.dispose()
+            restored = registry.get_toolset_definition("shared_lane")
+            assert restored is not None
+            assert restored["description"] == "first"
+            first_handle.dispose()
+            assert registry.get_toolset_definition("shared_lane") is None
+        finally:
+            first_handle.dispose()
+            second_handle.dispose()

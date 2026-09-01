@@ -22,6 +22,15 @@ import logging
 
 logger = logging.getLogger("hermes.plugins.deep_research")
 
+# The plugin-owned toolset the synthesis writer runs under when the caller's
+# config disables worker file tools (``deep_research.worker_file_tools:
+# false``). Deliberately empty and sealed: synthesis-only — no retrieval, no
+# files; the lane reports are already injected into the writer's prompt.
+# Registered through ``ctx.register_toolset()`` in ``register()`` below so the
+# toolset exists only while this plugin is enabled; ``runner.py`` passes it to
+# the writer session as ``-t research_writer`` (NO_FILE_WRITER_TOOLSETS).
+WRITER_NO_FILE_TOOLSET = "research_writer"
+
 
 def register(ctx) -> None:
     from plugins.deep_research import jobs, tool
@@ -35,6 +44,20 @@ def register(ctx) -> None:
         handler=tool.handle_delegate_research,
         check_fn=tool.check_requirements,
         emoji="🔬",
+    )
+
+    # The no-file writer's zero-tool boundary is owned here, not by the core
+    # toolset catalog: sealed keeps registry/plugin overlays from widening it,
+    # and disabling this plugin makes the toolset invalid everywhere at once.
+    ctx.register_toolset(
+        WRITER_NO_FILE_TOOLSET,
+        description=(
+            "Synthesis-only writer: no retrieval, no files "
+            "(deep_research with worker_file_tools: false)"
+        ),
+        tools=[],
+        includes=[],
+        sealed=True,
     )
 
     # Evidence ledger: a strict no-op outside a runner-spawned worker session.

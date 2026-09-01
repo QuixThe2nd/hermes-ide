@@ -2034,6 +2034,79 @@ class PluginContext:
         )
         return handle
 
+    @_serialized_replacement
+    def register_toolset(
+        self,
+        name: str,
+        *,
+        description: str = "",
+        tools: Optional[list] = None,
+        includes: Optional[list] = None,
+        sealed: bool = False,
+    ) -> Optional[PluginRegistration]:
+        """Register a plugin-owned toolset definition.
+
+        Use this for a toolset the plugin owns BY NAME even when no tool is
+        registered into it — the canonical case is a deliberately empty
+        ``sealed=True`` boundary toolset (e.g. a synthesis-only worker lane
+        whose zero-tool surface must hold even if an overlay tries to widen
+        it). The definition lives in the tool registry under this manager's
+        profile scope, so ``toolsets.validate_toolset`` /
+        ``get_toolset`` / ``resolve_toolset`` see it exactly like a
+        tool-backed plugin toolset, and unloading the plugin removes it —
+        a disabled or absent plugin's toolset is neither advertised nor
+        valid, and never leaks into the static ``TOOLSETS`` catalog.
+
+        ``sealed=True`` makes the definition authoritative: tools other
+        plugins/MCP overlays register into the same name are ignored by
+        ``get_toolset``/``resolve_toolset``. Unsealed definitions merge those
+        overlay tools, mirroring built-in toolset behavior.
+
+        Names already present in the static core catalog (``toolsets.TOOLSETS``)
+        cannot be claimed: core definitions always win, so the registration is
+        refused (logged, returns None).
+        """
+        from tools.registry import registry
+        from toolsets import TOOLSETS
+
+        if name in TOOLSETS:
+            logger.warning(
+                "Plugin %s tried to register toolset %r, which is already a "
+                "core toolset. Ignoring — core definitions win.",
+                self.manifest.name,
+                name,
+            )
+            return None
+
+        scope = self._manager.scope_key
+        previous = registry.snapshot_toolset_definition(name, scope=scope)
+        registry.register_toolset_definition(
+            name,
+            description=description,
+            tools=tools,
+            includes=includes,
+            sealed=sealed,
+            scope=scope,
+        )
+        registered = registry.snapshot_toolset_definition(name, scope=scope)
+        if registered is None or registered is previous:
+            return None
+        handle = self._track_replacement(
+            "toolset",
+            name,
+            slot=("toolset_definition", scope, name),
+            current=registered,
+            previous=previous,
+            restore=lambda replacement: registry.restore_toolset_definition(
+                name, registered, replacement, scope=scope
+            ),
+        )
+        logger.debug(
+            "Plugin %s registered toolset: %s%s",
+            self.manifest.name, name, " (sealed)" if sealed else "",
+        )
+        return handle
+
     # -- capability probing (#64228) -----------------------------------------
 
     def has_capability(self, capability: str) -> bool:

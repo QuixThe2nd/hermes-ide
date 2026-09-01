@@ -221,19 +221,12 @@ TOOLSETS = {
         "includes": []
     },
 
-    # Deliberately empty: the deep_research synthesis writer's toolset when the
-    # caller's config disables worker file tools (deep_research.worker_file_tools:
-    # false). Synthesis-only — no retrieval, no files; the lane reports are
-    # already injected into the writer's prompt. Never enabled by default and
-    # never used outside that no-file writer path. ``sealed`` keeps it empty:
-    # registry/plugin registrations targeting it are ignored by get_toolset()
-    # and resolve_toolset(), so the zero-tool writer is a hard boundary.
-    "research_writer": {
-        "description": "Synthesis-only writer: no retrieval, no files (deep_research with worker_file_tools: false)",
-        "tools": [],
-        "includes": [],
-        "sealed": True,
-    },
+    # NOTE: the deep_research no-file synthesis writer's deliberately empty,
+    # sealed ``research_writer`` toolset is NOT here. It is plugin-owned and
+    # registered by plugins/deep_research through the plugin context's
+    # register_toolset() API (registry-backed), so disabling or removing that
+    # plugin removes the toolset with it — the core catalog keeps no
+    # plugin-specific lanes.
 
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
@@ -755,6 +748,23 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
             | set(registry.get_tool_names_for_toolset(name))
         )
         return {**toolset, "tools": merged_tools}
+
+    # Plugin-owned toolset definitions (registered through the plugin
+    # context's register_toolset() API) live in the registry, not the static
+    # TOOLSETS catalog — a disabled or absent plugin's toolset is therefore
+    # neither advertised nor valid. A sealed definition is a hard boundary:
+    # registry/plugin tool registrations targeting it are ignored, mirroring
+    # the static ``"sealed": True`` path above. An unsealed definition merges
+    # overlay tools exactly like a built-in toolset does.
+    definition = registry.get_toolset_definition(name)
+    if definition is not None:
+        if definition.get("sealed"):
+            return definition
+        merged_tools = sorted(
+            set(definition.get("tools", []))
+            | set(registry.get_tool_names_for_toolset(name))
+        )
+        return {**definition, "tools": merged_tools}
 
     registry_toolset = name
     description = f"Plugin toolset: {name}"

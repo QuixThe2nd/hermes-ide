@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -476,6 +476,14 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        # Plugin-owned toolset DEFINITIONS (name -> definition dict). Unlike
+        # toolset membership — which is implied by registered tool entries —
+        # a definition lets a plugin own a toolset that has no tools at all
+        # (e.g. a deliberately empty, sealed boundary toolset). Same scope
+        # overlay rule as tools: a profile sees its own overlay first, then
+        # the process-global definitions.
+        self._toolset_definitions: Dict[str, Dict[str, Any]] = {}
+        self._scoped_toolset_definitions: Dict[str, Dict[str, Dict[str, Any]]] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -562,8 +570,118 @@ class ToolRegistry:
             return target.get(name)
 
     def get_registered_toolset_names(self) -> List[str]:
-        """Return sorted unique toolset names present in the registry."""
-        return sorted({entry.toolset for entry in self._snapshot_entries()})
+        """Return sorted unique toolset names present in the registry.
+
+        Includes plugin-registered toolset DEFINITIONS (see
+        :meth:`register_toolset_definition`), so an empty plugin-owned
+        toolset is valid and advertised exactly like a tool-backed one.
+        """
+        return sorted(
+            {entry.toolset for entry in self._snapshot_entries()}
+            | set(self._merged_toolset_definitions())
+        )
+
+    # ------------------------------------------------------------------
+    # Plugin-owned toolset definitions
+    # ------------------------------------------------------------------
+
+    def _merged_toolset_definitions(
+        self, scope: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return global toolset definitions overlaid with one profile's."""
+        active_scope = scope or self.current_scope_key()
+        merged = dict(self._toolset_definitions)
+        merged.update(self._scoped_toolset_definitions.get(active_scope, {}))
+        return merged
+
+    def register_toolset_definition(
+        self,
+        name: str,
+        description: str = "",
+        tools: Optional[List[str]] = None,
+        includes: Optional[List[str]] = None,
+        sealed: bool = False,
+        *,
+        scope: Optional[str] = None,
+    ) -> None:
+        """Register a plugin-owned toolset definition.
+
+        A definition makes a toolset resolvable and valid even when no tool
+        is registered into it — the empty/sealed case a plain tool
+        registration can never express. ``sealed=True`` marks the definition
+        as a hard boundary: ``toolsets.get_toolset``/``resolve_toolset`` then
+        ignore any tools registered into the same name by overlays.
+        """
+        with self._lock:
+            target = (
+                self._toolset_definitions
+                if scope is None
+                else self._scoped_toolset_definitions.setdefault(scope, {})
+            )
+            target[name] = {
+                "description": description,
+                "tools": list(tools or []),
+                "includes": list(includes or []),
+                "sealed": bool(sealed),
+            }
+            self._generation += 1
+
+    def get_toolset_definition(
+        self, name: str, *, scope: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return a copy of the active profile's toolset definition, or None."""
+        with self._lock:
+            definition = self._merged_toolset_definitions(scope).get(name)
+            if definition is None:
+                return None
+            return {
+                **definition,
+                "tools": list(definition.get("tools", [])),
+                "includes": list(definition.get("includes", [])),
+            }
+
+    def snapshot_toolset_definition(
+        self, name: str, *, scope: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return the local slot state without following global fallback."""
+        with self._lock:
+            target = (
+                self._toolset_definitions
+                if scope is None
+                else self._scoped_toolset_definitions.get(scope, {})
+            )
+            return target.get(name)
+
+    def restore_toolset_definition(
+        self,
+        name: str,
+        current: Dict[str, Any],
+        previous: Optional[Dict[str, Any]],
+        *,
+        scope: Optional[str] = None,
+    ) -> bool:
+        """Restore a plugin-owned toolset definition if it is still current.
+
+        Identity-checked inverse of :meth:`register_toolset_definition` used
+        by the plugin ownership ledger — mirrors :meth:`restore_registration`
+        so unloading one plugin never removes another's newer definition.
+        """
+        with self._lock:
+            target = (
+                self._toolset_definitions
+                if scope is None
+                else self._scoped_toolset_definitions.setdefault(scope, {})
+            )
+            if target.get(name) is not current:
+                return False
+            if previous is None:
+                target.pop(name, None)
+            else:
+                target[name] = previous
+            if scope is not None and not target:
+                self._scoped_toolset_definitions.pop(scope, None)
+            self._generation += 1
+        return True
 
     def get_all_entries(self) -> List[ToolEntry]:
         """Return the active profile's merged tool entries."""

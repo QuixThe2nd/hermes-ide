@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from plugins.deep_research import WRITER_NO_FILE_TOOLSET
 from plugins.deep_research import citations as citations_mod
 from plugins.deep_research import jobs, prompts
 from plugins.deep_research.config import (
@@ -55,10 +56,11 @@ _STDERR_TAIL_CHARS = 300
 RESEARCH_JOB_ENV = "HERMES_RESEARCH_JOB"
 WRITER_TOOLSETS = "file_readonly"
 # worker_file_tools=false: lanes keep retrieval minus the filesystem, the
-# writer gets the empty research_writer toolset (synthesis-only: no files,
-# no retrieval — the lane reports are already injected into its prompt).
+# writer gets the plugin-owned empty research_writer toolset (synthesis-only:
+# no files, no retrieval — the lane reports are already injected into its
+# prompt). The toolset is registered (sealed) by the plugin at load time.
 NO_FILE_LANE_TOOLSETS = "web,browser"
-NO_FILE_WRITER_TOOLSETS = "research_writer"
+NO_FILE_WRITER_TOOLSETS = WRITER_NO_FILE_TOOLSET
 
 SpawnResult = Tuple[int, str, str]  # (exit_code, stdout, stderr_tail)
 Spawner = Callable[[Sequence[str], Dict[str, str], float], SpawnResult]
