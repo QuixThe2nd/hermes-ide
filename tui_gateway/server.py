@@ -5839,6 +5839,34 @@ def _write_config_key(key_path: str, value):
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
 _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
+# Appearance switches the desktop renderer owns but the AGENT has to see: each
+# one gates a tool's `check_fn`, so the toggle has to reach the config of
+# whichever gateway the app is actually talking to — local, SSH, URL, or cloud.
+#
+# `config.set` matches an explicit key list and answers 4002 for anything else,
+# so a renderer mirroring a key that is not listed here writes nothing at all.
+# That is not hypothetical: the reactions toggle shipped mirroring
+# `display.message_reactions`, every write was rejected into a swallowed
+# `.catch()`, and `react_to_message` therefore stayed dark no matter what the
+# user picked. Adding a mirrored switch to the renderer means adding it here.
+_DISPLAY_TOGGLE_KEYS = frozenset(
+    {
+        "display.message_reactions",
+        "display.in_app_tips",
+        "display.in_app_tours",
+    }
+)
+_BOOL_WORDS = {
+    "1": True,
+    "on": True,
+    "true": True,
+    "yes": True,
+    "0": False,
+    "off": False,
+    "false": False,
+    "no": False,
+}
+
 
 def _load_approval_mode() -> str:
     """Resolve the effective ``approvals.mode`` for the TUI surface.
@@ -12858,7 +12886,17 @@ def _run_prompt_submit(
         marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
         marker_text = session.pop("_auto_continue_prompt", None) or text
         if isinstance(marker_text, str) and marker_text.strip():
+            # Publish the original key before the disk write so an interrupt
+            # racing startup can retire it even if compression rotates the
+            # session key later. The post-write cancel check closes the inverse
+            # race where Stop lands first and therefore clears no file yet.
+            with session["history_lock"]:
+                session["_active_turn_marker_key"] = marker_key
             record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+            with session["history_lock"]:
+                marker_cancelled = bool(session.get("_turn_cancel_requested"))
+            if marker_cancelled:
+                clear_turn_marker(marker_home, marker_key)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -13680,6 +13718,8 @@ def _run_prompt_submit(
             if terminal_receipt_committed:
                 _retire_turn_marker(session, marker_key)
                 with session["history_lock"]:
+                    if session.get("_active_turn_marker_key") == marker_key:
+                        session.pop("_active_turn_marker_key", None)
                     session.pop("_hosted_room_task", None)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
@@ -14871,6 +14911,13 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, resp)
         except Exception as e:
             return _err(rid, 5001, str(e))
+
+    if key in _DISPLAY_TOGGLE_KEYS:
+        on = _BOOL_WORDS.get(str(value).strip().lower())
+        if on is None:
+            return _err(rid, 4002, f"{key} takes true or false")
+        _write_config_key(key, on)
+        return _ok(rid, {"key": key, "value": on})
 
     return _err(rid, 4002, f"unknown config key: {key}")
 

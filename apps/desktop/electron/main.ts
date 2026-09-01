@@ -63,6 +63,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
@@ -14482,6 +14483,21 @@ const hudIpc = registerHudIpc({
   }
 })
 
+ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  // Models-page recovery after a code-skew 503 (#97046): kill the owned
+  // SSH serve (if any) before the local child so reconnect cannot reuse a
+  // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
+  await recycleOwnedBackend({
+    notifyApplied: sendConnectionApplied,
+    primaryProfile: primaryProfileKey(),
+    profile: typeof profile === 'string' ? profile : '',
+    teardownPool: teardownPoolBackendAndWait,
+    teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+    teardownSsh: value => teardownSshConnection(value || null)
+  })
+
+  return { ok: true }
+})
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
@@ -17556,6 +17572,7 @@ app.on('before-quit', event => {
 
     if (!sshQuitTeardownPromise) {
       const scopes = [...sshConnections.keys()]
+
       const pending = Promise.allSettled([
         ...scopes.map(scope => teardownSshConnection(scope || null)),
         ...sshBootstrapCoordinator.promises()
@@ -17565,12 +17582,11 @@ app.on('before-quit', event => {
       // The previous 4s race could close SSH first and leave serve --isolated
       // reparented to pid 1. Latch this promise BEFORE those deletes land so
       // a re-entrant quit still waits.
-      sshQuitTeardownPromise = Promise.race([
-        pending,
-        new Promise<void>(resolve => setTimeout(resolve, 6_000))
-      ]).then(async () => {
-        await sshBootstrapCoordinator.forceCleanupAll()
-      })
+      sshQuitTeardownPromise = Promise.race([pending, new Promise<void>(resolve => setTimeout(resolve, 6_000))]).then(
+        async () => {
+          await sshBootstrapCoordinator.forceCleanupAll()
+        }
+      )
     }
 
     void sshQuitTeardownPromise.then(() => {
