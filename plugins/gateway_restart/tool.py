@@ -1,18 +1,22 @@
 """``restart`` tool — agent-callable gateway restart on the /restart drain path.
 
-The tool pings the requester in the calling chat and waits for them to type the
-exact word ``restart`` before anything happens (same primitive as ``clarify``:
-an open-ended registration whose reply the gateway text-intercept eats instead
-of starting a new turn). Only then does it call
-``GatewayRunner.begin_user_restart``, the same shared entry point the
-``/restart`` slash command uses, so the two cannot drift apart: in-flight turns
-drain first, then the gateway bounces and comes back online. The
+When other sessions or background work are in flight, the tool pings the
+requester in the calling chat and waits for them to type the exact word
+``restart`` before anything happens (same primitive as ``clarify``: an
+open-ended registration whose reply the gateway text-intercept eats instead of
+starting a new turn). After the word lands — and once those other sessions
+have finished — it calls ``GatewayRunner.begin_user_restart``, the same shared
+entry point the ``/restart`` slash command uses, so the two cannot drift
+apart: in-flight turns drain first, then the gateway bounces and comes back
+online. When this session is provably the only work in flight, the ping is
+skipped and the drain is queued outright — with no one else to time the bounce
+around, the confirmation has nothing to protect. The
 shell/systemctl path stays blocked by the lifecycle guard — that path SIGTERMs
 the gateway and kills whatever child was running the command.
 
 On Discord, the calling thread is temporarily retitled ``Restart Pending``
-while the tool waits, then restored to its exact original name on every exit —
-via a small optional adapter capability, so the tool itself stays
+while the tool waits for the word, then restored to its exact original name on
+every exit — via a small optional adapter capability, so the tool itself stays
 platform-safe. The original name is captured by a read-only phase before the
 renaming edit is submitted, so even a rename whose response is lost after
 Discord applied it cannot lose the restore.
@@ -23,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -31,14 +36,16 @@ RESTART_SCHEMA = {
     "name": "restart",
     "description": (
         "Restart the Hermes gateway — the same drain path as the /restart "
-        "slash command. The requester is pinged in the current chat and must "
-        "reply with the exact word `restart` before anything happens; "
-        "anything else cancels. Once confirmed, in-flight turns (including "
-        "this one) finish first, then the gateway stops and comes back "
-        "online, and the requesting chat gets a comeback notice. Use it to "
-        "pick up config or code changes, or to recover a misbehaving "
-        "gateway. Blocks until the requester replies; the restart itself "
-        "fires after the current turn ends."
+        "slash command. When other sessions or background work are in "
+        "flight, the requester is pinged in the current chat and must reply "
+        "with the exact word `restart` before anything happens; anything "
+        "else cancels. After the exact word, the bounce waits for those "
+        "other sessions to finish before firing. When this is the only "
+        "active session, there is no ping — the restart is queued outright "
+        "and fires after this turn ends. In-flight turns (including this "
+        "one) drain first, then the gateway stops and comes back online, "
+        "and the requesting chat gets a comeback notice. Use it to pick up "
+        "config or code changes, or to recover a misbehaving gateway."
     ),
     "parameters": {
         "type": "object",
@@ -61,6 +68,32 @@ _CONFIRM_PROMPT = (
     "(lowercase, on its own) to bounce the gateway now. Anything else "
     "cancels."
 )
+
+# The same gate, said honestly when other sessions are still working: the
+# bounce will not fire the moment the word lands, but once they finish.
+_CONFIRM_PROMPT_WAITING_ON_OTHERS = (
+    "Gateway restart requested — reply with the exact word `restart` "
+    "(lowercase, on its own) and the gateway will bounce once the other "
+    "active sessions finish. Anything else cancels."
+)
+
+# One-shot note after a successful confirm while other work still runs: the
+# bounce is armed, it is just waiting on the other sessions. Plain text on
+# every platform (no embed, no progress bubble), sent at most once, and
+# cosmetic on failure — it must never gate or cancel the restart.
+_ARMED_NOTICE = (
+    "Restart confirmed — waiting for the other active sessions to finish; "
+    "the gateway bounces as soon as they do."
+)
+
+# How often the post-confirm idle wait re-checks the in-flight work from the
+# tool's worker thread. The wait itself is unbounded like the confirm wait;
+# this only paces the poll.
+_IDLE_POLL_INTERVAL_S = 0.5
+
+# Injectable so tests drive the idle wait deterministically instead of
+# sleeping real seconds; production always uses time.sleep.
+_idle_sleep = time.sleep
 
 _NO_RUNNER_ERROR = (
     "No live gateway runner in this process — the restart tool only works "
@@ -159,6 +192,94 @@ def _cancelled_json(message: str) -> str:
     )
 
 
+def _extra_background_work_in_flight(runner: Any) -> bool:
+    """Cron or API-server work that ``_running_agents`` cannot see.
+
+    Both counters already swallow their own lookup errors and report 0
+    (best-effort by design), so an error escaping one here means a runner too
+    odd to reason about — count that as work in flight rather than idle.
+    """
+    for counter in ("_active_cron_job_count", "_active_api_run_count"):
+        try:
+            if int(getattr(runner, counter)()) > 0:
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def _other_active_work_in_flight(runner: Any, session_key: str) -> bool:
+    """True when any in-flight work exists besides the calling session."""
+    running = getattr(runner, "_running_agents", None)
+    try:
+        if running and any(key != session_key for key in running):
+            return True
+    except Exception:
+        # Unreadable state looks busy, not idle — same stance as below.
+        return True
+    return _extra_background_work_in_flight(runner)
+
+
+def _session_is_only_active_work(runner: Any, session_key: str) -> bool:
+    """True only when the calling session is provably the sole work in flight.
+
+    ``_running_agents`` is a live mapping view in production
+    (``SessionFieldView``) and a plain dict on test doubles, so it is read
+    duck-typed. Fail closed: an empty mapping, a missing/blank session key,
+    or state that cannot be read is NOT proof of being alone — those keep
+    the confirm-then-bounce path. Skipping the confirmation requires the
+    session key to be present, alone, with no cron/API work beside it.
+    """
+    if not session_key:
+        return False
+    running = getattr(runner, "_running_agents", None)
+    if running is None:
+        return False
+    try:
+        if session_key not in running or len(running) != 1:
+            return False
+    except Exception:
+        return False
+    return not _extra_background_work_in_flight(runner)
+
+
+def _wait_for_other_work_to_clear(runner: Any, session_key: str) -> None:
+    """Block the tool's worker thread until no other in-flight work remains.
+
+    Runs only after a successful confirm, so the bounce is already committed
+    — this is a wait for *timing*, not a second gate: the same predicate as
+    the skip check (still excluding the calling session), unbounded like the
+    confirm wait, and a session that starts mid-wait simply extends it (the
+    gateway is not idle yet). This never parks or steers the other chats and
+    never touches ``_draining`` / ``_restart_requested`` —
+    ``begin_user_restart`` owns all of that once this returns.
+    """
+    while _other_active_work_in_flight(runner, session_key):
+        _idle_sleep(_IDLE_POLL_INTERVAL_S)
+
+
+def _send_armed_notice(adapter: Any, loop: Any, source: Any) -> None:
+    """Tell the requester the bounce is armed and waiting; cosmetic, one-shot."""
+    if adapter is None or source is None or not getattr(source, "chat_id", ""):
+        return
+    metadata: dict = {}
+    if getattr(source, "thread_id", None):
+        metadata["thread_id"] = source.thread_id
+    future, submit_error = _submit_to_loop(
+        adapter.send(source.chat_id, _ARMED_NOTICE, metadata=metadata or None), loop
+    )
+    if submit_error is not None:
+        logger.debug(
+            "restart tool: armed notice could not be submitted: %s", submit_error
+        )
+        return
+    try:
+        future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception as exc:
+        future.cancel()
+        logger.debug("restart tool: armed notice failed: %s", exc)
+
+
 def _drop_pending_confirm(clarify_mod: Any, clarify_id: str) -> None:
     """Disarm and reap a registered confirm prompt that will not be waited on.
 
@@ -207,6 +328,7 @@ def _deliver_confirm_prompt(
     adapter: Any,
     loop: Any,
     source: Any,
+    prompt: str,
     content: str,
     metadata: dict,
 ) -> Optional[str]:
@@ -230,7 +352,7 @@ def _deliver_confirm_prompt(
     if use_rich:
         coro = rich_send(
             chat_id=source.chat_id,
-            prompt=_CONFIRM_PROMPT,
+            prompt=prompt,
             requester_user_id=str(getattr(source, "user_id", "") or ""),
             metadata=metadata or None,
         )
@@ -400,6 +522,7 @@ def _confirm_restart_with_requester(
     loop: Any,
     source: Any,
     session_key: str,
+    prompt: str = _CONFIRM_PROMPT,
 ) -> Optional[str]:
     """Ping the requester and block until they type the exact word.
 
@@ -407,7 +530,8 @@ def _confirm_restart_with_requester(
     reason the restart must not happen. Runs on the tool's worker thread —
     the blocking wait is a ``threading.Event`` (same primitive as
     ``clarify``), so the gateway event loop stays free while the platform
-    adapters resolve the reply.
+    adapters resolve the reply. ``prompt`` is the question the requester
+    sees; the caller picks the wording for whether other work is in flight.
     """
     import uuid
 
@@ -430,7 +554,7 @@ def _confirm_restart_with_requester(
             "session's platform."
         )
 
-    content = _CONFIRM_PROMPT
+    content = prompt
     # Discord: the ping is the point — prefix the requester's snowflake so
     # the plain prompt notifies them. This full-text prompt is what non-
     # Discord adapters send and what the rich path falls back to; the rich
@@ -454,7 +578,7 @@ def _confirm_restart_with_requester(
         session_key=session_key,
         # The plain prompt is the question; the Discord mention prefix stays
         # in the sent content only.
-        question=_CONFIRM_PROMPT,
+        question=prompt,
         choices=None,
     )
 
@@ -468,7 +592,7 @@ def _confirm_restart_with_requester(
     try:
         title_restore = _begin_restart_pending_thread_title(adapter, loop, source)
         deliver_error = _deliver_confirm_prompt(
-            adapter, loop, source, content, metadata
+            adapter, loop, source, prompt, content, metadata
         )
         if deliver_error is not None:
             _drop_pending_confirm(clarify_gateway, clarify_id)
@@ -496,20 +620,28 @@ def handle_restart(args: dict, **_: Any) -> str:
     2. No live runner → ``{"success": false, "error": ...}``.
     3. A restart already draining/queued → in-progress status, no ping, and
        ``request_restart`` is NOT called a second time.
-    4. Otherwise the requester is pinged in the calling chat and the call
+    4. When this session is provably the only work in flight (its key is the
+       lone ``_running_agents`` entry and no cron/API work runs), the
+       confirmation is skipped and the drain is queued outright — with no
+       other session to time the bounce around, the ping has nothing to
+       protect.
+    5. Otherwise the requester is pinged in the calling chat and the call
        blocks until they reply. Only the exact word ``restart`` (after
        ``strip()``, nothing else — not ``Restart``, not ``yes``, not
-       ``/restart``) proceeds to the same supervisor/container branch as
-       ``/restart`` inside ``begin_user_restart``, with the requester's
-       routing persisted to ``.restart_notify.json`` for the comeback
-       notice. Anything else or empty cancels with
+       ``/restart``) confirms; anything else or empty cancels with
        ``{"success": false, "status": "cancelled"}``. While the tool waits,
        a Discord thread is temporarily retitled ``Restart Pending`` and
        restored to its exact original name on every exit — before the
        restart can be queued, and cosmetically (a rename or restore failure
        is logged, never fatal).
-    5. On confirmation, returns once the restart is queued — the bounce
-       happens after this turn ends.
+    6. After a successful confirm with other work still in flight, the
+       bounce waits (unbounded, from this worker thread) until that work
+       clears, then proceeds to the same supervisor/container branch as
+       ``/restart`` inside ``begin_user_restart``, with the requester's
+       routing persisted to ``.restart_notify.json`` for the comeback
+       notice.
+    7. On confirmation (or a skipped confirm), returns once the restart is
+       queued — the bounce happens after this turn ends.
     """
     from gateway.session_context import get_session_env
     from utils import is_truthy_value
@@ -566,9 +698,37 @@ def handle_restart(args: dict, **_: Any) -> str:
 
     source = _source_from_session_context()
     session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
-    confirm_error = _confirm_restart_with_requester(runner, loop, source, session_key)
-    if confirm_error is not None:
-        return _cancelled_json(confirm_error)
+
+    if not _session_is_only_active_work(runner, session_key):
+        # Other work is in flight — or aloneness cannot be proven — so keep
+        # today's timing gate: the exact word `restart` confirms, anything
+        # else cancels, and the wait for the reply stays unbounded.
+        confirm_error = _confirm_restart_with_requester(
+            runner,
+            loop,
+            source,
+            session_key,
+            prompt=(
+                _CONFIRM_PROMPT_WAITING_ON_OTHERS
+                if _other_active_work_in_flight(runner, session_key)
+                else _CONFIRM_PROMPT
+            ),
+        )
+        if confirm_error is not None:
+            return _cancelled_json(confirm_error)
+
+        # The word landed, so the bounce is committed. When other work is
+        # still in flight, hold the drain until it clears — bouncing under
+        # the other sessions is exactly what the confirm just timed us
+        # around. If they already finished, the wait is a no-op and the
+        # drain queues immediately.
+        if _other_active_work_in_flight(runner, session_key):
+            try:
+                notice_adapter = runner._adapter_for_source(source)
+            except Exception:
+                notice_adapter = None
+            _send_armed_notice(notice_adapter, loop, source)
+            _wait_for_other_work_to_clear(runner, session_key)
 
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip() or None
     begin = runner.begin_user_restart(source=source, message_id=message_id)
