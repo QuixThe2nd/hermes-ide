@@ -3721,17 +3721,25 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._add_reaction(message, "❌")
 
     @staticmethod
-    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+    def _message_reference_from_ids(
+        message_id,
+        channel,
+        *,
+        channel_id=None,
+    ) -> "discord.MessageReference":
         """ids-built reply reference — no fetch_message round trip.
 
         Discord resolves message_reference from the ids alone, and
         fail_if_not_exists=False keeps sends to deleted targets working
         exactly as the fetched form did (a dead target degrades to the
         send-side 10008 retry instead of a fetch failure).
+
+        ``channel_id`` anchors the reference outside the send channel —
+        the parent channel for auto-threaded root turns.
         """
         return discord.MessageReference(
             message_id=int(message_id),
-            channel_id=getattr(channel, "id", None),
+            channel_id=channel_id if channel_id is not None else getattr(channel, "id", None),
             guild_id=getattr(getattr(channel, "guild", None), "id", None),
             fail_if_not_exists=False,
         )
@@ -3790,17 +3798,24 @@ class DiscordAdapter(BasePlatformAdapter):
         reply anchor (``metadata["notify"]`` is set by the gateway final path
         and the stream consumer's fresh-final send).
 
-        Auto-threaded root turns return ``None`` even for finals: the
-        spawned thread's id equals the root message id and the root message
-        lives in the parent channel, so the reference can never attach —
-        ``send`` pings via an inline mention instead
-        (``_final_mention_prefix``).
+        Auto-threaded root turns (thread id == root message id, root lives
+        in the parent channel) can never attach a reference against the
+        send channel.  ``reply_to_mode='first'`` and ``'off'`` return
+        ``None`` — ``send`` pings via an inline mention instead
+        (``_final_mention_prefix``).  ``reply_to_mode='all'`` still sends a
+        real reply: the reference anchors to the parent channel, where the
+        root message actually lives.
         """
         if not self._final_send_wants_ping(reply_to, metadata):
             return None
-        if self._root_turn_reference_is_unattachable(reply_to, channel):
+        root_turn = self._root_turn_reference_is_unattachable(reply_to, channel)
+        if root_turn and self._reply_to_mode != "all":
             return None
         try:
+            if root_turn:
+                return self._message_reference_from_ids(
+                    reply_to, channel, channel_id=channel.parent_id
+                )
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:
             logger.debug("Could not build reply-to reference: %s", e)
@@ -3841,13 +3856,18 @@ class DiscordAdapter(BasePlatformAdapter):
         """Inline ``<@id> `` ping for finals whose reply reference can't attach.
 
         Only the same notify-worthy finals that would otherwise get a
-        ``MessageReference`` are considered.  The root author comes from the
-        local recovery ledger first (no API round trip), falling back to a
+        ``MessageReference`` are considered, and never under
+        ``reply_to_mode='all'`` — there every final carries a real reply
+        reference anchored in the parent channel, so an inline mention
+        would double-ping.  The root author comes from the local recovery
+        ledger first (no API round trip), falling back to a
         ``fetch_message`` in the parent channel; when both fail the send
         proceeds with no mention and no reference — the pre-fallback
         behavior.
         """
         if not self._final_send_wants_ping(reply_to, metadata):
+            return ""
+        if self._reply_to_mode == "all":
             return ""
         if not self._root_turn_reference_is_unattachable(reply_to, channel):
             return ""

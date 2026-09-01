@@ -726,3 +726,64 @@ class TestDiscordRootTurnMentionFallback:
         assert len(sent_messages) == 1
         assert len(sent_messages[0]["content"]) <= adapter.MAX_MESSAGE_LENGTH
         assert sent_messages[0]["content"].startswith("<@4242> ")
+
+
+class TestDiscordRootTurnAllModeReplyReference:
+    """reply_to_mode=all: root-turn finals are real replies, not standalone pings.
+
+    The inline-mention fallback is a 'first'-mode mechanism; 'all' anchors a
+    MessageReference to the parent channel — where the root message actually
+    lives — on every chunk of the final.
+    """
+
+    @pytest.mark.asyncio
+    async def test_root_turn_final_references_parent_channel_on_every_chunk(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id="4242"
+            )
+        )
+        long_answer = ("answer sentence. " * 300).strip()
+
+        result = await adapter.send(
+            parent_id,
+            long_answer,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            reference = msg["reference"]
+            assert reference is not None
+            assert reference.message_id == _ROOT_MESSAGE_ID
+            assert reference.channel_id == _PARENT_CHANNEL_ID
+            assert reference.fail_if_not_exists is False
+            assert "<@" not in msg["content"]
+        # The reference is ids-built — no author lookup round trip.
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_interim_send_stays_standalone_in_all_mode(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id="4242"
+            )
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Working on it...",
+            reply_to=root_id,
+            metadata={"notify": True, "_interim_send": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is None
+        assert "<@" not in sent_messages[0]["content"]
+        assert parent.fetch_message.await_count == 0
