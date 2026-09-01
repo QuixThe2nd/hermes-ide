@@ -1497,6 +1497,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Resolved forum-ness of root-turn parent channels (parent_id ->
+        # is_forum).  ``_root_turn_parent_is_forum`` falls back to an API
+        # fetch when both client caches miss, and ``fetch_channel`` never
+        # populates them — without this memo a cold-cache bot would refetch
+        # the parent on every root-turn final send (twice per send in
+        # 'first' mode: reference build + mention fallback).
+        self._root_turn_parent_forum_cache: Dict[int, bool] = {}
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
@@ -3761,8 +3768,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return bool(reply_to) and self._reply_to_mode != "off"
 
-    @staticmethod
-    def _root_turn_reference_is_unattachable(reply_to, channel) -> bool:
+    async def _root_turn_reference_is_unattachable(self, reply_to, channel) -> bool:
         """True when ``reply_to`` is the auto-thread root-turn signature.
 
         A parent-channel @mention that spawns a thread produces a thread
@@ -3772,6 +3778,11 @@ class DiscordAdapter(BasePlatformAdapter):
         Discord silently drops the reply ping (no error, no log).  The
         ``parent_id`` guard keeps a plain channel whose id coincidentally
         matches from triggering the fallback.
+
+        A forum post's starter message is the exception: Discord gives the
+        post thread and its starter the same id, but the starter lives in
+        the THREAD itself, so the reference attaches against the send
+        channel and must not be re-anchored to the forum parent.
         """
         if not reply_to:
             return False
@@ -3780,11 +3791,63 @@ class DiscordAdapter(BasePlatformAdapter):
         if parent_id is None or channel_id is None:
             return False
         try:
-            return int(reply_to) == int(channel_id) and int(parent_id) != int(channel_id)
+            if int(reply_to) != int(channel_id) or int(parent_id) == int(channel_id):
+                return False
         except (ValueError, TypeError):
             return False
+        return not await self._root_turn_parent_is_forum(channel, parent_id)
 
-    def _reply_reference_for_send(
+    async def _root_turn_parent_is_forum(self, channel, parent_id) -> bool:
+        """True when the send channel is a forum post thread.
+
+        Forum post threads carry their own starter message; the forum
+        parent never holds it — unlike the text-channel auto-threads the
+        root-turn fallback exists for.  The parent resolves from the
+        cached ``channel.parent`` first, then the client channel cache
+        (same lookup ``_root_turn_author_from_parent`` uses); when both
+        miss — ``send`` may hold a thread fetched straight from the API,
+        whose guild has nothing cached — a ``fetch_channel`` resolves the
+        parent over HTTP.  Only when that also fails is the answer "not
+        forum" so the fallback still fires conservatively.  Resolved
+        answers are memoized (``_root_turn_parent_forum_cache``) so the
+        HTTP fallback costs at most one fetch per parent channel.
+        """
+        try:
+            parent_key = int(parent_id)
+        except (ValueError, TypeError):
+            return False
+        cached = self._root_turn_parent_forum_cache.get(parent_key)
+        if cached is not None:
+            return cached
+        parent = getattr(channel, "parent", None)
+        if parent is None and self._client is not None:
+            try:
+                parent = self._client.get_channel(parent_key)
+            except Exception:
+                parent = None
+        if parent is None and self._client is not None:
+            fetch_channel = getattr(self._client, "fetch_channel", None)
+            if fetch_channel is not None:
+                try:
+                    parent = await fetch_channel(parent_key)
+                except Exception as e:
+                    logger.debug(
+                        "[%s] Parent-channel lookup for %s failed: %s",
+                        self.name,
+                        parent_id,
+                        e,
+                    )
+                    parent = None
+        if parent is None:
+            # Unresolvable (cold cache + fetch failure): answer "not forum"
+            # uncached so the conservative fallback fires but a later send
+            # retries the lookup.
+            return False
+        is_forum = self._is_forum_parent(parent)
+        self._root_turn_parent_forum_cache[parent_key] = is_forum
+        return is_forum
+
+    async def _reply_reference_for_send(
         self,
         reply_to,
         channel,
@@ -3804,11 +3867,13 @@ class DiscordAdapter(BasePlatformAdapter):
         ``None`` — ``send`` pings via an inline mention instead
         (``_final_mention_prefix``).  ``reply_to_mode='all'`` still sends a
         real reply: the reference anchors to the parent channel, where the
-        root message actually lives.
+        root message actually lives.  Forum post starters share the id
+        signature but their starter message lives in the thread itself,
+        so they keep the default thread-anchored reference.
         """
         if not self._final_send_wants_ping(reply_to, metadata):
             return None
-        root_turn = self._root_turn_reference_is_unattachable(reply_to, channel)
+        root_turn = await self._root_turn_reference_is_unattachable(reply_to, channel)
         if root_turn and self._reply_to_mode != "all":
             return None
         try:
@@ -3869,7 +3934,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
         if self._reply_to_mode == "all":
             return ""
-        if not self._root_turn_reference_is_unattachable(reply_to, channel):
+        if not await self._root_turn_reference_is_unattachable(reply_to, channel):
             return ""
         author_id = self._root_turn_author_from_recovery(reply_to)
         if not author_id:
@@ -3982,7 +4047,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 if self._is_forum_parent(channel):
                     content = markdown_progress
                 else:
-                    reference = self._reply_reference_for_send(reply_to, channel, metadata)
+                    reference = await self._reply_reference_for_send(reply_to, channel, metadata)
                     try:
                         msg = await channel.send(
                             embed=build_embed(agent_url),
@@ -4035,7 +4100,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
-            reference = self._reply_reference_for_send(reply_to, channel, metadata)
+            reference = await self._reply_reference_for_send(reply_to, channel, metadata)
             if reference is None:
                 # Auto-threaded root turns can never attach a reference —
                 # ping the root author inline instead of losing the reply
@@ -4765,7 +4830,7 @@ class DiscordAdapter(BasePlatformAdapter):
             filename = os.path.basename(audio_path)
 
             # ids-only reference — same no-fetch rationale as the text path.
-            reference = self._reply_reference_for_send(reply_to, channel, metadata)
+            reference = await self._reply_reference_for_send(reply_to, channel, metadata)
 
             with open(audio_path, "rb") as f:
                 file_data = f.read()
@@ -6221,7 +6286,7 @@ class DiscordAdapter(BasePlatformAdapter):
             embed = self._build_tool_stage_embed(stage)
             msg = await channel.send(
                 embed=embed,
-                reference=self._reply_reference_for_send(reply_to, channel),
+                reference=await self._reply_reference_for_send(reply_to, channel),
             )
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
