@@ -553,6 +553,82 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+_ORPHAN_RESCUE_REFS_TO_KEEP = 10
+_ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
+
+def _prune_orphan_rescue_refs(
+    git_cmd,
+    cwd,
+    branch,
+    keep=_ORPHAN_RESCUE_REFS_TO_KEEP,
+    max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS,
+) -> None:
+    """Expire old orphan rescue refs so backups stay bounded.
+
+    Each orphan-history divergence (#87694) parks the pre-reset HEAD under
+    ``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``. A rescue ref
+    pins every object reachable from that commit against ``git gc`` — and in
+    the incident shape those objects include a full working-tree snapshot
+    (the autostash orphan commit), which can be multi-GB when the tree holds
+    large stray files. Left alone, a repeatedly corrupted install would grow
+    ``.git`` without bound.
+
+    Two independent limits, both enforced on every orphan incident:
+
+    - **Count cap:** keep only the ``keep`` most-recent refs.
+    - **Age expiry:** drop any ref older than ``max_age_days``, parsed from
+      the ``YYYYMMDD-HHMMSS`` timestamp embedded in the ref name (refs with
+      unparseable names are left alone rather than guessed at).
+
+    Ref names sort chronologically (timestamp prefix), so lexicographic
+    order from ``for-each-ref`` is also creation order. Deleting a ref makes
+    its objects eligible for ``git gc``; actual disk reclaim happens on the
+    next gc (git auto-gc, or the user running ``git gc``). Best-effort: any
+    failure here must not block the update itself.
+    """
+    try:
+        list_result = subprocess.run(
+            git_cmd + [
+                "for-each-ref",
+                "--format=%(refname)",
+                "--sort=refname",
+                f"refs/hermes-update-backups/orphan-{branch}-*",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if list_result.returncode != 0:
+            return
+        refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
+        stale = set(refs[:-keep] if keep > 0 else refs)
+        # Age expiry: ref names embed a UTC YYYYMMDD-HHMMSS timestamp right
+        # after the branch segment; anything older than max_age_days goes.
+        if max_age_days > 0:
+            from datetime import timedelta, timezone
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+            prefix = f"refs/hermes-update-backups/orphan-{branch}-"
+            for ref in refs:
+                stamp = ref[len(prefix):][:15]  # "YYYYMMDD-HHMMSS"
+                try:
+                    ref_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    continue
+                if ref_time < cutoff:
+                    stale.add(ref)
+        for ref in sorted(stale):
+            subprocess.run(
+                git_cmd + ["update-ref", "-d", ref],
+                cwd=cwd,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+    except OSError:
+        pass
+
 # Files that define the editable install. A pull that touches none of them
 # cannot have invalidated it.
 _INSTALL_DEFINING_FILES = (
@@ -8030,6 +8106,19 @@ def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     }
 
 
+# Abort recovery lives in its own bounded module (review on #96235). Re-exported
+# here because `hermes_cli.main` and the update flow below address these names
+# through `update_cmd`.
+from hermes_cli.update_abort_recovery import (  # noqa: E402
+    _abort_recovery_is_complete,
+    _qualified_serve_skips,
+    _recover_gateway_restart_after_abort,
+    _serve_unit_recovery_available,
+    _surviving_pre_update_serve_runtimes,
+    _warn_stale_serve_runtimes,
+)
+
+
 def _gateway_recovery_partition(
     plan, *, skip_profiles: set[str] | None = None
 ) -> tuple[dict[str, str], list[dict]]:
@@ -8042,11 +8131,19 @@ def _gateway_recovery_partition(
     Returns ``(candidates, skipped)`` where ``candidates`` maps profile →
     supervisor for supervised gateway runtimes the fresh process may restart,
     and ``skipped`` lists every other inventoried runtime the recovery pass
-    deliberately does NOT touch, each with an explicit reason.  Nothing from
-    the spawn ledger may vanish from the recovery pass silently: manual
-    gateways have no relaunch authority, and serve/dashboard runtimes (the
-    ``update_inventory`` serve collector) are owned by the Desktop app or a
-    human terminal, not by this recovery boundary.
+    deliberately does NOT touch *through a profile command*, each with an
+    explicit reason.  Nothing from the spawn ledger may vanish silently:
+    manual gateways have no relaunch authority, and serve/dashboard runtimes
+    (the ``update_inventory`` serve collector) have no per-profile relaunch
+    command at all.
+
+    A ``skipped`` serve/dashboard entry is NOT a statement that the runtime is
+    unrecoverable.  The fresh child runs a separate ``hermes-serve*`` systemd
+    pass that enumerates units from systemd rather than from this inventory,
+    precisely because the ledger collector cannot classify a systemd-launched
+    ``hermes serve``: it records no spawner, so it reads as ``manual-serve``.
+    Whatever that unit pass does not reconcile is caught afterwards by
+    :func:`_surviving_pre_update_serve_runtimes` (#92145).
     """
     skip_profiles = skip_profiles or set()
     candidates: dict[str, str] = {}
@@ -8084,10 +8181,21 @@ def _gateway_recovery_partition(
                         " its supervisor"
                     )
                 else:
+                    # NOT a claim that no supervisor exists. The ledger
+                    # collector derives serve/dashboard supervisors from
+                    # spawner liveness alone, and a systemd-launched
+                    # `hermes serve` sets neither HERMES_SPAWN nor
+                    # HERMES_PARENT_PID, so it lands here as "manual-serve".
+                    # Unit-backed serve runtimes are recovered by the
+                    # fresh child's systemd pass, which enumerates
+                    # `hermes-serve*` from systemd instead of trusting this
+                    # classification; survivors are reported afterwards by
+                    # _surviving_pre_update_serve_runtimes (#92145).
                     reason = (
-                        "manually launched serve/dashboard has no relaunch"
-                        " authority; left running for explicit operator"
-                        " restart"
+                        "no per-profile relaunch command reaches a serve/"
+                        "dashboard runtime; recovered by the fresh systemd"
+                        " unit pass when it owns a hermes-serve* unit, else"
+                        " left running for explicit operator restart"
                     )
                 skipped.append(
                     {
@@ -8108,156 +8216,6 @@ def _gateway_restart_recovery_profiles(
     """Return supervised gateway profiles that a fresh process may restart."""
     candidates, _ = _gateway_recovery_partition(plan, skip_profiles=skip_profiles)
     return sorted(candidates)
-
-
-def _recover_gateway_restart_after_abort(
-    plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None
-) -> dict[str, list]:
-    """Retry supervised gateway restarts from a clean Python process.
-
-    ``hermes update`` normally performs the fleet restart in the interpreter
-    that started before ``git pull``.  If that phase raises while importing the
-    new tree, a warning alone leaves the old gateway alive against new files on
-    disk.  The recovery boundary launches the existing per-profile
-    ``gateway restart`` command through a new interpreter, preserving its
-    platform-specific drain and service-manager logic without inheriting the
-    stale ``sys.modules`` graph.
-
-    Only profiles classified as supervisor-owned by the pre-update inventory
-    are handed off.  A manual gateway must remain running and be reported for
-    explicit operator action rather than being killed without a relaunch
-    authority; serve/dashboard runtimes from the spawn ledger are likewise
-    recorded as skipped with a reason instead of vanishing from the pass.
-    The returned protocol is persisted in the update receipt so operators can
-    distinguish a spawn failure from a per-profile failure.
-
-    Outcome honesty: ``verified`` means the fresh child independently observed
-    the profile's systemd unit active after the relaunch.  A zero exit from
-    ``gateway restart`` alone is NOT observed proof that the new code
-    generation is serving, so those outcomes are reported as
-    ``relaunch_attempted`` and never claim supervisor coverage.
-    """
-    candidates, skipped = _gateway_recovery_partition(
-        plan, skip_profiles=skip_profiles
-    )
-    profiles = sorted(candidates)
-    if not profiles:
-        return {
-            "requested": [],
-            "verified": [],
-            "relaunch_attempted": [],
-            "failed": [],
-            "skipped": skipped,
-        }
-
-    def _all_failed() -> dict[str, list]:
-        return {
-            "requested": profiles,
-            "verified": [],
-            "relaunch_attempted": [],
-            "failed": profiles,
-            "skipped": skipped,
-        }
-
-    command = [
-        sys.executable,
-        "-m",
-        "hermes_cli.update_restart_recovery",
-        "--stdin",
-    ]
-    env = os.environ.copy()
-    env["HERMES_UPDATE_RESTART_RECOVERY"] = "1"
-    for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
-        env.pop(marker, None)
-
-    # A gateway-triggered update may run inside the gateway's systemd cgroup.
-    # Put the recovery process in a transient user scope before it asks systemd
-    # to restart that gateway, otherwise KillMode can terminate the recovery
-    # process together with the old service. If systemd-run is unavailable,
-    # fail closed rather than pretending the in-cgroup child is independent.
-    if gateway_mode and sys.platform == "linux":
-        systemd_run = shutil.which("systemd-run")
-        if not systemd_run:
-            logger.warning("Cannot isolate fresh gateway recovery from the gateway cgroup")
-            return _all_failed()
-        command = [
-            systemd_run,
-            "--user",
-            "--scope",
-            "--quiet",
-            "--collect",
-            "--",
-            *command,
-        ]
-
-    kwargs = {
-        "input": json.dumps({"profiles": profiles, "supervisors": candidates}),
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "check": False,
-        "env": env,
-        "timeout": max(120, 30 + 90 * len(profiles)),
-    }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        )
-    else:
-        kwargs["start_new_session"] = True
-
-    try:
-        result = subprocess.run(command, **kwargs)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Fresh gateway restart recovery failed: %s", exc)
-        return _all_failed()
-
-    if result.returncode != 0:
-        logger.warning("Fresh gateway restart recovery exited %s", result.returncode)
-        return _all_failed()
-
-    try:
-        recovery_result = json.loads(result.stdout or "")
-        verified = recovery_result.get("verified")
-        relaunch_attempted = recovery_result.get("relaunch_attempted")
-        failed = recovery_result.get("failed")
-    except (AttributeError, TypeError, ValueError):
-        logger.warning("Fresh gateway restart recovery returned invalid JSON")
-        return _all_failed()
-
-    buckets = (verified, relaunch_attempted, failed)
-    reported: list[str] = []
-    if all(isinstance(bucket, list) for bucket in buckets):
-        reported = [*verified, *relaunch_attempted, *failed]
-    if (
-        not all(isinstance(bucket, list) for bucket in buckets)
-        or any(not isinstance(profile, str) for profile in reported)
-        or set(reported) != set(profiles)
-        or len(reported) != len(set(reported))
-    ):
-        logger.warning("Fresh gateway restart recovery returned incomplete profiles")
-        return _all_failed()
-
-    if verified:
-        print(
-            "  ✓ Restarted supervised gateway(s) in a fresh process"
-            " (systemd-verified active): " + ", ".join(sorted(verified))
-        )
-    if relaunch_attempted:
-        print(
-            "  ⚠ Relaunch attempted in a fresh process but not"
-            " supervisor-verified (check these gateways manually): "
-            + ", ".join(sorted(relaunch_attempted))
-        )
-    return {
-        "requested": profiles,
-        "verified": sorted(verified),
-        "relaunch_attempted": sorted(relaunch_attempted),
-        "failed": sorted(failed),
-        "skipped": skipped,
-    }
 
 
 def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
@@ -10016,6 +9974,64 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # Same branch as the update target — a true upstream
                     # force-push/rebase. Local changes are already stashed;
                     # reset to match the remote exactly (original behaviour).
+                    #
+                    # Divergence here comes in two shapes: ordinary (a common
+                    # ancestor still exists — the reset below is a normal,
+                    # safe re-sync onto the remote) and orphan (no common
+                    # ancestor at all, e.g. a corrupted local HEAD or a repo
+                    # re-init — see #87694). In the orphan case `reset --hard`
+                    # would silently discard the entire local commit graph
+                    # with no way back, so park pre_pull_sha behind a rescue
+                    # ref first.
+                    merge_base_result = subprocess.run(
+                        git_cmd + ["merge-base", "HEAD", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    has_common_ancestor = bool(
+                        merge_base_result.returncode == 0
+                        and merge_base_result.stdout.strip()
+                    )
+                    if not has_common_ancestor and pre_pull_sha:
+                        from datetime import datetime as _dt, timezone
+
+                        # Suffix with the pre-pull SHA (not just a second-
+                        # resolution timestamp) so two updates racing within
+                        # the same second (e.g. a retried update) get distinct
+                        # refs instead of the second `update-ref` silently
+                        # overwriting the first backup.
+                        rescue_ref = (
+                            f"refs/hermes-update-backups/orphan-{branch}-"
+                            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                            f"-{pre_pull_sha[:12]}"
+                        )
+                        update_ref_result = subprocess.run(
+                            git_cmd + ["update-ref", rescue_ref, pre_pull_sha],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
+                        )
+                        if update_ref_result.returncode == 0:
+                            print(
+                                "  ⚠ Local history shares no common ancestor with "
+                                f"origin/{branch} (orphan divergence) — backed up "
+                                f"current HEAD to {rescue_ref} before resetting. "
+                                f"This backup expires after "
+                                f"{_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days."
+                            )
+                        else:
+                            # update-ref's return code is intentionally not
+                            # fatal (disk full, permissions) — but don't tell
+                            # the user a backup exists when the write failed.
+                            print(
+                                "  ⚠ Local history shares no common ancestor with "
+                                f"origin/{branch} (orphan divergence) — attempted "
+                                f"to back up current HEAD to {rescue_ref} before "
+                                "resetting, but the backup write failed "
+                                f"(pre-reset SHA was {pre_pull_sha})."
+                            )
+                        _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
                     print(
                         "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                     )
@@ -10801,6 +10817,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # needed to forward already-restarted units to
         # ``_finish_dashboard_update_cleanup`` (review on #83595).
         restarted_services: list = []
+        # Scope-qualified twin of ``restarted_services`` for systemd units:
+        # ``user/hermes-serve`` and ``system/hermes-serve`` are two different
+        # processes, and the abort-recovery child needs to know WHICH one was
+        # already settled. ``restarted_services`` itself keeps its bare-name
+        # vocabulary — the fleet probe, the receipt and the operator summary
+        # all read it (#92145 review).
+        restarted_scoped_units: set = set()
         # Keep these restart bookkeeping collections defined even when the
         # phase raises before its platform-specific imports initialize them.
         # The abort recovery and the fleet reconciliation both consume the
@@ -11339,11 +11362,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             f"continuing with remaining gateways"
                         )
 
-                    _for_each_systemd_gateway_unit(
-                        result.stdout,
-                        process_unit=_restart_one_systemd_gateway_unit,
-                        on_unit_timeout=_on_unit_timeout,
-                    )
+                    # Everything this scope appends to ``restarted_services``
+                    # belongs to THIS systemd manager; qualify it before the
+                    # next scope can append a same-named unit. ``finally`` so a
+                    # phase abort mid-scope still carries the units it settled.
+                    _scope_mark = len(restarted_services)
+                    try:
+                        _for_each_systemd_gateway_unit(
+                            result.stdout,
+                            process_unit=_restart_one_systemd_gateway_unit,
+                            on_unit_timeout=_on_unit_timeout,
+                        )
+                    finally:
+                        restarted_scoped_units.update(
+                            f"{scope}/{name}"
+                            for name in restarted_services[_scope_mark:]
+                        )
 
             # --- Launchd services (macOS) ---
             # Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
@@ -11602,7 +11636,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _pre_update_plan,
                 gateway_mode=gateway_mode,
                 skip_profiles=_already_restarted_profiles,
+                skip_units=set(restarted_scoped_units),
             )
+            _recovery_serve_units = _recovery_result.get("serve_units") or {}
+            _serve_units_failed = list(_recovery_serve_units.get("failed") or [])
+            # Deliberately NOT merged into ``restarted_services``: that list is
+            # the gateway phase's own vocabulary and feeds the fleet-probe
+            # expectation. Serve coverage lives in the recovery result and the
+            # receipt, where it can be read without changing gateway semantics.
+            # A serve/dashboard runtime that is still the SAME process the
+            # pre-update inventory saw is a live runtime on the pre-update
+            # code generation — the exact unsafe state of #92145, and the one
+            # the reporter hit through tui_gateway (hosted by `hermes serve`,
+            # which is not a gateway profile and which no `gateway restart`
+            # command can reach). Recovery may not report success while one
+            # is still there, and it must never kill one: a manual or
+            # Desktop-owned serve has no relaunch authority.
+            _stale_runtime_rows = _surviving_pre_update_serve_runtimes(
+                _pre_update_plan
+            )
+            _recovery_result["stale_runtimes"] = _stale_runtime_rows
             # Only systemd-VERIFIED outcomes may claim supervisor coverage.
             # A relaunch that merely exited 0 ("relaunch_attempted") was never
             # observed by the code and must not clear the incomplete flag.
@@ -11625,21 +11678,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _covered_gateway_profiles = (
                 _already_restarted_profiles | _recovery_verified
             )
-            _recovery_complete = bool(_planned_gateway_profiles) and (
-                _planned_gateway_profiles <= _covered_gateway_profiles
-                and not _recovery_result.get("failed")
-                and not _recovery_result.get("relaunch_attempted")
+            _recovery_complete = _abort_recovery_is_complete(
+                planned_gateway_profiles=_planned_gateway_profiles,
+                covered_gateway_profiles=_covered_gateway_profiles,
+                recovery_result=_recovery_result,
+                stale_runtime_rows=_stale_runtime_rows,
             )
             if _recovery_complete:
                 # The fresh child is the recovery terminal result. Leave the
                 # final fleet-version matrix below as the authoritative
                 # read-back before the update is declared successful.
                 gateway_fleet_restart_incomplete = False
-            elif _restart_phase_failure_is_incomplete(
-                _surviving, _pre_restart_gateway_pids
+            elif (
+                _restart_phase_failure_is_incomplete(
+                    _surviving, _pre_restart_gateway_pids
+                )
+                or _stale_runtime_rows
+                or _serve_units_failed
             ):
                 gateway_fleet_restart_incomplete = True
                 _warn_gateway_restart_phase_aborted(e, _surviving)
+                _warn_stale_serve_runtimes(_stale_runtime_rows)
                 if gateway_mode:
                     _exit_code_path = get_hermes_home() / ".update_exit_code"
                     try:
