@@ -2,6 +2,6 @@ name: auto_update
 default_enabled: true
 disabled_management: disabled_management
 version: 1.0.0
-description: "Safe unattended Hermes updates on Linux/systemd via an independent timer and oneshot service (hermes auto_update reconcile)."
+description: "Safe unattended Hermes updates on Linux/systemd via an independent timer: every tick prepares the available update, the fleet restart happens only once Hermes is idle (hermes auto_update reconcile)."
 author: Hermes Agent
 kind: backend

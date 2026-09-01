@@ -27,16 +27,20 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import time as _time
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.durable_state import durable_publish_bytes
 from hermes_constants import get_default_hermes_root, venv_python_path
 
 logger = logging.getLogger(__name__)
@@ -3220,32 +3224,413 @@ def _write_lazy_refresh_incomplete_marker() -> None:
 # completes or there were no running services to restart.
 _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
 
+# The AUTHORITATIVE prepared-generation record lives in its own file,
+# ``fleet_restart_prepared``, never inside the generic breadcrumb above.
+# Separating them is what makes a generic pull-time marker write — which any
+# re-prepare attempt performs the moment HEAD advances, including one that
+# then fails or is killed on timeout — unable to overwrite the strict
+# prepared fields a previous COMPLETED preparation published.
+_FLEET_RESTART_PREPARED_NAME = "fleet_restart_prepared"
+
+#: Schema of the prepared-generation record a *completed* ``--defer-restart``
+#: run publishes. Version it the moment any bound field changes meaning — an
+#: unknown version must read as unprepared.
+_PREPARED_GENERATION_SCHEMA = 1
+
+#: A full git object name: exactly 40 hex (SHA-1) or exactly 64 hex
+#: (SHA-256). Never a length range — 41 or 63 hex characters is not a git
+#: object id, and never a prefix/abbreviation. ``\A``/``\Z`` on purpose:
+#: ``$`` would wave a trailing newline through.
+_PREPARED_SHA_RE = re.compile(r"\A[0-9a-fA-F]{40}\Z|\A[0-9a-fA-F]{64}\Z")
+#: Generation ids are opaque unique tokens (uuid4 hex today).
+_PREPARED_GENERATION_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
+#: A receipt *file name* — bare on purpose, so a hand-edited record cannot
+#: point activation at JSON outside the receipt directory.
+_PREPARED_RECEIPT_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+#: The prepared record is a small key=value document written only by
+#: :func:`_publish_prepared_generation`. Anything oversized, or carrying
+#: duplicate/unknown keys, is tampering or corruption — never state.
+_PREPARED_RECORD_MAX_BYTES = 16 * 1024
+_PREPARED_RECORD_FIELDS = frozenset(
+    {
+        "schema",
+        "generation",
+        "expected_sha",
+        "receipt",
+        "prepared",
+        "restart",
+        "prepared_at",
+        "pid",
+    }
+)
+
+
+def _normalize_prepared_sha(value) -> str:
+    """Canonical (lowercase) full git object id, or ``""`` when not exactly one.
+
+    Accepts only the strict 40/64-hex shapes; mixed-case input is normalized
+    so marker, receipt and ``git rev-parse`` output compare like with like.
+    Whitespace, newlines, prefixes and abbreviations are rejected, not
+    trimmed.
+    """
+    text = str(value or "")
+    return text.lower() if _PREPARED_SHA_RE.match(text) else ""
+
 
 def _fleet_restart_pending_marker_path() -> Path:
     """HERMES_HOME breadcrumb for a pull that has not yet restarted the fleet."""
     return get_hermes_home() / _FLEET_RESTART_PENDING_NAME
 
 
-def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
-    """Drop the pull→restart obligation breadcrumb. Never raises."""
+def _fleet_restart_prepared_path() -> Path:
+    """HERMES_HOME record of the authoritative prepared generation.
+
+    Distinct from :func:`_fleet_restart_pending_marker_path`: the generic
+    breadcrumb is rewritten by every pull, while this file is written only
+    by a completed preparation and read only by strict activation.
+    """
+    return get_hermes_home() / _FLEET_RESTART_PREPARED_NAME
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Durably publish ``text`` at ``path`` via the one strict helper.
+
+    Unique same-directory staging with exclusive creation, full-write loop,
+    file fsync, atomic ``os.replace``, parent-directory fsync on POSIX and an
+    exact read-back — every failure raises :class:`OSError` (a POSIX file or
+    directory fsync failure is a hard publication failure, never a
+    log-and-continue). Callers that only ever wanted a best-effort
+    breadcrumb catch it themselves. The staged sibling is removed on every
+    failure path so no ``*.tmp.*`` litter survives.
+    """
+    durable_publish_bytes(path, text.encode("utf-8"))
+
+
+def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> bool:
+    """Drop the pull→restart obligation breadcrumb. Never raises.
+
+    Returns whether the breadcrumb is durable on disk. This writes the
+    *obligation only* — HEAD advanced and running runtimes still serve the
+    old code — with no claim about preparation state, and it never touches
+    the authoritative prepared record: a re-prepare that fails or times out
+    after this write leaves a previous completed preparation's record
+    byte-identical. The activatable ``prepared`` record is published
+    separately, and only by a deferred run whose whole preparation
+    transaction succeeded (see :func:`_publish_prepared_generation`).
+    """
     path = _fleet_restart_pending_marker_path()
     if _m()._pytest_owns_live_checkout(path.parent):
         logger.debug("Skipping fleet-restart-pending marker under pytest (live checkout)")
-        return
+        return True
+    lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
+    if expected_sha:
+        lines.append(f"expected_sha={expected_sha}")
     try:
-        lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
-        if expected_sha:
-            lines.append(f"expected_sha={expected_sha}")
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _atomic_write_text(path, "\n".join(lines) + "\n")
     except OSError as exc:
         logger.debug("Could not write fleet-restart-pending marker: %s", exc)
+        return False
+    return True
+
+
+def _read_fleet_restart_pending_marker() -> dict[str, str]:
+    """Parse the pending-restart breadcrumb into ``key -> value`` fields.
+
+    Empty when the marker is absent, unreadable, or malformed — callers must
+    treat that as "no proof", never as "nothing pending".
+    """
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip():
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+@dataclass(frozen=True)
+class PreparedGeneration:
+    """A strictly parsed ``fleet_restart_prepared`` generation record.
+
+    Binds the restart obligation to one exact checkout SHA and to the one
+    durable receipt that proves the preparation finished: the receipt
+    carries the same generation id, so a record whose receipt was replaced
+    by any later update run no longer validates.
+    """
+
+    schema: int
+    generation: str
+    expected_sha: str
+    receipt: str
+
+
+def _read_prepared_record_fields() -> dict[str, str] | None:
+    """Strictly parse the prepared-generation record file into fields.
+
+    ``None`` — "no proof", never "nothing pending" — for anything short of
+    an intact document: a missing, unreadable, empty or oversize file, a
+    line that is not ``key=value``, a duplicate key, an unknown key (a field
+    this schema never writes could be a security-relevant injection), CRLF
+    or trailing garbage. The generic marker reader stays lenient; the
+    authoritative record does not.
+    """
+    try:
+        raw = _fleet_restart_prepared_path().read_bytes()
+    except OSError:
+        return None
+    if not raw or len(raw) > _PREPARED_RECORD_MAX_BYTES:
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if not text.endswith("\n") or "\r" in text:
+        return None
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or not key:
+            return None
+        if key in fields or key not in _PREPARED_RECORD_FIELDS:
+            return None
+        # Values are taken verbatim — the writer never pads them, so
+        # surrounding whitespace is tampering the field validators reject,
+        # not something to normalize away.
+        fields[key] = value
+    return fields
+
+
+def _parse_prepared_generation() -> PreparedGeneration | None:
+    """Strictly parse the prepared record as a published prepared generation.
+
+    Anything short of a complete, well-typed, known-schema record reads as
+    unprepared: a missing, malformed, truncated, unreadable, wrong-typed, or
+    incomplete record, an unknown schema version, or a bare ``prepared=yes``
+    line. ``None`` means "no proof" — callers must fail closed on it, never
+    treat it as "nothing pending" *or* as activatable.
+    """
+    fields = _read_prepared_record_fields()
+    if not fields:
+        return None
+    if fields.get("schema") != str(_PREPARED_GENERATION_SCHEMA):
+        return None
+    generation = fields.get("generation", "")
+    expected_sha = _normalize_prepared_sha(fields.get("expected_sha", ""))
+    receipt = fields.get("receipt", "")
+    if not _PREPARED_GENERATION_RE.match(generation):
+        return None
+    if not expected_sha:
+        return None
+    if not _PREPARED_RECEIPT_RE.match(receipt) or receipt in {".", ".."}:
+        return None
+    if fields.get("prepared") != "yes":
+        return None
+    if fields.get("restart") != "pending":
+        return None
+    return PreparedGeneration(
+        schema=_PREPARED_GENERATION_SCHEMA,
+        generation=generation,
+        expected_sha=expected_sha,
+        receipt=receipt,
+    )
+
+
+def _fleet_restart_pending_prepared() -> bool:
+    """Durable proof that the pending update's preparation finished.
+
+    True only when the authoritative prepared record is a complete prepared
+    generation (see :func:`_parse_prepared_generation`) AND the receipt it
+    names still exists and independently claims the same generation, target
+    SHA and pending restart — published by a ``--defer-restart`` run after
+    pull, dependency sync, builds, migrations and skill sync all succeeded
+    and the record read back intact. False for the generic marker a plain or
+    interrupted update leaves behind (HEAD advanced, preparation state
+    unknown) — a generic obligation alone is never enough — for a record
+    whose receipt was replaced by any later update run, and for a pending
+    obligation inferred from a skewed receipt, where nothing proves
+    anything.
+    """
+    generation = _parse_prepared_generation()
+    return generation is not None and (
+        _read_prepared_generation_receipt(generation) is not None
+    )
+
+
+def _current_checkout_head() -> str | None:
+    """Current checkout HEAD, probed directly in ``PROJECT_ROOT``.
+
+    Deliberately not ``get_code_identity()``: that resolves the tree the
+    *running interpreter* was imported from, which is not necessarily the
+    one ``hermes update`` mutates. The prepared generation compares like
+    with like — its ``expected_sha`` came from this same probe.
+    """
+    return _capture_head_sha(["git"], _m().PROJECT_ROOT)
+
+
+def _read_prepared_generation_receipt(
+    generation: PreparedGeneration,
+) -> dict | None:
+    """Load and validate the receipt a prepared generation is bound to.
+
+    None unless the named receipt exists, parses, and independently claims
+    the same schema, generation id, target SHA, and a pending restart for a
+    successful, unfinished-free update run.
+    """
+    from hermes_cli.update_receipt import read_named_receipt
+
+    receipt = read_named_receipt(generation.receipt)
+    if receipt is None:
+        return None
+    bound = receipt.get("prepared_generation")
+    if not isinstance(bound, dict):
+        return None
+    if bound.get("schema") != _PREPARED_GENERATION_SCHEMA:
+        return None
+    if str(bound.get("generation") or "") != generation.generation:
+        return None
+    if str(bound.get("expected_sha") or "") != generation.expected_sha:
+        return None
+    if bound.get("restart") != "pending":
+        return None
+    if receipt.get("outcome") != "success":
+        return None
+    if _receipt_looks_unfinished(receipt):
+        return None
+    return receipt
+
+
+def _publish_prepared_generation() -> tuple[bool, str]:
+    """Publish the durable prepared generation for a finished deferred run.
+
+    Ordering is the contract: the matching receipt is finalized — and
+    therefore durably on disk (atomic write, fsync, directory fsync,
+    read-back) — FIRST, then the prepared record is published atomically as
+    the commit record pointing at it, then the record is read back and
+    strictly re-parsed. Every step is verified against the live checkout, so
+    a concurrent HEAD move between the pull and here fails the publication
+    instead of stamping a stale generation.
+
+    The record lands in ``fleet_restart_prepared`` — never in the generic
+    pull-time marker — so a later re-prepare that fails or times out after
+    its own pull-time marker write cannot destroy the generation this run
+    published; a later COMPLETED preparation atomically replaces it.
+
+    Returns ``(True, "")`` on success; any failure returns ``(False,
+    reason)`` and the caller must exit nonzero — a preparation whose
+    readiness cannot be proven durable is not a completed preparation.
+    """
+    expected_sha = _normalize_prepared_sha(
+        _read_fleet_restart_pending_marker().get("expected_sha", "")
+    )
+    if not expected_sha:
+        return False, "the pull-time marker records no full expected_sha"
+    head = _current_checkout_head()
+    if not head or head.lower() != expected_sha:
+        return False, (
+            f"checkout HEAD is {head or 'unresolvable'}, expected {expected_sha}"
+        )
+
+    generation = uuid.uuid4().hex
+    from hermes_cli.update_receipt import (
+        amend_receipt_outcome,
+        finalize_update_receipt,
+        record_prepared_generation,
+    )
+
+    record_prepared_generation(generation, expected_sha)
+    receipt_path = finalize_update_receipt("success")
+    if receipt_path is None:
+        return False, "the matching update receipt could not be made durable"
+
+    record = _fleet_restart_prepared_path()
+    body = (
+        f"schema={_PREPARED_GENERATION_SCHEMA}\n"
+        f"generation={generation}\n"
+        f"expected_sha={expected_sha}\n"
+        f"receipt={receipt_path.name}\n"
+        "prepared=yes\n"
+        "restart=pending\n"
+        f"prepared_at={int(_time.time())}\n"
+        f"pid={os.getpid()}\n"
+    )
+    try:
+        _atomic_write_text(record, body)
+    except OSError as exc:
+        amend_receipt_outcome(
+            receipt_path,
+            outcome="failed",
+            error=f"prepared record write failed: {exc}",
+        )
+        return False, f"the prepared record could not be written durably: {exc}"
+    parsed = _parse_prepared_generation()
+    if (
+        parsed is None
+        or parsed.generation != generation
+        or parsed.receipt != receipt_path.name
+        or parsed.expected_sha != expected_sha
+    ):
+        amend_receipt_outcome(
+            receipt_path,
+            outcome="failed",
+            error="prepared record read-back validation failed",
+        )
+        return False, "the prepared record failed read-back validation"
+    return True, ""
 
 
 def _clear_fleet_restart_pending_marker() -> None:
-    """Remove the pull→restart obligation breadcrumb. Never raises."""
+    """Remove the pull→restart obligation state. Never raises.
+
+    Stock/manual recovery semantics: once the stock restart machinery has
+    discharged the obligation (or the live fleet demonstrably already serves
+    the checkout), both the generic breadcrumb and any prepared generation
+    bound to it are moot, so both go. Strict activation never uses this —
+    it clears through :func:`_clear_prepared_generation_strict` only after
+    post-restart verification.
+    """
     _m()._clear_marker_file(
         _fleet_restart_pending_marker_path(), label="fleet-restart-pending"
     )
+    _m()._clear_marker_file(
+        _fleet_restart_prepared_path(), label="fleet-restart-prepared"
+    )
+
+
+def _clear_prepared_generation_strict() -> int:
+    """Clear the pending obligation, refusing to claim success it can't prove.
+
+    Unlike the best-effort clear (fine for the stock updater's own recovery
+    path), this verifies BOTH files are actually gone — the authoritative
+    prepared record and the generic breadcrumb: a permission error or a
+    read-only home must leave the obligation pending and return nonzero, not
+    silently reschedule a restart that already happened.
+    """
+    rc = 0
+    for path in (_fleet_restart_pending_marker_path(), _fleet_restart_prepared_path()):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"⚠ Could not clear {path.name}: {exc}")
+            rc = 1
+            continue
+        try:
+            still_there = path.exists()
+        except OSError as exc:
+            print(f"⚠ Could not re-check {path.name}: {exc}")
+            rc = 1
+            continue
+        if still_there:
+            print(f"⚠ {path.name} is still present after clearing it.")
+            rc = 1
+    if rc == 0:
+        print("  ✓ Pending fleet restart completed.")
+    return rc
 
 
 def _current_checkout_sha() -> str | None:
@@ -3327,6 +3712,10 @@ def _pending_fleet_restart_needed() -> bool:
     """True when a prior pull still owes the fleet a restart (#95294)."""
     try:
         if _fleet_restart_pending_marker_path().is_file():
+            return True
+        # A published prepared generation is itself a restart obligation,
+        # even if the generic breadcrumb alongside it was lost.
+        if _fleet_restart_prepared_path().is_file():
             return True
     except OSError:
         pass
@@ -3497,6 +3886,65 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
+def _expected_gateway_profiles_from_receipt() -> set[str] | None:
+    """Profiles the latest receipt's plan saw running a gateway, or None.
+
+    ``None`` means "no usable plan": missing, malformed, or unreadable
+    receipt. The caller then has no evidence about which profiles are
+    required, so it must fail closed rather than treat the snapshot as
+    complete.
+    """
+    try:
+        from hermes_cli.update_receipt import read_latest_receipt
+
+        receipt = read_latest_receipt()
+    except Exception:
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    plan = receipt.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    profiles = {
+        str(runtime.get("profile"))
+        for runtime in plan.get("runtimes") or []
+        if isinstance(runtime, dict)
+        and runtime.get("kind") == "gateway"
+        and runtime.get("profile")
+    }
+    return profiles or None
+
+
+def _live_fleet_already_serves_checkout(fleet: list) -> bool:
+    """True when every runtime that should be live already runs disk HEAD.
+
+    The manual-``/restart`` shape: the fleet was restarted by hand, so every
+    live gateway stamps the current checkout's sha, but ``fleet_restart_pending``
+    survived (a plain restart never consumes it). Restarting again would bounce
+    every gateway a second time for nothing.
+
+    Fail closed: an empty snapshot means "nothing verifiably live", not
+    "everything fine", and any stale / down / unknown row — or a profile the
+    receipt's plan saw running a gateway that the probe can no longer see —
+    keeps the normal catch-up behavior. So does a missing, malformed, or
+    unreadable receipt/plan: without expected-profile evidence this snapshot
+    cannot prove that no required profile went missing, and clearing the
+    marker without a restart needs that proof.
+    """
+    if not fleet:
+        return False
+    for entry in fleet:
+        if not isinstance(entry, dict) or entry.get("state") != "current":
+            return False
+    expected = _expected_gateway_profiles_from_receipt()
+    if not expected:
+        return False
+    live = {
+        str(entry.get("profile")) for entry in fleet if isinstance(entry, dict)
+    }
+    return expected.issubset(live)
+
+
 def _apply_pending_fleet_restart_catchup() -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
@@ -3507,12 +3955,586 @@ def _apply_pending_fleet_restart_catchup() -> None:
         return
     print()
     _warn_pending_fleet_restart()
+    # A manual `/restart` (or `hermes gateway restart`) brings the fleet onto
+    # the current code without consuming this marker. Probe the real live
+    # fleet first so that case clears the marker instead of restarting a
+    # fleet that is already current. Anything stale, down, unknown, missing,
+    # or unverifiable falls through to the real restart — never cleared on a
+    # failed inspection.
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Pending fleet inspection failed: %s", exc)
+        fleet = None
+    if fleet is not None and _live_fleet_already_serves_checkout(fleet):
+        print("→ Live gateways already run the current code — clearing the pending restart.")
+        _clear_fleet_restart_pending_marker()
+        return
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Strict activation (``hermes auto_update activate``)
+#
+# The catch-up above is the *stock* updater's recovery semantics: best-effort,
+# restart-when-in-doubt, tolerant of missing evidence. Auto-update activation
+# cannot borrow those semantics wholesale — it runs unattended, so every
+# uncertainty below fails closed instead of degrading. The two paths share the
+# restart machinery itself (``_run_pending_fleet_restart``) and the
+# ``fleet_restart_pending`` state; only the decision procedure differs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: How long activation waits for a just-restarted runtime to stamp its new
+#: code identity before declaring the restart incomplete.
+_ACTIVATION_VERIFY_BUDGET_SECONDS = 15.0
+
+#: Serve/dashboard supervisors whose lifecycle the pending-restart machinery
+#: owns: the ``hermes-serve*`` systemd units it restarts alongside the
+#: gateway units. Desktop-supervised and manually-launched backends are
+#: deliberately excluded — the stock restart phase leaves those to their own
+#: supervisor, so requiring them here would demand what nothing restarts.
+_MANAGED_SERVE_SUPERVISORS = frozenset({"systemd"})
+
+
+def _expected_runtimes_from_plan(plan) -> tuple[Optional[set], list, list]:
+    """Split a receipt plan into the runtimes strict activation must account for.
+
+    Returns ``(gateway_profiles, managed_serve, unmanaged_serve)``.
+    ``gateway_profiles`` is ``None`` when the plan itself is unusable —
+    missing, malformed, or without a ``runtimes`` list. That is "no
+    evidence", which is deliberately NOT the same value as the empty set an
+    explicitly valid empty plan produces: a prepare that saw nothing running
+    proves there is nothing to restart, a receipt nobody can parse proves
+    nothing. Malformed entries make the whole plan unusable for the same
+    reason — an entry that cannot be read could be any runtime.
+    """
+    if not isinstance(plan, dict):
+        return None, [], []
+    runtimes = plan.get("runtimes")
+    if not isinstance(runtimes, list):
+        return None, [], []
+    gateways: set = set()
+    managed: list = []
+    unmanaged: list = []
+    for runtime in runtimes:
+        kind = runtime.get("kind") if isinstance(runtime, dict) else None
+        profile = runtime.get("profile") if isinstance(runtime, dict) else None
+        if not isinstance(kind, str) or not isinstance(profile, str) or not profile:
+            return None, [], []
+        if kind == "gateway":
+            gateways.add(profile)
+        elif kind in ("serve", "dashboard"):
+            supervisor = str(runtime.get("supervisor") or "")
+            if supervisor in _MANAGED_SERVE_SUPERVISORS:
+                managed.append(dict(runtime))
+            else:
+                unmanaged.append(dict(runtime))
+    return gateways, managed, unmanaged
+
+
+def _inspect_live_fleet_strict() -> dict:
+    """Probe the live fleet, raising on any inspection failure.
+
+    Gateways come from the strict fleet-version snapshot (which raises where
+    the historical one shrugs), serve/dashboard backends from the spawn
+    ledger (live-verified ``(pid, create_time)`` pairs). Callers must treat
+    an exception as "the fleet state is unknown", never as "empty".
+    """
+    from hermes_cli.update_receipt import collect_fleet_versions_strict
+
+    fleet = collect_fleet_versions_strict()
+    from hermes_cli.process_identity import ledger_entries
+
+    ledger = ledger_entries()
+    return {"fleet": fleet, "ledger": ledger}
+
+
+def _live_ledger_rows(ledger: list) -> list[dict]:
+    """Live serve/dashboard rows from the spawn ledger, deterministically ordered.
+
+    One row per ledger ENTRY, so a pid the log-shaped file records twice
+    yields two rows. A pid is still one live process, never two matchable
+    runtimes — the injective matching and the duplicate-identity check
+    below enforce that on process identity, not on this row count.
+    """
+    rows: list[dict] = []
+    for entry in ledger:
+        if not isinstance(entry, dict):
+            continue
+        purpose = entry.get("purpose")
+        if purpose not in ("serve", "dashboard"):
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        rows.append(
+            {
+                "kind": str(purpose),
+                "profile": str(entry.get("profile") or "default"),
+                "pid": pid,
+                "host": str(entry.get("host") or ""),
+                "port": entry.get("port"),
+            }
+        )
+    rows.sort(key=lambda row: (row["kind"], row["profile"], row["pid"]))
+    return rows
+
+
+def _planned_runtime_identity(runtime: dict) -> tuple | None:
+    """Stable instance identity the plan recorded, when it recorded one.
+
+    Serve/dashboard plan rows carry the spawn-ledger ``host``/``port`` the
+    backend registered with (#63206) — the identity of the instance across a
+    restart, unlike its pid. Present only when both fields are usable.
+    """
+    detail = runtime.get("detail")
+    if not isinstance(detail, dict):
+        return None
+    host = str(detail.get("host") or "")
+    port = detail.get("port")
+    if host and port:
+        return (host, port)
+    return None
+
+
+def _runtime_row_compatible(planned: dict, live: dict) -> bool:
+    """True when a live ledger row may satisfy one planned runtime.
+
+    The base predicate is the plan's own kind/profile. When BOTH sides carry
+    a stable instance identity, that identity is preferred and must agree —
+    a live backend on a different host/port is a different instance, not
+    this plan row's replacement.
+    """
+    if live["kind"] != str(planned.get("kind")):
+        return False
+    if live["profile"] != str(planned.get("profile") or "default"):
+        return False
+    identity = _planned_runtime_identity(planned)
+    if identity is not None and live["host"] and live["port"]:
+        return (live["host"], live["port"]) == identity
+    return True
+
+
+def _match_runtimes_injectively(planned: list, live: list) -> dict[int, int]:
+    """Deterministic maximum one-to-one matching of planned rows to live pids.
+
+    Post-restart verification is injective on live PROCESS identity, not on
+    ledger-row count: every planned managed runtime must match a DISTINCT
+    live process, and one live process satisfies at most one planned row —
+    two planned serve backends of the same kind/profile are NOT both
+    satisfied by a single live replacement, however many ledger rows
+    describe it. Slots are therefore keyed by pid: a pid that appears in
+    the ledger twice (identical replay or conflicting fields alike) is ONE
+    slot whose identity is the first row in deterministic sort order.
+    Returns ``{planned_index: live_index}`` for the first row of each
+    matched slot; a planned row missing from the mapping could not be
+    matched. Kuhn's augmenting-path algorithm over the slots, so the result
+    does not depend on dict/ledger iteration order.
+    """
+    slots: list[tuple[int, dict]] = []  # (first live row index, identity row)
+    slot_by_pid: dict[int, int] = {}
+    for row_index, row in enumerate(live):
+        pid = row["pid"]
+        if pid in slot_by_pid:
+            continue
+        slot_by_pid[pid] = len(slots)
+        slots.append((row_index, row))
+
+    match_slot_to_planned: dict[int, int] = {}
+
+    def _augment(planned_index: int, seen: set) -> bool:
+        for slot_index, (_row_index, row) in enumerate(slots):
+            if slot_index in seen:
+                continue
+            if not _runtime_row_compatible(planned[planned_index], row):
+                continue
+            seen.add(slot_index)
+            previous = match_slot_to_planned.get(slot_index)
+            if previous is None or _augment(previous, seen):
+                match_slot_to_planned[slot_index] = planned_index
+                return True
+        return False
+
+    for planned_index in range(len(planned)):
+        _augment(planned_index, set())
+    return {
+        planned_index: slots[slot_index][0]
+        for slot_index, planned_index in match_slot_to_planned.items()
+    }
+
+
+def _duplicate_live_identity_problems(
+    planned: list, live_rows: list[dict]
+) -> list[str]:
+    """Fail-closed problems for ledger rows that disagree about one pid.
+
+    The ledger's single writer prunes a pid's old rows before appending its
+    new one, so two valid serve/dashboard rows for the SAME pid mean the
+    file can no longer prove which instance that process is — and without
+    this check, row-count matching would let one process stand in for two
+    planned runtimes. Identical replays carry no ambiguity (pid-keyed
+    matching collapses them into one slot); rows that disagree on identity
+    fields are an explicit problem for every planned runtime they could
+    have matched, so strict verification refuses to guess which identity is
+    the real one. Duplicate rows for runtimes this plan never planned are
+    not evidence against it and are left alone.
+    """
+    planned_pairs = {
+        (str(runtime.get("kind")), str(runtime.get("profile") or "default"))
+        for runtime in planned
+    }
+    rows_by_pid: dict[int, list[dict]] = {}
+    for row in live_rows:
+        rows_by_pid.setdefault(row["pid"], []).append(row)
+    problems: list[str] = []
+    for pid in sorted(rows_by_pid):
+        group = rows_by_pid[pid]
+        if len(group) == 1:
+            continue
+        identities = {
+            (row["kind"], row["profile"], row["host"], row["port"]) for row in group
+        }
+        if len(identities) == 1:
+            continue  # one identity recorded twice — collapses, nothing to guess
+        if not planned_pairs & {(row["kind"], row["profile"]) for row in group}:
+            continue
+        problems.append(
+            f"spawn ledger holds {len(group)} conflicting rows for live pid"
+            f" {pid} — it cannot prove which instance that process is"
+        )
+    return problems
+
+
+def _verify_fleet_on_expected_generation(
+    snapshot: dict,
+    *,
+    gateway_profiles: set,
+    managed_serve: list,
+    expected_sha: str,
+) -> list[str]:
+    """Problems that stop the fleet counting as serving ``expected_sha``.
+
+    Every runtime the prepared generation's plan saw is accounted for
+    injectively: a gateway must be live and stamping exactly ``expected_sha``
+    (compared directly against the sha the record binds — not the row's own
+    classification, so a probe that misresolved its reference cannot wave a
+    stale gateway through); a managed serve/dashboard backend must be live
+    AND must no longer be the process the plan recorded, because that
+    process was running before the code it now needs existed — and N planned
+    backends require N distinct live replacements, so a single survivor of
+    the restart can never satisfy two planned rows, no matter how many
+    ledger rows describe it.
+    """
+    problems: list[str] = []
+    rows = {
+        str(entry.get("profile")): entry
+        for entry in (snapshot.get("fleet") or [])
+        if isinstance(entry, dict)
+    }
+    for profile in sorted(gateway_profiles):
+        row = rows.get(profile)
+        if row is None:
+            problems.append(f"no live gateway for profile '{profile}'")
+            continue
+        if row.get("state") == "down":
+            problems.append(f"gateway for profile '{profile}' is down")
+            continue
+        sha = row.get("code_sha")
+        if not isinstance(sha, str) or not sha:
+            problems.append(
+                f"gateway for profile '{profile}' does not report a code sha"
+            )
+        elif sha != expected_sha:
+            problems.append(
+                f"gateway for profile '{profile}' runs {sha[:10]},"
+                f" not {expected_sha[:10]}"
+            )
+    live_rows = _live_ledger_rows(snapshot.get("ledger") or [])
+    problems.extend(_duplicate_live_identity_problems(managed_serve, live_rows))
+    matching = _match_runtimes_injectively(managed_serve, live_rows)
+    for index, runtime in enumerate(managed_serve):
+        kind = str(runtime.get("kind"))
+        profile = str(runtime.get("profile") or "default")
+        planned_pid = runtime.get("pid")
+        if isinstance(planned_pid, int) and any(
+            row["pid"] == planned_pid
+            and row["kind"] == kind
+            and row["profile"] == profile
+            for row in live_rows
+        ):
+            problems.append(
+                f"{kind} backend for profile '{profile}' still runs the"
+                f" pre-update process (pid {planned_pid})"
+            )
+            continue
+        live_index = matching.get(index)
+        if live_index is None:
+            if not any(
+                _runtime_row_compatible(runtime, row) for row in live_rows
+            ):
+                problems.append(
+                    f"{kind} backend for profile '{profile}' is not running"
+                )
+            else:
+                problems.append(
+                    f"{kind} backend for profile '{profile}' has no distinct"
+                    " live instance — one live runtime cannot satisfy two"
+                    " planned ones"
+                )
+    return problems
+
+
+def _activation_refuses(reason: str, *, hint: str = "hermes update") -> int:
+    """Print one fail-closed refusal and return the nonzero exit code."""
+    print(f"⚠ {reason} —")
+    print("  not activating it. Run `" + hint + "` to finish (or repair)")
+    print("  the preparation first.")
+    return 1
+
+
+def _activate_pending_fleet_restart_strict() -> int:
+    """Fail-closed activation of a prepared update (auto-update Phase B).
+
+    Returns a process exit code. Nothing here restarts anything until the
+    durable state proves what should be restarted: the authoritative
+    prepared record must parse as a complete prepared generation (the
+    generic marker alone is never enough), the bound receipt must still
+    exist and agree with it, the checkout HEAD must still be the
+    generation's SHA, and the plan must name every runtime the restart has
+    to account for. The record (and with it the obligation) is cleared only
+    when the live fleet is demonstrably serving that SHA — either because
+    it already was (the manual ``/restart`` case, cleared with zero
+    restarts) or after the stock restart machinery ran and an independent
+    re-inspection confirmed every managed runtime came back on the new
+    generation. Every other outcome keeps the obligation and returns
+    nonzero.
+    """
+    if not _pending_fleet_restart_needed():
+        return 0
+    generation = _parse_prepared_generation()
+    if generation is None:
+        return _activation_refuses(
+            "Update is pending but its prepared generation cannot be verified"
+        )
+    head = _current_checkout_head()
+    if not head or head != generation.expected_sha:
+        print("⚠ The checkout no longer matches the prepared update —")
+        print(
+            f"  prepared for {generation.expected_sha[:10]},"
+            f" HEAD is {(head or 'unresolvable')[:10]}."
+        )
+        print("  Leaving it pending; run `hermes update` to re-prepare.")
+        return 1
+    receipt = _read_prepared_generation_receipt(generation)
+    if receipt is None:
+        return _activation_refuses(
+            "The receipt bound to the prepared update is missing or unreadable"
+        )
+    gateway_profiles, managed_serve, _unmanaged = _expected_runtimes_from_plan(
+        receipt.get("plan")
+    )
+    if gateway_profiles is None:
+        return _activation_refuses(
+            "The prepared update's runtime plan cannot be verified"
+        )
+    expected_sha = generation.expected_sha
+    try:
+        snapshot = _inspect_live_fleet_strict()
+    except Exception as exc:
+        print("⚠ Could not inspect the running fleet — not activating anything.")
+        print(f"  ({exc})")
+        return 1
+    problems = _verify_fleet_on_expected_generation(
+        snapshot,
+        gateway_profiles=gateway_profiles,
+        managed_serve=managed_serve,
+        expected_sha=expected_sha,
+    )
+    if not problems:
+        print("→ Live fleet already runs the prepared code — clearing the pending restart.")
+        return _clear_prepared_generation_strict()
+    print("→ Running the pending fleet restart...")
+    if not _run_pending_fleet_restart():
+        print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
+        return 1
+    return _verify_activation_restart_completed(
+        gateway_profiles=gateway_profiles,
+        managed_serve=managed_serve,
+        expected_sha=expected_sha,
+    )
+
+
+def _verify_activation_restart_completed(
+    *,
+    gateway_profiles: set,
+    managed_serve: list,
+    expected_sha: str,
+) -> int:
+    """Re-inspect the fleet after a restart and only then clear the obligation.
+
+    A restart command returning cleanly is not proof: units can fail to come
+    back, and a gateway that dies before stamping its code identity would
+    otherwise clear the marker on the strength of a bookkeeping entry. The
+    poll budget only covers a freshly restarted runtime taking a moment to
+    stamp itself; anything still unverified after it keeps the obligation
+    (and the next activation retries against the real fleet, so a partial
+    restart converges instead of double-clearing).
+    """
+    deadline = _time.monotonic() + _ACTIVATION_VERIFY_BUDGET_SECONDS
+    problems: list[str] = []
+    while True:
+        try:
+            snapshot = _inspect_live_fleet_strict()
+        except Exception as exc:
+            print("⚠ Could not re-inspect the fleet after the restart —")
+            print("  the pending restart is kept for the next tick.")
+            print(f"  ({exc})")
+            return 1
+        problems = _verify_fleet_on_expected_generation(
+            snapshot,
+            gateway_profiles=gateway_profiles,
+            managed_serve=managed_serve,
+            expected_sha=expected_sha,
+        )
+        if not problems:
+            return _clear_prepared_generation_strict()
+        if _time.monotonic() >= deadline:
+            break
+        _time.sleep(1.0)
+    print("  ⚠ The restart did not bring every managed runtime onto the")
+    print("    prepared code — the pending restart is kept:")
+    for problem in problems:
+        print(f"    • {problem}")
+    print("  Recover with: hermes gateway restart")
+    return 1
+
+
+def _publish_no_update_repair_generation() -> tuple[bool, str]:
+    """Publish a prepared generation for a *no-update* repair run.
+
+    A repair on an already-current checkout (unhealthy venv, or the sync
+    handed off by the Windows shim) rewrote dependencies the running fleet
+    still has loaded, so it owes the same SHA-bound restart obligation a pull
+    does — bound to the CURRENT HEAD, because no pull happened. Writing that
+    obligation here is not inventing one: the repair demonstrably ran.
+
+    A valid prepared generation already bound to this HEAD is preserved
+    untouched — re-publishing would mint a new generation id and orphan the
+    receipt the existing record points at, for no new information.
+    """
+    head = _normalize_prepared_sha(_current_checkout_head() or "")
+    if not head:
+        return False, "current HEAD could not be resolved to a full SHA"
+    existing = _parse_prepared_generation()
+    if existing is not None and existing.expected_sha == head:
+        return True, ""
+    if not _write_fleet_restart_pending_marker(expected_sha=head):
+        return False, "the repair's restart obligation could not be written"
+    return _publish_prepared_generation()
+
+
+def _finish_deferred_restart(
+    *,
+    prepared_update: bool,
+    defects: list[str] | None = None,
+    repaired_runtime: bool = False,
+) -> None:
+    """Close out a ``--defer-restart`` run. Never restarts anything.
+
+    ``prepared_update`` is True when this run advanced HEAD and therefore owes
+    the fleet a restart; ``repaired_runtime`` when a no-update repair rewrote
+    the venv the running fleet still has loaded. ``defects`` collects every
+    required preparation step that failed or returned a partial result — with
+    any entry present the run is *not* prepared.
+
+    Readiness is published here and nowhere else, via
+    :func:`_publish_prepared_generation`: the matching receipt is finalized
+    and durable FIRST, then the marker is atomically swapped in as the commit
+    record and read back. A run that fails, times out, or dies before this
+    point leaves the marker unstamped, and ``hermes auto_update activate``
+    refuses it — the cross-tick hazard is the next up-to-date tick restarting
+    the fleet onto a half-prepared checkout just because the marker existed.
+
+    Publishing is a hard requirement, not a nicety: when the prepared
+    generation cannot be proven durable, this exits 1 rather than print a
+    success line, because a preparation whose readiness cannot be proven is
+    not a completed preparation.
+    """
+    defects = [str(d) for d in (defects or [])]
+    pending = False
+    try:
+        pending = _fleet_restart_pending_marker_path().is_file()
+    except OSError:
+        pending = False
+    # The obligation must come from this run's own evidence — the pull-time
+    # breadcrumb or an actual repair. Never from an inferred "HEAD is ahead".
+    owed = (prepared_update and pending) or repaired_runtime
+    ready, reason = False, ""
+    try:
+        from hermes_cli.update_receipt import record_skip, record_step
+
+        record_step(
+            "defer_restart",
+            not defects,
+            "prepared_update=%s pending_marker=%s repaired_runtime=%s defects=%d"
+            % (prepared_update, pending, repaired_runtime, len(defects)),
+        )
+        record_skip(
+            "fleet_restart",
+            "deferred by --defer-restart"
+            if (prepared_update or repaired_runtime)
+            else "skipped by --defer-restart (checkout already up to date)",
+        )
+    except Exception as exc:
+        logger.debug("Could not record deferred restart outcome: %s", exc)
+
+    if owed and not defects:
+        if prepared_update and pending:
+            ready, reason = _publish_prepared_generation()
+        else:
+            ready, reason = _publish_no_update_repair_generation()
+
+    failed = bool(defects) or (owed and not ready)
+    print()
+    if defects:
+        print("✗ Preparation did not complete — the update is NOT prepared:")
+        for defect in defects:
+            print(f"    • {defect}")
+    elif ready and repaired_runtime and not prepared_update:
+        print("✓ Dependencies repaired — fleet restart deferred.")
+    elif ready:
+        print("✓ Update prepared — fleet restart deferred.")
+    elif owed:
+        print("✗ Preparation finished, but its prepared generation could not")
+        print(f"  be published durably: {reason}")
+    else:
+        print("✓ Checkout already up to date — nothing to prepare.")
+
+    if ready:
+        print("  Restart pending: the next idle auto-update activation (or a")
+        print("  plain `hermes update`) restarts the fleet onto this code.")
+    elif failed or pending:
+        print("  Restart pending from an incomplete preparation — it stays")
+        print("  inactive until a full prepare succeeds: hermes update")
+    else:
+        print("  No fleet restart is pending.")
+
+    if failed:
+        stop_reason = "; ".join(defects) or reason or "prepared generation not durable"
+        try:
+            from hermes_cli.update_receipt import finalize_update_receipt
+
+            finalize_update_receipt("failed", stop_reason=stop_reason)
+        except Exception as exc:
+            logger.debug("Could not fail the deferred-run receipt: %s", exc)
+        sys.exit(1)
 
 
 def _format_concurrent_instances_message(
@@ -7910,6 +8932,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # never written to by an update (#89507 review feedback). Only meaningful
     # when updates.parked_branch_strategy is "update_in_place".
     switch_branch = bool(getattr(args, "switch_branch", False))
+    # --defer-restart: run the whole preparation transaction (pull, dependency
+    # sync, builds, migrations, skill sync) but leave the fleet-restart
+    # obligation pending instead of restarting anything. The auto-update
+    # scheduler uses this to prepare while Hermes is busy and activate later,
+    # when it is idle. See `_finish_deferred_restart`.
+    defer_restart = bool(getattr(args, "defer_restart", False))
+    # Required preparation steps that failed or returned a partial result on
+    # THIS run. Populated only after the pull (or, on the no-update path, by
+    # the venv repair); consumed solely by `_finish_deferred_restart`, which
+    # refuses to stamp a prepared generation while any entry exists. The
+    # stock non-deferred path never reads it, so its warnings stay warnings.
+    deferred_defects: list[str] = []
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -8018,7 +9052,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception:
         pass
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+    # --defer-restart must not stop gateways either: the pause exists so the
+    # venv can be mutated safely, and a deferred run has no restart phase to
+    # bring them back on the new code. Skipping it means the venv-holder guard
+    # below refuses (nonzero) while a gateway holds the interpreter — the
+    # correct outcome for a prepare-only pass on Windows.
+    _windows_gateway_resume = (
+        None
+        if defer_restart
+        else _m()._pause_windows_gateways_for_update()
+    )
     if _windows_gateway_resume:
         import atexit as _atexit
 
@@ -8037,9 +9080,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # and app.asar — a non-desktop venv python holding a .pyd would sail
     # through and corrupt the sync (the exact failure this guard exists for).
     # --force-venv is the explicit escape hatch.
+    #
+    # --defer-restart gates the whole sweep below. Every rung STOPS or kills
+    # holders so the venv can be mutated safely, justified by the post-update
+    # restart/resume phase bringing them back — a phase a deferred run never
+    # reaches. So with the flag set, no holder is ever reaped: the sweep is
+    # skipped and any holder falls straight through to the refusal (exit 2).
+    # A nonzero preparation failure is the correct outcome for a prepare-only
+    # pass; a deferred run must never stop, kill, or pause a live
+    # gateway/dashboard/serve runtime to get one.
     if _m()._is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
+        if _venv_holders and not defer_restart:
             _gateway_holders = _m()._leftover_pausable_gateway_pids(_venv_holders)
             if _gateway_holders is not None:
                 if _refuse_gateway_ancestor_tree_kill(
@@ -8075,7 +9127,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         )
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
+        if _venv_holders and not defer_restart:
             # Positive-identity rung (runs FIRST, any update context): holders
             # the spawn ledger proves are orphaned Hermes backends — the
             # process self-registered (pid, create_time, purpose, spawner) at
@@ -8090,7 +9142,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _m()._stop_process_trees(_ledger_backends)
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
+        if _venv_holders and not defer_restart:
             _orphan_backends = _m()._orphaned_desktop_backend_pids(_venv_holders)
             if _orphan_backends:
                 # Every remaining holder is a Desktop `serve` backend whose
@@ -8110,7 +9162,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _m()._stop_process_trees(_orphan_backends)
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
+        if _venv_holders and not defer_restart:
             # Manual serve/dashboard rung (#63206): a network-bound
             # `hermes serve --host <ip>` powering a REMOTE Desktop holds the
             # venv and used to dead-end the update with exit 2 — the user's
@@ -8153,7 +9205,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
+        if _venv_holders and not defer_restart:
             # Final rung before the dead-end: a GUI-updater hand-off
             # (`update --gateway --force` with the update-incomplete marker
             # claimed) means the Desktop is contractually gone and nothing
@@ -8192,6 +9244,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
+            if defer_restart:
+                print(
+                    "✗ --defer-restart never stops a running Hermes runtime, so it"
+                )
+                print(
+                    "  cannot prepare while one holds the venv. Prepare when the"
+                )
+                print(
+                    "  runtime is closed, or run a plain `hermes update` instead."
+                )
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
 
@@ -8277,6 +9339,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
 
     if use_zip_update:
+        if defer_restart:
+            # The ZIP fallback (Windows, git unusable) is one monolithic
+            # swap+build+restart transaction: it has no prepare-only half,
+            # restarts the dashboard/serve fleet itself, and never writes the
+            # fleet-restart marker. Refuse rather than half-honor the flag —
+            # a deferred run must never restart anything.
+            print("✗ --defer-restart requires a usable git checkout: the")
+            print("  Windows ZIP fallback cannot prepare without restarting.")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(2)
         # ZIP-based update for Windows when git is broken
         try:
             desktop_build_ok = _update_via_zip(
@@ -8696,6 +9768,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     current_checkout_complete = False
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
+                    deferred_defects.append(
+                        f"venv still unhealthy after repair: {detail_after}"
+                    )
             else:
                 current_checkout_complete = _repair_node_deps_on_current_checkout(
                     _print_verified_update_completion,
@@ -8719,6 +9794,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            if defer_restart:
+                # A deferred run never restarts anything — including a
+                # restart a *previous* run still owes. But a repair that
+                # rewrote the venv owes the fleet a reload of the CURRENT
+                # HEAD, so publish it as a SHA-bound prepared generation
+                # instead of leaving a bare, unprovable obligation behind
+                # (acceptance-v2: no-update repair must not create an
+                # obligation without a validated generation). A true no-op
+                # run publishes nothing and preserves what is already there.
+                _finish_deferred_restart(
+                    prepared_update=False,
+                    repaired_runtime=bool(handed_off_sync or not healthy),
+                    defects=deferred_defects,
+                )
+                return
             # Git is current, but a prior pull may still owe the fleet a
             # restart (#95294). Catch up even on the "Already up to date"
             # path — that early return is what left the gateway on stale
@@ -8985,7 +10075,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # and a completed (or no-op) restart leaves this marker so the next
         # ``hermes update`` can catch up even when git is already up to date.
         # Distinct from ``.update-incomplete`` (venv/install repair).
-        _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
+        if (
+            not _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
+            and defer_restart
+        ):
+            # The write is normally best-effort — the stock updater can still
+            # restart the fleet in-process without it. A DEFERRED run cannot:
+            # its whole contract is that the obligation outlives the process,
+            # so an undurable breadcrumb means the preparation can never be
+            # activated. Fail closed instead of printing success.
+            print()
+            print("✗ Could not record the pending fleet restart durably —")
+            print("  refusing to claim the update was prepared. Retry: hermes update")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
@@ -9148,6 +10251,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
                 "to finish import-based venv repair."
             )
+            deferred_defects.append("lazy-refresh recovery incomplete")
 
         _m()._restore_active_tool_dependencies(
             active_tool_dependencies,
@@ -9177,14 +10281,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"      {import_error}")
             print("    Run `hermes update` again — if it persists, reinstall:")
             print("    https://hermes-agent.nousresearch.com")
+            deferred_defects.append(
+                f"critical import validation failed: {failing_module}"
+            )
 
         node_failures = _update_node_dependencies()
-        _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+        if node_failures:
+            deferred_defects.append(
+                "Node.js dependency refresh incomplete: " + ", ".join(node_failures)
+            )
+        web_build_ok = _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+        if web_build_ok is False:
+            deferred_defects.append("web UI build failed")
 
         desktop_build_ok = _rebuild_desktop_after_update(
             desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
         )
+        if desktop_build_ok is False:
+            deferred_defects.append("desktop app rebuild failed")
 
         print()
         print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -9330,6 +10445,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  ✓ Skills are up to date")
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)
+            # Claimed work that threw cannot be part of a *completed*
+            # preparation — a deferred run that swallowed this would stamp
+            # itself prepared while the skill tree is half-synced.
+            deferred_defects.append(f"bundled skill sync failed: {e}")
 
         # Sync bundled skills to all profiles (including the active one).
         # seed_profile_skills() uses subprocess with an explicit HERMES_HOME so
@@ -9519,6 +10638,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
+
+        if defer_restart:
+            # Preparation finished and HEAD advanced. Everything below this
+            # point is the activation half of the transaction — gateway
+            # restarts, dashboard cleanup, and the fleet version check — and
+            # a deferred run must not touch any of it. The marker written
+            # after the pull stays, so a later non-deferred run (or an idle
+            # auto-update activation) picks the obligation up.
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            if gateway_mode:
+                _write_gateway_update_exit_code(desktop_build_ok)
+            _finish_deferred_restart(
+                prepared_update=True,
+                defects=deferred_defects,
+            )
+            return
 
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's
@@ -10685,7 +11820,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         stage = _format_update_failure_stage(e)
-        if _should_zip_fallback_on_update_error(e):
+        _zip_fallback_ok = _should_zip_fallback_on_update_error(e)
+        if _zip_fallback_ok and not defer_restart:
             print(f"⚠ {stage}: {e}")
             print("→ Falling back to ZIP download...")
             print()
@@ -10697,6 +11833,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
             print(f"✗ {stage}: {e}")
+            if _zip_fallback_ok and defer_restart:
+                # Same reasoning as the preflight refusal above: the ZIP
+                # fallback restarts the fleet, so a deferred run keeps this
+                # failure a failure instead of silently activating.
+                print("  (--defer-restart: ZIP fallback skipped — it would restart services.)")
             _print_called_process_error_tail(e)
             if _called_process_error_is_python_dep_install(e):
                 print(

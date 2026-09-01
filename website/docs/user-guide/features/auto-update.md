@@ -2,17 +2,15 @@
 sidebar_position: 6
 sidebar_label: "Auto Update"
 title: "Unattended Auto Update"
-description: "Safe scheduled Hermes updates on Linux/systemd when the agent is idle"
+description: "Safe scheduled Hermes updates on Linux/systemd — prepare every tick, restart only when idle"
 ---
 
 # Unattended Auto Update
 
-The bundled **`auto_update`** backend plugin installs an independent systemd timer that runs the **stock** Hermes updater when your install looks idle:
+The bundled **`auto_update`** backend plugin installs an independent systemd timer. Every tick is two phases, both through the **stock** Hermes updater:
 
-```bash
-hermes update --check
-hermes update --yes
-```
+1. **Prepare** — always: `hermes update --check`, then `hermes update --yes --defer-restart` when an update is available. Pulling code, syncing dependencies, and running migrations never interrupts a conversation, so preparation is not idle-gated.
+2. **Activate** — always attempted in a fresh process: `hermes auto_update activate`. It restarts the fleet onto the prepared update only when Hermes is idle; otherwise it exits 0 and leaves the obligation pending for a later tick. Activation also requires the update to be *proven* prepared — marker, receipt, and checkout SHA all agreeing (see [Safety boundaries](#safety-boundaries)) — and it re-proves everything under the stock updater lock before restarting anything.
 
 The plugin is a thin scheduler and policy layer. It does **not** reimplement backups, git operations, dependency installs, config migration, gateway restarts, or rollback logic — those stay inside `hermes update`.
 
@@ -27,6 +25,7 @@ hermes auto_update status
 hermes auto_update enable      # write units + enable timer (never runs update immediately)
 hermes auto_update disable     # stop timer; explicit disable survives upgrades
 hermes auto_update reconcile   # idempotent unit refresh
+hermes auto_update activate    # manual: restart onto a prepared update, only when idle
 ```
 
 Plugin discovery and registration never write systemd units or run subprocesses.
@@ -56,12 +55,9 @@ loginctl enable-linger "$USER"
 
 `hermes auto_update status` and `enable` warn when user scope is selected but `/var/lib/systemd/linger/<user>` is absent (read-only check — no loginctl mutation).
 
-## Idle gate
+## Idle gate (activation only)
 
-Before invoking the updater, the oneshot runner checks idleness against a **read-only** `state.db` adapter:
-
-1. Once before `hermes update --check`
-2. Again immediately before `hermes update --yes` (skipped if the second check fails)
+The activation command re-checks idleness immediately before restarting anything, against a **read-only** `state.db` adapter:
 
 Signals:
 
@@ -72,9 +68,13 @@ Signals:
 - live session turn leases (`session_turn_leases.expires_at > now`)
 - live delegated agents (`async_delegations.state IN ('dispatched','running','finalizing')`)
 
-Missing or unreadable `state.db` fails **closed** as a quiet deferral. Lock contention or an in-flight manual update (`read_live_update`) also defer quietly.
+Busy → exit 0 and keep the prepared update pending. Missing or unreadable `state.db` fails **closed** as a quiet deferral. Lock contention or an in-flight manual update (`read_live_update`) also defer the whole tick quietly.
 
 `gateway/scale_to_zero.is_idle` is **not** used — it requires live gateway process state unavailable to a standalone oneshot.
+
+### Manual restarts do not double-bounce
+
+A prepared update can also be picked up by hand: `/restart` or `hermes gateway restart` boots the new code but leaves the pending marker. When activation later runs, it first compares every live gateway's stamped version against the checkout — if the whole fleet already serves the current code it clears the marker **without restarting**. Stale, down, unknown, or missing runtimes — or a missing, malformed, or unreadable update receipt, which cannot prove that no required runtime went missing — keep the restart path.
 
 ## Configuration (`config.yaml`)
 
@@ -108,8 +108,13 @@ New units use the distinct prefix **`hermes-auto-updater.*`**.
 
 ## Safety boundaries
 
-- One stock updater invocation per timer firing (`--check`, then `--yes` only if an update is available and idle checks still pass).
-- Profile-safe nonblocking flock lock under `$HERMES_HOME/auto-update/.run.lock` (lock file retained after release).
+- One tick = one deferred prepare (`--check`, then `--yes --defer-restart` only if an update is available) + one fresh-process activation attempt. A failed, timed-out, or hung preparation is never activated — any nonzero `--check` exit (regardless of output text: the stock check reports availability with exit 0, so no nonzero rc ever means "update available") plus check and prepare timeouts are a **nonzero** tick outcome, and a timed-out re-prepare never disturbs an older valid prepared generation (its pull-time write touches only the generic `fleet_restart_pending` marker; the strict record lives separately in `fleet_restart_prepared`).
+- **Preparation only counts when it is proven.** `hermes update --yes --defer-restart` exits 0 solely after every required preparation step completed, the checkout still matches the target SHA, and a *prepared generation* was durably published: the update receipt is written and bound to the generation first (atomic temp-file write, fsync, directory fsync, exact read-back), then the `fleet_restart_prepared` record is published with the same durable transaction, carrying the schema version, a generation id, the exact 40-or-64 hex target SHA, and the receipt it belongs to. A required step that failed or only partially completed, a checkout that moved, or a record that could not be written and read back leaves the run at a **nonzero** exit with nothing stamped. Optional components that were never selected or installed do not become hard requirements.
+- Activation needs durable proof, not just a pending marker. A hand-written or truncated `prepared=yes` proves nothing: the `fleet_restart_prepared` record must parse strictly (known schema, well-formed generation and full SHA, `restart=pending`, no duplicate or unknown fields), the bound receipt must still exist and agree with it, and the checkout `HEAD` must equal the recorded `expected_sha` at that moment. Anything else — missing, malformed, unreadable, mismatched, or a moved HEAD — is **not** success: activation exits nonzero, keeps the obligation, and points at `hermes update`. Being up to date per `--check` never counts as readiness.
+- Activation runs **under the stock updater lock**, the same one a manual `hermes update` takes: idle is checked before acquiring it (never waiting for idle while holding a lock), then everything — record, receipt, HEAD, pending obligation, runtime plan, live fleet — is re-validated under the lock with no unlocked gap. Lock contention or a concurrent HEAD/generation change is a retryable non-success that preserves the obligation.
+- After a restart, activation independently re-inspects the fleet before clearing anything. The obligation (record and marker) is cleared only when every updater-managed runtime the plan expects is present, healthy, and serving the expected generation — matched **one-to-one**, so two planned backends of the same kind require two distinct live replacements; a missing planned runtime, an unverifiable plan, a failed inspection, or a stale/down/ambiguous PID keeps the obligation and reports nonzero. Repeated activation is idempotent, and a valid plan proving the fleet already serves the exact SHA clears the obligation without a second restart.
+- `hermes update --defer-restart` is a stock updater flag: full preparation, no gateway/serve/dashboard restart, `fleet_restart_pending` left behind. It never stops, kills, or pauses a live runtime either — on Windows it refuses (nonzero) while any gateway/serve/dashboard process holds the venv, rather than reap it or fall back to a ZIP update the way a full update does. The next plain `hermes update` — or an idle activation tick — finishes the restart. Default `hermes update` behavior is unchanged.
+- Profile-safe nonblocking flock lock under `$HERMES_HOME/auto-update/.run.lock` for the tick itself (lock file retained after release).
 - Atomic unit writes (`*.tmp` + `os.replace`) and byte-identical idempotent reconcile.
 - Disable/reconcile stop the **timer only** — never `systemctl stop hermes-auto-updater.service`.
 

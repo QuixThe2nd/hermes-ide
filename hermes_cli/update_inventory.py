@@ -141,6 +141,73 @@ def describe_restart_mechanism(mechanism: str, profile: str) -> str:
     return "hermes gateway restart"
 
 
+def _systemd_serve_unit_pids() -> set:
+    """MainPIDs of the active ``hermes-serve*`` systemd units.
+
+    The update's restart phase restarts ``hermes-gateway*`` AND
+    ``hermes-serve*`` units, so a ledger serve backend running as one of
+    those units is updater-managed in exactly the sense a gateway is. This
+    probe is what tells those apart from a manually-launched ``hermes serve``
+    — the ledger itself does not record the supervisor. Empty (never an
+    error) when systemd is absent, unreachable, or owns no serve units.
+    """
+    try:
+        from hermes_cli.gateway import supports_systemd_services
+
+        if not supports_systemd_services():
+            return set()
+    except Exception:
+        return set()
+    import subprocess
+
+    pids: set = set()
+    for scope_args in (["systemctl", "--user"], ["systemctl"]):
+        try:
+            result = subprocess.run(
+                scope_args
+                + [
+                    "list-units",
+                    "hermes-serve*",
+                    "--plain",
+                    "--no-legend",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+        except Exception as exc:
+            logger.debug("serve-unit listing failed (%s): %s", scope_args, exc)
+            continue
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.strip().splitlines():
+            unit = line.split()[0] if line.split() else ""
+            # Same base-unit filter as the restart phase: ``hermes-serve*``
+            # alone would also match the unrelated ``hermes-server.service``.
+            if not (
+                unit.startswith("hermes-serve-")
+                or unit == "hermes-serve.service"
+            ):
+                continue
+            try:
+                show = subprocess.run(
+                    scope_args + ["show", unit, "--property=MainPID", "--value"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
+                )
+                pids.add(int((show.stdout or "").strip()))
+            except Exception as exc:
+                logger.debug("MainPID probe for %s failed: %s", unit, exc)
+    pids.discard(0)
+    return pids
+
+
 def collect_runtime_inventory() -> UpdatePlan:
     """Build the pre-update plan. Read-only; never raises.
 
@@ -348,16 +415,23 @@ def collect_runtime_inventory() -> UpdatePlan:
 
     # Serve/dashboard backends from the spawn ledger (#63206). These are the
     # runtimes the gateway collectors above can never see: a manually
-    # launched `hermes serve --host <ip>` for a remote Desktop, or a
-    # long-lived `hermes dashboard`. Every serve/dashboard registers itself
+    # launched `hermes serve --host <ip>` for a remote Desktop, a
+    # long-lived `hermes dashboard`, or a systemd ``hermes-serve*`` unit
+    # (which also registers itself). Every serve/dashboard registers itself
     # (with structured host/port/profile since #63206) at startup, and
     # ledger_entries() live-verifies (pid, create_time) so PID reuse never
     # fabricates a row. Desktop-supervised backends are classified by their
     # recorded spawner still being alive — those restart via the Desktop's
-    # own respawn, not ours.
+    # own respawn, not ours — and a backend whose pid is the MainPID of an
+    # active ``hermes-serve*`` unit is classified ``systemd``, because the
+    # update's restart phase restarts exactly those units alongside the
+    # gateways. Keeping the distinction in the plan is what lets a consumer
+    # demand proof that a serve backend came back, without demanding it of
+    # backends nothing in the updater restarts.
     try:
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
+        systemd_serve_pids = _systemd_serve_unit_pids()
         for entry in ledger_entries():
             purpose = entry.get("purpose")
             if purpose not in ("serve", "dashboard"):
@@ -367,7 +441,12 @@ def collect_runtime_inventory() -> UpdatePlan:
                 continue
             seen_pids.add(pid)
             has_live_spawner = spawner_is_dead(entry) is False
-            supervisor = "desktop" if has_live_spawner else "manual-serve"
+            if pid in systemd_serve_pids:
+                supervisor = "systemd"
+            elif has_live_spawner:
+                supervisor = "desktop"
+            else:
+                supervisor = "manual-serve"
             profile = str(entry.get("profile") or "default")
             plan.runtimes.append(
                 RuntimeRecord(

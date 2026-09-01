@@ -100,6 +100,29 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--defer-restart",
+        action="store_true",
+        default=False,
+        help=(
+            "Prepare the update but do NOT restart any gateway/serve/dashboard: "
+            "run pull, dependency sync, build and migration work, then exit 0 "
+            "only after a prepared generation is durably published — the "
+            "fleet_restart_prepared record, bound to the receipt and the exact "
+            "target SHA, records the proven preparation alongside the generic "
+            "fleet_restart_pending restart obligation. Anything less "
+            "(a required step failed or only partially completed, the checkout "
+            "moved, or the record could not be written and read back) exits "
+            "nonzero and prepares nothing. Nothing is ever stopped, killed, or "
+            "paused either — on Windows the run refuses (nonzero) while another "
+            "process holds the venv instead of reaping it. A later "
+            "`hermes update` (or an idle auto-update activation, which "
+            "re-validates the record, receipt, checkout SHA and live fleet "
+            "under the updater lock before restarting) performs the restart. "
+            "On an already-up-to-date checkout this flag also skips the "
+            "pending-restart catch-up."
+        ),
+    )
+    update_parser.add_argument(
         "--force",
         action="store_true",
         default=False,
