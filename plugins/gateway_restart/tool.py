@@ -4,13 +4,15 @@ When other sessions or background work are in flight, the tool pings the
 requester in the calling chat and waits for them to type the exact word
 ``restart`` before anything happens (same primitive as ``clarify``: an
 open-ended registration whose reply the gateway text-intercept eats instead of
-starting a new turn). After the word lands — and once those other sessions
-have finished — it calls ``GatewayRunner.begin_user_restart``, the same shared
-entry point the ``/restart`` slash command uses, so the two cannot drift
-apart: in-flight turns drain first, then the gateway bounces and comes back
-online. When this session is provably the only work in flight, the ping is
-skipped and the drain is queued outright — with no one else to time the bounce
-around, the confirmation has nothing to protect. The
+starting a new turn). As soon as the word lands it calls
+``GatewayRunner.begin_user_restart``, the same shared entry point the
+``/restart`` slash command uses, so the two cannot drift apart: the drain
+blocks new work, waits for in-flight sessions to finish naturally (then
+force-drains on the existing timeouts), and the gateway bounces and comes
+back online — the tool never runs a wait of its own beside that drain. When
+this session is provably the only work in flight, the ping is skipped and the
+drain is queued outright — with no one else to time the bounce around, the
+confirmation has nothing to protect. The
 shell/systemctl path stays blocked by the lifecycle guard — that path SIGTERMs
 the gateway and kills whatever child was running the command.
 
@@ -27,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -39,8 +40,9 @@ RESTART_SCHEMA = {
         "slash command. When other sessions or background work are in "
         "flight, the requester is pinged in the current chat and must reply "
         "with the exact word `restart` before anything happens; anything "
-        "else cancels. After the exact word, the bounce waits for those "
-        "other sessions to finish before firing. When this is the only "
+        "else cancels. Once the word lands, the restart queues on that "
+        "shared drain, which waits for the other in-flight sessions to "
+        "finish naturally while blocking new work. When this is the only "
         "active session, there is no ping — the restart is queued outright "
         "and fires after this turn ends. In-flight turns (including this "
         "one) drain first, then the gateway stops and comes back online, "
@@ -70,30 +72,13 @@ _CONFIRM_PROMPT = (
 )
 
 # The same gate, said honestly when other sessions are still working: the
-# bounce will not fire the moment the word lands, but once they finish.
+# bounce will not fire the moment the word lands, but once they finish —
+# the shared drain inside begin_user_restart does that waiting.
 _CONFIRM_PROMPT_WAITING_ON_OTHERS = (
     "Gateway restart requested — reply with the exact word `restart` "
     "(lowercase, on its own) and the gateway will bounce once the other "
     "active sessions finish. Anything else cancels."
 )
-
-# One-shot note after a successful confirm while other work still runs: the
-# bounce is armed, it is just waiting on the other sessions. Plain text on
-# every platform (no embed, no progress bubble), sent at most once, and
-# cosmetic on failure — it must never gate or cancel the restart.
-_ARMED_NOTICE = (
-    "Restart confirmed — waiting for the other active sessions to finish; "
-    "the gateway bounces as soon as they do."
-)
-
-# How often the post-confirm idle wait re-checks the in-flight work from the
-# tool's worker thread. The wait itself is unbounded like the confirm wait;
-# this only paces the poll.
-_IDLE_POLL_INTERVAL_S = 0.5
-
-# Injectable so tests drive the idle wait deterministically instead of
-# sleeping real seconds; production always uses time.sleep.
-_idle_sleep = time.sleep
 
 _NO_RUNNER_ERROR = (
     "No live gateway runner in this process — the restart tool only works "
@@ -241,43 +226,6 @@ def _session_is_only_active_work(runner: Any, session_key: str) -> bool:
     except Exception:
         return False
     return not _extra_background_work_in_flight(runner)
-
-
-def _wait_for_other_work_to_clear(runner: Any, session_key: str) -> None:
-    """Block the tool's worker thread until no other in-flight work remains.
-
-    Runs only after a successful confirm, so the bounce is already committed
-    — this is a wait for *timing*, not a second gate: the same predicate as
-    the skip check (still excluding the calling session), unbounded like the
-    confirm wait, and a session that starts mid-wait simply extends it (the
-    gateway is not idle yet). This never parks or steers the other chats and
-    never touches ``_draining`` / ``_restart_requested`` —
-    ``begin_user_restart`` owns all of that once this returns.
-    """
-    while _other_active_work_in_flight(runner, session_key):
-        _idle_sleep(_IDLE_POLL_INTERVAL_S)
-
-
-def _send_armed_notice(adapter: Any, loop: Any, source: Any) -> None:
-    """Tell the requester the bounce is armed and waiting; cosmetic, one-shot."""
-    if adapter is None or source is None or not getattr(source, "chat_id", ""):
-        return
-    metadata: dict = {}
-    if getattr(source, "thread_id", None):
-        metadata["thread_id"] = source.thread_id
-    future, submit_error = _submit_to_loop(
-        adapter.send(source.chat_id, _ARMED_NOTICE, metadata=metadata or None), loop
-    )
-    if submit_error is not None:
-        logger.debug(
-            "restart tool: armed notice could not be submitted: %s", submit_error
-        )
-        return
-    try:
-        future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
-    except Exception as exc:
-        future.cancel()
-        logger.debug("restart tool: armed notice failed: %s", exc)
 
 
 def _drop_pending_confirm(clarify_mod: Any, clarify_id: str) -> None:
@@ -634,12 +582,12 @@ def handle_restart(args: dict, **_: Any) -> str:
        restored to its exact original name on every exit — before the
        restart can be queued, and cosmetically (a rename or restore failure
        is logged, never fatal).
-    6. After a successful confirm with other work still in flight, the
-       bounce waits (unbounded, from this worker thread) until that work
-       clears, then proceeds to the same supervisor/container branch as
-       ``/restart`` inside ``begin_user_restart``, with the requester's
-       routing persisted to ``.restart_notify.json`` for the comeback
-       notice.
+    6. After a successful confirm — other work in flight or not —
+       ``begin_user_restart`` is queued immediately, exactly as on the skip
+       path. The shared drain owns the wait for the other sessions: it
+       blocks new work, lets running turns finish naturally, then
+       force-drains on the existing timeouts. The requester's routing is
+       persisted to ``.restart_notify.json`` for the comeback notice.
     7. On confirmation (or a skipped confirm), returns once the restart is
        queued — the bounce happens after this turn ends.
     """
@@ -717,18 +665,11 @@ def handle_restart(args: dict, **_: Any) -> str:
         if confirm_error is not None:
             return _cancelled_json(confirm_error)
 
-        # The word landed, so the bounce is committed. When other work is
-        # still in flight, hold the drain until it clears — bouncing under
-        # the other sessions is exactly what the confirm just timed us
-        # around. If they already finished, the wait is a no-op and the
-        # drain queues immediately.
-        if _other_active_work_in_flight(runner, session_key):
-            try:
-                notice_adapter = runner._adapter_for_source(source)
-            except Exception:
-                notice_adapter = None
-            _send_armed_notice(notice_adapter, loop, source)
-            _wait_for_other_work_to_clear(runner, session_key)
+        # The word landed, so the bounce is committed — queue the shared
+        # drain right away, with no plugin-side wait beside it. Waiting for
+        # the other sessions here would run BEFORE _draining is set, so new
+        # turns would keep being accepted and a hung chat would never trip
+        # the drain's force-timeout. begin_user_restart owns that wait.
 
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip() or None
     begin = runner.begin_user_restart(source=source, message_id=message_id)
