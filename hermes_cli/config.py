@@ -1112,6 +1112,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
 }
 
@@ -1457,7 +1458,7 @@ def _is_env_config_key(key: str) -> bool:
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -2526,6 +2527,32 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
             ))
+
+    # ── web backends that no longer ship in-tree ─────────────────────────
+    # A stale selection (e.g. web.backend: tavily after the #99199 removal)
+    # otherwise fails only at the first web_search/web_extract call, with a
+    # generic "no registered provider" error. Warn at startup instead.
+    web_cfg = config.get("web")
+    if isinstance(web_cfg, dict):
+        try:
+            from tools.tool_backend_helpers import removed_backend_note
+        except Exception:
+            removed_backend_note = None
+        if removed_backend_note is not None:
+            seen: set = set()
+            for _key in ("backend", "search_backend", "extract_backend"):
+                _val = str(web_cfg.get(_key) or "").strip().lower()
+                if not _val or _val in seen:
+                    continue
+                seen.add(_val)
+                note = removed_backend_note("web", _val)
+                if note:
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"web.{_key} is set to '{_val}', but {note} — "
+                        "web_search/web_extract will fail until it is changed",
+                        "Run 'hermes tools' and pick a different Web Search & Extract provider",
+                    ))
 
     return issues
 
@@ -5080,6 +5107,7 @@ def show_config():
         ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
+        ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),

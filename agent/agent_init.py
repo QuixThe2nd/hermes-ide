@@ -3038,6 +3038,7 @@ def init_agent(
     # until the first response with usage; invalidated on compaction and
     # session switches so stale anchors can never suppress compression.
     agent._usage_anchor = None
+    agent._turn_base_usage_anchor = None
 
     # Cumulative token usage for the session
     agent.session_prompt_tokens = 0
