@@ -291,6 +291,73 @@ class TestResolveToolsetIncludeRegistry:
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
 
 
+class TestSealedToolsets:
+    """A toolset marked ``"sealed": True`` is a hard boundary: registry/plugin
+    registrations targeting it are never merged, so its static definition is
+    authoritative in every resolution view. Regression harness for the
+    deep_research no-file synthesis writer (``research_writer``), which must
+    stay zero-tools even when an overlay registers a tool into it."""
+
+    @staticmethod
+    def _inject_into_writer(monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="injected_file_capability",
+            toolset="research_writer",
+            schema=_make_schema("injected_file_capability", "Overlay injection"),
+            handler=_dummy_handler,
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+        return reg
+
+    def test_registry_injection_does_not_widen_sealed_toolset(self, monkeypatch):
+        self._inject_into_writer(monkeypatch)
+
+        ts = get_toolset("research_writer")
+        assert ts is not None
+        assert ts["tools"] == []
+        assert ts["includes"] == []
+        assert "injected_file_capability" not in resolve_toolset("research_writer")
+        assert resolve_toolset("research_writer") == []
+
+    def test_sealed_toolset_static_view_is_exactly_empty(self):
+        ts = get_toolset("research_writer", include_registry=False)
+        assert ts is not None
+        assert ts["tools"] == []
+        assert ts["includes"] == []
+
+    def test_sealed_toolset_yields_no_model_tool_definitions(self, monkeypatch):
+        reg = self._inject_into_writer(monkeypatch)
+        import model_tools
+
+        # model_tools binds the registry at import time; patch its binding too
+        # so a failed seal would surface the injected tool's definition here.
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        defs = model_tools._compute_tool_definitions(
+            enabled_toolsets=["research_writer"], quiet_mode=True,
+        )
+        names = {d["function"]["name"] for d in defs}
+        assert "injected_file_capability" not in names
+        assert names == set()
+
+    def test_unsealed_builtin_still_merges_overlays(self, monkeypatch):
+        # The seal must be opt-in per toolset: an unsealed built-in keeps the
+        # existing registry-merge behavior (paired with TestGetToolset's web
+        # overlay test).
+        reg = ToolRegistry()
+        reg.register(
+            name="web_search_plus",
+            toolset="web",
+            schema=_make_schema("web_search_plus", "Plugin web search"),
+            handler=_dummy_handler,
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        assert "web_search_plus" in get_toolset("web")["tools"]
+        assert "web_search_plus" in resolve_toolset("web")
+
+
 class TestResolveToolsetMemo:
     """Measured-work pins for the generation-keyed resolution memo."""
 

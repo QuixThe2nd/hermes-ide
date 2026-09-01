@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from plugins.deep_research import jobs, runner
-from plugins.deep_research.config import DeepResearchConfig
+from plugins.deep_research.config import DeepResearchConfig, load_deep_research_config
 
 GOOD_URL = "https://example.org/primary"
 OTHER_URL = "https://example.net/secondary"
@@ -83,13 +83,14 @@ def home(tmp_path: Path) -> Path:
     return tmp_path / "home"
 
 
-def _make_job(home: Path, *, questions=None, timeout=10, max_parallel=2, origin=None) -> tuple[str, Path]:
+def _make_job(home: Path, *, questions=None, timeout=10, max_parallel=2, origin=None, worker_file_tools=True) -> tuple[str, Path]:
     created = jobs.create_job(
         brief="Research the widget runtimes thoroughly.",
         research_questions=questions,
         timeout_minutes=timeout,
         max_parallel=max_parallel,
         worker_profile="researcher",
+        worker_file_tools=worker_file_tools,
         origin=origin,
         hermes_home=home,
     )
@@ -479,6 +480,215 @@ class TestCitationGating:
         allowed_block = correction.split("ONLY URLs you may cite", 1)[1].split("## Rules", 1)[0]
         assert GOOD_URL in allowed_block
         assert INVENTED_URL not in allowed_block
+
+
+# ---------------------------------------------------------------------------
+# worker_file_tools: config coercion, request freeze, lane/writer argv
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerFileToolsConfig:
+    def test_missing_key_defaults_true(self) -> None:
+        assert load_deep_research_config({}).worker_file_tools is True
+
+    def test_explicit_false_coerces(self) -> None:
+        assert load_deep_research_config({"worker_file_tools": False}).worker_file_tools is False
+
+    def test_explicit_true_coerces(self) -> None:
+        assert load_deep_research_config({"worker_file_tools": True}).worker_file_tools is True
+
+    @pytest.mark.parametrize("garbage", ["false", "no", 0, 1, {"value": False}, [False]])
+    def test_garbage_defaults_true(self, garbage) -> None:
+        # Never-raise: anything that is not a real YAML bool means "keep the
+        # historical file-tools-on behavior", never a silent lockdown.
+        assert load_deep_research_config({"worker_file_tools": garbage}).worker_file_tools is True
+
+
+class TestWorkerFileToolsFreeze:
+    def test_create_job_freezes_true_by_default(self, home: Path) -> None:
+        _job_id, directory = _make_job(home)
+        assert jobs.read_request(directory)["worker_file_tools"] is True
+
+    def test_create_job_freezes_false(self, home: Path) -> None:
+        _job_id, directory = _make_job(home, worker_file_tools=False)
+        assert jobs.read_request(directory)["worker_file_tools"] is False
+
+
+class TestWorkerFileToolsArgv:
+    @staticmethod
+    def _toolsets_value(argv: list[str]) -> str | None:
+        for flag in ("-t", "--toolsets"):
+            if flag in argv:
+                return argv[argv.index(flag) + 1]
+        return None
+
+    def test_default_lane_unrestricted_writer_file_readonly(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn()
+        assert _run(job_id, home, spawn) == "completed"
+        lane_argv, writer_argv = spawn.argvs[0], spawn.argvs[-1]
+        # Byte-compatible with the historical default path.
+        assert self._toolsets_value(lane_argv) is None
+        assert self._toolsets_value(writer_argv) == "file_readonly"
+
+    def test_no_file_lane_web_browser_writer_research_writer(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None, worker_file_tools=False)
+        _seed_evidence(directory, GOOD_URL)
+        # No-file mode puts -t on lanes too, so FakeSpawn's writer replay is
+        # what feeds both calls: one lane + one synthesis writer.
+        spawn = FakeSpawn(writers=["fine", "fine"])
+        assert _run(job_id, home, spawn) == "completed"
+        lane_argv, writer_argv = spawn.argvs[0], spawn.argvs[-1]
+        lane_toolsets = set((self._toolsets_value(lane_argv) or "").split(","))
+        assert lane_toolsets == {"web", "browser"}
+        assert not {"file", "file_readonly"} & lane_toolsets
+        writer_toolsets = set((self._toolsets_value(writer_argv) or "").split(","))
+        assert writer_toolsets == {"research_writer"}
+        assert not {"file", "file_readonly", "web", "browser"} & writer_toolsets
+
+    def test_no_file_job_still_passes_citation_gating(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None, worker_file_tools=False)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn(writers=["fine", "fine"])
+        assert _run(job_id, home, spawn) == "completed"
+        report = (directory / "report.md").read_text(encoding="utf-8")
+        assert GOOD_URL in report
+        assert jobs.read_status(directory)["synthesis"]["attempts"] == 1
+
+    def test_no_file_correction_path_uses_sealed_writer_for_both_calls(self, home: Path) -> None:
+        # Forced through citation correction: the synthesis draft invents a URL,
+        # the correction pass fixes it. Both writer calls must run under the
+        # sealed research_writer toolset, the lane under web,browser.
+        job_id, directory = _make_job(home, questions=None, worker_file_tools=False)
+        _seed_evidence(directory, GOOD_URL)
+        # No-file lanes carry -t too, so FakeSpawn replays lane output from
+        # the writers list: lane, then synthesis, then correction.
+        spawn = FakeSpawn(
+            writers=[
+                "fine",
+                f"Bad draft citing [x]({INVENTED_URL}).",
+                f"Corrected draft citing [x]({GOOD_URL}).",
+            ]
+        )
+        assert _run(job_id, home, spawn) == "completed"
+        assert len(spawn.argvs) == 3
+        lane_argv, synthesis_argv, correction_argv = spawn.argvs
+        lane_toolsets = set((self._toolsets_value(lane_argv) or "").split(","))
+        assert lane_toolsets == {"web", "browser"}
+        assert self._toolsets_value(synthesis_argv) == "research_writer"
+        assert self._toolsets_value(correction_argv) == "research_writer"
+        synthesis = jobs.read_status(directory)["synthesis"]
+        assert synthesis["attempts"] == 2 and synthesis["correction_used"] is True
+
+
+# ---------------------------------------------------------------------------
+# Invalid frozen requests fail closed before any worker is spawned
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidFrozenRequest:
+    """A corrupt/missing/partial request.json must never run a worker.
+
+    Regression coverage for the fail-open read: ``jobs.read_request()``
+    degrades to ``{}`` for notify/list/status callers, but the runner must
+    refuse instead of falling back to profile-default lane tools and a
+    ``file_readonly`` writer.
+    """
+
+    @staticmethod
+    def _write_request(directory: Path, payload) -> None:
+        (directory / "request.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _assert_refused_without_spawn(self, job_id: str, home: Path, directory: Path) -> None:
+        spawn = FakeSpawn()
+        _seed_evidence(directory, GOOD_URL)  # even a runnable-looking job must refuse
+        state = _run(job_id, home, spawn)
+        assert state == "failed"
+        status = jobs.read_status(directory)
+        assert status["state"] == "failed"
+        assert status["error"] == "invalid frozen request"
+        assert status["phase"] == "request_invalid"
+        assert status["completed_at"] is not None
+        assert spawn.argvs == []  # no worker argv was ever built or recorded
+        assert not (directory / "report.md").exists()
+        for lane in status["lanes"]:
+            assert lane["state"] == "failed"
+
+    def test_malformed_json(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None, worker_file_tools=False)
+        (directory / "request.json").write_text("{not json", encoding="utf-8")
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    def test_missing_request_json(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        (directory / "request.json").unlink()
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    def test_non_object_json(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        self._write_request(directory, ["not", "an", "object"])
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    def test_empty_object(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None, worker_file_tools=False)
+        self._write_request(directory, {})
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    def test_partial_object(self, home: Path) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        request = jobs.read_request(directory)
+        # A plausible-looking fragment: no budgets, no profile, no brief.
+        self._write_request(directory, {"job_id": request["job_id"]})
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    @pytest.mark.parametrize("bad_value", ["false", "no", 0, 1, {"value": False}, [True], None])
+    def test_worker_file_tools_non_bool_fails_closed(self, home: Path, bad_value) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        request = jobs.read_request(directory)
+        request["worker_file_tools"] = bad_value
+        self._write_request(directory, request)
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    @pytest.mark.parametrize(
+        "field,bad_value",
+        [
+            ("job_id", "rj_000000000000"),  # canonical but not this directory
+            ("job_id", "../../etc"),
+            ("brief", ""),
+            ("brief", 42),
+            ("research_questions", []),
+            ("research_questions", ["ok", ""]),
+            ("research_questions", "one question"),
+            ("worker_profile", ""),
+            ("worker_profile", "../researcher"),
+            ("timeout_minutes", True),
+            ("timeout_minutes", 0),
+            ("timeout_minutes", 9999),
+            ("max_parallel", 0),
+            ("max_parallel", 99),
+        ],
+    )
+    def test_structurally_invalid_fields_fail_closed(self, home: Path, field, bad_value) -> None:
+        job_id, directory = _make_job(home, questions=None)
+        request = jobs.read_request(directory)
+        request[field] = bad_value
+        self._write_request(directory, request)
+        self._assert_refused_without_spawn(job_id, home, directory)
+
+    def test_valid_pre_flag_request_still_runs_historical_default(self, home: Path) -> None:
+        # Every old required field present and valid, worker_file_tools absent:
+        # the pre-flag on-disk shape keeps the file-tools-on default.
+        job_id, directory = _make_job(home, questions=None)
+        request = jobs.read_request(directory)
+        del request["worker_file_tools"]
+        self._write_request(directory, request)
+        _seed_evidence(directory, GOOD_URL)
+        spawn = FakeSpawn()
+        assert _run(job_id, home, spawn) == "completed"
+        lane_argv, writer_argv = spawn.argvs[0], spawn.argvs[-1]
+        assert TestWorkerFileToolsArgv._toolsets_value(lane_argv) is None
+        assert TestWorkerFileToolsArgv._toolsets_value(writer_argv) == "file_readonly"
 
 
 # ---------------------------------------------------------------------------

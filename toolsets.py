@@ -221,6 +221,20 @@ TOOLSETS = {
         "includes": []
     },
 
+    # Deliberately empty: the deep_research synthesis writer's toolset when the
+    # caller's config disables worker file tools (deep_research.worker_file_tools:
+    # false). Synthesis-only — no retrieval, no files; the lane reports are
+    # already injected into the writer's prompt. Never enabled by default and
+    # never used outside that no-file writer path. ``sealed`` keeps it empty:
+    # registry/plugin registrations targeting it are ignored by get_toolset()
+    # and resolve_toolset(), so the zero-tool writer is a hard boundary.
+    "research_writer": {
+        "description": "Synthesis-only writer: no retrieval, no files (deep_research with worker_file_tools: false)",
+        "tools": [],
+        "includes": [],
+        "sealed": True,
+    },
+
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
         "tools": ["text_to_speech"],
@@ -702,6 +716,11 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
             ``_get_platform_tools`` uses False so that a tool registered into a
             toolset but absent from a platform's static composite does not drop
             the whole toolset from inference. See issue #49622.
+            Toolsets marked ``"sealed": True`` ignore this flag: their static
+            definition is authoritative and registry/plugin registrations
+            targeting them are never merged. This makes deliberately empty
+            toolsets (e.g. the deep_research no-file synthesis writer) a hard
+            boundary rather than a default an overlay can widen.
 
     Returns:
         Dict: Toolset definition with description, tools, and includes
@@ -712,10 +731,11 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
     """
     toolset = TOOLSETS.get(name)
 
-    if not include_registry:
+    if not include_registry or (toolset and toolset.get("sealed")):
         # Static view only: return the built-in definition (copying the nested
         # tools/includes lists so callers can't mutate TOOLSETS), or None for
-        # registry/MCP-only toolsets that have no static counterpart.
+        # registry/MCP-only toolsets that have no static counterpart. Sealed
+        # toolsets take this path even when registry tools were requested.
         if not toolset:
             return None
         return {

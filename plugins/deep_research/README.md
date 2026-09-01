@@ -38,7 +38,7 @@ All artifacts live under `$HERMES_HOME/research_jobs/<job_id>/` (0o700 dir, 0o60
 
 | File | Contents |
 |---|---|
-| `request.json` | Frozen brief, lanes, budgets, worker profile, origin session ids. Written once. |
+| `request.json` | Frozen brief, lanes, budgets, worker profile, `worker_file_tools`, origin session ids. Written once. |
 | `status.json` | `state` (`queued`/`running`/`synthesizing`/`completed`/`failed`/`cancelled`), phase, per-lane state, timestamps, error, runner identity, synthesis bookkeeping. |
 | `prompts/*.md` | The argv-free prompt transport for each lane and the writer passes. |
 | `lanes/<n>.md` | Each lane worker's report, verbatim. |
@@ -63,11 +63,13 @@ Both transient-service paths are deliberately *not* `--scope`: a scope would kee
 
 Each lane is one independent `researcher` session with that profile's tools (`web`, `browser`, `file_readonly`). Lanes run concurrently up to `max_parallel`. Without `research_questions`, exactly one lane runs the frozen brief. The lane prompt requires reading full pages (not snippets), preferring primary sources, two independent or one authoritative source per material claim, reporting conflicts and coverage gaps, and citing only fetched URLs.
 
+A caller whose config sets `deep_research.worker_file_tools: false` runs no-file jobs instead: the flag is frozen onto `request.json` at `start` (the runner never re-consults live config mid-job), lanes are pinned to `-t web,browser` (retrieval without the filesystem), and the writer is pinned to `-t research_writer`, a deliberately empty toolset. Lane reports are already injected into the writer's prompt, so it needs no tools at all.
+
 An exhausted job budget is terminal: the runner marks the job `failed` with `error: "budget exhausted"` before it exits, so a spent job can never sit in `running`/`synthesizing` forever — and an explicit cancellation always wins over the budget failure.
 
-Synthesis runs once, after every requested lane has succeeded. The writer is the same profile but with `--toolsets file_readonly`, so it has no retrieval tool at all and cannot do new research; its only inputs are the frozen brief and the lane reports.
+Synthesis runs once, after every requested lane has succeeded. The writer is the same profile but with `--toolsets file_readonly`, so it has no retrieval tool at all and cannot do new research; its only inputs are the frozen brief and the lane reports. For a no-file job (`worker_file_tools: false`) the writer's `--toolsets` is `research_writer` instead — synthesis-only, no retrieval, no files.
 
-**Fail closed.** A lane failure or timeout, a writer failure, or a citation failure after the single correction pass marks the job `failed` with the reason; artifacts are preserved and no `report.md` is published. A partial report is never presented as complete.
+**Fail closed.** A lane failure or timeout, a writer failure, or a citation failure after the single correction pass marks the job `failed` with the reason; artifacts are preserved and no `report.md` is published. A partial report is never presented as complete. A missing, unreadable, or structurally invalid frozen `request.json` is also refused: the job ends `failed` (`error: "invalid frozen request"`, `phase: "request_invalid"`) before any worker is spawned, rather than running on silently defaulted budgets, profile, or tool policy.
 
 ### Evidence and citations
 
@@ -103,6 +105,7 @@ deep_research:
   runner_mode: auto            # auto | systemd | fallback (see Worker execution)
   notify_interval_seconds: 5.0 # completion watcher sweep
   max_recent_jobs: 20          # bound on list output
+  worker_file_tools: true      # false: lanes run -t web,browser and the writer runs -t research_writer (no files at all)
 ```
 
 The plugin can also be disabled through the standard deny-list (`plugins.disabled: [deep_research]`), which always wins.

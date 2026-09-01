@@ -66,7 +66,7 @@ Sometimes you want the whole coding process handed off, including the paperwork.
 
 Planning normally uses a consult; `delegate_development plan_mode=debate` runs the multi-round adversarial council instead. Reviews use a Russian-language kimi and grok pair, and `open_pr=false` skips the draft PR when you do not want one. `delegate_development` itself is currently parked and not registered, while `dev_pipeline_status` remains live.
 
-Research has a lane of its own. `delegate_research` hands a substantial research brief to durable `researcher`-profile lanes (transient systemd user or system service) and returns one citation-checked report; every cited URL must have been fetched during the job.
+Research has a lane of its own. `delegate_research` hands a substantial research brief to durable `researcher`-profile lanes (transient systemd user or system service) and returns one citation-checked report; every cited URL must have been fetched during the job. Set `deep_research.worker_file_tools: false` in the calling profile's config to run no-file jobs instead: lanes are pinned to `web,browser` and the synthesis writer to the empty `research_writer` toolset.
 
 Agents are very good at ignoring the nice coding lane you built and editing the source anyway. The code-lane-gate plugin blocks in-context source edits everywhere by default, inside a git repo or not. Set `CODE_LANE_GATE_E2E=0` to opt out. Terminal writes are still a known v1 bypass.
 

@@ -310,6 +310,7 @@ def _action_start(args: Dict[str, Any], session_id: Optional[str], task_id: Opti
             timeout_minutes=timeout_minutes,
             max_parallel=max_parallel,
             worker_profile=config.worker_profile,
+            worker_file_tools=config.worker_file_tools,
             origin=notify.origin_context(session_id, task_id),
             hermes_home=hermes_home,
         )

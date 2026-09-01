@@ -123,6 +123,7 @@ def create_job(
     timeout_minutes: int,
     max_parallel: int,
     worker_profile: str,
+    worker_file_tools: bool = True,
     origin: Optional[Dict[str, Any]] = None,
     hermes_home: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -151,6 +152,8 @@ def create_job(
         "timeout_minutes": timeout_minutes,
         "max_parallel": max_parallel,
         "worker_profile": worker_profile,
+        # Frozen at creation: the runner reads this, never live config mid-job.
+        "worker_file_tools": bool(worker_file_tools),
         "created_at": created_at,
         # Origin identifiers are captured by the handler for completion routing.
         "origin": dict(origin or {}),
