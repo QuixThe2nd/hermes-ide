@@ -633,7 +633,7 @@ export function StatusRule({
   const showSubagents =
     segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
-  // Parked-background reassurance: a top-level delegate_task runs in the
+  // Parked-background reassurance: a top-level delegate_agent runs in the
   // background, so the turn ends (idle) while the subagent keeps working and its
   // result re-enters as a fresh turn later. When idle with work still in flight,
   // spell out that the agent resumes on its own — no spinner, nothing to poll.

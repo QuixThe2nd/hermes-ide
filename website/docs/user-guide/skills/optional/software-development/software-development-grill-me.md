@@ -81,7 +81,7 @@ round.
 **Facts are your job; decisions are the user's.** When a frontier question
 needs a fact from the environment (codebase, filesystem, config, docs), find
 it yourself with `search_files` / `read_file` / `terminal` — or dispatch a
-subagent via `delegate_task` for a heavy exploration. Never ask the user for
+subagent via `delegate_agent` for a heavy exploration. Never ask the user for
 anything you could look up. Don't block on an exploration: only the questions
 downstream of it wait; ask the rest of the frontier now.
 

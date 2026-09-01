@@ -1,22 +1,22 @@
-"""Regression test for #86632: cron's synchronous delegate_task fallback must
-return after the child completes — the automatic background review must not
-fire inside the delegated child.
+"""Regression test for #86632: a delegated child's synchronous run must return
+after the child completes — the automatic background review must not fire inside
+the delegated child.
 
-Field signature (issue #86632): a cron job's top-level ``delegate_task`` takes
-the #66617 stateless-channel synchronous fallback, the child finishes its turn
+Field signature (issue #86632): a cron job's top-level ``delegate_agent`` took
+the #66617 stateless-channel synchronous fallback, the child finished its turn
 normally (``Turn ended: reason=text_response``), and the delegation never
-returns to the parent — the heartbeat monitor goes stale and the cron
-inactivity watchdog kills the job.  Root cause (traced in the issue thread and
+returned to the parent — the heartbeat monitor went stale and the cron
+inactivity watchdog killed the job.  Root cause (traced in the issue thread and
 fixed by the ``_delegate_depth`` guard in ``AIAgent._spawn_background_review``):
 the child's turn finalization spawned the automatic memory/skill background
 review fork.  Delegated children must never spawn that fork — it inherits the
 child's (often premium) model, replays the whole conversation, and its spawn
 inside the child's finalize path is the wedge site the cron watchdog kills.
 
-This exercises the REAL end-to-end #86632 path: a genuine ``AIAgent`` child
-(mocked LLM client) with the skill-review trigger armed, dispatched through
-``delegate_task(background=True)`` under a session runtime where async delivery
-is unsupported (cron), forcing the synchronous fallback.
+Under the uniform delegation lifecycle the stateless-channel behavior changed:
+``background=true`` is now REJECTED up front (no work started) instead of
+silently degrading to a synchronous run, and the foreground default blocks
+until the child finishes. Both halves are asserted here.
 """
 
 from __future__ import annotations
@@ -25,8 +25,6 @@ import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 import tools.delegate_tool as dt
 
@@ -38,7 +36,7 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 
 def _make_real_child():
-    """A real AIAgent child, as the cron sync fallback runs one.
+    """A real AIAgent child, as the synchronous path runs one.
 
     The LLM client is mocked to complete in one call, and the post-turn
     skill-review trigger is armed the way a long child run arms it — so turn
@@ -87,13 +85,27 @@ def _make_real_child():
     return child
 
 
-def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
-    """The #86632 path: sync fallback completes AND no review fork spawns.
+def _cron_stateless():
+    """Cron declares the channel stateless (#66617): no async delivery, no id."""
+    return (
+        patch(
+            "gateway.session_context.async_delivery_supported",
+            return_value=False,
+        ),
+        patch(
+            "tools.async_delegation._current_origin_session_id",
+            return_value="",
+        ),
+    )
+
+
+def test_cron_sync_run_returns_and_spawns_no_review_fork(monkeypatch):
+    """The #86632 path: the foreground run completes AND no review fork spawns.
 
     Red on the pre-fix code: the delegated child's finalize path constructed a
     background-review fork (``fork_constructed`` fires).  With the
     ``_delegate_depth`` guard the fork is never built, removing the wedge site
-    entirely, and ``delegate_task`` returns the child's result promptly.
+    entirely, and ``delegate_agent`` returns the child's result promptly.
     """
     fork_spawned = threading.Event()
     release_fork = threading.Event()
@@ -127,48 +139,39 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
 
     done: dict = {}
 
-    def _call_delegate_task():
-        # Cron declares the channel stateless (#66617): async delivery is
-        # unsupported and there is no bound origin session id to wake, so
-        # delegate_task must run the batch synchronously.
-        with (
-            patch(
-                "gateway.session_context.async_delivery_supported",
-                return_value=False,
-            ),
-            patch(
-                "tools.async_delegation._current_origin_session_id",
-                return_value="",
-            ),
-        ):
-            done["out"] = dt.delegate_task(
+    def _call_delegate_agent():
+        async_patch, origin_patch = _cron_stateless()
+        with async_patch, origin_patch:
+            done["out"] = dt.delegate_agent(
                 goal="do trivial work and finish",
                 context="cron regression #86632",
-                background=True,
                 parent_agent=parent,
             )
 
-    worker = threading.Thread(target=_call_delegate_task, daemon=True)
+    worker = threading.Thread(target=_call_delegate_agent, daemon=True)
     worker.start()
     worker.join(timeout=90)
     try:
-        # 1) The synchronous fallback must return to the parent. On the field
-        #    failure this never happened; here a non-return means the child's
-        #    finalize path (or the parent join) wedged.
+        # 1) The blocking run must return to the parent. On the field failure
+        #    this never happened; here a non-return means the child's finalize
+        #    path (or the parent join) wedged.
         assert not worker.is_alive(), (
-            "delegate_task synchronous fallback did not return after the "
-            "child completed (#86632 wedge)"
+            "delegate_agent blocking run did not return after the child "
+            "completed (#86632 wedge)"
         )
         parsed = json.loads(done["out"])
         results = parsed["results"]
         assert len(results) == 1
         assert results[0]["status"] == "completed"
         assert results[0]["summary"] == "child work done"
+        # Exactly one delivery channel: a foreground run never mints a handle.
+        assert parsed.get("mode") != "background"
+        assert "delegation_id" not in parsed
 
         # 2) The wedge site must not exist at all: a delegated child
-        #    (_delegate_depth > 0) must never spawn the automatic background
-        #    review fork. Give a straggling daemon spawn a moment to show up
-        #    so a race cannot mask a regression.
+        # (_delegate_depth > 0) must never spawn the automatic background
+        # review fork. Give a straggling daemon spawn a moment to show up
+        # so a race cannot mask a regression.
         assert not fork_spawned.wait(timeout=3), (
             "automatic background review fork was constructed inside a "
             "delegation subagent — the #86632 wedge site is back"
@@ -177,3 +180,40 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
         # Unblock a stray fork thread if the regression reappears, so it
         # cannot outlive this test and pollute the rest of the session.
         release_fork.set()
+
+
+def test_cron_background_is_rejected_before_any_child_is_built(monkeypatch):
+    """A stateless channel has no background rail: fail clearly, start nothing.
+
+    The pre-lifecycle code silently ran the fan-out synchronously with an
+    apologetic note. That handed the model a mode it did not ask for and made
+    the async/cron contract untestable; the uniform lifecycle rejects the call
+    before any child exists.
+    """
+    from tools import async_delegation as ad
+
+    built = []
+
+    def _explode(**kw):
+        built.append(kw)
+        raise AssertionError("a child must never be built for a rejected background call")
+
+    monkeypatch.setattr(dt, "_build_child_agent", _explode)
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "cron_244ee2c8b9da"
+
+    async_patch, origin_patch = _cron_stateless()
+    with async_patch, origin_patch:
+        out = dt.delegate_agent(
+            goal="must not start", background=True, parent_agent=parent,
+        )
+
+    parsed = json.loads(out)
+    assert parsed.get("error")
+    assert "NO WORK WAS STARTED" in parsed.get("error", "")
+    assert "background=false" in parsed.get("error", "")
+    # Nothing was built, nothing was registered, nothing is durable.
+    assert built == []
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
 
-_SUBAGENT_TOOL_NAMES = frozenset({"delegate_task"})
+_SUBAGENT_TOOL_NAMES = frozenset({"delegate_agent"})
 
 _CATEGORY_COLORS = {
     "system_prompt": "var(--context-usage-system)",

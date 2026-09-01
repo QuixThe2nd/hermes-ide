@@ -163,7 +163,7 @@ KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _assert_not_delegated_child_mutation() -> None:
-    """Reject Kanban state mutations from ``delegate_task`` child contexts.
+    """Reject Kanban state mutations from ``delegate_agent`` child contexts.
 
     The structured kanban tools and CLI dispatch layer both have fast-fail
     guards for better UX, but neither is a trust boundary: a delegated child can
@@ -181,7 +181,7 @@ def _assert_not_delegated_child_mutation() -> None:
         delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
     if delegated:
         raise PermissionError(
-            "delegate_task child contexts cannot mutate Kanban tasks or boards"
+            "delegate_agent child contexts cannot mutate Kanban tasks or boards"
         )
 
 

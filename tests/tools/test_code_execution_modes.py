@@ -403,24 +403,24 @@ class TestSecurityInvariantsAcrossModes(unittest.TestCase):
         code = (
             "import hermes_tools as ht\n"
             "print('execute_code_available:', hasattr(ht, 'execute_code'))\n"
-            "print('delegate_task_available:', hasattr(ht, 'delegate_task'))\n"
+            "print('delegate_agent_available:', hasattr(ht, 'delegate_agent'))\n"
         )
         result = self._run(code, mode="strict")
         self.assertEqual(result["status"], "success")
         self.assertIn("execute_code_available: False", result["output"])
-        self.assertIn("delegate_task_available: False", result["output"])
+        self.assertIn("delegate_agent_available: False", result["output"])
 
     def test_tool_whitelist_enforced_in_project_mode(self):
         """CRITICAL: project mode does NOT widen the tool whitelist."""
         code = (
             "import hermes_tools as ht\n"
             "print('execute_code_available:', hasattr(ht, 'execute_code'))\n"
-            "print('delegate_task_available:', hasattr(ht, 'delegate_task'))\n"
+            "print('delegate_agent_available:', hasattr(ht, 'delegate_agent'))\n"
         )
         result = self._run(code, mode="project")
         self.assertEqual(result["status"], "success")
         self.assertIn("execute_code_available: False", result["output"])
-        self.assertIn("delegate_task_available: False", result["output"])
+        self.assertIn("delegate_agent_available: False", result["output"])
 
 
 # ---------------------------------------------------------------------------

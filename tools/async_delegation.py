@@ -2,7 +2,7 @@
 """
 Async (background) delegation registry.
 
-Backs ``delegate_task(background=true)``: the parent agent dispatches a
+Backs ``delegate_agent(background=true)``: the parent agent dispatches a
 subagent that runs on a module-level daemon executor and returns a handle
 immediately, so the user and the model can keep working while the child runs.
 
@@ -32,6 +32,29 @@ This module owns ONLY the async lifecycle. The actual child build + run is
 delegated back to ``delegate_tool._run_single_child`` via an injected
 runner, so all the credential leasing, heartbeat, timeout, and result-shaping
 logic stays in one place.
+
+Delivery-mode contract (uniform delegation lifecycle)
+-----------------------------------------------------
+Every delegation tool advertises ``background: bool = false``. The mode is
+decided ONLY by that argument — never by nesting, platform, session type, or
+delivery capability:
+
+* ``background=false`` (the default) blocks until a terminal outcome and
+  returns the final result inline. A foreground executor-owned run never
+  touches this registry: no record, no durable row, no completion event.
+  (The one exception is the foreground mission wait — an externally-driven
+  unit — which registers an inline record plus an ``external`` durable row
+  so its cross-process takeover is exactly-once; see
+  ``register_inline_wait`` / ``claim_inline_takeover``.)
+* ``background=true`` returns the shared acceptance envelope (see
+  :func:`build_background_acceptance_envelope`) immediately and later
+  delivers exactly ONE terminal result through the completion rail.
+
+Exactly one delivery channel per delegation is enforced structurally at
+:func:`publish_terminal_event`: it is the only producer of
+``type="async_delegation"`` on the completion queue, and it atomically
+reroutes a terminal event into a registered inline waiter instead (used by
+the foreground ``delegate_assistant`` mission wait).
 """
 
 from __future__ import annotations
@@ -89,6 +112,26 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # deliverable while stopping weeks-old sessions from replaying after upgrades.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 _DB_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Uniform delivery modes
+# ---------------------------------------------------------------------------
+# Every delegation record carries a ``delivery_mode``. The default is the
+# event rail (the normal background contract). A foreground waiter that needs
+# the terminal result handed back inline registers itself first and the mode
+# is CAS'd to ``inline`` under ``_records_lock`` — see
+# ``register_inline_wait`` / ``publish_terminal_event``.
+DELIVERY_MODE_EVENT = "event"
+DELIVERY_MODE_INLINE = "inline"
+
+# What kind of work a delegation wraps. Used by the acceptance envelope
+# (``result_kind``) and by the completion formatter so a claude-code run, a
+# Cursor cloud run, or an assistant mission does not render with subagent
+# phrasing.
+RESULT_KIND_SUBAGENT = "subagent_batch"
+RESULT_KIND_CLI_AGENT = "cli_agent"
+RESULT_KIND_CLOUD_AGENT = "cloud_agent"
+RESULT_KIND_MISSION = "mission"
 
 # ---------------------------------------------------------------------------
 # Stale-delegation detection (progress-based, on by default)
@@ -241,7 +284,7 @@ def _capture_routing_origin() -> Dict[str, Any]:
     return origin
 
 
-def _persist_dispatch(record: Dict[str, Any]) -> None:
+def _persist_dispatch(record: Dict[str, Any], *, replace: bool = True) -> None:
     now = time.time()
     try:
         from gateway.status import get_process_start_time
@@ -252,6 +295,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         key: record.get(key)
         for key in (
             "goal", "goals", "context", "toolsets", "role", "model", "is_batch",
+            "tool", "result_kind", "external",
             # Routing origin (scope_id/user_id/user_name): persisted so a
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
@@ -260,8 +304,13 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         if key in record
     }
     with _DB_LOCK, _transaction() as conn:
+        # ``replace``=False keeps an already-written row intact: a delegation
+        # registered at accept time (``register_background_delegation``)
+        # carries routing origin + delivery bookkeeping that a terminal-side
+        # re-insert from the closing process must not wipe.
+        verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
         conn.execute(
-            """INSERT OR REPLACE INTO async_delegations
+            f"""{verb} INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
@@ -326,7 +375,8 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
         conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
-               WHERE delegation_id=?""",
+               WHERE delegation_id=?
+                 AND (delivery_state IS NULL OR delivery_state!='delivered')""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
         )
@@ -358,6 +408,18 @@ def recover_abandoned_delegations() -> int:
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
              pid, started, task_json, origin_session_id) = row
+            task = json.loads(task_json or "{}")
+            if task.get("external"):
+                # Externally-driven delegation (an assistant mission, see
+                # register_background_delegation): the "runner" is a human
+                # conversation in whatever process serves that chat, so NO
+                # process ever owns the outcome — the accepting process dying
+                # says nothing about whether the work finished. The mission
+                # store on disk is the source of truth; its own terminalization
+                # publishes the real outcome. Recovering it here would fire a
+                # spurious "outcome unknown" turn at every gateway restart
+                # while the mission is still active.
+                continue
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -365,7 +427,6 @@ def recover_abandoned_delegations() -> int:
                     live = get_process_start_time(int(pid)) == int(started)
             if live:
                 continue
-            task = json.loads(task_json or "{}")
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
@@ -380,6 +441,12 @@ def recover_abandoned_delegations() -> int:
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
+            # Tool provenance (see _stamp_event_provenance) so a recovered
+            # claude/cursor/mission event still labels itself correctly.
+            for _k in ("tool", "result_kind"):
+                if task.get(_k):
+                    event[_k] = task[_k]
+            event["background"] = True
             # Routing origin persisted at dispatch (see _capture_routing_origin):
             # restores scope_id/user_id for the reconstructed SessionSource so
             # relay egress priming works after a restart.
@@ -464,6 +531,27 @@ def mark_completion_delivered(delegation_id: str) -> bool:
         return cur.rowcount == 1
 
 
+def finalize_inline_delivery(delegation_id: str, status: str) -> bool:
+    """Retire a durable row whose outcome was delivered INLINE, not on the rail.
+
+    A foreground wait leaves no row of its own, but the terminal side inserts
+    one (``ensure_durable_delegation``) BEFORE the chokepoint decides inline vs
+    rail, so a claimed inline result strands a ``running``/``pending`` row.
+    This flips it to terminal + delivered so it stops being recovery/replay
+    bait and becomes prunable. An already-terminal row (a rail publish owns
+    it) is left untouched.
+    """
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegations SET state=?, completed_at=COALESCE(completed_at, ?),
+                      updated_at=?, delivery_state='delivered', delivered_at=?
+               WHERE delegation_id=? AND state IN ('running','finalizing')""",
+            (status, now, now, now, delegation_id),
+        )
+        return cur.rowcount == 1
+
+
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
@@ -480,6 +568,103 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                WHERE delegation_id=? AND delivery_state='pending'
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
             (claim_id, now, now, delegation_id, now - 300),
+        )
+        return cur.rowcount == 1
+
+
+def claim_inline_takeover(delegation_id: str, status: str = "completed") -> bool:
+    """Atomically let an INLINE reader own one terminal delivery.
+
+    Cross-process exactly-once for foreground mission waits: the closing
+    process cannot see this process's inline record, so it publishes on its
+    own rail — a durable ``pending`` row plus a queue event a consumer must
+    claim. A foreground waiter that notices the terminal mission FILE on disk
+    may return the outcome inline only if it wins ownership of that delivery
+    here; otherwise a later consumer claim or restart replay re-delivers the
+    same outcome as a second model turn.
+
+    The decision a rail consumer faces, resolved in one transaction:
+
+    - no row → ``True`` AND a terminal ``delivered`` tombstone row is
+      inserted (a foreground wait's registration row may not exist — the
+      store refused it, or a legacy waiter never wrote one — and "return
+      True" alone leaves nothing durable for a LATE publisher to collide
+      with: its ``ensure_durable_delegation`` would then create a fresh
+      ``pending`` row and deliver the outcome a second time). The
+      tombstone is atomic with the win (one transaction) and terminal, so
+      the late publisher's insert no-ops, its completion UPDATE refuses to
+      resurrect a delivered row, every consumer claim fails, and restart
+      replay finds nothing pending;
+    - ``delivered`` → ``False`` (a rail delivery already happened — inline
+      must not duplicate it);
+    - ``dropped`` → ``True`` (the rail terminally gave up; inline is the
+      only delivery that will ever exist);
+    - a ``pending`` row holding a fresh foreign claim (< 300 s, the same
+      steal window :func:`claim_completion_delivery` honours) → ``False``
+      (a live rail consumer owns the outcome right now);
+    - anything else (unclaimed/stale ``pending``, a not-yet-published
+      ``running``/``finalizing`` row, a legacy NULL row) → the row is
+      claimed AND acknowledged ``delivered`` atomically → ``True``.
+
+    Winning also holds against a LATE rail publish: ``_persist_completion``
+    never resurrects a delivered row back to ``pending``, and any consumer
+    that later picks up the already-queued event fails its
+    :func:`claim_event_delivery` and skips it.
+    """
+    now = time.time()
+    claim_id = (
+        f"inline-takeover:{__import__('os').getpid()}:{uuid.uuid4().hex}"
+    )
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute(
+            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        if row is None:
+            # Durable tombstone for a no-row win — see docstring. INSERT OR
+            # IGNORE keeps the win and the tombstone atomic (one
+            # transaction) without ever stomping a row a concurrent writer
+            # slipped in behind the SELECT: an ignored insert falls through
+            # and that fresh row is judged by the normal takeover rules.
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO async_delegations
+                   (delegation_id, origin_session, origin_ui_session_id,
+                    parent_session_id, state, dispatched_at, completed_at,
+                    updated_at, delivered_at, delivery_state, delivery_claim,
+                    delivery_claimed_at, task_json)
+                   VALUES (?, '', '', NULL, ?, ?, ?, ?, ?, 'delivered', ?, ?, ?)""",
+                (delegation_id, status, now, now, now, now, claim_id, now,
+                 json.dumps({"external": True})),
+            )
+            if cur.rowcount == 1:
+                return True
+            row = conn.execute(
+                "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+                (delegation_id,),
+            ).fetchone()
+            if row is None:
+                # Ignored yet still absent (the concurrent row vanished
+                # again): nothing durable exists to replay either way.
+                return True
+        state = row[0]
+        if state == "delivered":
+            return False
+        if state == "dropped":
+            return True
+        cur = conn.execute(
+            """UPDATE async_delegations
+               SET state=CASE WHEN state IN ('running','finalizing') THEN ?
+                              ELSE state END,
+                   completed_at=COALESCE(completed_at, ?),
+                   delivery_state='delivered', delivered_at=?, updated_at=?,
+                   delivery_claim=?, delivery_claimed_at=?
+               WHERE delegation_id=? AND (
+                   state IN ('running','finalizing')
+                   OR delivery_state IS NULL
+                   OR (delivery_state='pending'
+                       AND (delivery_claim IS NULL OR delivery_claimed_at < ?))
+               )""",
+            (status, now, now, now, claim_id, now, delegation_id, now - 300),
         )
         return cur.rowcount == 1
 
@@ -773,6 +958,9 @@ def dispatch_async_delegation(
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    delegation_id: Optional[str] = None,
+    tool: str = "",
+    result_kind: str = "",
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -809,6 +997,15 @@ def dispatch_async_delegation(
         Concurrency cap. When at capacity the dispatch is REJECTED (the caller
         should fall back to sync or tell the user) rather than queued, so a
         runaway model can't pile up unbounded background work.
+    delegation_id
+        Optional pre-minted id. Callers that need a stable id for logs/receipts
+        BEFORE the dispatch is accepted (the Cursor receipt spine, the
+        live-transcript directory) pass one in; a fresh ``deleg_<hex>`` is
+        minted otherwise.
+    tool / result_kind
+        Additive provenance stamped on the record, the acceptance envelope,
+        and the terminal event so the completion renders with the right
+        vocabulary (see ``RESULT_KIND_*``).
 
     Returns
     -------
@@ -816,7 +1013,7 @@ def dispatch_async_delegation(
         ``{"status": "dispatched", "delegation_id": ...}`` on success, or
         ``{"status": "rejected", "error": ...}`` when at capacity.
     """
-    delegation_id = _new_delegation_id()
+    delegation_id = delegation_id or _new_delegation_id()
     dispatched_at = time.time()
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
@@ -830,11 +1027,22 @@ def dispatch_async_delegation(
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         **_capture_routing_origin(),
+        "tool": tool,
+        "result_kind": result_kind,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "progress_fn": progress_fn,
+        # Delivery-mode bookkeeping (see DELIVERY_MODE_*). ``runner_tid`` is
+        # filled in by the worker so interrupt_all/interrupt_for_session can
+        # set the per-thread interrupt bit on the thread actually running the
+        # child, making cooperative _check_interrupted() hooks fire.
+        "delivery_mode": DELIVERY_MODE_EVENT,
+        "inline_event": None,
+        "inline_result": None,
+        "inline_claimed": False,
+        "runner_tid": None,
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None,
         "_progress_ts": dispatched_at,
@@ -844,6 +1052,15 @@ def dispatch_async_delegation(
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
     with _records_lock:
+        existing = _records.get(delegation_id)
+        if existing is not None and existing.get("status") in (
+            "running", "stalling", "finalizing"
+        ):
+            # Idempotent re-arm: the caller passed a pre-minted id (the
+            # Cursor receipt spine re-arms a background poll after a
+            # restart) and this unit is already live — never start a second
+            # runner for the same handle.
+            return {"status": "duplicate", "delegation_id": delegation_id}
         running = sum(
             1 for r in _records.values()
             if r.get("status") in ("running", "stalling")
@@ -865,9 +1082,20 @@ def dispatch_async_delegation(
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
+        from tools.interrupt import clear_current_thread_interrupt
+
         result: Dict[str, Any] = {}
         status = "error"
         try:
+            with _records_lock:
+                record["runner_tid"] = threading.current_thread().ident
+            # Recycled-thread hygiene: the daemon pool reuses this thread for
+            # later delegations, and the interrupt bit is a process-global
+            # per-thread flag. A previous delegation's /stop or gateway
+            # shutdown may have left it set HERE, which would make the next
+            # runner begin already interrupted. Clear only the CURRENT
+            # thread's bit — another runner's thread is never touched.
+            clear_current_thread_interrupt()
             result = runner() or {}
             status = result.get("status") or "completed"
         except Exception as exc:  # noqa: BLE001 — must never crash the worker
@@ -881,7 +1109,17 @@ def dispatch_async_delegation(
             }
             status = "error"
         finally:
-            _finalize(delegation_id, result, status)
+            try:
+                _finalize(delegation_id, result, status)
+            finally:
+                # Post-finalize the record is terminal, so no interrupt path
+                # can re-target this thread through it — wipe the bit again
+                # so the next delegation scheduled onto this recycled worker
+                # starts clean even if a set landed mid-run and went
+                # unobserved. Nested try/finally (not one flat block): a
+                # raising _finalize must not skip this wipe, or the pooled
+                # thread carries a set interrupt bit into its NEXT task.
+                clear_current_thread_interrupt()
 
     try:
         # Propagate the dispatching profile so the detached child resolves
@@ -945,24 +1183,64 @@ def _finish_finalization(delegation_id: str, status: str) -> None:
         _prune_completed_locked()
 
 
-def _push_completion_event(
-    record: Dict[str, Any], result: Dict[str, Any], status: str
-) -> None:
-    """Push a type='async_delegation' event onto the shared completion queue.
+def publish_terminal_event(evt: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    """Deliver ONE terminal delegation event. The only queue producer.
 
-    Best-effort: a failure here must not crash the worker, but it WOULD mean a
-    silently-lost result, so we log loudly.
+    This is the single chokepoint that turns a finished delegation into a
+    delivered outcome, so "exactly one delivery channel" is structural rather
+    than conventional:
+
+    - If a live record registered an INLINE wait (foreground
+      ``delegate_assistant``), the event is handed to that waiter under
+      ``_records_lock`` and ``False`` is returned — nothing is persisted as
+      pending and nothing is placed on the completion queue, so no second
+      turn is spawned.
+    - Otherwise the event is persisted durably and pushed onto the shared
+      ``process_registry.completion_queue``; ``True`` is returned.
+
+    The mode swap and the result hand-off both happen under the same
+    ``_records_lock`` hold, which makes the linearization point unambiguous:
+    exactly one of {inline hand-off, queue put} runs for a delegation id.
     """
+    delegation_id = str(evt.get("delegation_id") or "")
+    with _records_lock:
+        record = _records.get(delegation_id) if delegation_id else None
+        if (
+            record is not None
+            and record.get("delivery_mode") == DELIVERY_MODE_INLINE
+        ):
+            record["inline_result"] = evt
+            waiter = record.get("inline_event")
+            if waiter is not None:
+                waiter.set()
+            return False
+
+    _persist_completion(evt, result)
     try:
         from tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
         logger.error(
             "Async delegation %s finished but process_registry import failed; "
             "result lost: %s",
-            record.get("delegation_id"), exc,
+            delegation_id, exc,
         )
-        return
+        return False
+    try:
+        process_registry.completion_queue.put(evt)
+    except Exception as exc:  # pragma: no cover
+        logger.error(
+            "Async delegation %s: failed to enqueue completion event; "
+            "result lost: %s",
+            delegation_id, exc,
+        )
+        return False
+    return True
 
+
+def _push_completion_event(
+    record: Dict[str, Any], result: Dict[str, Any], status: str
+) -> None:
+    """Build + publish a single-subagent terminal completion event."""
     summary = result.get("summary")
     error = result.get("error")
     dispatched_at = record.get("dispatched_at") or time.time()
@@ -993,12 +1271,7 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
-    # Routing origin captured at dispatch (see _capture_routing_origin):
-    # additive, lets the gateway reconstruct a full SessionSource (incl.
-    # scope_id for relay tenant egress) when its own caches are cold.
-    for _k in ("scope_id", "user_id", "user_name"):
-        if record.get(_k):
-            evt[_k] = record[_k]
+    _stamp_event_provenance(evt, record)
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (
@@ -1009,15 +1282,35 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
-    _persist_completion(evt, result)
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation %s: failed to enqueue completion event; "
-            "result lost: %s",
-            record.get("delegation_id"), exc,
-        )
+    # Uniform lifecycle: run artifacts a cli/cloud delegation finishes with
+    # (the claude-run log, the child session id, cost) ride along additively
+    # so the completion block can point the caller at them. Absent on
+    # subagent results, which is fine — consumers key off presence.
+    for _k in ("log_path", "child_session_id", "cost_usd", "warnings", "models_used"):
+        if result.get(_k):
+            evt[_k] = result[_k]
+    publish_terminal_event(evt, result)
+
+
+def _stamp_event_provenance(evt: Dict[str, Any], record: Dict[str, Any]) -> None:
+    """Add routing-origin + tool provenance keys onto a terminal event.
+
+    Additive only: consumers key off the fields that were already there, so
+    unknown/absent provenance degrades to today's behavior.
+    """
+    # Routing origin captured at dispatch (see _capture_routing_origin):
+    # additive, lets the gateway reconstruct a full SessionSource (incl.
+    # scope_id for relay tenant egress) when its own caches are cold.
+    for _k in ("scope_id", "user_id", "user_name"):
+        if record.get(_k):
+            evt[_k] = record[_k]
+    # Uniform delegation lifecycle: which tool commissioned this work and what
+    # kind of result it carries, so renderers can label it correctly.
+    if record.get("tool"):
+        evt["tool"] = record["tool"]
+    if record.get("result_kind"):
+        evt["result_kind"] = record["result_kind"]
+    evt["background"] = True
 
 
 def dispatch_async_delegation_batch(
@@ -1036,6 +1329,8 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    tool: str = "",
+    result_kind: str = "",
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -1045,7 +1340,7 @@ def dispatch_async_delegation_batch(
     "total_duration_seconds": N}`` dict that the synchronous path would have
     returned. We occupy ONE async slot for the whole batch (the in-batch
     parallelism is bounded separately by ``max_concurrent_children``), so a
-    single ``delegate_task`` fan-out never exhausts the async pool by itself.
+    single ``delegate_agent`` fan-out never exhausts the async pool by itself.
 
     When the batch finishes, a SINGLE completion event is pushed onto the
     shared ``process_registry.completion_queue`` carrying the full per-task
@@ -1077,12 +1372,19 @@ def dispatch_async_delegation_batch(
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         **_capture_routing_origin(),
+        "tool": tool,
+        "result_kind": result_kind,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
         "progress_fn": progress_fn,
+        "delivery_mode": DELIVERY_MODE_EVENT,
+        "inline_event": None,
+        "inline_result": None,
+        "inline_claimed": False,
+        "runner_tid": None,
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
@@ -1108,9 +1410,17 @@ def dispatch_async_delegation_batch(
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
+        from tools.interrupt import clear_current_thread_interrupt
+
         combined: Dict[str, Any] = {}
         status = "error"
         try:
+            with _records_lock:
+                record["runner_tid"] = threading.current_thread().ident
+            # Recycled-thread hygiene — see the single-task _worker above:
+            # wipe only the CURRENT thread's stale interrupt bit before the
+            # batch runner starts, and again after finalize.
+            clear_current_thread_interrupt()
             combined = runner() or {}
             # Batch status: completed unless every child errored/was interrupted.
             child_results = combined.get("results") or []
@@ -1130,7 +1440,13 @@ def dispatch_async_delegation_batch(
             }
             status = "error"
         finally:
-            _finalize_batch(delegation_id, combined, status)
+            try:
+                _finalize_batch(delegation_id, combined, status)
+            finally:
+                # Same post-finalize wipe as the single-task worker, and for
+                # the same reason nested: a raising _finalize_batch must not
+                # strand the interrupt bit on this recycled thread.
+                clear_current_thread_interrupt()
 
     try:
         # Propagate the dispatching profile to the detached batch children.
@@ -1169,17 +1485,7 @@ def _finalize_batch(
 def _push_batch_completion_event(
     event_record: Dict[str, Any], combined: Dict[str, Any], status: str
 ) -> None:
-    """Push a combined async-delegation batch completion event."""
-    try:
-        from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s finished but process_registry import "
-            "failed; result lost: %s",
-            event_record.get("delegation_id"), exc,
-        )
-        return
-
+    """Build + publish a combined async-delegation batch completion event."""
     dispatched_at = event_record.get("dispatched_at") or time.time()
     completed_at = event_record.get("completed_at") or time.time()
     evt = {
@@ -1209,10 +1515,7 @@ def _push_batch_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
     }
-    # Routing origin captured at dispatch (see _capture_routing_origin).
-    for _k in ("scope_id", "user_id", "user_name"):
-        if event_record.get(_k):
-            evt[_k] = event_record[_k]
+    _stamp_event_provenance(evt, event_record)
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (
@@ -1223,15 +1526,7 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    _persist_completion(evt, combined)
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s: failed to enqueue completion event; "
-            "result lost: %s",
-            event_record.get("delegation_id"), exc,
-        )
+    publish_terminal_event(evt, combined)
 
 
 def _ensure_stale_monitor() -> None:
@@ -1507,6 +1802,44 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     return items
 
 
+def _signal_runner_interrupt(record: Dict[str, Any], reason: str) -> bool:
+    """Signal one delegation to stop. Returns True if any channel fired.
+
+    Two independent channels, both required for the uniform lifecycle:
+
+    - ``runner_tid``: set the per-thread interrupt bit on the worker thread
+      so cooperative ``_check_interrupted()`` hooks INSIDE the runner (the
+      claude/cursor subprocess poll loops) unwind on ``/stop`` and gateway
+      shutdown, not just the injected ``interrupt_fn``.
+    - ``interrupt_fn``: the tool-specific cancellation (hard child-agent
+      interrupt, cloud-run cancel, process-group kill).
+    """
+    signalled = False
+    runner_tid = record.get("runner_tid")
+    if runner_tid:
+        try:
+            from tools.interrupt import set_interrupt
+
+            set_interrupt(True, runner_tid, reason=reason)
+            signalled = True
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug(
+                "interrupt: %s thread-bit failed: %s",
+                record.get("delegation_id"), exc,
+            )
+    fn = record.get("interrupt_fn")
+    if callable(fn):
+        try:
+            fn()
+            signalled = True
+        except Exception as exc:
+            logger.debug(
+                "interrupt: %s interrupt_fn failed: %s",
+                record.get("delegation_id"), exc,
+            )
+    return signalled
+
+
 def interrupt_all(reason: str = "shutdown") -> int:
     """Signal every running async delegation to stop. Returns how many.
 
@@ -1521,16 +1854,8 @@ def interrupt_all(reason: str = "shutdown") -> int:
             if r.get("status") in ("running", "stalling")
         ]
     for r in targets:
-        fn = r.get("interrupt_fn")
-        if callable(fn):
-            try:
-                fn()
-                count += 1
-            except Exception as exc:
-                logger.debug(
-                    "interrupt_all: %s interrupt failed: %s",
-                    r.get("delegation_id"), exc,
-                )
+        if _signal_runner_interrupt(r, reason):
+            count += 1
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
     return count
@@ -1575,22 +1900,553 @@ def interrupt_for_session(
             )
         ]
     for r in targets:
-        fn = r.get("interrupt_fn")
-        if callable(fn):
-            try:
-                fn()
-                count += 1
-            except Exception as exc:
-                logger.debug(
-                    "interrupt_for_session: %s interrupt failed: %s",
-                    r.get("delegation_id"), exc,
-                )
+        if _signal_runner_interrupt(r, reason):
+            count += 1
     if count:
         logger.info(
             "Interrupted %d async delegation(s) for ending session (%s)",
             count, reason,
         )
     return count
+
+
+# ---------------------------------------------------------------------------
+# Uniform lifecycle: acceptance envelope, capability gate, inline waits
+# ---------------------------------------------------------------------------
+
+def build_background_acceptance_envelope(
+    *,
+    tool: str,
+    result_kind: str,
+    delegation_id: str,
+    count: int = 1,
+    goals: Optional[List[str]] = None,
+    note: str = "",
+    control_hint: str = "",
+    subagent_ids: Optional[List[str]] = None,
+    live_transcripts: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """The ONE acceptance shape every background delegation returns inline.
+
+    A background call must not return a terminal result inline, so this
+    envelope is all the caller gets: status, mode, the handle, and how to
+    observe or steer the work. Tool-specific keys (``subagent_ids``,
+    ``live_transcripts``) are added only when meaningful; ``tool`` and
+    ``result_kind`` are always present so UIs can label the unit without
+    sniffing the id format.
+    """
+    payload: Dict[str, Any] = {
+        "status": "dispatched",
+        "mode": "background",
+        "delegation_id": delegation_id,
+        "tool": tool,
+        "result_kind": result_kind,
+        "count": count,
+    }
+    if goals:
+        payload["goals"] = list(goals)
+    if note:
+        payload["note"] = note
+    if subagent_ids:
+        payload["subagent_ids"] = list(subagent_ids)
+    if control_hint:
+        payload["control_hint"] = control_hint
+    if live_transcripts:
+        payload["live_transcripts"] = list(live_transcripts)
+    return payload
+
+
+def background_delivery_supported() -> tuple:
+    """Whether THIS session can receive a late background completion.
+
+    Wraps ``gateway.session_context.async_delivery_supported`` plus the
+    api-server self-post escape: on a stateless HTTP session the adapter
+    cannot push, but a bound raw session id still lets ``gateway.wake``
+    self-POST a fresh turn, which IS a supported delivery channel. Returns
+    ``(True, "")`` when delivery is possible and ``(False, reason)``
+    otherwise — the reason is user-facing and must say that no work was
+    started.
+
+    Callers must run this BEFORE building any child or side effect: an
+    unsupported channel is a hard error, never a silent foreground run.
+    """
+    try:
+        from gateway.session_context import async_delivery_supported
+    except Exception as exc:  # pragma: no cover — gateway always importable
+        logger.debug("background_delivery_supported: context unavailable: %s", exc)
+        return True, ""
+
+    if async_delivery_supported():
+        return True, ""
+
+    wake_sid = _current_origin_session_id()
+    if wake_sid:
+        # The adapter cannot push, but the bound raw session id can be woken
+        # by a self-post once the delegation completes (gateway.wake).
+        return True, ""
+
+    return (
+        False,
+        "background=true is not available in this session: it cannot receive "
+        "a detached result after the turn ends (a one-shot runner such as "
+        "`hermes -z`, a cron job, a Kanban worker, or a stateless HTTP "
+        "endpoint). NO WORK WAS STARTED. Omit `background` (or pass "
+        "background=false) to run the task in the foreground this turn "
+        "instead.",
+    )
+
+
+def register_inline_wait(
+    delegation_id: str,
+    *,
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    origin_session_id: str = "",
+    parent_session_id: Optional[str] = None,
+    goal: str = "",
+    context: Optional[str] = None,
+    tool: str = "",
+    result_kind: str = "",
+) -> "threading.Event":
+    """Register a foreground waiter for ``delegation_id``; returns its Event.
+
+    Creates the record when it does not exist and atomically flips
+    ``delivery_mode`` to ``inline`` under ``_records_lock``, so a terminal
+    event racing this call linearizes on one side of the swap. A freshly
+    created wait record is externally-driven — the "runner" is a human
+    conversation in whatever process serves it — so it is ALSO registered as
+    a durable ``running`` row (``external``, never clobbering a row the
+    closing process already inserted) BEFORE this thread blocks: that row is
+    what a cross-process :func:`claim_inline_takeover` retires atomically,
+    and marking it ``external`` keeps a restart from classifying a live
+    mission as outcome-unknown. Best-effort — if the durable store refuses,
+    the wait still runs and the no-row takeover writes its own delivered
+    tombstone instead.
+
+    The returned Event is set by :func:`publish_terminal_event` when the
+    terminal outcome lands; the waiter then reads it with
+    :func:`claim_inline_result`.
+    """
+    waiter = threading.Event()
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            record = {
+                "delegation_id": delegation_id,
+                "goal": goal,
+                "context": context,
+                "toolsets": None,
+                "role": "",
+                "model": None,
+                "session_key": session_key,
+                "origin_ui_session_id": origin_ui_session_id,
+                "origin_session_id": origin_session_id,
+                "parent_session_id": parent_session_id,
+                **_capture_routing_origin(),
+                "tool": tool,
+                "result_kind": result_kind,
+                # Externally-driven (see recover_abandoned_delegations): the
+                # wait has no runner of ours, so the durable row below must
+                # never be recovered as a dead-owner "outcome unknown".
+                "external": True,
+                "status": "running",
+                "dispatched_at": time.time(),
+                "completed_at": None,
+                "interrupt_fn": None,
+                "progress_fn": None,
+                "delivery_mode": DELIVERY_MODE_EVENT,
+                "inline_event": None,
+                "inline_result": None,
+                "inline_claimed": False,
+                "runner_tid": None,
+                "_progress_token": None,
+                "_progress_ts": time.time(),
+                "_interrupted_at": None,
+            }
+            _records[delegation_id] = record
+        record["delivery_mode"] = DELIVERY_MODE_INLINE
+        record["inline_event"] = waiter
+        record["inline_result"] = None
+        record["inline_claimed"] = False
+    try:
+        # INSERT OR IGNORE: an executor-owned delegation's dispatch row (or a
+        # terminal-side row the closing process just inserted) is never
+        # overwritten — only a missing row is created.
+        _persist_dispatch(record, replace=False)
+    except Exception:
+        logger.warning(
+            "Foreground inline wait for %s: durable registration failed; "
+            "the no-row takeover tombstone is the durability fallback.",
+            delegation_id,
+            exc_info=True,
+        )
+    return waiter
+
+
+def claim_inline_result(delegation_id: str) -> Optional[Dict[str, Any]]:
+    """Consume the terminal event parked for an inline waiter, if any.
+
+    Non-blocking: the caller polls its Event between interrupt checks and
+    calls this once the Event is set (or opportunistically). The result is
+    consumed exactly once — a second claim returns ``None``.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return None
+        evt = record.get("inline_result")
+        if evt is None:
+            return None
+        record["inline_result"] = None
+        record["inline_claimed"] = True
+        # No live waiter anymore (matches inline_wait_pending's contract): a
+        # later publisher for the same id must see "no one is waiting" and
+        # take the rail, not report a phantom inline hand-off.
+        record["inline_event"] = None
+        return evt
+
+
+def abandon_inline_wait(delegation_id: str) -> Optional[Dict[str, Any]]:
+    """Give up a foreground wait without losing the terminal result.
+
+    Returns a parked-but-unconsumed terminal event for the CALLER to publish
+    on the event rail (the mission already finished; the waiter is leaving;
+    dropping it would lose the outcome). When no result has landed yet the
+    record is flipped back to ``delivery_mode="event"`` and KEPT LIVE, so the
+    eventual terminalization publishes through the rail as a fresh turn.
+
+    Either way exactly one delivery channel survives this call.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return None
+        if record.get("delivery_mode") != DELIVERY_MODE_INLINE:
+            return None
+        parked = record.get("inline_result")
+        if record.get("inline_claimed"):
+            parked = None
+        record["inline_result"] = None
+        record["inline_event"] = None
+        if parked is not None:
+            # Caller is leaving with an unconsumed terminal result: drop the
+            # record so a later publish cannot double-deliver, and hand the
+            # event back for rail publication.
+            _records.pop(delegation_id, None)
+            return parked
+        record["delivery_mode"] = DELIVERY_MODE_EVENT
+        record["inline_claimed"] = False
+        return None
+
+
+def inline_wait_pending(delegation_id: str) -> bool:
+    """Whether a live foreground waiter is registered for ``delegation_id``.
+
+    Lets a terminal-side publisher tell "handed to a waiting caller" apart
+    from "failed to publish" — :func:`publish_terminal_event` returns
+    ``False`` for both. Stays ``True`` until the waiter claims or abandons,
+    which is exactly the window the publisher cares about.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        return bool(
+            record is not None
+            and record.get("delivery_mode") == DELIVERY_MODE_INLINE
+            and record.get("inline_event") is not None
+        )
+
+
+def drop_inline_wait(delegation_id: str) -> None:
+    """Drop a foreground-wait record outright — the outcome arrived elsewhere.
+
+    Cross-process terminalization: the closing process could not see THIS
+    process's inline record, so it published the outcome on its own
+    completion rail. Nothing will ever be published for this id here, and
+    keeping the record live would pin a phantom ``running`` delegation
+    against ``active_count()`` (capacity accounting, scale-to-zero) forever.
+    Idempotent; never touches a record that is not an inline wait.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("delivery_mode") != DELIVERY_MODE_INLINE:
+            return
+        _records.pop(delegation_id, None)
+
+
+def abandon_all_inline_waits(reason: str = "shutdown") -> int:
+    """Abandon every live foreground wait. Returns how many.
+
+    Shutdown fan-out (alongside :func:`interrupt_all`): the waiter threads
+    die with the process, so each inline claim must be released without
+    losing its outcome —
+
+    - a parked-but-unconsumed result is published on the event rail (the
+      durable row makes it replay after the restart), and the record drops;
+    - a still-pending wait flips back to ``delivery_mode="event"`` and stays
+      live, so the work's own terminalization publishes normally later.
+
+    Either way exactly one delivery channel survives per delegation.
+    """
+    parked_events: List[tuple] = []
+    with _records_lock:
+        targets = [
+            rid
+            for rid, r in _records.items()
+            if r.get("delivery_mode") == DELIVERY_MODE_INLINE
+        ]
+        for rid in targets:
+            record = _records.get(rid)
+            if record is None:
+                continue
+            evt = record.get("inline_result")
+            if record.get("inline_claimed"):
+                evt = None
+            record["inline_result"] = None
+            record["inline_event"] = None
+            if evt is not None:
+                _records.pop(rid, None)
+                parked_events.append((rid, evt))
+            else:
+                record["delivery_mode"] = DELIVERY_MODE_EVENT
+                record["inline_claimed"] = False
+    for delegation_id, evt in parked_events:
+        # Outside _records_lock: publish_terminal_event takes the same lock.
+        # The durable row already exists — terminalization persists before
+        # parking — so this UPDATE lands and the replay survives the restart.
+        try:
+            publish_terminal_event(evt, {"status": evt.get("status")})
+        except Exception as exc:  # pragma: no cover — must not break shutdown
+            logger.error(
+                "Abandoned inline wait %s: failed to publish its parked "
+                "result (%s); outcome lost",
+                delegation_id, exc,
+            )
+    if targets:
+        logger.info(
+            "Abandoned %d foreground delegation wait(s) (%s)",
+            len(targets), reason,
+        )
+    return len(targets)
+
+
+def finalize_external_delegation(delegation_id: str, status: str) -> None:
+    """Retire an externally-driven delegation's in-memory record.
+
+    ``register_background_delegation`` / ``register_inline_wait`` records
+    have no worker of ours, so nothing ever runs ``_begin_finalization`` for
+    them: whoever publishes the terminal event must also retire the record
+    here, or it pins a phantom ``running`` unit against ``active_count()``
+    (capacity accounting, scale-to-zero) for the life of the process.
+
+    Mirrors ``_finish_finalization``: terminal status, then the same
+    bounded-retention prune executor-owned records get.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") not in ("running", "stalling"):
+            return
+        record["status"] = status
+        record["completed_at"] = time.time()
+        record["interrupt_fn"] = None
+        record["progress_fn"] = None
+        _prune_completed_locked()
+
+
+def register_background_delegation(
+    *,
+    delegation_id: str,
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    origin_session_id: str = "",
+    parent_session_id: Optional[str] = None,
+    goal: str = "",
+    goals: Optional[List[str]] = None,
+    context: Optional[str] = None,
+    tool: str = "",
+    result_kind: str = "",
+    interrupt_fn: Optional[Callable[[], None]] = None,
+) -> Dict[str, Any]:
+    """Register an EXTERNALLY-driven background unit (no runner of ours).
+
+    Used by delegations whose work is not a callable we own — the assistant
+    mission, whose "runner" is a human conversation in another session. The
+    record is live in the registry (so capacity accounting, the typing
+    supervisor, and scale-to-zero see it) and has a durable row, so its
+    completion is claimable/dedup-able and replays after a restart. The
+    terminal event is delivered by whatever finishes the work calling
+    :func:`publish_terminal_event`.
+    """
+    now = time.time()
+    record: Dict[str, Any] = {
+        "delegation_id": delegation_id,
+        "goal": goal,
+        "goals": list(goals) if goals else None,
+        "context": context,
+        "toolsets": None,
+        "role": "",
+        "model": None,
+        "session_key": session_key,
+        "origin_ui_session_id": origin_ui_session_id,
+        "origin_session_id": origin_session_id,
+        "parent_session_id": parent_session_id,
+        **_capture_routing_origin(),
+        "tool": tool,
+        "result_kind": result_kind,
+        # Externally-driven (see recover_abandoned_delegations): no process
+        # owns this unit's outcome, so a dead owner_pid must not classify it
+        # as abandoned at the next boot.
+        "external": True,
+        "status": "running",
+        "dispatched_at": now,
+        "completed_at": None,
+        "interrupt_fn": interrupt_fn,
+        "progress_fn": None,
+        "delivery_mode": DELIVERY_MODE_EVENT,
+        "inline_event": None,
+        "inline_result": None,
+        "inline_claimed": False,
+        "runner_tid": None,
+        "_progress_token": None,
+        "_progress_ts": now,
+        "_interrupted_at": None,
+    }
+    with _records_lock:
+        existing = _records.get(delegation_id)
+        if existing is not None and existing.get("status") in (
+            "running", "stalling", "finalizing"
+        ):
+            return {"status": "duplicate", "delegation_id": delegation_id}
+        _records[delegation_id] = record
+    _persist_dispatch(record)
+    return {"status": "dispatched", "delegation_id": delegation_id}
+
+
+def ensure_durable_delegation(
+    *,
+    delegation_id: str,
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    origin_session_id: str = "",
+    parent_session_id: Optional[str] = None,
+    goal: str = "",
+    goals: Optional[List[str]] = None,
+    context: Optional[str] = None,
+    tool: str = "",
+    result_kind: str = "",
+    dispatched_at: Optional[float] = None,
+) -> None:
+    """Create the durable ``running`` row for an externally-driven delegation.
+
+    Terminal-side companion to :func:`register_background_delegation`: an
+    externally-driven unit (an assistant mission) typically terminalizes in a
+    DIFFERENT process than the one that accepted it — the assistant profile's
+    own turn — so the row may not exist when :func:`publish_terminal_event`
+    UPDATEs it. Inserting it here, idempotently and never clobbering an
+    existing row, gives the completion the same durability,
+    ``claim_completion_delivery`` dedup, and restart replay every
+    executor-owned delegation gets. No in-memory record is created: the
+    closing process must not hold a phantom live delegation.
+    """
+    _persist_dispatch(
+        {
+            "delegation_id": delegation_id,
+            "session_key": session_key,
+            "origin_ui_session_id": origin_ui_session_id,
+            "origin_session_id": origin_session_id,
+            "parent_session_id": parent_session_id,
+            "goal": goal,
+            "goals": goals,
+            "context": context,
+            "tool": tool,
+            "result_kind": result_kind,
+            # Externally-driven (see recover_abandoned_delegations): the
+            # closing process inserts this row itself, so it is never a
+            # candidate for dead-owner recovery either.
+            "external": True,
+            "dispatched_at": dispatched_at if dispatched_at is not None else time.time(),
+        },
+        replace=False,
+    )
+
+
+def dispatch_background_delegation(
+    *,
+    tool: str,
+    result_kind: str,
+    goal: str,
+    runner: Callable[[], Dict[str, Any]],
+    session_key: str = "",
+    parent_session_id: Optional[str] = None,
+    origin_ui_session_id: str = "",
+    origin_session_id: str = "",
+    interrupt_fn: Optional[Callable[[], None]] = None,
+    max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    goals: Optional[List[str]] = None,
+    context: Optional[str] = None,
+    role: str = "",
+    model: Optional[str] = None,
+    delegation_id: Optional[str] = None,
+    note: str = "",
+    control_hint: str = "",
+    progress_fn: Optional[Callable[[], tuple]] = None,
+) -> Dict[str, Any]:
+    """Thin single chokepoint for a background dispatch + acceptance envelope.
+
+    Wraps :func:`dispatch_async_delegation` / ``_batch`` (they own the record,
+    the durable row, the executor slot, and the terminal publisher) and
+    returns the shared acceptance envelope on success. On rejection the raw
+    ``{"status": "rejected", ...}`` dict is returned unchanged so the caller
+    can fail clearly WITHOUT having started any work.
+    """
+    if goals and len(goals) > 1:
+        dispatch = dispatch_async_delegation_batch(
+            goals=list(goals),
+            context=context,
+            toolsets=None,
+            role=role,
+            model=model,
+            session_key=session_key,
+            parent_session_id=parent_session_id,
+            runner=runner,
+            origin_ui_session_id=origin_ui_session_id,
+            origin_session_id=origin_session_id,
+            interrupt_fn=interrupt_fn,
+            max_async_children=max_async_children,
+            delegation_id=delegation_id,
+            tool=tool,
+            result_kind=result_kind,
+            progress_fn=progress_fn,
+        )
+    else:
+        dispatch = dispatch_async_delegation(
+            goal=goal,
+            context=context,
+            toolsets=None,
+            role=role,
+            model=model,
+            session_key=session_key,
+            parent_session_id=parent_session_id,
+            runner=runner,
+            origin_ui_session_id=origin_ui_session_id,
+            origin_session_id=origin_session_id,
+            interrupt_fn=interrupt_fn,
+            max_async_children=max_async_children,
+            delegation_id=delegation_id,
+            tool=tool,
+            result_kind=result_kind,
+            progress_fn=progress_fn,
+        )
+    if dispatch.get("status") != "dispatched":
+        return dispatch
+    return build_background_acceptance_envelope(
+        tool=tool,
+        result_kind=result_kind,
+        delegation_id=dispatch["delegation_id"],
+        count=len(goals) if goals else 1,
+        goals=goals,
+        note=note,
+        control_hint=control_hint,
+    )
 
 
 def _reset_for_tests() -> None:

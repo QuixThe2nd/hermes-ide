@@ -482,7 +482,7 @@ Next: Run significance tests on these results.
 | **Wrong model ID** | Model not found errors | Fix ID (e.g., `claude-opus-4-6` not `claude-opus-4.6`) |
 | **Parallel slowdown** | Each experiment taking 2x longer | Reduce parallel experiments to 2-3 max |
 | **Security scan blocks** | Commands blocked by security | Use `execute_code` instead of piped `terminal` commands |
-| **Delegation failures** | `delegate_task` returns errors | Fall back to doing work directly |
+| **Delegation failures** | `delegate_agent` returns errors | Fall back to doing work directly |
 | **Timeout on hard problems** | Process stuck, no log progress | Kill, skip problem, note in results |
 | **Dataset path mismatch** | File not found errors | Verify paths before launching |
 

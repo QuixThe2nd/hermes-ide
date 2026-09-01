@@ -72,7 +72,7 @@ def _is_delegated_child_context() -> bool:
 
 def _is_dispatcher_owned_worker() -> bool:
     """False when HERMES_KANBAN_* is present but this execution does not own it
-    (delegate_task child, or a cron job fired in-process from a worker)."""
+    (delegate_agent child, or a cron job fired in-process from a worker)."""
     try:
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
@@ -108,7 +108,7 @@ def _get_tool_loop():
 def _get_worker_loop():
     """Return a persistent event loop for the current worker thread.
 
-    Each worker thread (e.g., delegate_task's ThreadPoolExecutor threads)
+    Each worker thread (e.g., delegate_agent's ThreadPoolExecutor threads)
     gets its own long-lived loop stored in thread-local storage.  This
     prevents the "Event loop is closed" errors that occurred when
     asyncio.run() was used per-call: asyncio.run() creates a loop, runs
@@ -211,7 +211,7 @@ def _run_async(coro):
             pool.shutdown(wait=False)
 
     # If we're on a worker thread (e.g., parallel tool execution in
-    # delegate_task), use a per-thread persistent loop.  This avoids
+    # delegate_agent), use a per-thread persistent loop.  This avoids
     # contention with the main thread's shared loop while keeping cached
     # httpx/AsyncOpenAI clients bound to a live loop for the thread's
     # lifetime — preventing "Event loop is closed" on GC cleanup.
@@ -592,33 +592,40 @@ def _compute_tool_definitions(
         ]
         available_tool_names.discard("browser_exec")
 
-    # delegate_task's child-restrictions rule names sibling tools (clarify,
+    # delegate_agent's child-restrictions rule names sibling tools (clarify,
     # memory, cronjob). Warning about tools this session doesn't even have
     # teaches ghost vocabulary — filter the list to tools actually present
     # and drop the line entirely when none apply. Two source variants exist
-    # (depth-derived): the depth-off line also names delegate_task itself;
+    # (depth-derived): the depth-off line also names delegate_agent itself;
     # the depth-on line lists only the siblings. Pattern order matters —
     # the sibling list is a substring of the full list.
     # Same session-level seam as the browser_exec gate above.
-    if "delegate_task" in available_tool_names:
+    # Both spellings appear in the wild: the live schema says delegate_agent,
+    # while a cached/older description (or a legacy transcript replayed through
+    # this path) may still say delegate_task. Match either.
+    if "delegate_agent" in available_tool_names:
         blocked_present = [
             t for t in ("clarify", "memory", "cronjob") if t in available_tool_names
         ]
         if len(blocked_present) < 3:
-            full_offvariant = "delegate_task, clarify, memory, or cronjob"
-            full_onvariant = "clarify, memory, or cronjob"
             for i, td in enumerate(filtered_tools):
                 fn = td.get("function", {})
                 desc = fn.get("description", "")
-                if fn.get("name") != "delegate_task":
+                if fn.get("name") != "delegate_agent":
                     continue
-                if full_offvariant in desc:
-                    full, keep_self = full_offvariant, True
-                elif full_onvariant in desc:
-                    full, keep_self = full_onvariant, False
-                else:
+                full, keep_self = None, False
+                for variant, keeps_self in (
+                    ("delegate_agent, clarify, memory, or cronjob", True),
+                    ("delegate_agent, clarify, memory, cronjob", False),
+                    ("delegate_task, clarify, memory, or cronjob", True),
+                    ("delegate_task, clarify, memory, cronjob", False),
+                ):
+                    if variant in desc:
+                        full, keep_self = variant, keeps_self
+                        break
+                if full is None:
                     break
-                names = (["delegate_task"] if keep_self else []) + blocked_present
+                names = (["delegate_agent"] if keep_self else []) + blocked_present
                 if blocked_present:
                     if len(names) == 1:
                         replacement = names[0]
@@ -788,7 +795,9 @@ def _resolve_active_context_length() -> int:
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+# ``delegate_task`` must be listed too: a replayed/transcript-fed call with
+# the legacy name would otherwise fall through to the registry stub error.
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_agent", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 

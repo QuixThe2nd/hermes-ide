@@ -1,7 +1,7 @@
-"""Context-local state for delegate_task child execution.
+"""Context-local state for delegate_agent child execution.
 
 The parent Hermes process may itself be a Kanban dispatcher worker with
-HERMES_KANBAN_* variables in process env. delegate_task children run inside the
+HERMES_KANBAN_* variables in process env. delegate_agent children run inside the
 same Python process, but they are not dispatcher-owned Kanban workers. This
 module lets code paths that resolve tool schemas or spawn subprocesses fail
 closed for delegated children without mutating global os.environ for the parent.
@@ -25,7 +25,7 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar(
 # Set for any in-process execution that is NOT the dispatcher-owned worker even
 # though the worker's HERMES_KANBAN_* vars are legitimately in os.environ (cron
 # jobs fired via the `cronjob` tool).  Kept separate from
-# _DELEGATED_CHILD_CONTEXT so the delegate_task-specific behaviour attached to
+# _DELEGATED_CHILD_CONTEXT so the delegate_agent-specific behaviour attached to
 # that flag (subprocess env scrubbing, its own error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar(
     "hermes_non_dispatcher_owned_context",
@@ -66,7 +66,7 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
 
 
 def is_delegated_child_context() -> bool:
-    """Return True while code is running for a delegate_task child."""
+    """Return True while code is running for a delegate_agent child."""
     return bool(_DELEGATED_CHILD_CONTEXT.get())
 
 
@@ -98,7 +98,7 @@ def is_dispatcher_owned_worker_context() -> bool:
     """Return True only when this execution owns the dispatcher's Kanban task.
 
     The single predicate every ``HERMES_KANBAN_*`` identity gate should use
-    before trusting those vars.  False for delegate_task children and for cron
+    before trusting those vars.  False for delegate_agent children and for cron
     jobs fired in-process from a worker.
     """
     if _DELEGATED_CHILD_CONTEXT.get():
@@ -145,7 +145,7 @@ def delegated_child_subprocess_env(
     """Return an env override only when delegated-child lineage must cross fork.
 
     Most subprocess call sites historically used ``env=None`` to inherit the
-    process environment.  In a ``delegate_task`` child, inheriting as-is leaks
+    process environment.  In a ``delegate_agent`` child, inheriting as-is leaks
     parent dispatcher ``HERMES_KANBAN_*`` vars while losing the ContextVar in
     the new process.  This helper preserves normal ``env=None`` semantics for
     non-delegated calls, and only materializes a scrubbed env when the lineage

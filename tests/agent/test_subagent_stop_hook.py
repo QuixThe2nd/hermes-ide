@@ -1,6 +1,6 @@
 """Tests for the subagent_stop hook event.
 
-Covers wire-up from tools.delegate_tool.delegate_task:
+Covers wire-up from tools.delegate_tool.delegate_agent:
   * fires once per child in both single-task and batch modes
   * is dispatched from the parent thread (no child-pool re-entrancy)
     and callback bodies stay on that caller thread
@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.delegate_tool import _summarize_tool_arguments, delegate_task
+from tools.delegate_tool import _summarize_tool_arguments, delegate_agent
 from hermes_cli import plugins
 
 
@@ -57,7 +57,7 @@ def _fresh_plugin_manager():
 
 @pytest.fixture(autouse=True)
 def _stub_child_builder(monkeypatch):
-    """Replace _build_child_agent with a MagicMock factory so delegate_task
+    """Replace _build_child_agent with a MagicMock factory so delegate_agent
     never transitively imports run_agent / openai.  Keeps the test runnable
     in environments without heavyweight runtime deps installed."""
     def _fake_build_child(task_index, **kwargs):
@@ -99,7 +99,7 @@ class TestSingleTask:
                 "duration_seconds": 5.0,
                 "_child_role": "analyst",
             }
-            delegate_task(goal="do X", parent_agent=_make_parent())
+            delegate_agent(goal="do X", parent_agent=_make_parent())
 
         assert len(captured) == 1
         payload = captured[0]
@@ -127,7 +127,7 @@ class TestSingleTask:
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
                 "_child_role": None,
             }
-            delegate_task(goal="go", parent_agent=_make_parent())
+            delegate_agent(goal="go", parent_agent=_make_parent())
 
         assert dispatch_threads and all(t is main_thread for t in dispatch_threads)
         cb_thread = captured[0]["_thread"]
@@ -142,7 +142,7 @@ class TestSingleTask:
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
                 "_child_role": None,
             }
-            delegate_task(
+            delegate_agent(
                 goal="go",
                 parent_agent=_make_parent(session_id="sess-xyz"),
             )
@@ -169,7 +169,7 @@ class TestBatchMode:
                  "summary": "C", "api_calls": 3, "duration_seconds": 3.0,
                  "_child_role": "role-c"},
             ]
-            delegate_task(
+            delegate_agent(
                 tasks=[
                     {"goal": "Investigate module A"},
                     {"goal": "Investigate module B"},
@@ -204,7 +204,7 @@ class TestBatchMode:
                  "summary": "B", "api_calls": 2, "duration_seconds": 2.0,
                  "_child_role": None},
             ]
-            delegate_task(
+            delegate_agent(
                 tasks=[
                     {"goal": "Investigate module A"},
                     {"goal": "Investigate module B"},
@@ -247,7 +247,7 @@ class TestPayloadShape:
                     "result": "secret output",
                 }],
             }
-            delegate_task(goal="do X", parent_agent=_make_parent())
+            delegate_agent(goal="do X", parent_agent=_make_parent())
 
         assert captured[0]["tool_call_history"] == [{
             "tool_name": "write_file",
@@ -277,7 +277,7 @@ class TestPayloadShape:
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
                 "_child_role": "leaf",
             }
-            raw = delegate_task(goal="do X", parent_agent=_make_parent())
+            raw = delegate_agent(goal="do X", parent_agent=_make_parent())
 
         parsed = json.loads(raw)
         assert "results" in parsed

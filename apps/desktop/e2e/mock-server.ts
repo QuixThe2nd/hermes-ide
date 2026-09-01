@@ -148,10 +148,10 @@ export function receivedUserTexts(): readonly string[] {
 // A separate trigger (E2E_SIDEBAR_TRIGGER) exercises the desktop sidebar's
 // background-process and subagent states. The mock returns tool_calls that
 // the agent executes for real — `terminal(background=true)` spawns a real
-// (but trivial) background process, and `delegate_task` spawns a real
+// (but trivial) background process, and `delegate_agent` spawns a real
 // subagent that calls the mock server and gets the canned reply.
 //
-// Turn 1: text + terminal(bg=true) + delegate_task → tools execute
+// Turn 1: text + terminal(bg=true) + delegate_agent → tools execute
 // Turn 2: final answer → message.complete, dot transitions
 
 const SIDEBAR_SCRIPT: ScriptedTurn[] = [
@@ -167,7 +167,7 @@ const SIDEBAR_SCRIPT: ScriptedTurn[] = [
         },
       },
       {
-        name: 'delegate_task',
+        name: 'delegate_agent',
         args: {
           goal: 'Summarize the test results',
           context: 'This is a test subagent for the sidebar states E2E test.',
@@ -229,7 +229,7 @@ function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
           },
         },
         {
-          name: 'delegate_task',
+          name: 'delegate_agent',
           args: {
             goal: 'Analyze cross-session state',
             context: 'Testing that the background dot updates across sessions.',

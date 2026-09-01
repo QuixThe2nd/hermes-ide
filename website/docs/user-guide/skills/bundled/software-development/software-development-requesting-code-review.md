@@ -142,13 +142,13 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
-Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
+Call `delegate_agent` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
 the implementer. Fail-closed: unparseable response = fail.
 
 ```python
-delegate_task(
+delegate_agent(
     goal="""You are an independent code reviewer. You have no context about how
 these changes were made. Review the git diff and return ONLY valid JSON.
 
@@ -217,7 +217,7 @@ Spawn a THIRD agent context — not you (the implementer), not the reviewer.
 It fixes ONLY the reported issues:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="""You are a code fix agent. Fix ONLY the specific issues listed below.
 Do NOT refactor, rename, or change anything else. Do NOT add features.
 
@@ -291,7 +291,7 @@ tests exist, tests pass, no regressions.
 - **Empty diff** — check `git status`, tell user nothing to verify
 - **Not a git repo** — skip and tell user
 - **Large diff (>15k chars)** — split by file, review each separately
-- **delegate_task returns non-JSON** — retry once with stricter prompt, then treat as FAIL
+- **delegate_agent returns non-JSON** — retry once with stricter prompt, then treat as FAIL
 - **False positives** — if reviewer flags something intentional, note it in fix prompt
 - **No test framework found** — skip regression check, reviewer verdict still runs
 - **Lint tools not installed** — skip that check silently, don't fail

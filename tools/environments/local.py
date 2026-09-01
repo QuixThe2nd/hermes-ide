@@ -774,7 +774,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
 
 def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
-    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
+    """Strip dispatcher-owned Kanban env from delegate_agent child subprocesses."""
     try:
         from agent.delegation_context import (
             is_delegated_child_process_context,
@@ -908,7 +908,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     _inject_session_context_env(env)
 
     # Non-terminal subprocess helpers (browser, lazy-deps, TUI/ACP hosts, etc.)
-    # also need the delegate_task child lineage marker.  Otherwise a child
+    # also need the delegate_agent child lineage marker.  Otherwise a child
     # context that later imports Kanban DB code in the spawned process would
     # still see the parent's HERMES_HOME but lose the DB mutation guard.
     env = _scrub_delegated_child_kanban_env(env)

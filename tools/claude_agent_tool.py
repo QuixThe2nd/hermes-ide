@@ -80,6 +80,7 @@ from tools.agent_cli_runner import run_agent_cli
 from tools.claude_viewer_url import watch_url
 from tools.registry import registry
 from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -387,11 +388,13 @@ def _run_and_stream(
     log_dir: Path,
     run_timestamp: str,
     on_spawn: Optional[Callable[[Path], None]] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
 
     ``on_spawn`` is handed straight to ``run_agent_cli`` — invoked once with
-    the resolved log path, right after spawn.
+    the resolved log path, right after spawn. ``on_proc`` likewise receives
+    the ``Popen`` itself (the handle a background run's interrupt kills).
 
     Returns ``(error_code, log_path, log_text, duration_seconds, returncode)``.
     """
@@ -403,6 +406,7 @@ def _run_and_stream(
         log_dir=log_dir,
         run_timestamp=run_timestamp,
         on_spawn=on_spawn,
+        on_proc=on_proc,
     )
 
 
@@ -458,8 +462,21 @@ def delegate_claude_agent(
     allowed_tools: str = DEFAULT_ALLOWED_TOOLS,
     permission_mode: str = DEFAULT_PERMISSION_MODE,
     task_id: str | None = None,
+    background: bool = False,
+    session_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> str:
-    del task_id  # reserved for future correlation; not used yet
+    """Delegate one dev task to the Claude Code CLI.
+
+    Uniform delegation lifecycle: the mode comes ONLY from the explicit
+    ``background`` argument. Omitted/false blocks until the CLI exits and
+    returns the run's result inline. ``background=true`` first checks the
+    session can receive a late completion — failing clearly (starting
+    nothing) when it cannot — and otherwise returns the shared acceptance
+    envelope; the terminal result later re-enters the conversation through
+    the completion rail.
+    """
+    del task_id, session_id, tool_call_id  # reserved for correlation; unused
 
     if not task or not str(task).strip():
         return _make_result(
@@ -488,6 +505,22 @@ def delegate_claude_agent(
                 f"{list(_ALLOWED_PERMISSION_MODES)}, got: {permission_mode!r}"
             ),
         )
+
+    # Uniform lifecycle gate — BEFORE any side effect (the /goal brief
+    # write, the log directory, the subprocess). An unsupported channel is
+    # a hard error, never a silent foreground run the model did not ask
+    # for, and never work that starts and cannot be delivered.
+    if background:
+        from tools.async_delegation import background_delivery_supported
+
+        bg_ok, bg_reason = background_delivery_supported()
+        if not bg_ok:
+            logger.info(
+                "delegate_claude_agent: background=true rejected before "
+                "spawn: %s",
+                bg_reason,
+            )
+            return _make_result(success=False, error=bg_reason)
 
     # Pre-flight /goal rewrite: the child CLI caps /goal conditions at
     # GOAL_CONDITION_MAX_CHARS and never starts an over-limit run, so spill
@@ -558,14 +591,48 @@ def delegate_claude_agent(
         ]
     )
 
+    if background:
+        return _dispatch_claude_background(
+            cmd,
+            workdir=str(workdir_path),
+            clamped_timeout=clamped_timeout,
+            log_dir=log_dir,
+            run_timestamp=run_timestamp,
+            goal_brief_path=goal_brief_path,
+            goal=prompt,
+            model_name=model_name,
+        )
+
+    return _run_claude_agent_sync(
+        cmd,
+        workdir=str(workdir_path),
+        clamped_timeout=clamped_timeout,
+        log_dir=log_dir,
+        run_timestamp=run_timestamp,
+        goal_brief_path=goal_brief_path,
+    )
+
+
+def _run_claude_agent_sync(
+    cmd: List[str],
+    *,
+    workdir: str,
+    clamped_timeout: int,
+    log_dir: Path,
+    run_timestamp: str,
+    goal_brief_path: Optional[str],
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
+) -> str:
+    """Spawn the CLI, wait for it to exit, and return its result inline."""
     try:
         watchdog_error, log_path, log_text, duration, returncode = _run_and_stream(
             cmd,
-            workdir=str(workdir_path),
+            workdir=workdir,
             timeout_seconds=clamped_timeout,
             log_dir=log_dir,
             run_timestamp=run_timestamp,
             on_spawn=_emit_viewer_progress_notice,
+            on_proc=on_proc,
         )
     except Exception as exc:
         logger.error("delegate_claude_agent spawn failed: %s", exc, exc_info=True)
@@ -645,6 +712,166 @@ def delegate_claude_agent(
         error=error,
         **base_fields,
     )
+
+
+def _dispatch_claude_background(
+    cmd: List[str],
+    *,
+    workdir: str,
+    clamped_timeout: int,
+    log_dir: Path,
+    run_timestamp: str,
+    goal_brief_path: Optional[str],
+    goal: str,
+    model_name: str,
+) -> str:
+    """Return the background acceptance envelope, or a clear rejection.
+
+    The subprocess is NOT spawned here: the runner spawns it on the async
+    registry's daemon worker, so a capacity rejection leaves nothing
+    running and nothing to tear down.
+    """
+    from tools.async_delegation import (
+        RESULT_KIND_CLI_AGENT,
+        dispatch_background_delegation,
+    )
+
+    live: Dict[str, subprocess.Popen] = {}
+
+    def _runner() -> Dict[str, Any]:
+        # Runs on the async registry's daemon thread. On /stop or gateway
+        # shutdown, `_signal_runner_interrupt` sets THIS thread's interrupt
+        # bit before `interrupt_fn` fires, so `run_agent_cli`'s cooperative
+        # poll unwinds and kills the process group with no per-tool code.
+        def _on_proc(proc: subprocess.Popen) -> None:
+            live["proc"] = proc
+
+        out = _run_claude_agent_sync(
+            cmd,
+            workdir=workdir,
+            clamped_timeout=clamped_timeout,
+            log_dir=log_dir,
+            run_timestamp=run_timestamp,
+            goal_brief_path=goal_brief_path,
+            on_proc=_on_proc,
+        )
+        payload = json.loads(out)
+        status = "completed" if payload.get("success") else "error"
+        if payload.get("error") in ("interrupted", "timeout"):
+            status = payload["error"]
+        try:
+            from tools.interrupt import is_interrupted
+
+            if is_interrupted():
+                # This thread's interrupt bit is only ever set by
+                # `_signal_runner_interrupt`, so a run that ended because of
+                # a stop request reports `interrupted` even when the direct
+                # process kill won the race against the cooperative poll.
+                status = "interrupted"
+        except Exception:
+            pass
+        # Same vocabulary `_run_single_child` produces, so the shared
+        # completion block renders a claude run exactly like any other
+        # delegation; the run artifacts ride along additively.
+        return {
+            "status": status,
+            "summary": payload.get("final_report") or "",
+            "error": payload.get("error"),
+            "duration_seconds": payload.get("duration_seconds"),
+            "model": model_name or None,
+            "log_path": payload.get("log_path"),
+            "child_session_id": payload.get("session_id"),
+            "cost_usd": payload.get("cost_usd"),
+            "models_used": payload.get("models_used") or [],
+            "warnings": payload.get("warnings") or [],
+            "exit_reason": status if status != "completed" else None,
+        }
+
+    def _interrupt() -> None:
+        # Best-effort direct kill on top of the cooperative thread bit: the
+        # worker may be descheduled inside the spawn/reader handshake.
+        proc = live.get("proc")
+        if proc is None:
+            return
+        try:
+            from tools.agent_cli_runner import _terminate_process
+
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (OSError, ProcessLookupError):
+                pgid = None
+            _terminate_process(proc, pgid)
+        except Exception:
+            logger.debug("claude background interrupt failed", exc_info=True)
+
+    try:
+        from tools.delegate_tool import _get_max_async_children
+        from tools.approval import get_current_session_key
+    except Exception:  # pragma: no cover — both always importable in-tree
+        _get_max_async_children = None
+        get_current_session_key = None
+
+    session_key = ""
+    parent_session_id: Optional[str] = None
+    try:
+        if get_current_session_key is not None:
+            session_key = get_current_session_key(default="")
+        from gateway.session_context import get_session_env
+
+        # The spawning session's durable id routes the completion back to
+        # the right conversation when the platform session key rotates.
+        parent_session_id = get_session_env("HERMES_SESSION_ID", "") or None
+    except Exception:
+        parent_session_id = None
+
+    max_children = _get_max_async_children() if _get_max_async_children else 3
+
+    dispatch = dispatch_background_delegation(
+        tool="delegate_claude_agent",
+        result_kind=RESULT_KIND_CLI_AGENT,
+        goal=goal,
+        goals=[goal],
+        runner=_runner,
+        interrupt_fn=_interrupt,
+        session_key=session_key,
+        parent_session_id=parent_session_id,
+        max_async_children=max_children,
+        model=model_name or None,
+        note=(
+            "The Claude Code run is underway in the background. You and the "
+            "user can keep working; its result re-enters the conversation as "
+            "a new message when the run finishes. Do not wait or poll — just "
+            "continue."
+        ),
+        control_hint=(
+            "The run streams to a JSONL log under the Hermes home directory; "
+            "its path is delivered with the result."
+        ),
+    )
+
+    if dispatch.get("status") != "dispatched":
+        # Capacity unavailable — the runner never started, so the subprocess
+        # was never spawned. Fail clearly rather than silently running inline.
+        logger.info(
+            "delegate_claude_agent: background dispatch rejected (%s); "
+            "no work started.",
+            dispatch.get("error", "rejected"),
+        )
+        return _make_result(
+            success=False,
+            error=(
+                "background=true was rejected and NO WORK WAS STARTED: "
+                + str(
+                    dispatch.get(
+                        "error", "the background delegation pool is at capacity"
+                    )
+                )
+                + " Omit `background` (or pass background=false) to run the "
+                "task in the foreground this turn instead."
+            ),
+        )
+
+    return json.dumps(dispatch, ensure_ascii=False)
 
 
 def _coerce_str(value: Any) -> str:
@@ -732,6 +959,18 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
                 "default": DEFAULT_PERMISSION_MODE,
                 "enum": list(_ALLOWED_PERMISSION_MODES),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Blocking by default: omitted or false runs the CLI to "
+                    "completion and returns its final report inline. Pass "
+                    "true to return a background handle immediately and keep "
+                    "working; the terminal result re-enters the conversation "
+                    "as a new message when the run finishes. The mode depends "
+                    "only on this argument."
+                ),
+                "default": False,
+            },
         },
         "required": ["task", "workdir"],
     },
@@ -747,6 +986,9 @@ def _handle_delegate_claude_agent(args, **kw):
         allowed_tools=args.get("allowed_tools", DEFAULT_ALLOWED_TOOLS),
         permission_mode=args.get("permission_mode", DEFAULT_PERMISSION_MODE),
         task_id=kw.get("task_id"),
+        background=is_truthy_value(args.get("background"), default=False),
+        session_id=kw.get("session_id"),
+        tool_call_id=kw.get("tool_call_id"),
     )
 
 

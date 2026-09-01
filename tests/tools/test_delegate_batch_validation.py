@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch input validation for delegate_task(tasks=[...]).
+"""Batch input validation for delegate_agent(tasks=[...]).
 
 Guards against the model wasting a whole fan-out on malformed batches:
 exact-duplicate goals, placeholder goals ('TODO', 'task N', unexpanded
@@ -17,7 +17,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import delegate_task
+from tools.delegate_tool import delegate_agent
 
 
 def _make_mock_parent(depth=0):
@@ -43,7 +43,7 @@ def _make_mock_parent(depth=0):
 
 
 def _call(tasks):
-    return json.loads(delegate_task(tasks=tasks, parent_agent=_make_mock_parent()))
+    return json.loads(delegate_agent(tasks=tasks, parent_agent=_make_mock_parent()))
 
 
 GOOD_A = "Refactor the login handler to use the new session helper"
@@ -178,7 +178,7 @@ class TestValidBatchStillRuns(unittest.TestCase):
                 "task_index": 0, "status": "completed", "summary": "ok",
                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
             }
-            result = json.loads(delegate_task(goal="test", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="test", parent_agent=parent))
         self.assertNotIn("error", result)
 
 

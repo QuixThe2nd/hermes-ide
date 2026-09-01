@@ -174,7 +174,7 @@ _RUNTIME_CACHE_TTL_SECONDS = 300.0
 
 # Upper bound on concurrent reference-model calls. References are independent
 # advisory calls (no tools, no inter-dependence), so we fan them out the same
-# way delegate_task runs a batch: all in flight at once, results collected when
+# way delegate_agent runs a batch: all in flight at once, results collected when
 # every reference finishes. Presets rarely list more than a handful of
 # references; this cap just protects against a pathologically large preset
 # opening dozens of sockets at once.
@@ -339,7 +339,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     model=...)`` that leaves base_url/api_key/api_mode unresolved and lets the
     auxiliary auto-detector guess. We route the slot's provider through
     ``resolve_runtime_provider`` (the canonical provider→api_mode/base_url/
-    api_key resolver the CLI, gateway, and delegate_task all use), so the slot
+    api_key resolver the CLI, gateway, and delegate_agent all use), so the slot
     gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
     GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
     Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
@@ -517,7 +517,7 @@ def _run_reference(
     Never raises: a failed reference becomes a labelled note so the aggregator
     can still act with partial context. Designed to run inside a thread pool —
     ``call_llm`` is synchronous/blocking, so threads (not asyncio) are the right
-    concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
+    concurrency primitive, mirroring ``delegate_agent``'s batch fan-out.
     """
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
 
@@ -812,7 +812,7 @@ def _run_references_parallel(
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
-    Like ``delegate_task``'s batch mode, every reference is dispatched at once
+    Like ``delegate_agent``'s batch mode, every reference is dispatched at once
     and we block until all of them finish before handing the joined results to
     the aggregator. Output order matches ``reference_models`` so the
     ``Reference {idx}`` labelling stays stable. MoA presets that reference

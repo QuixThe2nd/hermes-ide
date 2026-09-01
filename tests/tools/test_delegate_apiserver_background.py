@@ -1,11 +1,12 @@
-"""delegate_task(background=true) on stateless API-server sessions.
+"""delegate_agent(background=true) on stateless API-server sessions.
 
-Previously async_delivery_supported()=False forced SYNCHRONOUS execution for
-every background dispatch on the API server, blocking the whole turn. Now
-that background completions can wake the originating session via the
-/v1/chat/completions self-post (gateway/wake.py), a session-continuable
-turn (raw session id bound as the api_server chat_id) dispatches async; only
-session-id-less one-shot requests keep the sync fallback.
+async_delivery_supported()=False on the API server does NOT by itself block a
+background dispatch: a session-continuable turn (raw session id bound as the
+api_server chat_id) can be woken via the /v1/chat/completions self-post
+(gateway/wake.py), so it dispatches normally. Only a request with NO bound
+session id has genuinely no channel — under the uniform delegation lifecycle
+that call now FAILS CLEARLY before any child is built instead of silently
+degrading to a synchronous run.
 
 The wake target must be captured from the request-scoped chat_id binding,
 NOT from HERMES_SESSION_ID: constructing a child agent calls
@@ -121,7 +122,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
         async_delivery=False,
     )
 
-    out = dt.delegate_task(
+    out = dt.delegate_agent(
         goal="bg on api_server", context="ctx",
         background=True, parent_agent=_fake_parent(),
     )
@@ -145,10 +146,21 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
-    """No session id to wake → keep the sync fallback (a detached result
-    would never re-enter any conversation)."""
+def test_apiserver_session_without_id_rejects_background(monkeypatch):
+    """No session id to wake → reject up front, starting nothing.
+
+    A detached result could never re-enter any conversation here, so the old
+    silent synchronous fallback handed the model a mode it did not ask for.
+    The uniform lifecycle turns that into a clear error emitted BEFORE any
+    child is built.
+    """
     dt = _patch_delegate(monkeypatch)
+    from tools import async_delegation as ad
+
+    def _no_children(**kw):
+        raise AssertionError("a child must never be built for a rejected call")
+
+    monkeypatch.setattr(dt, "_build_child_agent", _no_children)
     set_session_vars(
         platform="api_server",
         chat_id="",
@@ -157,11 +169,13 @@ def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
         async_delivery=False,
     )
 
-    out = dt.delegate_task(
+    out = dt.delegate_agent(
         goal="one-shot", context="ctx",
         background=True, parent_agent=_fake_parent(),
     )
     parsed = json.loads(out)
-    assert parsed.get("status") != "dispatched", parsed
-    assert "SYNCHRONOUSLY" in parsed.get("note", "")
+    assert parsed.get("error"), parsed
+    assert "NO WORK WAS STARTED" in parsed.get("error", "")
+    assert "background=false" in parsed.get("error", "")
     assert process_registry.completion_queue.empty()
+    assert ad.active_count() == 0

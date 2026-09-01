@@ -103,7 +103,7 @@ class MemoryStore:
     # SQLite permits only one writer at a time. Each MemoryStore instance used
     # to open its own connection guarded by its own RLock, so the several
     # providers that coexist in one process (the main agent plus every
-    # delegate_task subagent) raced as independent WAL writers. Combined with
+    # delegate_agent subagent) raced as independent WAL writers. Combined with
     # writes that were not rolled back on error, one connection could leave an
     # open write transaction that pinned the write lock and made every other
     # connection's write fail with "database is locked" for the full busy

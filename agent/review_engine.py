@@ -1,7 +1,7 @@
 """Shared engine for the /review command — every surface calls this.
 
 /review spawns an independent, full-privilege background subagent (the same
-async delegation rail as ``delegate_task(background=true)``) whose job is to
+async delegation rail as ``delegate_agent(background=true)``) whose job is to
 thoroughly review whatever the recent conversation presented: a PR, a diff,
 code, documentation, or any other work product. The reviewer's result
 re-enters the spawning session as a normal async-delegation completion, so
@@ -12,7 +12,7 @@ base_url/api_key/api_mode in config.yaml) when configured; otherwise it
 inherits the parent agent's credentials — main-model-first, same convention
 as every other auxiliary task. Resolution reuses the delegation credential
 resolver (``tools.delegate_tool._resolve_delegation_credentials``) via the
-internal ``credentials_cfg`` parameter of ``delegate_task`` so native-SDK
+internal ``credentials_cfg`` parameter of ``delegate_agent`` so native-SDK
 providers, api_mode detection, and credential pools all behave identically
 to ``delegation.provider`` pins.
 
@@ -241,7 +241,7 @@ def start_review(
 ) -> Dict[str, Any]:
     """Dispatch the reviewer subagent in the background.
 
-    Returns the parsed ``delegate_task`` dispatch dict (``status:
+    Returns the parsed ``delegate_agent`` dispatch dict (``status:
     "dispatched"`` with a ``delegation_id`` on success, or the synchronous
     result dict on channels that cannot route async completions).
 
@@ -259,9 +259,9 @@ def start_review(
     goal, context = build_review_task(snapshot, user_prompt, loaded_skills)
     credentials_cfg = _load_review_credentials_cfg()
 
-    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool import delegate_agent
 
-    raw = delegate_task(
+    raw = delegate_agent(
         goal=goal,
         context=context,
         background=True,

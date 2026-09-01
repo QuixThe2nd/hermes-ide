@@ -659,9 +659,9 @@ delegation:
   provider: "openrouter"                    # provider for subagents
 ```
 
-Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
+Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_agent` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
 
-You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
+You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_agent`, which automatically picks up the delegation config.
 
 For one-off model switches without delegation, use `/model` in the CLI:
 

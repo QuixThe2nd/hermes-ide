@@ -134,7 +134,7 @@ breaks reading the dossier).
 | `$PDD drop <subject> [--filed]` | **The one-shot legal lever**: one CA DROP request deletes from ALL registered brokers; `--filed` records it |
 | `$PDD plan <subject> [--priority crucial]` | Per-broker tier + method + `search_vectors` + the exact fields to disclose |
 | `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
-| `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs; batches of 5 - 8+ time out) |
+| `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_agent` subagents (auto for large runs; batches of 5 - 8+ time out) |
 | `$PDD record <subject> <broker> <state> [--found true] [--evidence JSON] [--disclosed F --channel C] [--reason "..."]` | Update the ledger (validated state machine); **auto-stamps `next_recheck_at`** |
 | `$PDD show <subject> <broker>` | Read back a case's recorded state + evidence + disclosure log (so the parent re-verifies a subagent's `found` without re-deriving the listing URL) |
 | `$PDD send-email <subject> <broker> --listing <url> [--kind ccpa_indirect ...]` | Render + record the request (recipient locked to the broker's own address). **browser** mode returns a `compose` payload to send via webmail (no password); **programmatic** mode SMTP-sends |
@@ -156,7 +156,7 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_extract`
   probes directly** - most people-search sites render name/phone/address results as static HTML that
   `web_extract` reads in seconds. Escalate to `browser_*` only for the few JS-only sites, and to
-  `delegate_task` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
+  `delegate_agent` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
   disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
   heavy; the ledger writes that survived came at 10x the cost of parent `web_extract`. A `blocked`
@@ -234,7 +234,7 @@ recording `found` and before any deletion.
    accumulates in `q.human_digest`. In `autonomy=full`, execute actions without pausing; honor
    `confirm_first` in `assisted` mode.
 4. **Scanning (when `next` says so).** For `fanout_scan`: run `$PDD fanout <subject>` and **spawn one
-   `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
+   `delegate_agent` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.
    Either way, each broker gets **every** `search_vectors` entry via the `references/methods.md`
    ladder (`web_extract` → `site:` probe → `browser_navigate` → `scrapling`), a 404 is INCONCLUSIVE

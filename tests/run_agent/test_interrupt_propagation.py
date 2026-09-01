@@ -1,6 +1,6 @@
 """Test interrupt propagation from parent to child agents.
 
-Reproduces the CLI scenario: user sends a message while delegate_task is
+Reproduces the CLI scenario: user sends a message while delegate_agent is
 running, main thread calls parent.interrupt(), child should stop.
 """
 

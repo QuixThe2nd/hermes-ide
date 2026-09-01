@@ -8249,7 +8249,7 @@ def refresh_agent_mcp_tools(
             # leave the live snapshot untouched (no churn). Content-aware
             # callers (the compaction boundary) also diff the serialized
             # bytes: dynamic schemas (image_generate capabilities,
-            # delegate_task limits, execute_code stubs) change CONTENT
+            # delegate_agent limits, execute_code stubs) change CONTENT
             # under stable names when config changes between compactions.
             content_changed = False
             if content_aware:

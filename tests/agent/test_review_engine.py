@@ -2,7 +2,7 @@
 
 Covers conversation snapshotting, reviewer-task composition,
 auxiliary.review credential resolution, background dispatch through
-delegate_task (including the internal per-call ``credentials_cfg``
+delegate_agent (including the internal per-call ``credentials_cfg``
 override), and the shared dispatch-note formatter.
 """
 
@@ -147,7 +147,7 @@ def test_load_review_credentials_cfg_missing_section(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# delegate_task credentials_cfg override (the internal /review routing hook)
+# delegate_agent credentials_cfg override (the internal /review routing hook)
 # ---------------------------------------------------------------------------
 
 def _fake_parent():
@@ -160,7 +160,7 @@ def _fake_parent():
     return parent
 
 
-def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
+def test_delegate_agent_credentials_cfg_overrides_delegation_config(monkeypatch):
     """The per-call credentials_cfg dict must reach the credential resolver
     instead of the global delegation config section."""
     import tools.delegate_tool as dt
@@ -188,7 +188,7 @@ def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
     )
 
     override = {"provider": "openrouter", "model": "review-model-x"}
-    out = dt.delegate_task(
+    out = dt.delegate_agent(
         goal="review this",
         background=True,
         parent_agent=_fake_parent(),

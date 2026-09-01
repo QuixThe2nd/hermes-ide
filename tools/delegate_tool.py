@@ -49,7 +49,7 @@ from utils import base_url_hostname, is_truthy_value
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
-        "delegate_task",  # no recursive delegation
+        "delegate_agent",  # no recursive delegation
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
@@ -106,7 +106,7 @@ def _get_subagent_approval_callback():
     """Return the callback to install into subagent worker threads.
 
     Config key: delegation.subagent_auto_approve (bool, default False).
-    Reads via the same _load_config() path as the rest of delegate_task so
+    Reads via the same _load_config() path as the rest of delegate_agent so
     priority is config.yaml > (no env override for this knob) > default.
     """
     cfg = _load_config()
@@ -124,7 +124,7 @@ _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
 # so without this flag a config of max_concurrent_children>10 spams the log on
-# every turn / agent spawn even when delegate_task is never called.
+# every turn / agent spawn even when delegate_agent is never called.
 _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
@@ -140,7 +140,7 @@ _MIN_SPAWN_DEPTH = 1
 #
 # Consumed by the TUI observability layer (overlay/control surface) and the
 # gateway RPCs `delegation.pause`, `delegation.status`, `subagent.interrupt`.
-# Kept module-level so they span every delegate_task invocation in the
+# Kept module-level so they span every delegate_agent invocation in the
 # process, including nested orchestrator -> worker chains.
 # ---------------------------------------------------------------------------
 
@@ -249,9 +249,9 @@ def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]
 
 
 def set_spawn_paused(paused: bool) -> bool:
-    """Globally block/unblock new delegate_task spawns.
+    """Globally block/unblock new delegate_agent spawns.
 
-    Active children keep running; only NEW calls to delegate_task fail fast
+    Active children keep running; only NEW calls to delegate_agent fail fast
     with a "spawning paused" error until unblocked.  Returns the new state.
     """
     global _spawn_paused
@@ -455,7 +455,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
     return False
 
 
-# Model-facing control actions accepted by delegate_task(action=...).
+# Model-facing control actions accepted by delegate_agent(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
 _CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
 
@@ -526,7 +526,7 @@ def _handle_control_action(
     message: Optional[str],
     parent_agent: Any,
 ) -> str:
-    """Synchronous control plane for delegate_task: list/steer/stop.
+    """Synchronous control plane for delegate_agent: list/steer/stop.
 
     Runs in-turn (never backgrounded) and only over subagents descended from
     *parent_agent* — the same registry the TUI overlay drives, but scoped so
@@ -922,7 +922,7 @@ def _normalize_role(r: Optional[str]) -> str:
     r_norm = str(r).strip().lower()
     if r_norm in {"leaf", "orchestrator"}:
         return r_norm
-    logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
+    logger.warning("Unknown delegate_agent role=%r, coercing to 'leaf'", r)
     return "leaf"
 
 
@@ -932,7 +932,7 @@ def _get_max_concurrent_children() -> int:
 
     Users can raise this as high as they want; only the floor (1) is enforced.
 
-    Uses the same ``_load_config()`` path that the rest of ``delegate_task``
+    Uses the same ``_load_config()`` path that the rest of ``delegate_agent``
     uses, keeping config priority consistent (config.yaml > env > default).
     """
     cfg = _load_config()
@@ -1329,16 +1329,16 @@ def _build_child_system_prompt(
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
             "because they would be at the depth floor — you cannot pass "
-            "role='orchestrator' to your own delegate_task calls."
+            "role='orchestrator' to your own delegate_agent calls."
             if child_depth + 1 >= max_spawn_depth
             else "Your own children can themselves be orchestrators or leaves, "
-            "depending on the `role` you pass to delegate_task. Default is "
+            "depending on the `role` you pass to delegate_agent. Default is "
             "'leaf'; pass role='orchestrator' explicitly when a child "
             "needs to further decompose its work."
         )
         parts.append(
             "\n## Subagent Spawning (Orchestrator Role)\n"
-            "You have access to the `delegate_task` tool and CAN spawn "
+            "You have access to the `delegate_agent` tool and CAN spawn "
             "your own subagents to parallelize independent work.\n\n"
             "WHEN to delegate:\n"
             "- The goal decomposes into 2+ independent subtasks that can "
@@ -1419,7 +1419,7 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     """
     blocked_names = set(DELEGATE_BLOCKED_TOOLS)
     if role == "orchestrator":
-        blocked_names.discard("delegate_task")
+        blocked_names.discard("delegate_agent")
     return sorted(
         name
         for name, defn in TOOLSETS.items()
@@ -1831,7 +1831,7 @@ def _build_child_agent(
     else:
         inherited_disabled = []
     if effective_role == "orchestrator":
-        # Role grants delegate_task explicitly, matching the unconditional
+        # Role grants delegate_agent explicitly, matching the unconditional
         # delegation toolset re-add below.
         inherited_disabled = [
             name for name in inherited_disabled if name != "delegation"
@@ -1945,7 +1945,7 @@ def _build_child_agent(
     # honoring it. An explicitly pinned transport that cannot run must fail
     # the spawn loudly (#80450) — silently falling back to the default
     # transport would run the child somewhere the user explicitly routed it
-    # away from. Normally unreachable via delegate_task, which pre-validates
+    # away from. Normally unreachable via delegate_agent, which pre-validates
     # the command in _resolve_delegation_credentials.
     if override_acp_command:
         import shutil as _shutil
@@ -2654,7 +2654,7 @@ def _run_single_child(
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
-    # Without this, the parent's _last_activity_ts freezes when delegate_task
+    # Without this, the parent's _last_activity_ts freezes when delegate_agent
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
     # Stale detection: track the child's (tool, iteration, activity_ts) across
@@ -2675,7 +2675,7 @@ def _run_single_child(
             if not touch:
                 continue
             # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
+            desc = f"delegate_agent: subagent {task_index} working"
             try:
                 child_summary = child.get_activity_summary()
                 child_tool = child_summary.get("current_tool")
@@ -2729,14 +2729,14 @@ def _run_single_child(
 
                 if child_tool:
                     desc = (
-                        f"delegate_task: subagent running {child_tool} "
+                        f"delegate_agent: subagent running {child_tool} "
                         f"(iteration {child_iter}/{child_max})"
                     )
                 else:
                     child_desc = child_summary.get("last_activity_desc", "")
                     if child_desc:
                         desc = (
-                            f"delegate_task: subagent {child_desc} "
+                            f"delegate_agent: subagent {child_desc} "
                             f"(iteration {child_iter}/{child_max})"
                         )
             except Exception:
@@ -3734,7 +3734,7 @@ def _run_child_lifecycle(
     child=None,
     parent_agent=None,
 ) -> Dict[str, Any]:
-    """Run one child and apply the same host lifecycle used by delegate_task."""
+    """Run one child and apply the same host lifecycle used by delegate_agent."""
     result = _run_single_child(task_index, goal, child, parent_agent)
     result.setdefault("task_index", task_index)
     task = {"goal": goal}
@@ -3818,7 +3818,7 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
             return (
                 f"Task {i} goal contains an unexpanded template marker "
                 f"({marker.group(0)!r}). Substitute the real value before "
-                "calling delegate_task — subagents cannot resolve "
+                "calling delegate_agent — subagents cannot resolve "
                 "placeholders."
             )
         if len(goal) < _MIN_BATCH_GOAL_LEN and len(task_list) >= 2:
@@ -3835,7 +3835,7 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def delegate_task(
+def delegate_agent(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
@@ -3871,7 +3871,7 @@ def delegate_task(
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
-        return tool_error("delegate_task requires a parent agent context.")
+        return tool_error("delegate_agent requires a parent agent context.")
 
     # ── Control plane: list/steer/stop run synchronously and return here.
     # They never spawn, so they bypass the pause gate, depth limit, and the
@@ -3905,7 +3905,26 @@ def delegate_task(
     # carrying the consolidated per-task results. It re-enters the conversation
     # as one message once ALL children finish — the chat is not blocked while
     # they run.
+    #
+    # Uniform delegation lifecycle: the mode comes ONLY from this explicit
+    # argument. Never nesting depth, session type, platform, or delivery
+    # capability — omitted/false blocks until the result is back inline.
     background = is_truthy_value(background, default=False) if background is not None else False
+
+    # Fail clearly BEFORE any child is built when background delivery has no
+    # channel. A session that can never receive a detached completion must not
+    # be handed a handle it can never collect, and must not silently fall back
+    # to a foreground run the model did not ask for.
+    if background:
+        from tools.async_delegation import background_delivery_supported
+
+        _bg_ok, _bg_reason = background_delivery_supported()
+        if not _bg_ok:
+            logger.info(
+                "delegate_agent: background=true rejected before spawn: %s",
+                _bg_reason,
+            )
+            return tool_error(_bg_reason)
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -3930,7 +3949,7 @@ def delegate_task(
     # cached tool schema or a stale provider.
     if max_iterations is not None and max_iterations != default_max_iter:
         logger.debug(
-            "delegate_task: ignoring caller-supplied max_iterations=%s; "
+            "delegate_agent: ignoring caller-supplied max_iterations=%s; "
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
@@ -3975,7 +3994,7 @@ def delegate_task(
                 f"Too many tasks: {len(tasks)} provided, but "
                 f"max_concurrent_children is {max_children}. "
                 f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
+                f"delegate_agent calls, or increase "
                 f"delegation.max_concurrent_children in config.yaml."
             )
         task_list = tasks
@@ -4351,56 +4370,21 @@ def delegate_task(
         from tools.async_delegation import dispatch_async_delegation_batch
         from tools.approval import get_current_session_key
 
-        # Finite sessions cannot route a detached subagent result back to the
-        # agent after their turn/process ends. This includes stateless HTTP
-        # requests (#10760) and one-shot Kanban workers (#63169). Fall back to
-        # SYNCHRONOUS execution so the result returns in this same turn instead
-        # of handing out a handle with no durable consumer. Mirrors the
-        # pool-at-capacity inline fallback below.
-        try:
-            from gateway.session_context import async_delivery_supported
-            _async_ok = async_delivery_supported()
-        except Exception:
-            _async_ok = True
-
-        _wake_sid = ""
-        if not _async_ok:
-            # The adapter itself cannot push, but if a raw session id is
-            # bound (the API server always binds one — see
-            # ApiServerAdapter._bind_api_server_session), gateway.wake can
-            # still reach the session by self-POSTing /v1/chat/completions
-            # with that id in X-Hermes-Session-Id once the batch completes.
-            # Only fall back to forced-sync execution when there is truly no
-            # session id to wake. Uses the origin captured before child
-            # construction (see _origin_wake_sid above) — reading
-            # HERMES_SESSION_ID here would return the subagent's internal id.
-            _wake_sid = _origin_wake_sid
-            if _wake_sid:
-                logger.info(
-                    "delegate_task: async delivery unsupported on this "
-                    "session, but a session id is bound (%s) — dispatching "
-                    "in the background and waking the session via self-post "
-                    "when it completes instead of forcing synchronous "
-                    "execution.",
-                    _wake_sid,
-                )
-                _async_ok = True
-
-        if not _async_ok:
+        # Capability was already gated at the top of this function: a session
+        # with no background delivery channel failed loudly BEFORE any child
+        # was built. The wake target for a stateless HTTP session (the
+        # api-server self-post escape) is the origin captured before child
+        # construction — reading HERMES_SESSION_ID here would return the
+        # subagent's internal id (see _origin_wake_sid above).
+        _wake_sid = _origin_wake_sid
+        if _wake_sid:
             logger.info(
-                "delegate_task: async delivery unsupported on this session "
-                "runtime; running the batch synchronously instead."
+                "delegate_agent: async delivery unsupported on this session, "
+                "but a session id is bound (%s) — dispatching in the "
+                "background and waking the session via self-post when it "
+                "completes.",
+                _wake_sid,
             )
-            _sync_result = _execute_and_aggregate()
-            if isinstance(_sync_result, dict):
-                _sync_result["note"] = (
-                    "background=true is not available in this session — it cannot "
-                    "receive a detached subagent result after the turn ends (a "
-                    "one-shot runner such as `hermes -z`, a cron job, a Kanban "
-                    "worker, or a stateless HTTP endpoint). The subagent(s) ran "
-                    "SYNCHRONOUSLY and the result is included above."
-                )
-            return json.dumps(_sync_result, ensure_ascii=False)
 
         _session_key = get_current_session_key(default="")
         try:
@@ -4554,7 +4538,7 @@ def delegate_task(
                 payload["subagent_ids"] = _sids
                 payload["control_hint"] = (
                     "While a child runs you can orchestrate it live with this "
-                    "same tool: delegate_task(action='list') to see live "
+                    "same tool: delegate_agent(action='list') to see live "
                     "children, action='steer' with subagent_id + message to "
                     "redirect one, action='stop' with subagent_id to end one "
                     "early."
@@ -4569,24 +4553,39 @@ def delegate_task(
                 )
             return json.dumps(payload, ensure_ascii=False)
 
-        # Pool at capacity / schedule failure — children are still attached
-        # (we detach above only on the parent list, but the async unit was
-        # never accepted, so re-attaching isn't needed: we just run inline).
+        # Pool at capacity / schedule failure — the async unit was never
+        # accepted, so NO work is running. Fail clearly rather than silently
+        # executing inline: the model asked for a handle and would otherwise
+        # wait for a completion event that is never coming. The children built
+        # above are torn down here (they were detached from the parent's
+        # interrupt-propagation list when the async unit was accepted, so
+        # re-attach first).
         logger.info(
-            "delegate_task: async pool at capacity (%s); running the whole "
-            "batch synchronously instead.",
+            "delegate_agent: background dispatch rejected (%s); no work started.",
             dispatch.get("error", "rejected"),
         )
-        _cap_result = _execute_and_aggregate()
-        if isinstance(_cap_result, dict):
-            _cap_result["note"] = (
-                "The background delegation pool was at capacity "
-                "(delegation.max_concurrent_children), so the subagent(s) ran "
-                "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
-                "more concurrent background delegations."
-            )
-        return json.dumps(_cap_result, ensure_ascii=False)
+        for _c in _child_agents:
+            try:
+                request_hard_interrupt(_c, "Background delegation rejected")
+            except Exception:
+                pass
+            if hasattr(parent_agent, "_active_children"):
+                _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+                try:
+                    if _ac_lock:
+                        with _ac_lock:
+                            parent_agent._active_children.append(_c)
+                    else:
+                        parent_agent._active_children.append(_c)
+                except Exception:
+                    pass
+        return tool_error(
+            "background=true was rejected and NO work was started: "
+            + str(dispatch.get("error", "the background delegation pool is at "
+                                       "capacity"))
+            + " Omit `background` (or pass background=false) to run the task "
+            "in the foreground this turn instead."
+        )
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
@@ -4981,7 +4980,7 @@ def _load_config() -> dict:
 
 
 def _build_top_level_description() -> str:
-    """Compose the delegate_task tool description.
+    """Compose the delegate_agent tool description.
 
     Deliberately carries ONLY guidance that exists nowhere else in the
     schema. Batch/concurrency limits live in the 'tasks' parameter
@@ -5015,7 +5014,7 @@ def _build_top_level_description() -> str:
         )
     else:
         restrictions_rule = (
-            "- Children cannot call delegate_task, clarify, memory, or "
+            "- Children cannot call delegate_agent, clarify, memory, or "
             "cronjob.\n"
         )
 
@@ -5024,12 +5023,14 @@ def _build_top_level_description() -> str:
         "terminal session, and toolset, and only its final summary returns to "
         "you. Pass every task in `tasks` — one entry spawns one subagent, "
         "several run in parallel (limit in the tasks description).\n\n"
-        "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message, "
-        "results in task order) re-enters the conversation on its own. Do NOT "
-        "wait or poll; continue other work. While children run, `action` "
-        "(list/steer/stop) controls them live — steer when a transcript shows "
-        "a child drifting.\n\n"
+        "Blocking by default: the call returns once every child has finished, "
+        "with the consolidated results (in task order) inline. Pass "
+        "background=true to dispatch and keep working instead — dispatch then "
+        "returns immediately with live transcript paths and the completed "
+        "result re-enters the conversation as a new message on its own. In "
+        "that mode do NOT wait or poll. In both modes `action` "
+        "(list/steer/stop) controls running children live — steer when a "
+        "transcript shows a child drifting.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
@@ -5112,7 +5113,7 @@ def _build_dynamic_schema_overrides() -> dict:
 
 
 DELEGATE_TASK_SCHEMA = {
-    "name": "delegate_task",
+    "name": "delegate_agent",
     # NOTE: description / tasks.description / role.description are placeholder
     # values. The real text is generated per get_definitions() call by
     # _build_dynamic_schema_overrides() (registered via
@@ -5174,16 +5175,29 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 # No maxItems — the runtime limit is configurable via
                 # delegation.max_concurrent_children (default 3) and
-                # enforced with a clear error in delegate_task().
+                # enforced with a clear error in delegate_agent().
                 # NOTE: the handler also accepts a per-task `role` — legacy,
                 # ignored: delegation capability is depth-derived, not
                 # caller-declared. Unadvertised on purpose; do not re-add.
                 "description": "(rebuilt at get_definitions() time)",
             },
-            # NOTE: the handler also accepts `background` (bool) — DEPRECATED,
-            # ignored: top-level delegations always run in the background.
-            # Deliberately unadvertised (old transcripts/callers only); do not
-            # re-add to the schema.
+            "background": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Run this delegation in the background. Default false: "
+                    "the call BLOCKS until every child has finished and "
+                    "returns the consolidated results inline in this turn "
+                    "(use this whenever you need the results to continue "
+                    "working). background=true returns immediately with a "
+                    "handle; the results re-enter the conversation as a new "
+                    "message when they finish. Rejected up front — with no "
+                    "work started — on sessions that cannot receive a late "
+                    "completion (one-shot `hermes -z` runs, cron jobs, Kanban "
+                    "workers, stateless HTTP endpoints); there, omit it and "
+                    "work in the foreground."
+                ),
+            },
             "action": {
                 "type": "string",
                 "enum": ["spawn", "list", "steer", "stop"],
@@ -5230,18 +5244,13 @@ from tools.registry import registry, tool_error
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback).
 
-    Delegations from the top-level agent always run in the background — the
-    model does not choose. This applies to both a single task and a fan-out
-    batch (the whole batch is one async unit that joins on all children and
-    returns one consolidated result). The one
-    exception is a delegation from an orchestrator subagent (depth > 0), which
-    needs its workers' results within its own turn. The live path is
-    ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
-    case the intercept is bypassed. Direct Python callers of ``delegate_task``
-    keep the historical synchronous default.
+    Uniform delegation lifecycle: the mode is decided ONLY by the explicit
+    ``background`` argument, exactly as the model wrote it. No depth, session,
+    platform, or capability inference. The live path is
+    ``run_agent._dispatch_delegate_agent``; this mirrors it for the rare case
+    the intercept is bypassed.
     """
-    is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
-    return not is_subagent
+    return is_truthy_value(args.get("background"), default=False)
 
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
@@ -5266,11 +5275,14 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return stripped_tasks if changed else tasks
 
 
-registry.register(
-    name="delegate_task",
-    toolset="delegation",
-    schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
+def _delegate_agent_handler(args: dict, **kw):
+    """Shared dispatch body for ``delegate_agent`` and its legacy alias.
+
+    The alias forwards ``background`` verbatim, so the mode is decided solely
+    by the argument for BOTH names — an aliased dispatch can never reintroduce
+    context-dependent semantics.
+    """
+    return delegate_agent(
         goal=args.get("goal"),
         context=args.get("context"),
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
@@ -5282,8 +5294,41 @@ registry.register(
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
-    ),
+    )
+
+
+registry.register(
+    name="delegate_agent",
+    toolset="delegation",
+    schema=DELEGATE_TASK_SCHEMA,
+    handler=_delegate_agent_handler,
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
+
+# ── Legacy alias ────────────────────────────────────────────────────────────
+# ``delegate_task`` was renamed to ``delegate_agent`` (uniform delegation
+# lifecycle). The old name stays DISPATCHABLE forever — replayed transcripts,
+# cached tool schemas, user prompts, and third-party scripts still emit it —
+# but is hidden (advertise=False) so it costs no schema tokens. It forwards
+# every argument, including ``background``, verbatim.
+_LEGACY_ALIAS_DESCRIPTION = (
+    "Deprecated alias for delegate_agent. Kept dispatchable so old "
+    "transcripts and scripts keep working; new calls should use "
+    "delegate_agent."
+)
+
+registry.register(
+    name="delegate_task",
+    toolset="delegation",
+    schema={"name": "delegate_task", "description": _LEGACY_ALIAS_DESCRIPTION,
+            "parameters": {"type": "object", "properties": {}}},
+    handler=_delegate_agent_handler,
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+    advertise=False,
+)
+
+# Back-compat module alias for direct Python callers of the old name.
+delegate_task = delegate_agent

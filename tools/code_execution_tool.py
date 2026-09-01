@@ -335,7 +335,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             ", ".join(sorted(_dropped_hermes)),
         )
 
-    # delegate_task children are marked with a ContextVar, not os.environ, while
+    # delegate_agent children are marked with a ContextVar, not os.environ, while
     # the execute_code sandbox crosses a process boundary. Bridge that context
     # into the child env and strip dispatcher-owned Kanban variables after the
     # normal secret/passthrough scrub so an explicit passthrough cannot re-grant

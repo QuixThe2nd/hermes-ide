@@ -1,6 +1,6 @@
 """Tests for subagent summary budgeting (PR #9126).
 
-delegate_task caps subagent summaries against the parent's remaining context
+delegate_agent caps subagent summaries against the parent's remaining context
 headroom (split across the batch) before they enter the parent's context, and
 spills the full text to disk so nothing is lost. This guards the
 compression/429 death spiral that batch fan-out could trigger by returning N

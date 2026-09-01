@@ -1,4 +1,4 @@
-"""Structured-output schema helpers for delegate_task (T1-24).
+"""Structured-output schema helpers for delegate_agent (T1-24).
 
 Optional per-task ``output_schema`` (a JSON Schema object): the child is
 told about the contract via an OUTPUT CONTRACT block appended to its

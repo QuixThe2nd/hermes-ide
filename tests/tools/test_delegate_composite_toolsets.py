@@ -1,4 +1,4 @@
-"""Tests for composite toolset expansion in delegate_task intersection."""
+"""Tests for composite toolset expansion in delegate_agent intersection."""
 
 import unittest
 

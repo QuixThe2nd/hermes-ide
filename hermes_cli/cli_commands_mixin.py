@@ -538,7 +538,7 @@ class CLICommandsMixin:
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
-        # Background subagents dispatched via delegate_task(background=true)
+        # Background subagents dispatched via delegate_agent(background=true)
         # live in their own registry, not the process registry.
         try:
             from tools.async_delegation import active_count, interrupt_all
@@ -577,7 +577,7 @@ class CLICommandsMixin:
         if finished:
             _cprint(f"  Recently finished: {len(finished)}")
 
-        # Background (async) delegations — delegate_task(background=true)
+        # Background (async) delegations — delegate_agent(background=true)
         try:
             from tools.async_delegation import list_async_delegations
             delegations = list_async_delegations()

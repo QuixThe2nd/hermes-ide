@@ -3913,7 +3913,7 @@ class AIAgent:
 
         # Never kill a tool merely to deliver conversational guidance. The
         # existing steer drain puts it on the final tool result before the next
-        # model decision, including delegate_task children.
+        # model decision, including delegate_agent children.
         if getattr(self, "_executing_tools", False):
             return self.steer(cleaned)
 
@@ -5492,31 +5492,35 @@ class AIAgent:
         )
 
     @staticmethod
-    def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Truncate excess delegate_task calls to max_concurrent_children.
+    def _cap_delegate_agent_calls(tool_calls: list) -> list:
+        """Truncate excess delegate_agent calls to max_concurrent_children.
 
         The delegate_tool caps the task list inside a single call, but the
-        model can emit multiple separate delegate_task tool_calls in one
+        model can emit multiple separate delegate_agent tool_calls in one
         turn.  This truncates the excess, preserving all non-delegate calls.
 
         Returns the original list if no truncation was needed.
         """
         from tools.delegate_tool import _get_max_concurrent_children
         max_children = _get_max_concurrent_children()
-        delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
+        # Both spellings count: a legacy ``delegate_task`` call is the same spawn.
+        delegate_count = sum(
+            1 for tc in tool_calls
+            if tc.function.name in ("delegate_agent", "delegate_task")
+        )
         if delegate_count <= max_children:
             return tool_calls
         kept_delegates = 0
         truncated = []
         for tc in tool_calls:
-            if tc.function.name == "delegate_task":
+            if tc.function.name in ("delegate_agent", "delegate_task"):
                 if kept_delegates < max_children:
                     truncated.append(tc)
                     kept_delegates += 1
             else:
                 truncated.append(tc)
         logger.warning(
-            "Truncated %d excess delegate_task call(s) to enforce "
+            "Truncated %d excess delegate_agent call(s) to enforce "
             "max_concurrent_children=%d limit",
             delegate_count - max_children, max_children,
         )
@@ -8990,35 +8994,29 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
-    def _dispatch_delegate_task(self, function_args: dict) -> str:
-        """Single call site for delegate_task dispatch.
+    def _dispatch_delegate_agent(self, function_args: dict) -> str:
+        """Single call site for delegate_agent dispatch.
 
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
         from tools.delegate_tool import (
             _strip_model_hidden_task_fields,
-            delegate_task as _delegate_task,
+            delegate_agent as _delegate_agent,
         )
-        # Delegations from the top-level MODEL always run in the background —
-        # the model does not get to choose. delegate_task returns immediately
-        # with a handle (one per task) and each subagent's result re-enters the
-        # conversation as a new message when it finishes. This applies to BOTH
-        # a single task and a fan-out batch (each task becomes its own
-        # independent background subagent). The one exception:
-        #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
-        #     synchronous: the orchestrator needs its workers' results within
-        #     its own turn to compose a summary, and a subagent doesn't own the
-        #     gateway session the async result would route back to.
-        # The schema-level `background` param is intentionally ignored here.
-        _is_subagent = getattr(self, "_delegate_depth", 0) > 0
-        return _delegate_task(
+        # Uniform delegation lifecycle: the mode comes ONLY from the explicit
+        # `background` argument, exactly as the model wrote it. No nesting,
+        # session, platform, or capability inference — omitted/false blocks
+        # until the result is back inline; true dispatches to the background
+        # rail (and fails loudly, before starting work, when the session has
+        # no channel for a late completion).
+        return _delegate_agent(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
-            background=(not _is_subagent),
+            background=function_args.get("background", False),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"),
             message=function_args.get("message"),

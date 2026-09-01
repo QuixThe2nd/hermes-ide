@@ -87,7 +87,8 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return null
   }
 
-  if (props.toolName === 'delegate_task') {
+  // `delegate_task` is the legacy spelling present in older transcripts.
+  if (props.toolName === 'delegate_agent' || props.toolName === 'delegate_task') {
     return <DelegateToolPart {...props} />
   }
 

@@ -305,7 +305,7 @@ def _read_background_work_count() -> int:
     """Count live background/subagent work that ``active_agents`` does NOT include.
 
     ``hermes.gateway.active_agents`` counts foreground turns + in-flight cron
-    jobs + API runs, but deliberately excludes backgrounded ``delegate_task``
+    jobs + API runs, but deliberately excludes backgrounded ``delegate_agent``
     subagents, ``terminal(background=true)`` processes, kanban workers, and the
     runner's own background tasks (they are tracked only for the scale-to-zero
     suspend guard, ``_scale_to_zero_has_live_background_work``). Without this
@@ -338,7 +338,7 @@ def _read_background_delegations_count() -> int:
     """Count live async delegation UNITS (dispatch/pool slots).
 
     Complements ``_read_background_work_count`` (which is task-granular): this
-    counts each ``delegate_task`` dispatch as ONE regardless of fan-out width,
+    counts each ``delegate_agent`` dispatch as ONE regardless of fan-out width,
     matching the async pool's capacity accounting (a batch = one slot). Together
     the two metrics let an operator see both slot pressure
     (``background_delegations``, alert vs ``max_concurrent_children``) and real

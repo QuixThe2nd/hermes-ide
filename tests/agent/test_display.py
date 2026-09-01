@@ -91,9 +91,9 @@ class TestBuildToolPreview:
 
 
 
-    def test_delegate_task_batch_preview_respects_max_len(self):
+    def test_delegate_agent_batch_preview_respects_max_len(self):
         result = build_tool_preview(
-            "delegate_task",
+            "delegate_agent",
             {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
             max_len=30,
         )

@@ -1,7 +1,7 @@
 """End-to-end test simulating CLI interrupt during subagent execution.
 
 Reproduces the exact scenario:
-1. Parent agent calls delegate_task
+1. Parent agent calls delegate_agent
 2. Child agent is running (simulated with a slow tool)
 3. User "types a message" (simulated by calling parent.interrupt from another thread)
 4. Child should detect the interrupt and stop
@@ -28,7 +28,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         set_interrupt(False)
 
     def test_full_delegate_interrupt_flow(self):
-        """Full integration: parent runs delegate_task, main thread interrupts."""
+        """Full integration: parent runs delegate_agent, main thread interrupts."""
         from run_agent import AIAgent
 
         interrupt_detected = threading.Event()

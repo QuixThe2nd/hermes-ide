@@ -85,7 +85,7 @@ class TestRunAsyncLoopLifecycle:
 
 
 class TestRunAsyncWorkerThread:
-    """Verify worker threads get persistent per-thread loops (delegate_task fix)."""
+    """Verify worker threads get persistent per-thread loops (delegate_agent fix)."""
 
     def test_worker_thread_loop_not_closed(self):
         """A worker thread's loop must stay open after _run_async returns,

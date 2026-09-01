@@ -758,7 +758,7 @@ class TestLegacyRotationDiscovery:
 
 
 class TestDelegationExclusion:
-    """Delegation children (delegate_task) must STAY excluded — their content
+    """Delegation children (delegate_agent) must STAY excluded — their content
     is still visible to the parent agent. parent_session_id is set but the
     parent does NOT have end_reason='compression'."""
 
@@ -1037,7 +1037,7 @@ class TestNewResetLineageDiscovery:
         assert "s_cli_old" in [r["session_id"] for r in result["results"]]
 
     def test_live_delegation_child_still_excluded(self, db):
-        """Unended parent+child (delegate_task) must stay hidden."""
+        """Unended parent+child (delegate_agent) must stay hidden."""
         db.create_session("s_parent", source="cli")
         db.append_message(
             "s_parent", role="user",

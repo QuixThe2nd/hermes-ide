@@ -557,7 +557,7 @@ def _looks_like_test_tempdir(path: str) -> bool:
 def _build_hermes_tools_mcp_entry() -> dict:
     """Build the codex stdio-transport entry that launches Hermes' own
     tool surface as an MCP server. Codex's subprocess will call back into
-    this for browser/web/delegate_task/vision/memory/skills tools.
+    this for browser/web/delegate_agent/vision/memory/skills tools.
 
     The command runs the worktree's Python via the current sys.executable
     so a hermes installed under /opt/, /usr/local/, or a venv all work.
@@ -599,7 +599,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
     }
     if env:
         out["env"] = env
-    # Generous timeouts — browser_navigate or delegate_task can take a
+    # Generous timeouts — browser_navigate or delegate_agent can take a
     # while; we don't want codex's MCP client to give up too early.
     out["startup_timeout_sec"] = 30.0
     out["tool_timeout_sec"] = 600.0
@@ -636,7 +636,7 @@ def migrate(
             to leave permissions unset and let codex use its compiled-in
             default (which is read-only).
         expose_hermes_tools: when True (default), register Hermes' own
-            tool surface (web_search, browser_*, delegate_task, vision,
+            tool surface (web_search, browser_*, delegate_agent, vision,
             memory, skills, etc.) as an MCP server in ~/.codex/config.toml
             so the codex subprocess can call back into Hermes for tools
             codex doesn't have built in. Set False to opt out.
@@ -689,7 +689,7 @@ def migrate(
 
     # Inject Hermes' own tool surface as an MCP server so the spawned
     # codex subprocess can call back into Hermes for the tools codex
-    # doesn't ship with — web_search, browser_*, delegate_task, vision,
+    # doesn't ship with — web_search, browser_*, delegate_agent, vision,
     # memory, skills, session_search, image_generate, text_to_speech.
     # The server itself is agent/transports/hermes_tools_mcp_server.py
     # and is launched on demand by codex (stdio MCP).

@@ -1364,7 +1364,7 @@ class GatewaySlashCommandsMixin:
             ]
         )
 
-        # Background (async) delegations — delegate_task(background=true).
+        # Background (async) delegations — delegate_agent(background=true).
         # Live per-child activity comes from the registry's progress sampler
         # (#51690): api calls, current tool, seconds since last activity.
         delegations: list[dict] = []

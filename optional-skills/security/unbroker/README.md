@@ -29,7 +29,7 @@ fallback**. Scope is **US-first**, with EU/UK (GDPR) and global coverage on the 
 The design is **Hermes-native**: a small deterministic Python CLI (`scripts/pdd.py`) owns the state
 (config, dossiers, broker DB, tier planning, ledger, drafts, reports), while the agent does the
 scanning and submitting with native tools (`web_extract`, `browser_*`, email, `cronjob`,
-`delegate_task`). [`SKILL.md`](SKILL.md) is the authoritative reference.
+`delegate_agent`). [`SKILL.md`](SKILL.md) is the authoritative reference.
 
 ## Install
 
@@ -73,7 +73,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 | `pdd.py registry` | State data-broker registry coverage (CA ~545 ingested; VT/OR/TX portals); `--search` to find one |
 | `pdd.py drop` | The CA DROP one-shot: delete from all registered brokers in a single request |
 | `pdd.py plan` | Per-broker tier, method, search vectors, and the exact fields to disclose |
-| `pdd.py fanout` | Batch brokers into parallel `delegate_task` subagents |
+| `pdd.py fanout` | Batch brokers into parallel `delegate_agent` subagents |
 | `pdd.py record` | Update the ledger (validated state machine); auto-stamps recheck dates |
 | `pdd.py send-email` | Render and send an opt-out / CCPA / GDPR request (recipient locked to the broker's own address) |
 | `pdd.py poll-verification` / `verify-link` | Resolve email-verification links (IMAP poll, or browser-mode from pasted text) |

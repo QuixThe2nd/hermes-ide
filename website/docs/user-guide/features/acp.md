@@ -30,7 +30,7 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 - web/browser tools
 - memory, todo, session search
 - skills
-- execute_code and delegate_task
+- execute_code and delegate_agent
 - vision
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.

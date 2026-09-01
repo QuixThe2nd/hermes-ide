@@ -3,7 +3,7 @@
 When the user runs `openai/*` turns through the codex app-server, codex
 owns the loop and builds its own tool list. By default, that means
 Hermes' richer tool surface — web search, browser automation,
-delegate_task subagents, vision analysis, persistent memory, skills,
+delegate_agent subagents, vision analysis, persistent memory, skills,
 cross-session search, image generation, TTS — is unreachable.
 
 This module exposes a curated subset of those Hermes tools to the
@@ -29,7 +29,7 @@ What we DO NOT expose:
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
+  - delegate_agent / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
     session_search / todo                  (model_tools.py). They require
                                            the running AIAgent context to
                                            dispatch (mid-loop state), so a
@@ -104,7 +104,7 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
 #   - terminal / shell / read_file / write_file / patch / search_files /
 #     process — codex's built-ins cover these and approval routes through
 #     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
+#   - delegate_agent / memory / session_search / todo — these are
 #     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
 #     the running AIAgent context to dispatch (mid-loop state), so a
 #     stateless MCP callback can't drive them. Hermes' default runtime

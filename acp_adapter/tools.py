@@ -50,6 +50,8 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_back": "execute",
     "browser_get_images": "read",
     # Agent internals
+    "delegate_agent": "execute",
+    # Hidden legacy alias maps to the same ACP mode.
     "delegate_task": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
@@ -61,7 +63,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
 
 _POLISHED_TOOLS = {
     # Core operator loop
-    "todo", "memory", "session_search", "delegate_task",
+    "todo", "memory", "session_search", "delegate_agent", "delegate_task",
     # Files / execution
     "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
     # Skills / web / browser / media
@@ -125,7 +127,7 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         action = str(args.get("action") or "").strip() or "manage"
         sid = str(args.get("session_id") or "").strip()
         return f"process {action}: {sid}" if sid else f"process {action}"
-    if tool_name == "delegate_task":
+    if tool_name in ("delegate_agent", "delegate_task"):
         tasks = args.get("tasks")
         if isinstance(tasks, list) and tasks:
             return f"delegate batch ({len(tasks)} tasks)"
@@ -922,6 +924,8 @@ def _build_polished_completion_content(
         "search_files": lambda: _format_search_files_result(result),
         "execute_code": lambda: _format_execute_code_result(result),
         "process": lambda: _format_process_result(result, function_args),
+        "delegate_agent": lambda: _format_delegate_result(result),
+        # Hidden legacy alias renders through the same formatter.
         "delegate_task": lambda: _format_delegate_result(result),
         "session_search": lambda: _format_session_search_result(result),
         "memory": lambda: _format_memory_result(result, function_args),
@@ -1248,7 +1252,7 @@ def _build_tool_start(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
-    if tool_name == "delegate_task":
+    if tool_name in ("delegate_agent", "delegate_task"):
         tasks = arguments.get("tasks")
         if isinstance(tasks, list) and tasks:
             lines = [f"Delegating {len(tasks)} tasks", ""]

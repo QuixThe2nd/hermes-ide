@@ -304,7 +304,7 @@ Meta only allows **free-form messages** within a 24-hour window after the user's
 
 - Reactive chat (user DMs → bot replies within 24h → user replies → ...) works forever. This covers >95% of normal bot use.
 - **Cron jobs that deliver to WhatsApp** after a gap > 24h will fail with Graph error code `131047` ("Re-engagement message").
-- **Long-running `delegate_task` async results** that take longer than 24h fail the same way.
+- **Long-running `delegate_agent(background=true)` async results** that take longer than 24h fail the same way.
 - **Webhook subscribers** that route external events to WhatsApp fail when the user hasn't DM'd the bot recently.
 
 Hermes warns the agent about this window in its system prompt, so the model knows to mention it when scheduling delayed messages.

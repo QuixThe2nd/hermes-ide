@@ -282,7 +282,7 @@ def _refresh_agent_tool_definitions(agent) -> bool:
     Forever-sessions (Bot Mode desktop chats, gateway channels) never
     restart, so compaction is the only moment a config change can reach the
     tool snapshot: dynamic schemas (image_generate capability gating,
-    delegate_task limits, execute_code interpreter/stub text) are built
+    delegate_agent limits, execute_code interpreter/stub text) are built
     once at agent init and then frozen for cache stability. The prompt
     cache is already invalidated at this boundary, so refreshing here is
     free; between compactions the snapshot stays byte-stable as before.

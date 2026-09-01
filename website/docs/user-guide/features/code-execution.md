@@ -150,7 +150,7 @@ Fallback behavior in `project` mode: if `VIRTUAL_ENV` / `CONDA_PREFIX` is unset,
 Security-critical invariants are identical across both modes:
 
 - environment scrubbing (API keys, tokens, credentials stripped)
-- tool whitelist (scripts cannot call `execute_code` recursively, `delegate_task`, or MCP tools)
+- tool whitelist (scripts cannot call `execute_code` recursively, `delegate_agent`, or MCP tools)
 - resource limits (timeout, stdout cap, tool-call cap)
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.

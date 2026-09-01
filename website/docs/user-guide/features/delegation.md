@@ -1,19 +1,19 @@
 ---
 sidebar_position: 7
 title: "Subagent Delegation"
-description: "Spawn isolated child agents for parallel workstreams with delegate_task"
+description: "Spawn isolated child agents for parallel workstreams with delegate_agent"
 ---
 
 # Subagent Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+The `delegate_agent` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
-Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
+Delivery follows one lifecycle across all four delegate tools (`delegate_agent`, `delegate_claude_agent`, `delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the explicit `background` argument. Omitted or false **blocks** the calling turn until the work is terminal and returns the final result inline. `background=true` returns a handle immediately so the conversation can continue, then posts exactly one completion back as a new message — and fails up front, with nothing started, when the session cannot receive a late completion. The old `delegate_task` / `dispatch_assistant` spellings still dispatch as hidden aliases that forward `background` unchanged.
 
 ## Single Task
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Debug why tests fail",
     context="Error: assertion in test_foo.py line 42"
 )
@@ -24,7 +24,7 @@ delegate_task(
 Up to 3 concurrent subagents by default (configurable, no hard ceiling):
 
 ```python
-delegate_task(tasks=[
+delegate_agent(tasks=[
     {"goal": "Research topic A", "context": "Focus on recent primary sources"},
     {"goal": "Research topic B", "context": "Compare the leading explanations"},
     {"goal": "Fix the build", "context": "Project root: /home/user/project"}
@@ -34,7 +34,7 @@ delegate_task(tasks=[
 ## How Subagent Context Works
 
 :::warning Critical: Subagents Know Nothing
-Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
+Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_agent`.
 :::
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
@@ -43,10 +43,10 @@ This means the parent agent must pass **everything** the subagent needs in the c
 
 ```python
 # BAD - subagent has no idea what "the error" is
-delegate_task(goal="Fix the error")
+delegate_agent(goal="Fix the error")
 
 # GOOD - subagent has all context it needs
-delegate_task(
+delegate_agent(
     goal="Fix the TypeError in api/handlers.py",
     context="""The file api/handlers.py has a TypeError on line 47:
     'NoneType' object has no attribute 'get'.
@@ -65,7 +65,7 @@ The subagent receives a focused system prompt built from your goal and context, 
 Research multiple topics simultaneously and collect summaries:
 
 ```python
-delegate_task(tasks=[
+delegate_agent(tasks=[
     {
         "goal": "Research the current state of WebAssembly in 2025",
         "context": "Focus on: browser support, non-browser runtimes, language support"
@@ -86,7 +86,7 @@ delegate_task(tasks=[
 Delegate a review-and-fix workflow to a fresh context:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Review the authentication module for security issues and fix any found",
     context="""Project at /home/user/webapp.
     Auth module files: src/auth/login.py, src/auth/jwt.py, src/auth/middleware.py.
@@ -101,7 +101,7 @@ delegate_task(
 Delegate a large refactoring task that would flood the parent's context:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Refactor all Python files in src/ to replace print() with proper logging",
     context="""Project at /home/user/myproject.
     Use the 'logging' module with logger = logging.getLogger(__name__).
@@ -117,13 +117,13 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+When a top-level agent provides a `tasks` array, the batch runs its subagents in parallel and returns one consolidated result after every child finishes — inline in the default blocking mode, or as one posted completion when `background=true` was passed. An orchestrator subagent always waits for its batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
-- **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. Synchronous orchestrator children still follow their parent's interrupt state
+- **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. A blocking call follows its parent's interrupt state; orchestrator children always do
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
 
@@ -184,13 +184,13 @@ Decomposing a problem into well-specified subtasks takes frontier-level judgment
 model:
   default: "your-frontier-model"     # parent (planner) stays on the frontier model
 delegation:
-  model: "your-inexpensive-model"    # all delegate_task children run on this
+  model: "your-inexpensive-model"    # all delegate_agent children run on this
   provider: "openrouter"             # optional: route children to a different provider
 ```
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+Note that the pin is global: `delegate_agent` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
 ## The `/review` Command
 
@@ -204,7 +204,7 @@ Note that the pin is global: `delegate_task` has no per-task model parameter, so
 What happens:
 
 1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded).
-2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_task` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
+2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_agent` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
 3. The reviewer inherits the primary agent's working context: any skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
 4. When it finishes, its full review re-enters the same session as a normal background-subagent completion — your primary agent sees it and can act on it (fix the findings, push follow-ups, reply to you).
 
@@ -227,10 +227,10 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 
 ## Inherited Tool Access
 
-`delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
+`delegate_agent` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
-- `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegate_agent` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
 - `send_message` — no cross-platform side effects
@@ -243,7 +243,7 @@ Both roles retain `execute_code` (programmatic tool calling) so children can bat
 Each subagent has an iteration limit (default: 50) that controls how many tool-calling turns it can take:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Quick file check",
     context="Check if /etc/nginx/nginx.conf exists and print its first 10 lines",
     max_iterations=10  # Simple task, don't need many turns
@@ -285,12 +285,12 @@ A subagent that fails — non-retryable provider error (404/400), timeout, crash
 Error text is reduced to the single most informative line (the exception message, not a traceback wall) and capped in length.
 
 :::tip Diagnostic dump on zero-call timeout
-With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
+With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_agent` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
 :::
 
 ## Stall Detection for Background Subagents
 
-Background delegations (`delegate_task(background=true)`) are watched by a
+Background delegations (`delegate_agent(background=true)`) are watched by a
 **progress-based stall monitor** — on by default, zero config. Unlike a
 wall-clock timeout, it never touches a child that is making progress, no
 matter how long it runs.
@@ -326,7 +326,7 @@ as the safety net for anything else.
 
 ## Monitoring Running Subagents (`/agents`)
 
-The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_task` fan-out into a first-class audit surface:
+The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_agent` fan-out into a first-class audit surface:
 
 - Live tree view of running and recently-finished subagents, grouped by parent
 - Per-branch cost, token, and file-touched rollups
@@ -357,7 +357,7 @@ Interrupting a child throws away its in-flight work; often you just want to redi
 
 ### From the parent agent (model-facing)
 
-The parent agent orchestrates its own running children with the same `delegate_task` tool it spawned them with — no separate control tool:
+The parent agent orchestrates its own running children with the same `delegate_agent` tool it spawned them with — no separate control tool:
 
 ```json
 {"action": "list"}
@@ -391,7 +391,7 @@ So the parent (or the operator driving it) can tell a steered child from one tha
 
 ## Live Transcripts
 
-Every `delegate_task` dispatch also creates one **append-only, human-readable log per task** so you (or the parent agent) can watch a subagent work in real time instead of waiting for the consolidated summary:
+Every `delegate_agent` dispatch also creates one **append-only, human-readable log per task** so you (or the parent agent) can watch a subagent work in real time instead of waiting for the consolidated summary:
 
 ```
 <hermes_home>/cache/delegation/live/<delegation_id>/task-<n>.log
@@ -412,7 +412,7 @@ By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1)
 For multi-stage workflows (research → synthesis, or parallel orchestration over sub-problems), a parent can spawn **orchestrator** children that *can* delegate their own workers:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Survey three code review approaches and recommend one",
     role="orchestrator",  # Allows this child to spawn its own workers
     context="...",
@@ -428,7 +428,7 @@ delegate_task(
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
-Top-level model-facing `delegate_task` calls run in the background automatically where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Orchestrator subagents wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
+A delegation runs in the background only when you pass `background=true`. Hermes then returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Without the argument the call blocks and returns the result inline. On a session that cannot receive a late completion (a stateless request/response endpoint, a one-shot run), `background=true` is refused before any child starts rather than silently falling back — omit the argument there instead.
 
 - Normal follow-up messages do not cancel background children. `/stop` cancels running background delegations, and closing or resetting the owning session discards its active children.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
@@ -447,7 +447,7 @@ For **durable execution** that must survive session closure or process restart, 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
+- Leaf subagents **cannot** call: `delegate_agent`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_agent` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session cancels its background children; synchronous descendants under orchestrators follow their parent's interrupt state
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
@@ -490,7 +490,7 @@ error.
 
 ## Cursor My Machines (`delegate_cursor_agent`)
 
-`delegate_cursor_agent` is a separate delegation surface from `delegate_task`. It keeps the same tool name and parameter schema, and still returns a **synchronous** final JSON result after the run finishes.
+`delegate_cursor_agent` is a separate delegation surface from `delegate_agent`. It keeps the same parameter schema and follows the same lifecycle: blocking by default (the final JSON result returns inline once the cloud run finishes), or a background handle plus one later completion when `background=true`.
 
 The backend is a [Cursor My Machines](https://cursor.com/docs/cloud-agent/self-hosted-guides/my-machines.md) Cloud Agent, not a local `agent -p` subprocess:
 
@@ -513,7 +513,7 @@ The tool is gated on the Cursor `agent` CLI binary (`PATH` or `~/.local/bin/agen
 
 ## Delegation vs execute_code
 
-| Factor | delegate_task | execute_code |
+| Factor | delegate_agent | execute_code |
 |--------|--------------|-------------|
 | **Reasoning** | Full LLM reasoning loop | Just Python code execution |
 | **Context** | Fresh isolated conversation | No conversation, just script |
@@ -523,7 +523,7 @@ The tool is gated on the Cursor `agent` CLI binary (`PATH` or `~/.local/bin/agen
 | **Token cost** | Higher (full LLM loop) | Lower (only stdout returned) |
 | **User interaction** | None (subagents can't clarify) | None |
 
-**Rule of thumb:** Use `delegate_task` when the subtask requires reasoning, judgment, or multi-step problem solving. Use `execute_code` when you need mechanical data processing or scripted workflows.
+**Rule of thumb:** Use `delegate_agent` when the subtask requires reasoning, judgment, or multi-step problem solving. Use `execute_code` when you need mechanical data processing or scripted workflows.
 
 ## Configuration
 

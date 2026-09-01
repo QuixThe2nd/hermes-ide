@@ -163,7 +163,7 @@ class TestMissedSteerRetention:
         import json
         from unittest.mock import MagicMock, patch
 
-        from tools.delegate_tool import delegate_task
+        from tools.delegate_tool import delegate_agent
 
         parent = MagicMock()
         parent._delegate_depth = 0
@@ -187,7 +187,7 @@ class TestMissedSteerRetention:
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="race test", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="race test", parent_agent=parent))
             entry = result["results"][0]
 
         assert entry["missed_steer"] == "focus on pricing instead"
@@ -200,7 +200,7 @@ class TestMissedSteerRetention:
         import json
         from unittest.mock import MagicMock, patch
 
-        from tools.delegate_tool import delegate_task
+        from tools.delegate_tool import delegate_agent
 
         parent = MagicMock()
         parent._delegate_depth = 0
@@ -221,7 +221,7 @@ class TestMissedSteerRetention:
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="clean run", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="clean run", parent_agent=parent))
             entry = result["results"][0]
 
         assert "missed_steer" not in entry

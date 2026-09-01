@@ -3,7 +3,7 @@
 A manual `cronjob(action='run')` used to execute the job synchronously on the
 calling agent's tool thread — a full agent run (minutes to hours) inside ONE
 tool call, uninterruptible and serial. It now dispatches through the async
-delegation registry (same rail as delegate_task background mode): the tool
+delegation registry (same rail as delegate_agent background mode): the tool
 returns immediately with a handle and the run's outcome re-enters the
 conversation as a type='async_delegation' completion event.
 

@@ -2455,7 +2455,7 @@ class TestConcurrentToolExecution:
         """Sequential and concurrent agent-level paths share post-hook ownership."""
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
 
-        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_agent"):
             assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
 
         agent._context_engine_tool_names = {"context_query"}
@@ -2612,7 +2612,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("read_window_below", {}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
         ("tour", {"action": "stop"}),
-        ("delegate_task", {"goal": "Check the child path"}),
+        ("delegate_agent", {"goal": "Check the child path"}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
@@ -2670,7 +2670,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,
-            "_dispatch_delegate_task",
+            "_dispatch_delegate_agent",
             lambda args: '{"ok":true}',
         )
         agent._memory_manager = None

@@ -1083,7 +1083,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     # hermes_cli.kanban_db, because children can import DB mutators directly.
     if _is_delegated_child_cli_mutation(args):
         print(
-            "kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI",
+            "kanban: delegate_agent child contexts cannot mutate Kanban tasks via the CLI",
             file=sys.stderr,
         )
         return 1

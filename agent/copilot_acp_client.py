@@ -87,7 +87,7 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
     older releases (and Claude Code v2.x as of Aug 2026) do not.
     Spawning a CLI that doesn't recognize the flag silently exits
     with code 1 and ``error: unknown option '--acp'`` on stderr,
-    after which every delegate_task call hangs the parent for
+    after which every delegate_agent call hangs the parent for
     ``child_timeout_seconds`` (default 600s) waiting for stdout
     that never arrives.
 

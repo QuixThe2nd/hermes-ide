@@ -6592,7 +6592,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
-        # Count live background/async subagents (delegate_task batches and
+        # Count live background/async subagents (delegate_agent batches and
         # background single delegations tracked by tools.async_delegation).
         # active_count() iterates an in-memory records dict under a lock —
         # cheap and only counts records still in the "running" state.
@@ -15064,10 +15064,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
         """Render file edits with inline diff after write-capable tools complete."""
-        # A top-level delegate_task dispatches in the background and re-enters as
-        # a fresh turn when done. Say so once — no spinner, nothing to poll — so
-        # the idle prompt doesn't read as "nothing happened" (⛓ tracks the work).
-        if function_name == "delegate_task":
+        # A background delegation returns a handle and re-enters as a fresh
+        # turn when done. Say so once — no spinner, nothing to poll — so the
+        # idle prompt doesn't read as "nothing happened" (⛓ tracks the work).
+        # The default (foreground) mode blocks inside the tool call, so its
+        # spinner already said "working" the whole time and needs no note.
+        # The legacy ``delegate_agent`` spelling still reaches here from
+        # replayed transcripts, so both names are matched.
+        if function_name in ("delegate_agent", "delegate_agent"):
             try:
                 parsed = json.loads(function_result) if isinstance(function_result, str) else (function_result or {})
             except Exception:

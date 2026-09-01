@@ -6,6 +6,9 @@ author: Hermes Agent
 kind: standalone
 provides_tools:
   - dispatch_agent
+  - delegate_assistant
+  # Legacy spelling of delegate_assistant (uniform delegation lifecycle):
+  # kept dispatchable through a hidden advertise=False alias.
   - dispatch_assistant
   - end_session
   - escalate_task

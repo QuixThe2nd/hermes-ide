@@ -134,14 +134,62 @@ _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # alive). Override with
 # ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
 # explicit empty list disables the exemption entirely).
+#
+# Uniform delegation lifecycle: ALL four delegate tools are exempt in their
+# default (blocking) mode — a foreground fan-out, a multi-hour claude/cursor
+# run, or a days-long assistant mission wait is legitimate blocked work, not
+# a wedged thread. The 30s tool heartbeat keeps the gateway's inactivity
+# watchdog fed the whole time, so the deadline exemption is the only guard
+# that could kill one. Legacy aliases are listed too so an exemption survives
+# a replayed old-name call.
 _DEFAULT_UNBOUNDED_TOOLS = frozenset(
-    {"delegate_cursor_agent", "delegate_claude_agent", "restart"}
+    {
+        "delegate_agent",
+        "delegate_claude_agent",
+        "delegate_cursor_agent",
+        "delegate_assistant",
+        # Hidden registry aliases (advertise=False) — dispatchable forever.
+        "delegate_task",
+        "dispatch_assistant",
+        "restart",
+    }
 )
+
+# Old name -> current name. A user's explicit ``timeouts.tools.unbounded_tools``
+# list REPLACES the default frozenset (agent.deadline.resolve_name_list), so a
+# list written before the rename that names only the old spelling would
+# silently drop the exemption. Normalizing here keeps both spellings equal.
+_TOOL_NAME_ALIASES = {
+    # legacy spellings normalize to the same exemption
+    "delegate_task": "delegate_agent",
+    "dispatch_assistant": "delegate_assistant",
+}
+
 
 def _resolve_unbounded_tools() -> frozenset[str]:
     from agent.deadline import resolve_name_list
 
-    return resolve_name_list("tools.unbounded_tools", default=_DEFAULT_UNBOUNDED_TOOLS)
+    resolved = resolve_name_list("tools.unbounded_tools", default=_DEFAULT_UNBOUNDED_TOOLS)
+    if resolved is _DEFAULT_UNBOUNDED_TOOLS:
+        return resolved
+    # Alias-normalize a user-supplied list: naming the old tool also exempts
+    # the renamed one (and vice versa), and warn once when a delegation tool
+    # is missing entirely — its foreground waits would be killed at 420s.
+    expanded = set(resolved)
+    for old, new in _TOOL_NAME_ALIASES.items():
+        if old in expanded:
+            expanded.add(new)
+        if new in expanded:
+            expanded.add(old)
+    if not expanded & {"delegate_agent", "delegate_task"}:
+        logger.warning(
+            "timeouts.tools.unbounded_tools names no delegation tool; a "
+            "foreground delegate_agent call will be killed by the %ss batch "
+            "deadline. Add 'delegate_agent' to keep long blocking delegations "
+            "alive.",
+            _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
+        )
+    return frozenset(expanded)
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough
 # to cover slow-but-legitimate authorization (e.g. an approval round-trip),
@@ -2450,19 +2498,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('setup_mcp', function_args, tool_duration, result=function_result)}")
-        elif function_name == "delegate_task":
+        elif function_name in ("delegate_agent", "delegate_task"):
             _action_arg = str(function_args.get("action") or "").strip().lower()
             tasks_arg = function_args.get("tasks")
+            # Mode-aware label: a foreground run blocks here (the spinner is
+            # the only "still working" signal the user gets), a background
+            # dispatch returns a handle and the work continues outside the
+            # turn. The legacy ``delegate_agent`` spelling renders identically.
+            _bg_flag = function_args.get("background")
+            _is_bg = (
+                _bg_flag is True
+                or (isinstance(_bg_flag, str)
+                    and _bg_flag.strip().lower() in ("1", "true", "yes", "on"))
+            )
+            _tail = "/agents to monitor" if _is_bg else "waiting on results"
             if _action_arg in ("list", "steer", "stop"):
                 spinner_label = f"🔀 subagent {_action_arg}"
             elif tasks_arg and isinstance(tasks_arg, list):
-                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · (/agents to monitor)"
+                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · ({_tail})"
             else:
                 goal_preview = (function_args.get("goal") or "")[:30]
                 spinner_label = (
-                    f"🔀 {goal_preview} · (/agents to monitor)"
+                    f"🔀 {goal_preview} · ({_tail})"
                     if goal_preview
-                    else "🔀 delegating · (/agents to monitor)"
+                    else f"🔀 delegating · ({_tail})"
                 )
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
@@ -2473,7 +2532,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _delegate_result = None
             try:
                 def _execute(next_args: dict) -> Any:
-                    return agent._dispatch_delegate_task(next_args)
+                    return agent._dispatch_delegate_agent(next_args)
                 function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                     agent,
                     function_name=function_name,
@@ -2488,7 +2547,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             finally:
                 agent._delegate_spinner = None
                 tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                cute_msg = _get_cute_tool_message_impl(
+                    function_name, function_args, tool_duration,
+                    result=_delegate_result,
+                )
                 if spinner:
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
@@ -2746,7 +2808,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
         # The agent-runtime tools above (todo, session_search, memory,
-        # context-engine, memory-manager, clarify, delegate_task) are
+        # context-engine, memory-manager, clarify, delegate_agent) are
         # dispatched inline — they never reach handle_function_call, so the
         # executor is the one that has to fire post_tool_call. For
         # Every dispatch suppresses the inner handle_function_call observer so

@@ -334,12 +334,12 @@ terminal("pytest tests/test_feature.py::test_name -v")
 terminal("pytest tests/ -q")
 ```
 
-### With delegate_task
+### With delegate_agent
 
 When dispatching subagents for implementation, enforce TDD in the goal:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Implement [feature] using strict TDD",
     context="""
     Follow test-driven-development skill:

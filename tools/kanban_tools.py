@@ -72,7 +72,7 @@ def _is_delegated_child_context() -> bool:
 
 
 def _is_dispatcher_owned_worker() -> bool:
-    """False for delegate_task children AND for cron jobs fired in-process from
+    """False for delegate_agent children AND for cron jobs fired in-process from
     a worker — i.e. whenever HERMES_KANBAN_* is present but not ours."""
     try:
         from agent.delegation_context import is_dispatcher_owned_worker_context
@@ -83,9 +83,9 @@ def _is_dispatcher_owned_worker() -> bool:
 
 
 def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
-    """Deny Kanban mutations from delegate_task children.
+    """Deny Kanban mutations from delegate_agent children.
 
-    A delegate_task child runs in the same process as its parent, so stale or
+    A delegate_agent child runs in the same process as its parent, so stale or
     inherited HERMES_KANBAN_* env vars are not proof of dispatcher ownership.
     The child may summarize findings to its parent, but it must not complete,
     block, heartbeat, comment, create, link, or unblock board tasks directly.
@@ -93,7 +93,7 @@ def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
     if not _is_delegated_child_context():
         return None
     return tool_error(
-        f"{tool_name} refused: delegate_task child agents are not Kanban "
+        f"{tool_name} refused: delegate_agent child agents are not Kanban "
         "run owners. Return findings to the parent agent; the dispatcher "
         "worker or an explicitly configured Kanban orchestrator must perform "
         "board mutations."
