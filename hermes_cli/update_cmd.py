@@ -3751,8 +3751,32 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         pass
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+#: systemd unit patterns for the catch-up restart's gateway-and-serve sweep.
+_GATEWAY_SERVE_UNIT_PATTERNS = ("hermes-gateway*", "hermes-serve*")
+
+#: systemd unit patterns a no-gateway fleet still owes a restart for (Codex
+#: P1 B): a serve-only install runs ``hermes-serve*`` backends and a managed
+#: ``hermes-dashboard`` with zero gateway processes, so "no gateway PIDs"
+#: cannot mean "nothing to restart" on a systemd host.
+_SERVE_DASHBOARD_UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*")
+
+
+def _restart_systemd_units_best_effort(
+    failed: list,
+    restarted: Optional[list] = None,
+    *,
+    patterns: tuple = _GATEWAY_SERVE_UNIT_PATTERNS,
+) -> bool:
+    """Best-effort ``systemctl restart`` of the hermes units matching
+    *patterns*, in both the user and the system scope.
+
+    Returns ``True`` when at least one unit was found (whether its restart
+    then succeeded or timed out into *failed*), ``False`` when no matching
+    unit exists in either scope. *restarted*, when given, collects every
+    unit a restart was attempted for, in discovery order — the caller's
+    evidence that the enumeration matched something at all.
+    """
+    found_any = False
     for scope, scope_cmd in (
         ("user", ["systemctl", "--user"]),
         ("system", ["systemctl"]),
@@ -3762,8 +3786,7 @@ def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
                 scope_cmd
                 + [
                     "list-units",
-                    "hermes-gateway*",
-                    "hermes-serve*",
+                    *patterns,
                     "--plain",
                     "--no-legend",
                     "--no-pager",
@@ -3780,6 +3803,10 @@ def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
+            nonlocal found_any
+            found_any = True
+            if restarted is not None:
+                restarted.append(svc_name)
             restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
             if (
                 _scope == "system"
@@ -3804,13 +3831,21 @@ def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
             process_unit=process_unit,
             on_unit_timeout=on_timeout,
         )
+    return found_any
+
+
+def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
+    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+    _restart_systemd_units_best_effort(failed)
 
 
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code (#95294).
 
-    Returns True when restart completed or no services were running.
-    Returns False if restart was incomplete. Never raises.
+    Returns True when restart completed or no services were running — where
+    "services" includes the systemd-managed serve/dashboard units of a fleet
+    with no gateway processes at all (Codex P1 B). Returns False if the
+    restart was incomplete. Never raises.
     """
     print("→ Restarting gateways left on pre-update code...")
     try:
@@ -3837,6 +3872,30 @@ def _run_pending_fleet_restart() -> bool:
         pids = None
 
     if pids == []:
+        # Codex P1 B: a serve-only fleet has no gateway PIDs, but its
+        # systemd-managed serve/dashboard backends still run pre-update code.
+        # Treating "no gateways" as done left activation verifying against
+        # the ORIGINAL serve PID forever — restart those units exactly the
+        # way the gateway sweep does, and only report success when the fleet
+        # is truly unsupervised (no gateways AND no managed units).
+        if supports_systemd_services():
+            restarted_units: list = []
+            failed_units: list = []
+            found_units = _restart_systemd_units_best_effort(
+                failed_units,
+                restarted_units,
+                patterns=_SERVE_DASHBOARD_UNIT_PATTERNS,
+            )
+            if failed_units:
+                _warn_incomplete_gateway_fleet_restart(failed_units)
+                return False
+            if found_units:
+                print(
+                    "  ✓ No running gateways — restarted"
+                    f" {len(restarted_units)} systemd serve/dashboard"
+                    " unit(s)."
+                )
+                return True
         print("  ✓ No running gateways — nothing to restart.")
         return True
 
@@ -4231,6 +4290,14 @@ def _verify_fleet_on_expected_generation(
     backends require N distinct live replacements, so a single survivor of
     the restart can never satisfy two planned rows, no matter how many
     ledger rows describe it.
+
+    The plan proves what must be restarted, not that nothing else is
+    running: a live gateway row whose profile the plan never listed (the
+    inventory degraded between prepare and activate, or the profile appeared
+    since) is held to the SAME standard, because clearing the obligation
+    while such a gateway is down, unproven, or serving another sha would
+    strand it there with ``problems == []`` (Codex P1 A). Only an extra
+    gateway already stamping exactly ``expected_sha`` is genuinely fine.
     """
     problems: list[str] = []
     rows = {
@@ -4238,23 +4305,39 @@ def _verify_fleet_on_expected_generation(
         for entry in (snapshot.get("fleet") or [])
         if isinstance(entry, dict)
     }
+
+    def _gateway_problem(profile: str, row: dict) -> Optional[str]:
+        # Shared by planned and unplanned profiles, so the fail-closed rule
+        # for a gateway the plan omitted cannot drift from the rule for one
+        # it named. Compared directly against the sha the record binds —
+        # not the row's own current/stale/unknown classification.
+        if row.get("state") == "down":
+            return f"gateway for profile '{profile}' is down"
+        sha = row.get("code_sha")
+        if not isinstance(sha, str) or not sha:
+            return f"gateway for profile '{profile}' does not report a code sha"
+        if sha != expected_sha:
+            return (
+                f"gateway for profile '{profile}' runs {sha[:10]},"
+                f" not {expected_sha[:10]}"
+            )
+        return None
+
     for profile in sorted(gateway_profiles):
         row = rows.get(profile)
         if row is None:
             problems.append(f"no live gateway for profile '{profile}'")
             continue
-        if row.get("state") == "down":
-            problems.append(f"gateway for profile '{profile}' is down")
+        problem = _gateway_problem(profile, row)
+        if problem is not None:
+            problems.append(problem)
+    for profile in sorted(rows):
+        if profile in gateway_profiles:
             continue
-        sha = row.get("code_sha")
-        if not isinstance(sha, str) or not sha:
+        problem = _gateway_problem(profile, rows[profile])
+        if problem is not None:
             problems.append(
-                f"gateway for profile '{profile}' does not report a code sha"
-            )
-        elif sha != expected_sha:
-            problems.append(
-                f"gateway for profile '{profile}' runs {sha[:10]},"
-                f" not {expected_sha[:10]}"
+                f"{problem} — live gateway not in the prepared plan"
             )
     live_rows = _live_ledger_rows(snapshot.get("ledger") or [])
     problems.extend(_duplicate_live_identity_problems(managed_serve, live_rows))
@@ -7632,8 +7715,8 @@ def _for_each_systemd_gateway_unit(
     process_unit,
     on_unit_timeout,
 ) -> None:
-    """Process each ``hermes-gateway*.service``/``hermes-serve*.service`` unit
-    from ``systemctl list-units``.
+    """Process each ``hermes-gateway*/serve*/dashboard*.service`` unit from
+    ``systemctl list-units``.
 
     ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
     that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
@@ -7651,11 +7734,15 @@ def _for_each_systemd_gateway_unit(
         # ``unit.startswith("hermes-serve")`` alone would also accept the
         # unrelated ``hermes-server.service`` — require the exact base unit
         # or the hyphenated profile family instead (review on #83595).
+        # ``hermes-dashboard`` joins the same strict shape for the
+        # serve-only catch-up restart (Codex P1 B).
         if not (
             unit == "hermes-gateway.service"
             or unit.startswith("hermes-gateway-")
             or unit == "hermes-serve.service"
             or unit.startswith("hermes-serve-")
+            or unit == "hermes-dashboard.service"
+            or unit.startswith("hermes-dashboard-")
         ):
             continue
         svc_name = unit.removesuffix(".service")
@@ -9803,6 +9890,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # (acceptance-v2: no-update repair must not create an
                 # obligation without a validated generation). A true no-op
                 # run publishes nothing and preserves what is already there.
+                #
+                # Codex P1 C: the same publication gate as the HEAD-advanced
+                # path. A repair whose completion verification failed (e.g. a
+                # positive WAL-vulnerable SQLite probe) rewrote the venv but
+                # could not prove the run complete, so it must not publish a
+                # prepared generation either.
+                if not current_checkout_complete:
+                    deferred_defects.append(
+                        "update completion verification failed — the repair"
+                        " is only partially complete"
+                    )
                 _finish_deferred_restart(
                     prepared_update=False,
                     repaired_runtime=bool(handed_off_sync or not healthy),
@@ -10528,6 +10626,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok=desktop_build_ok,
             pre_update_version=pre_update_version,
         )
+        if not update_complete:
+            # Codex P1 C: a run whose own completion verification failed
+            # (WAL-vulnerable SQLite runtime, unrebuilt Desktop app) is a
+            # partial update, and a partial update must not be published as
+            # a prepared generation — activation would restart the fleet
+            # onto a checkout this run could not prove complete. The
+            # non-deferred flow below keeps its historical behavior: partial
+            # completion still proceeds into the restart phase (#91277).
+            deferred_defects.append(
+                "update completion verification failed — the update is only"
+                " partially complete"
+            )
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —

@@ -17,6 +17,7 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -936,13 +937,112 @@ def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
 
 
 def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
+    # No systemd host (and no gateways): genuinely nothing to restart. The
+    # systemd mock matters as much as the gateway one now — a systemd host
+    # with managed serve units owes those a restart (Codex P1 B below).
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda **k: []
     )
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services", lambda: False
+    )
 
     assert update_cmd._run_pending_fleet_restart() is True
     assert "nothing to restart" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Serve-only fleets: no gateway PIDs, but systemd-managed serve/dashboard
+# units still run pre-update code (Codex P1 B)
+# ---------------------------------------------------------------------------
+
+
+def _patch_no_gateway_systemd_fleet(
+    monkeypatch, list_units_stdout: str, restart_handler=None
+):
+    """No gateway PIDs on a systemd host whose system scope answers.
+
+    Returns the list of systemctl command lines executed, for assertions on
+    exactly which units a restart was attempted for. *restart_handler*, when
+    given, replaces the default succeeding restart. Nothing here can reach a
+    real systemctl — ``subprocess.run`` itself is the mock.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
+    )
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services", lambda: True
+    )
+    commands: list[list[str]] = []
+
+    def _systemctl(cmd, **_kwargs):
+        commands.append([str(part) for part in cmd])
+        if "list-units" in cmd:
+            if "--user" in cmd:
+                # No user manager on this shape of host — system scope only.
+                return SimpleNamespace(returncode=1, stdout="", stderr="no bus")
+            return SimpleNamespace(
+                returncode=0, stdout=list_units_stdout, stderr=""
+            )
+        if restart_handler is not None:
+            restart_handler(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", _systemctl)
+    return commands
+
+
+def test_no_gateway_fleet_still_restarts_systemd_serve_units(monkeypatch, capsys):
+    """A serve-only fleet must not read as "nothing to restart".
+
+    ``find_gateway_pids() == []`` used to short-circuit to success before
+    the systemd sweep, so a systemd-managed ``hermes serve``/dashboard kept
+    its pre-update PID and activation could never verify a replacement.
+    """
+    commands = _patch_no_gateway_systemd_fleet(
+        monkeypatch,
+        "hermes-serve.service loaded active running\n"
+        "hermes-dashboard.service loaded active running\n",
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    restarts = [c for c in commands if "restart" in c]
+    assert {c[-1] for c in restarts} == {"hermes-serve", "hermes-dashboard"}
+    out = capsys.readouterr().out
+    assert "restarted 2 systemd serve/dashboard unit(s)" in out
+    assert "nothing to restart" not in out
+
+
+def test_no_gateway_fleet_with_no_systemd_units_still_true(monkeypatch, capsys):
+    """No gateways AND no managed units anywhere → success, no attempts."""
+    commands = _patch_no_gateway_systemd_fleet(monkeypatch, "")
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert not [c for c in commands if "restart" in c]
+    assert "nothing to restart" in capsys.readouterr().out
+
+
+def test_no_gateway_fleet_systemd_unit_restart_failure_returns_false(
+    monkeypatch, capsys
+):
+    """A managed serve unit that cannot restart fails the catch-up."""
+
+    def _wedged_restart(cmd):
+        raise subprocess.TimeoutExpired(cmd, timeout=30)
+
+    commands = _patch_no_gateway_systemd_fleet(
+        monkeypatch,
+        "hermes-serve.service loaded active running\n",
+        restart_handler=_wedged_restart,
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is False
+    assert any("restart" in c and c[-1] == "hermes-serve" for c in commands)
+    out = capsys.readouterr().out
+    assert "were not restarted" in out
+    assert "hermes-serve" in out
 
 
 # ---------------------------------------------------------------------------

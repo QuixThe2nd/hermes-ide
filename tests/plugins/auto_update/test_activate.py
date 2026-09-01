@@ -801,6 +801,92 @@ def test_verify_fleet_matches_gateways_and_managed_rows_injectively():
     assert problems == []
 
 
+def test_verify_fleet_fails_closed_on_unplanned_live_gateways():
+    """Codex P1 A: a live gateway the plan omitted is held to the same rule.
+
+    The plan proves what must be restarted, not that nothing else runs: an
+    extra live row that is stale, down, or without a code sha must be a
+    problem even with every planned profile satisfied — otherwise a strict
+    probe returning a degraded-inventory gateway would clear the obligation
+    while it serves the old generation.
+    """
+    verify = update_cmd._verify_fleet_on_expected_generation
+    sha = "a" * 40
+    other = "b" * 40
+    planned_fleet = [
+        {"profile": "default", "pid": 1, "code_sha": sha, "state": "current"}
+    ]
+
+    # Stale extra gateway (the plan only ever saw 'default').
+    problems = verify(
+        {"fleet": planned_fleet + [
+            {"profile": "work", "pid": 2, "code_sha": other, "state": "stale"}
+        ], "ledger": []},
+        gateway_profiles={"default"},
+        managed_serve=[],
+        expected_sha=sha,
+    )
+    assert problems == [
+        "gateway for profile 'work' runs bbbbbbbbbb, not aaaaaaaaaa"
+        " — live gateway not in the prepared plan"
+    ]
+    # Down / sha-less extra gateways fail the same way.
+    problems = verify(
+        {"fleet": planned_fleet + [
+            {"profile": "work", "pid": 2, "code_sha": None, "state": "down"}
+        ], "ledger": []},
+        gateway_profiles={"default"},
+        managed_serve=[],
+        expected_sha=sha,
+    )
+    assert problems == [
+        "gateway for profile 'work' is down — live gateway not in the prepared plan"
+    ]
+    problems = verify(
+        {"fleet": planned_fleet + [
+            {"profile": "work", "pid": 2, "code_sha": None, "state": "unknown"}
+        ], "ledger": []},
+        gateway_profiles={"default"},
+        managed_serve=[],
+        expected_sha=sha,
+    )
+    assert problems == [
+        "gateway for profile 'work' does not report a code sha"
+        " — live gateway not in the prepared plan"
+    ]
+    # An extra gateway already serving exactly the expected sha is fine.
+    problems = verify(
+        {"fleet": planned_fleet + [
+            {"profile": "work", "pid": 2, "code_sha": sha, "state": "current"}
+        ], "ledger": []},
+        gateway_profiles={"default"},
+        managed_serve=[],
+        expected_sha=sha,
+    )
+    assert problems == []
+
+
+def test_unplanned_stale_gateway_keeps_the_obligation(home, monkeypatch, wiring, capsys):
+    """Activation does not clear when a live-but-unplanned gateway is stale."""
+    _publish_prepared(
+        monkeypatch, runtimes=[{"kind": "gateway", "profile": "default", "pid": 11}]
+    )
+    _set_idle(monkeypatch, IdleSnapshot(idle=True, blockers=()))
+    # Plan lists only 'default' (current); the live probe also returns a
+    # 'work' gateway the degraded inventory never planned — still stale.
+    wiring.state["fleet"] = [
+        {"profile": "default", "pid": 12, "code_sha": PREPARED_SHA, "state": "current"},
+        {"profile": "work", "pid": 13, "code_sha": MOVED_SHA, "state": "stale"},
+    ]
+
+    assert auto_cli.cmd_activate() == 1
+    assert wiring.calls["restart"] == 1, "the restart ran — it just did not converge"
+    assert _marker().is_file(), "the obligation is kept"
+    assert _prepared_record().is_file()
+    out = capsys.readouterr().out
+    assert "live gateway not in the prepared plan" in out
+
+
 # ---------------------------------------------------------------------------
 # Durable cross-tick proof: activation in a genuinely fresh process
 # ---------------------------------------------------------------------------

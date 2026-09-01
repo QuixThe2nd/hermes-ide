@@ -579,6 +579,107 @@ def test_deferred_no_update_repair_failure_withholds_the_stamp(
     assert "NOT prepared" in capsys.readouterr().out
 
 
+# ---------------------------------------------------------------------------
+# Codex P1 C: failed completion verification blocks prepared publication
+# ---------------------------------------------------------------------------
+
+
+def _force_partial_completion(monkeypatch):
+    """Make the real completion verification withhold success.
+
+    A POSITIVE WAL-vulnerable SQLite probe is the canonical partial shape:
+    the update/repair itself finished, but the runtime it leaves behind
+    still carries the corruption bug, so ``_print_update_summary`` /
+    ``_print_verified_update_completion`` demote the outcome and return
+    False without a single other stage failing.
+    """
+    monkeypatch.setattr(
+        update_cmd,
+        "_post_update_sqlite_runtime_status",
+        lambda: (False, SimpleNamespace(sqlite_version_string="3.46.1")),
+    )
+
+
+def test_deferred_partial_completion_never_publishes_a_generation(
+    monkeypatch, tmp_path, capsys
+):
+    """A HEAD-advancing run that ends partially complete is not prepared.
+
+    The WAL-vulnerable probe used to be invisible to the deferred path:
+    ``_print_update_summary`` returned False into a variable nobody read,
+    so ``_finish_deferred_restart`` still published a prepared generation
+    for a checkout the run itself called only partially complete.
+    """
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    calls = _forbid_restart_paths(monkeypatch)
+    _force_partial_completion(monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(_update_args(defer_restart=True))
+
+    assert excinfo.value.code == 1
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    assert marker.is_file(), "the pull's restart obligation survives"
+    assert update_cmd._fleet_restart_pending_prepared() is False
+    assert not update_cmd._fleet_restart_prepared_path().exists()
+    out = capsys.readouterr().out
+    assert "Update partially complete" in out
+    assert "NOT prepared" in out
+    assert "completion verification failed" in out
+    assert calls["restart"] == 0
+    assert calls["catchup"] == 0
+
+
+def test_deferred_no_update_repair_partial_completion_never_publishes(
+    monkeypatch, tmp_path, capsys
+):
+    """The no-update repair path holds the same publication gate.
+
+    A venv repair that rewrote the dependencies but ended on a positive
+    WAL-vulnerable probe used to ignore ``current_checkout_complete`` and
+    publish a prepared generation anyway.
+    """
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+    calls = _forbid_restart_paths(monkeypatch)
+    _patch_no_update_repair(monkeypatch)
+    _force_partial_completion(monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(_update_args(defer_restart=True))
+
+    assert excinfo.value.code == 1
+    assert update_cmd._fleet_restart_pending_prepared() is False
+    assert not update_cmd._fleet_restart_prepared_path().exists()
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    out = capsys.readouterr().out
+    assert "NOT prepared" in out
+    assert "completion verification failed" in out
+    assert calls["restart"] == 0
+    assert calls["catchup"] == 0
+
+
+def test_deferred_update_partial_completion_still_restarts_by_default(
+    monkeypatch, tmp_path, capsys
+):
+    """Control: without --defer-restart, partial completion keeps the stock
+    restart phase — only the deferred publication is blocked (Codex P1 C
+    explicitly preserves the non-deferred behavior)."""
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    _forbid_restart_paths(monkeypatch)
+    _force_partial_completion(monkeypatch)
+
+    # No preparation-failure exit: the stock run reports the partial outcome
+    # through its own banner and completes the restart phase regardless.
+    hermes_main.cmd_update(_update_args())
+
+    out = capsys.readouterr().out
+    assert "Update partially complete" in out
+    assert "NOT prepared" not in out, "the stock path has no preparation gate"
+    assert not update_cmd._fleet_restart_pending_marker_path().exists(), (
+        "the stock restart phase still consumed the obligation"
+    )
+
+
 def test_deferred_true_noop_preserves_an_existing_generation(monkeypatch, tmp_path):
     """A no-op run invents no obligation and does not disturb a valid one."""
     from hermes_cli import update_receipt as ur
