@@ -5495,6 +5495,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
+                # Plugin-registered toolsets (e.g. deep_research's sealed
+                # ``research_writer``) exist in the registry only after
+                # plugin discovery, which _prepare_agent_startup() runs in a
+                # background thread to overlap startup. Join it before
+                # warning: otherwise validity depends on a startup race and
+                # an enabled plugin's toolset intermittently reads as
+                # unknown. discover_plugins() is idempotent and no-ops once
+                # discovery has landed; a disabled plugin's toolset stays
+                # invalid and still warns below.
+                try:
+                    from hermes_cli.plugins import discover_plugins
+
+                    discover_plugins()
+                except Exception:
+                    logger.debug("plugin discovery join failed during toolset validation", exc_info=True)
+                invalid = [t for t in invalid if not validate_toolset(t) and t not in mcp_names]
+            if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
         # Filesystem checkpoints: CLI flag > config

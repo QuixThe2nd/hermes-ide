@@ -70,6 +70,75 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         importlib.reload(_cli_restore)
 
 
+class TestToolsetValidationJoinsPluginDiscovery:
+    """Regression: HermesCLI init validated ``-t`` toolsets against the live
+    registry while plugin discovery was still running in the background thread
+    started by ``_prepare_agent_startup()``. An enabled plugin's toolset —
+    deep_research's sealed ``research_writer`` — intermittently warned as
+    "Unknown toolsets" in real child CLI processes, and the writer session
+    then resolved empty by accident (unknown toolset) instead of empty by
+    seal (plugin-registered definition). Validation must join discovery
+    before declaring a toolset unknown.
+    """
+
+    @staticmethod
+    def _fresh_registry(monkeypatch):
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        monkeypatch.setattr("tools.registry.registry", reg)
+        return reg
+
+    def test_plugin_toolset_validates_after_discovery_join(self, monkeypatch, capsys):
+        # Pre-discovery state: the plugin-owned toolset is absent from the
+        # registry, so the first validate_toolset pass misses it — the exact
+        # interleaving the background discovery thread made intermittent.
+        reg = self._fresh_registry(monkeypatch)
+
+        def _discovery_lands():
+            reg.register_toolset_definition(
+                "research_writer",
+                description="Synthesis-only writer: no retrieval, no files",
+                tools=[],
+                includes=[],
+                sealed=True,
+            )
+
+        discover = MagicMock(side_effect=_discovery_lands)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", discover)
+
+        cli = _make_cli(toolsets=["research_writer"])
+
+        assert discover.called, "validation never joined plugin discovery"
+        assert cli.enabled_toolsets == ["research_writer"]
+        assert "Unknown toolsets" not in capsys.readouterr().out
+
+    def test_genuinely_unknown_toolset_still_warns(self, monkeypatch, capsys):
+        # Fail-closed is preserved: a toolset no enabled plugin registers
+        # (e.g. research_writer with deep_research disabled) still warns
+        # after the discovery join.
+        self._fresh_registry(monkeypatch)
+        discover = MagicMock()  # discovery completes but registers nothing
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", discover)
+
+        _make_cli(toolsets=["research_writer"])
+
+        assert discover.called
+        assert "Unknown toolsets" in capsys.readouterr().out
+
+    def test_no_discovery_join_when_all_toolsets_already_valid(self, monkeypatch):
+        # Startup latency guard: the join only runs when something failed the
+        # first pass — builtin toolsets never pay for it.
+        self._fresh_registry(monkeypatch)
+        discover = MagicMock()
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", discover)
+
+        cli = _make_cli(toolsets=["web"])
+
+        assert cli.enabled_toolsets == ["web"]
+        assert not discover.called
+
+
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 
