@@ -570,6 +570,181 @@ def test_handler_survives_runner_without_a_loop(monkeypatch):
     runner.request_restart.assert_not_called()
 
 
+# ── skip vs confirm: timing the bounce around other work ────────────────────
+#
+# The confirmation exists to time the bounce. When this session is provably
+# the only in-flight work (its key is the lone ``_running_agents`` entry and
+# no cron/API work runs), there is nothing to time around: no ping, no
+# clarify registration, the drain queues outright. When other sessions — or
+# cron/API work that ``_running_agents`` cannot see — are in flight, the
+# exact-word confirm stays, and after the word lands the tool holds the
+# drain until that other work finishes. Fail closed: a runner whose
+# ``_running_agents`` does not show the calling session keeps the confirm
+# path — an empty map is not proof of being alone.
+
+
+def test_only_in_flight_session_skips_the_confirmation(gateway_loop, monkeypatch):
+    from plugins.gateway_restart import tool as restart_tool
+
+    runner = _live_runner(monkeypatch, gateway_loop, _running_agents={"tg-42": object()})
+    adapter = next(iter(runner.adapters.values()))
+    register, wait = _mock_confirm(monkeypatch, "restart")
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "restarting"
+    register.assert_not_called()
+    wait.assert_not_called()
+    # No ping of any kind left the adapter — no prompt, no armed note.
+    assert adapter.sent_calls == []
+    runner.request_restart.assert_called_once()
+
+
+def test_confirm_with_another_session_live_waits_for_it_to_finish(
+    gateway_loop, monkeypatch
+):
+    """Exact word confirmed, but the drain holds until the other key clears."""
+    from plugins.gateway_restart import tool as restart_tool
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _running_agents={"tg-42": object(), "tg-99": object()},
+    )
+    adapter = next(iter(runner.adapters.values()))
+    register, wait = _mock_confirm(monkeypatch, "restart")
+    polls: list[float] = []
+
+    def _other_session_finishes(interval):
+        # Still inside the idle wait: the other session is live, so the
+        # drain must not have been queued yet.
+        assert "tg-99" in runner._running_agents
+        runner.request_restart.assert_not_called()
+        polls.append(interval)
+        del runner._running_agents["tg-99"]
+
+    monkeypatch.setattr(restart_tool, "_idle_sleep", _other_session_finishes)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "restarting"
+    register.assert_called_once()
+    wait.assert_called_once()
+    _assert_unlimited_wait(wait)
+    # The drain really waited for the other session, then queued exactly once.
+    assert polls, "the drain never waited for the other in-flight session"
+    runner.request_restart.assert_called_once()
+    # The prompt said the bounce waits for the other sessions (not "now"),
+    # and exactly one armed note followed the confirm — no spam while waiting.
+    _chat_id, prompt, _metadata = adapter.sent_calls[0]
+    assert "once the other active sessions finish" in prompt
+    assert "to bounce the gateway now" not in prompt
+    assert len(adapter.sent_calls) == 2
+    assert "waiting for the other active sessions" in adapter.sent_calls[1][1]
+
+
+@pytest.mark.parametrize("busy", ["cron", "api"])
+def test_extra_cron_or_api_work_alone_keeps_the_confirmation(
+    gateway_loop, monkeypatch, busy
+):
+    """The calling session is the only chat agent, but background work runs."""
+    from gateway.config import Platform
+    from plugins.gateway_restart import tool as restart_tool
+
+    runner = _live_runner(monkeypatch, gateway_loop, _running_agents={"tg-42": object()})
+
+    finished = False
+    if busy == "cron":
+        monkeypatch.setattr("cron.scheduler.get_running_job_ids", lambda: {"job-7"})
+    else:
+        api_adapter = SimpleNamespace(active_agent_work_count=lambda: 1)
+        runner.adapters = {**runner.adapters, Platform.API_SERVER: api_adapter}
+
+    def _finish_the_extra_work(_interval):
+        nonlocal finished
+        finished = True
+        if busy == "cron":
+            monkeypatch.setattr("cron.scheduler.get_running_job_ids", lambda: set())
+        else:
+            api_adapter.active_agent_work_count = lambda: 0
+
+    monkeypatch.setattr(restart_tool, "_idle_sleep", _finish_the_extra_work)
+    register, wait = _mock_confirm(monkeypatch, "restart")
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    register.assert_called_once()
+    wait.assert_called_once()
+    assert finished, "the post-confirm idle wait never ran"
+    runner.request_restart.assert_called_once()
+
+
+def test_fail_closed_on_an_empty_running_agents_still_confirms(gateway_loop, monkeypatch):
+    """An empty ``_running_agents`` is not proof of being alone — confirm runs."""
+    from plugins.gateway_restart import tool as restart_tool
+
+    runner = _live_runner(monkeypatch, gateway_loop)  # _running_agents = {}
+    register, wait = _mock_confirm(monkeypatch, "restart")
+    slept = MagicMock()
+    monkeypatch.setattr(restart_tool, "_idle_sleep", slept)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    register.assert_called_once()
+    wait.assert_called_once()
+    _assert_unlimited_wait(wait)
+    # No other work in flight → the idle wait is a no-op, not a sleep.
+    slept.assert_not_called()
+    runner.request_restart.assert_called_once()
+
+
+def test_cancel_with_other_sessions_live_never_waits_nor_restarts(
+    gateway_loop, monkeypatch
+):
+    """A non-matching reply cancels before any idle wait or drain."""
+    from plugins.gateway_restart import tool as restart_tool
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _running_agents={"tg-42": object(), "tg-99": object()},
+    )
+    _register, _wait = _mock_confirm(monkeypatch, "not now")
+    slept = MagicMock()
+    monkeypatch.setattr(restart_tool, "_idle_sleep", slept)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    slept.assert_not_called()
+    runner.request_restart.assert_not_called()
+
+
 # ── the Discord confirmation embed ──────────────────────────────────────────
 #
 # On Discord the confirm gate renders as ONE dedicated embed owned by the
