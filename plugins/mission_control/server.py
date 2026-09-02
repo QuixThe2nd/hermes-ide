@@ -892,11 +892,50 @@ def clamp_label(text):
     return text
 
 
+def _home_root():
+    """The resolved root every served database must live inside.
+
+    That root is the directory holding MAIN_DB with symlinks resolved:
+    MAIN_DB is <HERMES_HOME>/state.db by construction, and the tests
+    and the CLI re-point these module knobs at a scratch home, so
+    deriving the root here — at call time, from the knob — honors
+    exactly the home this process is configured to serve, never a
+    different one captured at import."""
+    return os.path.realpath(os.path.dirname(os.path.abspath(MAIN_DB)))
+
+
+def _db_stays_in_home(path, root):
+    """True when a candidate state.db fully resolves inside root.
+
+    Every path component counts: a profile directory that is a symlink
+    out of the home, or a state.db that is one, resolves outside root
+    and is rejected here — before any connection is opened — so no
+    read, write, spawn or token lookup can reach a database the home
+    did not configure. A candidate that cannot be resolved (missing,
+    broken, permission-denied, or racing away mid-check) answers False
+    instead of raising: discovery may only ever shrink."""
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return real == root or real.startswith(prefix)
+
+
 def discover_dbs():
-    """Yield (path, profile name) for the main DB then each profile DB."""
-    found = [(MAIN_DB, "default")]
+    """Yield (path, profile name) for the main DB then each profile DB.
+
+    Every candidate must stay inside _home_root(): a profile directory
+    or state.db symlinked outside the configured home — and anything
+    missing or unreadable — is dropped before it is ever returned, so
+    every surface built on this mapping (inbox, chat, feed, lineage,
+    archive sync, spawns) can only ever touch in-root databases."""
+    root = _home_root()
+    found = []
+    if _db_stays_in_home(MAIN_DB, root):
+        found.append((MAIN_DB, "default"))
     for path in sorted(glob.glob(PROFILE_GLOB)):
-        if os.path.isfile(path):
+        if os.path.isfile(path) and _db_stays_in_home(path, root):
             found.append((path, os.path.basename(os.path.dirname(path))))
     return found
 
@@ -1809,6 +1848,12 @@ SECRET_KEY_WORDS = ("password", "passwd", "passphrase", "secret", "token",
 SECRET_KEY_RE = re.compile(
     "(?i)(?:%s)" % "|".join(w.replace("_", "[_-]?")
                             for w in SECRET_KEY_WORDS))
+# The same words as a name's required SUFFIX — exactly the judgment the
+# assignment pass below applies to a raw name, factored out so a
+# percent-decoded parameter name is judged by the same rule.
+SECRET_KEY_SUFFIX_RE = re.compile(
+    "(?i)(?:%s)$" % "|".join(w.replace("_", "[_-]?")
+                             for w in SECRET_KEY_WORDS))
 REDACTED = "[REDACTED]"
 
 # The one bounded redaction boundary every UI-exposed tool argument and
@@ -1825,6 +1870,11 @@ REDACTED = "[REDACTED]"
 # 4. Key/value secret assignments, quoted or bare — the FULL value is
 #    replaced (a quoted phrase like password: "hunter two" is one
 #    match, not a masked first word plus a leaked remainder).
+# 5. Percent-encoded parameter names — "Api%5FKey=…",
+#    "access%2Dtoken=…", "%41pi%5fkey=…" — spell the keyword with
+#    escapes the raw-name pass cannot see, so a name is judged again
+#    after exactly one safe percent-decoding pass of the NAME ONLY;
+#    the value is replaced whole, still exactly as written.
 AUTH_VALUE_RE = re.compile(
     r"(?i)\b(authorization|proxy[-_]authorization)\b(\s*[=:]\s*)"
     r"(?:bearer|basic|digest|token|oauth|negotiate|hmac|mutual)[ \t]+"
@@ -1845,6 +1895,82 @@ SECRET_ASSIGN_RE = re.compile(
     r"(?!\[REDACTED\])(\"[^\"]*\"|'[^']*'|[^\s,;&>]+)"
     % "|".join(w.replace("_", "[_-]?") for w in SECRET_KEY_WORDS))
 
+# A parameter NAME that carries at least one percent escape, its "="
+# and the value forms the assignment pass would have consumed — quoted
+# phrase or bare run, exactly the same value charset, so pass 5's
+# replacements match pass 4's shape. Only percent-bearing names ever
+# match, so ordinary text ("status=open", "a=b", prose) is not even a
+# candidate here, and a clean name like "redirect_uri" never blankets
+# the nested parameters its value may hold.
+ENCODED_PARAM_RE = re.compile(
+    r"(?<![A-Za-z0-9_.~%-])([A-Za-z0-9_.~%-]*%[A-Za-z0-9_.~%-]*)="
+    r"(\"[^\"]*\"|'[^']*'|[^\s,;&>]+)")
+
+
+def _param_name_is_sensitive(name):
+    """True when a URL/query/form parameter name is secret-bearing.
+
+    The raw name counts exactly when the assignment pass above would
+    have taken it (a secret keyword as the name's suffix). Otherwise
+    the name gets ONE safe percent-decoding pass — the name only,
+    never any value — and is judged again by the same suffix rule, so
+    "Api%5FKey", "access%2Dtoken" and "%41pi%5fkey" all count while
+    "redirect%5Furi" and "token%5Fcount" do not. Malformed escapes
+    fail closed: whatever still holds an escape (or an undecodable
+    byte) after that one pass is judged by the broader substring test
+    AND by the most lenient further reading — bad escapes simply
+    dropped, "%%5Fapi%%5Fkey" reading as "__api_key" — so a name that
+    MIGHT decode to a keyword under any decoder redacts. Even a
+    decoder error counts as sensitive. Never raises.
+    """
+    if SECRET_KEY_SUFFIX_RE.search(name):
+        return True
+    try:
+        decoded = unquote(name)
+    except Exception:
+        return True
+    if SECRET_KEY_SUFFIX_RE.search(decoded):
+        return True
+    if "%" in decoded or "\N{REPLACEMENT CHARACTER}" in decoded:
+        if SECRET_KEY_RE.search(decoded):
+            return True
+        lenient = decoded.replace("%", "").replace(
+            "\N{REPLACEMENT CHARACTER}", "")
+        return bool(SECRET_KEY_SUFFIX_RE.search(lenient))
+    return False
+
+
+def _redact_encoded_params(text, depth=0):
+    """Mask the values of percent-encoded sensitive parameter names.
+
+    Pass 5 of the redaction boundary: each candidate name=value pair is
+    judged by _param_name_is_sensitive(); a sensitive name keeps its
+    encoded spelling and loses its whole value — quoted forms included
+    — to REDACTED, with nothing decoded, normalized or reordered in the
+    original text. A benign encoded name's value may itself carry
+    nested parameters (a redirect target URL), so that value is
+    re-scanned on its own, strictly shorter each level and capped at a
+    few levels, instead of being blanket-consumed and hiding them.
+    """
+    if depth >= 4 or "%" not in text:
+        return text
+    out, last = [], 0
+    for m in ENCODED_PARAM_RE.finditer(text):
+        value = m.group(2)
+        if _param_name_is_sensitive(m.group(1)):
+            fixed = REDACTED
+        else:
+            fixed = _redact_encoded_params(value, depth + 1)
+        if fixed == value:
+            continue
+        out.append(text[last:m.start(2)])
+        out.append(fixed)
+        last = m.end()
+    if not out:
+        return text
+    out.append(text[last:])
+    return "".join(out)
+
 
 def redact_secret_text(text):
     """One string -> the same string with credential-shaped content
@@ -1853,8 +1979,9 @@ def redact_secret_text(text):
     Runs on every string that can reach a tool argument summary, a tool
     detail block, or a Discord error line: Authorization headers
     (keyword + scheme + full credential), bare bearer tokens,
-    user:password URL/DB-URI userinfo, and password/token/api-key style
-    assignments with their full quoted or bare value. Useful
+    user:password URL/DB-URI userinfo, password/token/api-key style
+    assignments with their full quoted or bare value, and the same
+    assignments hiding behind a percent-encoded parameter name. Useful
     non-secret text (paths, commands, ordinary words) passes through.
     """
     if not text:
@@ -1877,6 +2004,7 @@ def redact_secret_text(text):
         text)
     text = SECRET_ASSIGN_RE.sub(
         lambda m: m.group(1) + m.group(2) + REDACTED, text)
+    text = _redact_encoded_params(text)
     return text
 
 
@@ -2279,7 +2407,12 @@ def load_session_cwd(profile, session_id, dbs):
 
 
 def mission_control_ids():
-    """mission-control session ids from the main DB, newest first."""
+    """mission-control session ids from the main DB, newest first.
+
+    Bound by the same rule as discovery: a main DB symlinked outside
+    the configured home is not read at all."""
+    if not _db_stays_in_home(MAIN_DB, _home_root()):
+        return []
     try:
         con = sqlite3.connect("file:" + quote(MAIN_DB) + "?mode=ro",
                               uri=True, timeout=2.0)

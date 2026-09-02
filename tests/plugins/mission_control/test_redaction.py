@@ -74,6 +74,16 @@ QUOTED_PASS = "hunter two sentinel words"
 URI_PASS = "SENTINEL-uri-password-99"
 BASIC_B64 = "c2VudGluZWxJc2FvbWU6cGFzcw=="
 
+# The same credential shapes behind percent-encoded parameter NAMES
+# ("Api%5FKey", "access%2Dtoken", "%41pi%5fkey"): the keyword is
+# invisible to a raw-name matcher, so only a boundary that decodes the
+# name can recognize them. Benign neighbors ride along in the same
+# strings to prove precision.
+ENC_URL = "ENCODED_SENTINEL_937451"
+ENC_ACCESS = "ENCODED-ACCESS-TOKEN-8675309"
+ENC_QUOTED = "encoded quoted passphrase words 424242"
+ENC_MALFORMED = "MALFORMED-SENTINEL-889900"
+
 TOOL_RESULT = (
     "HTTP/1.1 200 OK\n"
     "Authorization: Bearer %s\n"
@@ -85,6 +95,19 @@ TOOL_RESULT = (
     "GET /v1/tasks?status=open returned 3 rows\n"   # useful, non-secret
     "see /var/log/hermes/tasks.log for details\n"    # useful, non-secret
     % (BEARER, PLAIN_KEY, PLAIN_KEY, QUOTED_PASS, URI_PASS, BASIC_B64))
+
+# Built by concatenation, not %-formatting: the encoded names hold
+# literal '%' escapes that would collide with format specs.
+ENCODED_TOOL_RESULT = (
+    "GET https://example.test/?status=open&Api%5FKey=" + ENC_URL + "\n"
+    "GET https://example.test/?access%2Dtoken=" + ENC_ACCESS
+    + "&scope=read\n"
+    "form body: %41pi%5fkey=" + ENC_ACCESS
+    + "&user=bob&token%5Fcount=2\n"
+    'header form Api%5FKey="' + ENC_QUOTED + '"\n'
+    "broken escape api%5Fkey%zz=" + ENC_MALFORMED + "\n"
+    "clean redirect%5Furi=https://ok.test/a?b=1\n"   # useful, non-secret
+)
 
 # The pending call's arguments: parsed JSON with nested credential
 # keys and textual forms — what summarize_arguments renders.
@@ -166,7 +189,8 @@ class RedactionCase(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8")
 
-    SENTINELS = (BEARER, PLAIN_KEY, QUOTED_PASS, URI_PASS, BASIC_B64)
+    SENTINELS = (BEARER, PLAIN_KEY, QUOTED_PASS, URI_PASS, BASIC_B64,
+                 ENC_URL, ENC_ACCESS, ENC_QUOTED, ENC_MALFORMED)
 
 
 class TestSurfacesStayClean(RedactionCase):
@@ -219,6 +243,47 @@ class TestSurfacesStayClean(RedactionCase):
         self.assertIn("[REDACTED]", rendered)
         # the non-secret argument fields survive the summary
         self.assertIn("workdir=/repo", pending[0]["args"])
+
+    def test_encoded_parameter_names_hidden_on_page_and_feed(self):
+        """Credentials behind percent-encoded parameter names never
+        reach the rendered transcript or the feed, while the benign
+        neighbors in the very same strings stay readable."""
+        now = time.time()
+        con = sqlite3.connect(self.db)
+        try:
+            con.execute(
+                "INSERT INTO sessions (id, source, title, started_at,"
+                " last_activity_at, archived, hidden)"
+                " VALUES ('sess_enc','cli','encoded fixture',?,?,0,0)",
+                (now - 90, now - 5))
+            con.execute(
+                "INSERT INTO messages (session_id, role, content,"
+                " tool_name, timestamp)"
+                " VALUES ('sess_enc','tool',?,'http',?)",
+                (ENCODED_TOOL_RESULT, now - 5))
+            con.commit()
+        finally:
+            con.close()
+        status, page = self.fetch("/s/default/sess_enc")
+        self.assertEqual(status, 200)
+        for sentinel in self.SENTINELS:
+            self.assertNotIn(sentinel, page, sentinel)
+        # the encoded name keeps its spelling, the whole value goes
+        self.assertIn("Api%5FKey=[REDACTED]", page)
+        self.assertIn("access%2Dtoken=[REDACTED]", page)
+        self.assertIn("%41pi%5fkey=[REDACTED]", page)
+        self.assertIn("api%5Fkey%zz=[REDACTED]", page)
+        # benign parameters and prose in the same strings survive
+        self.assertIn("status=open", page)
+        self.assertIn("scope=read", page)
+        self.assertIn("user=bob", page)
+        self.assertIn("token%5Fcount=2", page)
+        self.assertIn("redirect%5Furi=https://ok.test/a?b=1", page)
+        status, body = self.fetch("/s/default/sess_enc/feed?after=0")
+        self.assertEqual(status, 200)
+        for sentinel in self.SENTINELS:
+            self.assertNotIn(sentinel, body, sentinel)
+        self.assertIn("[REDACTED]", body)
 
 
 class TestMatcherShapes(unittest.TestCase):
@@ -305,6 +370,94 @@ class TestMatcherShapes(unittest.TestCase):
         summary = self.mod.summarize_arguments(json.dumps(obj))
         for sentinel in sentinels:
             self.assertNotIn(sentinel, summary)
+
+
+class TestEncodedParameterNames(unittest.TestCase):
+    """The boundary behind the pass: a parameter name is judged after
+    one safe percent-decoding pass of the NAME ONLY, its value is
+    replaced whole exactly as written, and malformed escapes fail
+    closed without ever raising."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="redact-enc-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.mod = load_server(self.tmp, os.path.join(self.tmp,
+                                                      "state.db"))
+
+    def r(self, text):
+        return self.mod.redact_secret_text(text)
+
+    def test_encoded_names_redact_across_encodings_and_case(self):
+        for text, needle in (
+            ("https://example.test/?status=open&Api%5FKey=" + ENC_URL,
+             ENC_URL),
+            ("https://example.test/?Api%5Fkey=" + ENC_URL + "&x=1",
+             ENC_URL),
+            ("https://example.test/?access%2Dtoken=" + ENC_ACCESS
+             + "&scope=read", ENC_ACCESS),
+            ("form body: %41pi%5fkey=" + ENC_ACCESS + "&user=bob",
+             ENC_ACCESS),
+            ("%61PI%5FKEY=" + ENC_URL, ENC_URL),
+            ("API%2DKEY=" + ENC_URL, ENC_URL),
+            ("x%5Fgithub%5Ftoken=" + ENC_URL, ENC_URL),
+            ('header form Api%5FKey="' + ENC_QUOTED + '"', ENC_QUOTED),
+            # the VALUE is never decoded, only replaced whole
+            ("api%5Fkey=abc%20" + ENC_URL, "abc%20" + ENC_URL),
+        ):
+            out = self.r(text)
+            self.assertNotIn(needle, out, text)
+            self.assertIn("[REDACTED]", out, text)
+
+    def test_sensitive_encoded_name_keeps_spelling_and_marker(self):
+        out = self.r("https://example.test/?status=open&Api%5FKey="
+                     + ENC_URL)
+        self.assertIn("Api%5FKey=[REDACTED]", out)
+        self.assertIn("status=open", out)
+        # and a quoted phrase is one replacement, no leaked remainder
+        out = self.r('Api%5Fkey="' + ENC_QUOTED + '"')
+        self.assertNotIn("encoded", out)
+        self.assertNotIn("passphrase", out)
+
+    def test_benign_neighbors_pass_through_untouched(self):
+        for text in (
+            "https://example.test/?status=open&user=bob",
+            "redirect%5Furi=https://ok.test/a?b=1",
+            "token%5Fcount=2",
+            "progress at 100%=done",
+            "clean https://example.com/path?query=1",
+        ):
+            self.assertEqual(self.r(text), text, text)
+
+    def test_nested_encoded_pair_inside_benign_value(self):
+        out = self.r("redirect%5Fto=https://other.test/?api%5Fkey="
+                     + ENC_URL + "&x=1")
+        self.assertNotIn(ENC_URL, out)
+        self.assertIn("redirect%5Fto=", out)
+        self.assertIn("x=1", out)
+
+    def test_malformed_escapes_fail_closed_without_raising(self):
+        for text in ("api%5Fkey%zz=" + ENC_MALFORMED,
+                     "token%gg=" + ENC_MALFORMED,
+                     "%%5F%%5Fapi%%5Fkey=" + ENC_MALFORMED,
+                     "%=%=%%",
+                     "api%5Fkey=%C3%28",
+                     "trailing %"):
+            out = self.r(text)  # must not raise, whatever it holds
+            self.assertIsInstance(out, str)
+        for text in ("api%5Fkey%zz=" + ENC_MALFORMED,
+                     "token%gg=" + ENC_MALFORMED,
+                     "%%5F%%5Fapi%%5Fkey=" + ENC_MALFORMED):
+            self.assertNotIn(ENC_MALFORMED, self.r(text), text)
+            self.assertIn("[REDACTED]", self.r(text), text)
+
+    def test_pass_is_idempotent(self):
+        for text in ("https://example.test/?status=open&Api%5FKey="
+                     + ENC_URL,
+                     "redirect%5Fto=https://other.test/?api%5Fkey="
+                     + ENC_URL + "&x=1",
+                     "api%5Fkey%zz=" + ENC_MALFORMED):
+            once = self.r(text)
+            self.assertEqual(self.r(once), once, text)
 
 
 if __name__ == "__main__":

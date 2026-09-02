@@ -251,6 +251,185 @@ class TestLiveHomeUntouchable(IsolationCase):
             os.path.join(self.decoy, "spawned.txt")))
 
 
+class TestDiscoveryStaysInsideHome(IsolationCase):
+    """A database outside the configured home — reached by a profile
+    directory symlink or by a state.db symlink — is never discovered,
+    never loaded, never written, and never reaches a response; the
+    valid in-root DBs keep working beside it."""
+
+    def setUp(self):
+        super().setUp()
+        # A third location: outside the configured home, with a marker
+        # row a leak would surface.
+        self.outside = tempfile.mkdtemp(prefix="iso-outside-")
+        self.addCleanup(shutil.rmtree, self.outside, ignore_errors=True)
+        self.outside_db = os.path.join(self.outside, "state.db")
+        now = time.time()
+        con = sqlite3.connect(self.outside_db)
+        con.executescript(SESSION_SCHEMA)
+        con.execute(
+            "INSERT INTO sessions (id, source, title, started_at,"
+            " last_activity_at, archived, hidden)"
+            " VALUES ('SENTINEL-outside-row','cli','outside marker',"
+            " ?,?,0,0)", (now - 60, now))
+        con.commit()
+        con.close()
+
+        # In-root control profile: a real directory and real state.db.
+        inroot = os.path.join(self.fixture, "profiles", "real")
+        os.makedirs(inroot, exist_ok=True)
+        con = sqlite3.connect(os.path.join(inroot, "state.db"))
+        con.executescript(SESSION_SCHEMA)
+        con.execute(
+            "INSERT INTO sessions (id, source, title, started_at,"
+            " last_activity_at, archived, hidden)"
+            " VALUES ('sess_inroot','cli','in-root row',?,?,0,0)",
+            (now - 90, now - 5))
+        con.commit()
+        con.close()
+
+        # Escape form 1: the whole profile directory is a symlink out.
+        os.symlink(self.outside,
+                   os.path.join(self.fixture, "profiles", "escape"))
+        # Escape form 2: the profile directory is real, its state.db
+        # is a symlink out.
+        filed = os.path.join(self.fixture, "profiles", "escapefile")
+        os.makedirs(filed, exist_ok=True)
+        os.symlink(self.outside_db,
+                   os.path.join(filed, "state.db"))
+        # Broken scenery that must also pass without a crash: a broken
+        # profile-directory symlink, a broken state.db symlink and an
+        # empty profile directory.
+        os.symlink(os.path.join(self.outside, "not-there"),
+                   os.path.join(self.fixture, "profiles", "broken"))
+        brokenfile = os.path.join(self.fixture, "profiles", "brokenfile")
+        os.makedirs(brokenfile, exist_ok=True)
+        os.symlink(os.path.join(self.outside, "gone.db"),
+                   os.path.join(brokenfile, "state.db"))
+        os.makedirs(os.path.join(self.fixture, "profiles", "emptydir"))
+
+    def discovered_names(self):
+        return {name for _path, name in self.mod.discover_dbs()}
+
+    def outside_digest(self):
+        with open(self.outside_db, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+
+    def outside_files(self):
+        out = []
+        for root, _dirs, names in os.walk(self.outside):
+            for name in names:
+                out.append(os.path.relpath(os.path.join(root, name),
+                                           self.outside))
+        return sorted(out)
+
+    def test_discovery_drops_candidates_resolving_outside(self):
+        names = self.discovered_names()
+        self.assertNotIn("escape", names)
+        self.assertNotIn("escapefile", names)
+        self.assertNotIn("broken", names)
+        self.assertNotIn("brokenfile", names)
+        self.assertIn("default", names)
+        self.assertIn("real", names)
+        # an escaping profile has no trusted home either, so nothing
+        # can be spawned or routed into it
+        self.assertIsNone(self.mod.profile_home("escape"))
+        self.assertIsNone(self.mod.profile_home("escapefile"))
+        self.assertEqual(self.mod.profile_home("real"),
+                         os.path.join(self.fixture, "profiles", "real"))
+
+    def test_outside_marker_rows_never_surface_nor_load(self):
+        rows, _notes = self.mod.load_sessions(time.time())
+        ids = [r["id"] for r in rows]
+        self.assertNotIn("SENTINEL-outside-row", ids)
+        self.assertIn("sess_fix", ids)       # in-root main control
+        self.assertIn("sess_inroot", ids)    # in-root profile control
+        dbs = {name: path for path, name in self.mod.discover_dbs()}
+        self.assertNotIn("escape", dbs)
+        self.assertNotIn("escapefile", dbs)
+        # an escaping profile is simply an unknown profile: nothing
+        # about it can be loaded
+        with self.assertRaises(KeyError):
+            self.mod.load_chat("escape", "SENTINEL-outside-row", dbs)
+        with self.assertRaises(KeyError):
+            self.mod.load_chat("escapefile", "SENTINEL-outside-row",
+                               dbs)
+        # and the served inbox never shows the marker, over real HTTP
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.mod.Handler)
+        threading.Thread(target=httpd.serve_forever,
+                         daemon=True).start()
+        try:
+            with urllib.request.urlopen(
+                    "http://127.0.0.1:%d/" % httpd.server_address[1],
+                    timeout=10) as resp:
+                page = resp.read().decode("utf-8")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertNotIn("SENTINEL-outside-row", page)
+        self.assertNotIn("outside marker", page)
+        self.assertIn("in-root row", page)
+
+    def test_outside_home_is_never_touched(self):
+        digest_before = self.outside_digest()
+        files_before = self.outside_files()
+        self.mod.load_sessions(time.time())
+        self.mod.discord_sync_once(time.time())
+        self.mod.lineage_index(time.time())
+        self.assertEqual(self.outside_digest(), digest_before)
+        self.assertEqual(self.outside_files(), files_before)
+
+    def test_main_db_symlinked_outside_is_not_served(self):
+        link = os.path.join(self.fixture, "mainlink.db")
+        os.symlink(self.outside_db, link)
+        with unittest.mock.patch.object(self.mod, "MAIN_DB", link):
+            names = self.discovered_names()
+            self.assertNotIn("default", names)
+            self.assertIn("real", names)
+            self.assertEqual(self.mod.mission_control_ids(), [])
+            rows, _notes = self.mod.load_sessions(time.time())
+            self.assertNotIn("SENTINEL-outside-row",
+                             [r["id"] for r in rows])
+            self.assertIn("sess_inroot", [r["id"] for r in rows])
+
+    def test_missing_racing_and_denied_candidates_never_crash(self):
+        # A candidate that disappears between discovery passes is
+        # simply gone on the next pass.
+        raced = os.path.join(self.fixture, "profiles", "raced")
+        os.makedirs(raced, exist_ok=True)
+        raced_db = os.path.join(raced, "state.db")
+        con = sqlite3.connect(raced_db)
+        con.executescript(SESSION_SCHEMA)
+        con.commit()
+        con.close()
+        self.assertIn("raced", self.discovered_names())
+        os.remove(raced_db)
+        self.assertNotIn("raced", self.discovered_names())
+        # A missing main DB stays a load-time note, never a crash, and
+        # the in-root profiles keep working around it.
+        with unittest.mock.patch.object(
+                self.mod, "MAIN_DB",
+                os.path.join(self.fixture, "gone.db")):
+            rows, notes = self.mod.load_sessions(time.time())
+            self.assertIn("sess_inroot", [r["id"] for r in rows])
+            self.assertTrue(any("default" in n for n in notes))
+        # A resolution that fails outright (permission denied to even
+        # resolve the candidate) rejects that candidate only.
+        real_realpath = os.path.realpath
+
+        def denied(path):
+            if "escape" in path:
+                raise OSError("permission denied")
+            return real_realpath(path)
+
+        with unittest.mock.patch("os.path.realpath", side_effect=denied):
+            names = self.discovered_names()
+        self.assertEqual(names, {"default", "real"})
+        # The full inventory still answers a page render after all of it.
+        rows, _notes = self.mod.load_sessions(time.time())
+        self.assertIn("sess_fix", [r["id"] for r in rows])
+
+
 class TestModuleStateResets(IsolationCase):
     """A fresh module instance shares nothing with a used one: jobs,
     notes, children, epochs and the lineage cache all start empty —
