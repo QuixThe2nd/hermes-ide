@@ -42,11 +42,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 # Imported at module level (unlike hermes_cli.config, see the header):
 # fallback_config imports nothing beyond typing, so no cycle can form.
-from hermes_cli.fallback_config import (
-    RETIRED_OX_ALPHA_MODEL,
-    RETIRED_OX_ALPHA_PROVIDER,
-    is_retired_ox_alpha_route,
-)
+from hermes_cli.fallback_config import is_retired_ox_alpha_route
 
 #: Auto-migration support floor. Configs whose on-disk ``_config_version`` is
 #: below this are NOT auto-migrated any more (policy decision, July 2026):
@@ -922,9 +918,22 @@ _ROUTE_OWNED_MODEL_KEYS = (
 )
 
 
-def _route_part(value: Any) -> str:
-    """Case/whitespace-normalized provider or model id."""
-    return str(value or "").strip().lower()
+def _endpoint_url(holder: Any) -> Any:
+    """Endpoint a route mapping carries, with the ``api_base`` alias applied.
+
+    ``api_base`` → ``base_url`` is normalized at the load/save chokepoint
+    (``_normalize_root_model_keys``, issue #8919) — fallback-only, never
+    overriding an explicit ``base_url``. Retirement classification must look
+    through the same alias: a custom endpoint named the intuitive way loads
+    as that endpoint, and retiring it as the inferred OpenRouter route would
+    destroy a working manual route.
+    """
+    if not isinstance(holder, dict):
+        return None
+    base_url = holder.get("base_url")
+    if base_url:
+        return base_url
+    return holder.get("api_base")
 
 
 def _is_retired_ox_alpha_entry(entry: Any) -> bool:
@@ -932,15 +941,17 @@ def _is_retired_ox_alpha_entry(entry: Any) -> bool:
 
     Provider and model are case/whitespace normalized, so ``OpenRouter`` /
     `` Stealth/OX-Alpha `` also matches — but no other openrouter model
-    (and no other provider) ever does. Unlike the primary matcher below,
-    a fallback entry must name the provider explicitly: the chain only
-    accepts entries with both halves, so there is nothing to infer.
+    (and no other provider) ever does. An ``auto`` provider — or an omitted
+    one, for raw collection entries ``get_fallback_chain`` never sees —
+    names the same route too when the model id is the retired one and no
+    custom endpoint re-routes it: the runtime resolves that
+    vendor-namespaced id to OpenRouter. A custom ``base_url``/``api_base``
+    endpoint keeps the entry alive, exactly as for the primary route.
     """
     if not isinstance(entry, dict):
         return False
-    return (
-        _route_part(entry.get("provider")) == RETIRED_OX_ALPHA_PROVIDER
-        and _route_part(entry.get("model")) == RETIRED_OX_ALPHA_MODEL
+    return is_retired_ox_alpha_route(
+        entry.get("provider"), entry.get("model"), _endpoint_url(entry)
     )
 
 
@@ -954,14 +965,26 @@ def _primary_routes_retired_model(raw_model: Any) -> bool:
     OpenRouter route an explicit ``provider: openrouter`` pins. A named
     custom provider serving the same model id is a different route and is
     never matched here; so is a bare/``auto`` primary whose custom
-    ``base_url`` makes the runtime resolve a custom endpoint (e.g. a local
-    server) instead of inferring OpenRouter — v41 must preserve that route.
+    ``base_url`` (or its ``api_base`` alias, normalized below) makes the
+    runtime resolve a custom endpoint (e.g. a local server) instead of
+    inferring OpenRouter — v41 must preserve that route.
 
     A dict-valued id (``model.default: {provider: ..., model: ...}``) is
     flattened with the canonical ``split_model_config_default`` splitter —
     the same one ``_get_model_config`` uses at load time — so the supported
     nested shape is recognized here too and cannot slip past the scrub only
     to be flattened back into the dead route after the version is stamped.
+    Provider precedence mirrors ``_normalize_root_model_keys``' flattening:
+    the nested provider wins only over an absent or ``auto`` outer
+    ``model.provider`` — an explicitly configured outer provider pins the
+    manual route the config actually loads as, which is never the retired
+    one, so it must survive the scrub untouched. ``auto`` is matched
+    case-insensitively after whitespace trim, the same normalization every
+    route consumer applies (``resolve_requested_provider``,
+    ``is_retired_ox_alpha_route``): a padded ``" AUTO "`` is the merged
+    default, not an explicit provider — gating on it case-sensitively would
+    hand the classifier an ``auto`` it then resolves by inference,
+    scrubbing the manual nested route it was supposed to protect.
     """
     if isinstance(raw_model, dict):
         raw_id: Any = None
@@ -972,10 +995,12 @@ def _primary_routes_retired_model(raw_model: Any) -> bool:
         from hermes_cli.config import split_model_config_default
 
         model_id, nested_provider = split_model_config_default(raw_id)
-        # Nested provider wins, outer ``provider`` is the fallback — exactly
-        # the precedence _get_model_config applies when it flattens.
-        provider = nested_provider or raw_model.get("provider")
-        base_url = raw_model.get("base_url")
+        outer_provider = str(raw_model.get("provider") or "").strip()
+        if outer_provider and outer_provider.lower() != "auto":
+            provider: Any = outer_provider
+        else:
+            provider = nested_provider or outer_provider
+        base_url = _endpoint_url(raw_model)
     else:
         model_id, provider, base_url = raw_model, None, None
     return is_retired_ox_alpha_route(provider, model_id, base_url)
@@ -1031,11 +1056,13 @@ def _promoted_model_config(previous: Any, promotee: Dict[str, Any]) -> Dict[str,
 
 def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 40 → 41: retire the openrouter/stealth/ox-alpha route ──
-    # See _RETIRED_OX_ALPHA_* above. Three scrub rules:
+    # See the retired-route section above. Three scrub rules:
     #
     # * retired fallback entries are removed from BOTH fallback_providers
     #   (modern list shape) and fallback_model (legacy dict/list shape),
-    #   preserving order, shape, and every unrelated entry;
+    #   preserving order, shape, and every unrelated entry — the route-aware
+    #   predicate also catches auto/omitted-provider entries that resolve to
+    #   OpenRouter, while custom-endpoint ones survive;
     # * a retired primary promotes the first surviving fallback in effective
     #   chain order — fallback_providers first, then fallback_model, exactly
     #   as hermes_cli.fallback_config.get_fallback_chain defines it — into
