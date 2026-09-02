@@ -19,8 +19,10 @@ budget marks the job ``failed`` with every artifact preserved and no
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -32,9 +34,17 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from plugins.deep_research import WRITER_NO_FILE_TOOLSET
 from plugins.deep_research import citations as citations_mod
 from plugins.deep_research import jobs, prompts
-from plugins.deep_research.config import DeepResearchConfig, load_deep_research_config
+from plugins.deep_research.config import (
+    MAX_MAX_PARALLEL,
+    MAX_TIMEOUT_MINUTES,
+    MIN_MAX_PARALLEL,
+    MIN_TIMEOUT_MINUTES,
+    DeepResearchConfig,
+    load_deep_research_config,
+)
 from plugins.deep_research.evidence import EVIDENCE_ENV, LANE_ENV
 from plugins.deep_research.launcher import resolve_worker_argv
 
@@ -45,6 +55,12 @@ _STDERR_TAIL_CHARS = 300
 
 RESEARCH_JOB_ENV = "HERMES_RESEARCH_JOB"
 WRITER_TOOLSETS = "file_readonly"
+# worker_file_tools=false: lanes keep retrieval minus the filesystem, the
+# writer gets the plugin-owned empty research_writer toolset (synthesis-only:
+# no files, no retrieval — the lane reports are already injected into its
+# prompt). The toolset is registered (sealed) by the plugin at load time.
+NO_FILE_LANE_TOOLSETS = "web,browser"
+NO_FILE_WRITER_TOOLSETS = WRITER_NO_FILE_TOOLSET
 
 SpawnResult = Tuple[int, str, str]  # (exit_code, stdout, stderr_tail)
 Spawner = Callable[[Sequence[str], Dict[str, str], float], SpawnResult]
@@ -56,6 +72,91 @@ class JobAborted(Exception):
 
 class BudgetExhausted(JobAborted):
     """The job's own time budget ran out mid-run."""
+
+
+class InvalidFrozenRequest(ValueError):
+    """request.json is missing, unreadable, malformed, or structurally invalid."""
+
+
+# Stable, non-secret identity recorded on a refused job (never request content).
+REQUEST_INVALID_ERROR = "invalid frozen request"
+REQUEST_INVALID_PHASE = "request_invalid"
+
+# Same shape as hermes_cli.profiles' profile id rule, inlined so the runner
+# stays plugin-local. The profile becomes a ``-p`` argv value.
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def load_frozen_request(directory: Path) -> Dict[str, Any]:
+    """Strictly read and validate the frozen ``request.json``.
+
+    Unlike :func:`jobs.read_request` — which degrades to ``{}`` so notify /
+    list / status callers stay up — the runner fails closed: anything short of
+    a structurally valid request raises :class:`InvalidFrozenRequest` *before*
+    any lane or writer subprocess is spawned, so a corrupted request can never
+    run with silently defaulted budgets, profile, or tool policy. A valid
+    pre-flag request (every required field present, ``worker_file_tools``
+    absent) still validates and keeps the historical file-tools-on default.
+    """
+    path = directory / "request.json"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            request = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise InvalidFrozenRequest(f"request.json missing or unreadable: {exc}") from exc
+    if not isinstance(request, dict):
+        raise InvalidFrozenRequest("request.json is not a JSON object")
+    _validate_frozen_request(directory, request)
+    return request
+
+
+def _validate_frozen_request(directory: Path, request: Dict[str, Any]) -> None:
+    """Reject a partial/corrupt frozen request. Messages name fields, never values."""
+    job_id = request.get("job_id")
+    if not jobs.is_canonical_job_id(job_id) or job_id != directory.name:
+        raise InvalidFrozenRequest("job_id missing, non-canonical, or not matching the job directory")
+
+    brief = request.get("brief")
+    if not isinstance(brief, str) or not brief.strip():
+        raise InvalidFrozenRequest("brief must be a non-empty string")
+
+    questions = request.get("research_questions")
+    if questions is not None and (
+        not isinstance(questions, list)
+        or not questions
+        or any(not isinstance(q, str) or not q.strip() for q in questions)
+    ):
+        raise InvalidFrozenRequest("research_questions must be null or a non-empty list of non-empty strings")
+
+    profile = request.get("worker_profile")
+    if not isinstance(profile, str) or not _PROFILE_ID_RE.fullmatch(profile):
+        raise InvalidFrozenRequest("worker_profile must be a valid profile name")
+
+    timeout = request.get("timeout_minutes")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not (MIN_TIMEOUT_MINUTES <= timeout <= MAX_TIMEOUT_MINUTES)
+    ):
+        raise InvalidFrozenRequest(
+            f"timeout_minutes must be a number within {MIN_TIMEOUT_MINUTES}-{MAX_TIMEOUT_MINUTES}"
+        )
+
+    max_parallel = request.get("max_parallel")
+    if (
+        isinstance(max_parallel, bool)
+        or not isinstance(max_parallel, int)
+        or not (MIN_MAX_PARALLEL <= max_parallel <= MAX_MAX_PARALLEL)
+    ):
+        raise InvalidFrozenRequest(
+            f"max_parallel must be an integer within {MIN_MAX_PARALLEL}-{MAX_MAX_PARALLEL}"
+        )
+
+    # Absent (pre-flag jobs on disk) means the historical file-tools-on
+    # behavior; present means an actual bool — never bool()-coerced.
+    worker_file_tools = request.get("worker_file_tools", True)
+    if not isinstance(worker_file_tools, bool):
+        raise InvalidFrozenRequest("worker_file_tools must be a boolean when present")
 
 
 def default_spawn(argv: Sequence[str], env: Dict[str, str], timeout: float) -> SpawnResult:
@@ -141,6 +242,9 @@ class ResearchRunner:
         self.log = logger or _job_logger(jobs.job_dir(job_id, self.hermes_home))
         self._clock = clock
         self._aborted = threading.Event()
+        # Read from the frozen request in _run; default preserves old behavior
+        # for any direct-use path that skips _run's request read.
+        self._worker_file_tools = True
 
     # -- public entry ------------------------------------------------------
 
@@ -157,17 +261,34 @@ class ResearchRunner:
             return jobs.read_status(directory).get("state") or jobs.STATE_FAILED
 
     def _run(self, directory: Path) -> str:
-        request = jobs.read_request(directory)
         status = jobs.read_status(directory)
         if status.get("state") in jobs.TERMINAL_STATES:
             return str(status["state"])  # already decided (e.g. cancelled pre-start)
 
-        brief = str(request.get("brief") or "")
+        try:
+            request = load_frozen_request(directory)
+        except InvalidFrozenRequest as exc:
+            # Fail closed before any lane/writer subprocess exists: a missing,
+            # unreadable, or structurally invalid frozen request must never
+            # run on silently defaulted budgets, profile, or tool policy.
+            self.log.error("job %s refused: %s", self.job_id, exc)
+            if self._finish(
+                directory, jobs.STATE_FAILED,
+                error=REQUEST_INVALID_ERROR, phase=REQUEST_INVALID_PHASE,
+            ):
+                jobs.mark_lanes_failed(directory, REQUEST_INVALID_ERROR)
+            return jobs.STATE_FAILED
+
+        brief = str(request["brief"])
         questions = request.get("research_questions") or []
         objectives: List[str] = [str(q) for q in questions] or [brief]
-        profile = str(request.get("worker_profile") or self.config.worker_profile)
-        budget_seconds = float(request.get("timeout_minutes") or self.config.default_timeout_minutes) * 60
-        max_parallel = int(request.get("max_parallel") or self.config.max_parallel)
+        profile = str(request["worker_profile"])
+        budget_seconds = float(request["timeout_minutes"]) * 60
+        max_parallel = int(request["max_parallel"])
+        # Frozen at job creation; missing (pre-flag jobs on disk) means the
+        # historical file-tools-on behavior. Live config is never re-consulted.
+        # load_frozen_request already guaranteed a real bool when present.
+        self._worker_file_tools = request.get("worker_file_tools", True)
         self.deadline = self._clock() + budget_seconds
 
         jobs.mark_running(directory, {})
@@ -231,7 +352,11 @@ class ResearchRunner:
             self._check_active(directory)
             jobs.update_lane(directory, index, state=jobs.LANE_RUNNING, error=None)
             self.log.info("lane %d starting", index)
-            argv = build_worker_argv(self.worker_argv, profile, directory / "prompts" / f"lane_{index}.md")
+            argv = build_worker_argv(
+                self.worker_argv, profile, directory / "prompts" / f"lane_{index}.md",
+                # No file tools: lanes still need retrieval, just not the fs.
+                toolsets=None if self._worker_file_tools else NO_FILE_LANE_TOOLSETS,
+            )
             started = time.monotonic()
             code, stdout, stderr = self.spawn(
                 argv, worker_env(evidence=evidence, lane=index, research_job=self.job_id),
@@ -321,7 +446,8 @@ class ResearchRunner:
         self._check_active(directory)
         prompt_path = jobs.write_prompt(directory, name, prompt)
         argv = build_worker_argv(
-            self.worker_argv, profile, prompt_path, toolsets=WRITER_TOOLSETS
+            self.worker_argv, profile, prompt_path,
+            toolsets=WRITER_TOOLSETS if self._worker_file_tools else NO_FILE_WRITER_TOOLSETS,
         )
         code, stdout, stderr = self.spawn(
             argv,

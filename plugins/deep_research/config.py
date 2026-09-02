@@ -28,6 +28,7 @@ DEFAULT_MEMORY_MAX = "2G"
 DEFAULT_RUNNER_MODE = "auto"  # auto | systemd | fallback
 DEFAULT_NOTIFY_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_RECENT_JOBS = 20
+DEFAULT_WORKER_FILE_TOOLS = True
 
 MAX_BRIEF_CHARS = 20_000
 MAX_QUESTION_CHARS = 2_000
@@ -45,6 +46,7 @@ class DeepResearchConfig:
     runner_mode: str = DEFAULT_RUNNER_MODE
     notify_interval_seconds: float = DEFAULT_NOTIFY_INTERVAL_SECONDS
     max_recent_jobs: int = DEFAULT_MAX_RECENT_JOBS
+    worker_file_tools: bool = DEFAULT_WORKER_FILE_TOOLS
 
 
 def _coerce_int(value: Any, default: int, lo: int, hi: int) -> int:
@@ -92,6 +94,13 @@ def load_deep_research_config(raw: Dict[str, Any] | None = None) -> DeepResearch
     worker_profile = str(raw.get("worker_profile") or DEFAULT_WORKER_PROFILE).strip()
     worker_profile = worker_profile or DEFAULT_WORKER_PROFILE
 
+    # Strict bool: a malformed value (string, dict, …) degrades to the default
+    # (file tools on), never silently locks the workers down.
+    worker_file_tools_raw = raw.get("worker_file_tools")
+    worker_file_tools = (
+        worker_file_tools_raw if isinstance(worker_file_tools_raw, bool) else DEFAULT_WORKER_FILE_TOOLS
+    )
+
     return DeepResearchConfig(
         enabled=bool(raw.get("enabled", True)),
         worker_profile=worker_profile,
@@ -110,4 +119,5 @@ def load_deep_research_config(raw: Dict[str, Any] | None = None) -> DeepResearch
         max_recent_jobs=_coerce_int(
             raw.get("max_recent_jobs"), DEFAULT_MAX_RECENT_JOBS, 1, 100,
         ),
+        worker_file_tools=worker_file_tools,
     )

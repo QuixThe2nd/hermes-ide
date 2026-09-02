@@ -221,6 +221,13 @@ TOOLSETS = {
         "includes": []
     },
 
+    # NOTE: the deep_research no-file synthesis writer's deliberately empty,
+    # sealed ``research_writer`` toolset is NOT here. It is plugin-owned and
+    # registered by plugins/deep_research through the plugin context's
+    # register_toolset() API (registry-backed), so disabling or removing that
+    # plugin removes the toolset with it — the core catalog keeps no
+    # plugin-specific lanes.
+
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
         "tools": ["text_to_speech"],
@@ -702,6 +709,11 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
             ``_get_platform_tools`` uses False so that a tool registered into a
             toolset but absent from a platform's static composite does not drop
             the whole toolset from inference. See issue #49622.
+            Toolsets marked ``"sealed": True`` ignore this flag: their static
+            definition is authoritative and registry/plugin registrations
+            targeting them are never merged. This makes deliberately empty
+            toolsets (e.g. the deep_research no-file synthesis writer) a hard
+            boundary rather than a default an overlay can widen.
 
     Returns:
         Dict: Toolset definition with description, tools, and includes
@@ -712,10 +724,11 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
     """
     toolset = TOOLSETS.get(name)
 
-    if not include_registry:
+    if not include_registry or (toolset and toolset.get("sealed")):
         # Static view only: return the built-in definition (copying the nested
         # tools/includes lists so callers can't mutate TOOLSETS), or None for
-        # registry/MCP-only toolsets that have no static counterpart.
+        # registry/MCP-only toolsets that have no static counterpart. Sealed
+        # toolsets take this path even when registry tools were requested.
         if not toolset:
             return None
         return {
@@ -735,6 +748,23 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
             | set(registry.get_tool_names_for_toolset(name))
         )
         return {**toolset, "tools": merged_tools}
+
+    # Plugin-owned toolset definitions (registered through the plugin
+    # context's register_toolset() API) live in the registry, not the static
+    # TOOLSETS catalog — a disabled or absent plugin's toolset is therefore
+    # neither advertised nor valid. A sealed definition is a hard boundary:
+    # registry/plugin tool registrations targeting it are ignored, mirroring
+    # the static ``"sealed": True`` path above. An unsealed definition merges
+    # overlay tools exactly like a built-in toolset does.
+    definition = registry.get_toolset_definition(name)
+    if definition is not None:
+        if definition.get("sealed"):
+            return definition
+        merged_tools = sorted(
+            set(definition.get("tools", []))
+            | set(registry.get_tool_names_for_toolset(name))
+        )
+        return {**definition, "tools": merged_tools}
 
     registry_toolset = name
     description = f"Plugin toolset: {name}"
