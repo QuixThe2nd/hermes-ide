@@ -267,6 +267,33 @@ def test_cmd_serve_builds_argv_from_config_and_flags(
     assert captured[-1][-1] == "--no-discord-sync"
 
 
+def test_sigterm_during_startup_stops_cleanly(tmp_path, monkeypatch):
+    """A SIGTERM landing mid-startup stops as cleanly as one in the loop.
+
+    The stop signal is raised from inside the server constructor — the
+    same install-to-serve-loop window a caller hits when it SIGTERMs
+    the process the instant the flushed startup line lands (a caller
+    that reads the port from stdout does exactly that). main() must
+    swallow it and still run its cleanup, never traceback out."""
+    from plugins.mission_control import server
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def explode(_host_port, _handler):
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(0)  # the handler fires at the next bytecode boundary
+        raise AssertionError("constructor ran past the signal")
+
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        monkeypatch.setattr(server, "ThreadingHTTPServer", explode)
+        assert server.main(["--port", "0", "--no-discord-sync"]) is None
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def test_real_serve_path_root_session_feeds_and_clean_shutdown(
         serve_home):
     proc = _ServeProcess(serve_home, "--no-discord-sync")

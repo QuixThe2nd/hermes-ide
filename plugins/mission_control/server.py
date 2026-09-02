@@ -56,31 +56,48 @@ the link, the identity badge and the row metadata name the child's
 profile, never the parent's.
 
 The inbox is split into honest sections, still one dense messenger
-list: Active (a live unexpired session_turn_leases row for the
-conversation — the holder's "turn=<continuation id>" parsed
-conservatively, conversation_id as the fallback — or a composer
-reply this server is currently running for the session), Closed
-(archived, mirrored from Discord or closed locally — every closed
-row carries an explicit Archived chip and subdued styling), then the
-two open buckets: Open · completed (sessions.ended_at set, or the
-newest active non-hidden event is a plain assistant answer) and
-Open · unfinished (everything else — stale user- or tool-ended
-transcripts are never mislabeled completed).
+list, and every open session renders above every closed one: the
+open buckets first — Active (a live unexpired session_turn_leases
+row for the conversation — the holder's "turn=<continuation id>"
+parsed conservatively, conversation_id as the fallback — or a
+composer reply this server is currently running for the session),
+then Open · completed (sessions.ended_at set, or the newest active
+non-hidden event is a plain assistant answer) and Open · unfinished
+(everything else — stale user- or tool-ended transcripts are never
+mislabeled completed) — and Closed (archived, mirrored from Discord
+or closed locally) strictly last, however recent a closed session
+is. Every closed row carries an explicit Archived chip and subdued
+styling, and the Closed block is a collapsed disclosure so open
+work stays on top literally and visually.
 Each section carries a stable id, a visible count badge and stays
-newest-first; the search filter covers every section and hides one
-with no visible children. A DB without the lease table degrades to
-Completed/Incomplete classification with at most one note.
+newest-first inside itself; the search filter covers every section
+and hides one with no visible children. A DB without the lease
+table degrades to Completed/Incomplete classification with at most
+one note.
 
 The page is a dark messenger-style inbox rendered entirely server-side
-(no external assets; participants are generic letter badges derived
-from the owning profile's name): one dense
+(no external assets): one dense
 full-width row per conversation, separated by hairlines — a circular
-initials badge of the owning Hermes profile,
+badge of the owning Hermes profile (its initial by default, or the
+optional local avatar image described below),
 the conversation name with a compact profile badge and the relative
 time on the right,
 a one-line last-message preview, and an optional tiny muted chip for
 the session's last tool. A small inline script adds client-side row
 filtering and swaps in a fresh copy of "/" every 10 s without a reload.
+
+Participant avatars are optional and strictly local: an install that
+wants pictures drops one PNG per identity beside that profile's state
+DB — <profile home>/mission-control/avatar.png, and the main home's
+mission-control/user.png for the person at the keyboard — and every
+badge layers that image over its letter fallback (GET /avatar/
+<profile> and GET /avatar-user serve exactly those fixed names,
+re-resolved against the discovered mapping and the configured home
+root on every request, never from URL input). With no files there is
+nothing to fetch and nothing to break: a clean install renders pure
+letter badges, a missing/unreadable/oversized/escaped file falls
+back to the letter, and a broken image in the browser steps aside
+client-side so the letter shows through.
 
 Each row is one big link to GET /s/<profile>/<session_id>, a chat-style
 transcript served from that profile's DB only (the profile
@@ -90,12 +107,13 @@ must be "default" — the main state.db — or a directory under
 timestamp then id, every displayable row — no cap) on a
 ~900px centered canvas under one sticky header (back link, title,
 profile pill, time range). User text is right-aligned in a blue-tinted
-bubble (~72% wide) with a circular "You" letter badge on the right;
+bubble (~72% wide) with a circular "You" badge on the right;
 agent text is left-aligned on a neutral surface (~78%) with the owning
-profile's initials badge on the left; each bubble carries
-a subtle timestamp. The badges are plain letters on a colored disc —
-no image assets exist or are fetched, so a clean install renders
-identically with nothing to download. Runs of consecutive tool rows collapse into ONE
+profile's badge on the left; each bubble carries
+a subtle timestamp. The badges are letters on a colored disc, with
+the optional local avatar image (see above) layered on top when that
+profile has one — the letter always shows through as the fallback.
+Runs of consecutive tool rows collapse into ONE
 compact expandable group — "N tool calls" plus tool-name chips, opening
 to a chronological list where each tool keeps its optional collapsed
 details block holding substr(content,1,400). Grouping compresses the
@@ -194,6 +212,28 @@ Interactive layer (all same-origin, relative URLs, stdlib only):
   optimistic message and restores the composer. GET /new serves the
   same dark chat chrome as a blank composer whose first send goes
   through /s/new.
+- Clarify bridge: while the core API holds a pending clarify for a
+  session (a gateway or /v1/runs agent paused on a question), the
+  transcript page and every /feed poll also read the authenticated core
+  GET /api/sessions/{id}/clarify (base CLARIFY_API_BASE, the repo
+  default API server on loopback; the default profile's API key from
+  the .env beside the main DB, a named profile's ONLY from its own
+  .env; always through the /p/<profile> prefix; the key is never
+  logged or echoed) and render it as an escaped Discord-style
+  #clarify-card directly above the composer. Single choices submit on
+  click, multi-select toggles then Submit (an optional UI-only Other
+  contributes its typed text — never the label "Other"), and
+  free-text questions get an input; while a card is active the normal
+  composer is disabled with the placeholder "Answer the question
+  above". Answers POST /s/<profile>/<id>/clarify through the same
+  CSRF gate as every other mutation, which validates the session and
+  payload locally, proxies the core clarify POST with the exact
+  clarify_id the client holds, and answers only safe
+  200/400/404/409/503 JSON — it never invokes /reply and never writes
+  a user message. A new clarify_id replaces the card (selection
+  resets), the same id preserves it, a failed answer flashes safely
+  and re-polls, and any core API error leaves the page untouched (the
+  feed simply omits the clarify field).
 - The list page carries a "New chat" control linking to /new.
 
 Live tool activity: a tool call appears the moment its assistant
@@ -362,18 +402,24 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 ) WHERE rn = 1
 """
 
-# Inbox section keys in display order. Closed sits directly under
-# Active — an archived conversation is the second thing to see, not the
-# last — and the two open buckets follow, retitled "Open · …" so the
-# four headers read as one honest question: live, archived, or open
-# (and if open, done or not). The ids/data-state values are unchanged
-# stable hooks for the client filter; only order and titles moved.
+# Inbox section keys in display order. The ordering contract: every
+# open session renders above every closed one — Active first, then the
+# two open resting buckets, and Closed strictly last — so a closed
+# conversation can never jump ahead of an older open one however
+# fresh its last activity is. Rows are bucketed by state before any
+# rendering (this surface has no row cap or window to partition
+# around), and each bucket keeps its own newest-first order. The open
+# resting buckets are retitled "Open · …" so the headers read as one
+# honest question: live, or open (and if open, done or not), with the
+# archived tail collapsed by default. The ids/data-state values are
+# unchanged stable hooks for the client filter; only order and titles
+# moved.
 # Active and Completed always render (when the page has any rows at
 # all), Incomplete and Closed only when they have members. Closed is
 # archived state mirrored from Discord (or set locally for non-Discord
 # sessions) — it wins over every other signal, and every closed row
 # says so itself with an Archived chip.
-SECTION_ORDER = ("active", "closed", "completed", "incomplete")
+SECTION_ORDER = ("active", "completed", "incomplete", "closed")
 SECTION_TITLES = {"active": "Active", "closed": "Closed",
                   "completed": "Open \N{MIDDLE DOT} completed",
                   "incomplete": "Open \N{MIDDLE DOT} unfinished"}
@@ -402,6 +448,37 @@ NEW_JOB_PATH_RE = re.compile(r"^/s/new/([A-Za-z0-9_-]+)$")
 # session — for a Discord thread session this patches the Discord
 # thread first and only mirrors locally when Discord confirms.
 ARCHIVE_PATH_RE = re.compile(r"^/s/([^/]+)/([^/]+)/(close|reopen)$")
+
+# POST /s/<profile>/<id>/clarify: answer this session's pending
+# clarify question through the core API (see the clarify bridge
+# constants below).
+CLARIFY_PATH_RE = re.compile(r"^/s/([^/]+)/([^/]+)/clarify$")
+
+# ---- optional local avatar images ------------------------------------
+# Every participant renders as a letter badge by default — no image
+# assets ship, none are fetched, a clean install works untouched. An
+# install that wants photos provides ONE optional PNG per identity,
+# always through this fixed, profile-aware layout the user owns:
+#
+#   <profile home>/mission-control/avatar.png   that profile's agent
+#   <main home>/mission-control/user.png        the person at the keys
+#
+# GET /avatar/<profile> and GET /avatar-user serve exactly those fixed
+# filenames, re-resolved from the discovered DB mapping on every
+# request — the URL contributes only a profile name that must already
+# be a discovered profile, never a path. A file that is missing,
+# unreadable, larger than AVATAR_MAX_BYTES, or resolves (through
+# symlinks) outside the configured home root is simply not served and
+# the letter badge stands alone — the same discovery boundary the
+# databases obey.
+AVATAR_DIR_NAME = "mission-control"
+PROFILE_AVATAR_FILE = "avatar.png"
+USER_AVATAR_FILE = "user.png"
+AVATAR_PATH_RE = re.compile(r"^/avatar/([A-Za-z0-9_.-]+)$")
+USER_AVATAR_PATH = "/avatar-user"
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_CACHE_CONTROL = "public, max-age=3600"
+AVATAR_CONTENT_TYPE = "image/png"
 
 # ---- Discord archive sync ------------------------------------------
 # Everything the background mirror and the close/reopen actions need.
@@ -444,6 +521,36 @@ def _archive_epoch(db_path):
     """Current archive epoch for one profile DB (0 when never bumped)."""
     with _archive_epoch_lock:
         return _archive_epochs.get(db_path, 0)
+
+# ---- clarify bridge --------------------------------------------------
+# The pending-clarify card lives in the core API (a native-gateway
+# prompt or a /v1/runs agent paused on a clarify); this server reads it
+# for the transcript page and proxies answers back, and nothing else —
+# the reply/new execution paths are untouched. The only configuration
+# is the base URL (the repo's own API server on loopback by default,
+# overridable through the deployment's HERMES_API_SERVER_URL); the
+# per-profile API key is read fresh from the .env beside the profile's
+# DB (the default profile's from the .env beside the main DB, a named
+# profile's ONLY from its own .env) and leaves this process solely as
+# the value of one Authorization header — never logged, never echoed,
+# never inside any error string. Upstream bodies are parsed but never
+# emitted: errors report the HTTP status alone.
+CLARIFY_API_BASE = (os.environ.get("HERMES_API_SERVER_URL")
+                    or "http://127.0.0.1:8642")
+# Short on purpose: the card rides the feed poll, so a wedged core must
+# never pin a client's poll for long, and the card body is tiny.
+CLARIFY_TIMEOUT_SECONDS = 4.0
+CLARIFY_MAX_BODY_BYTES = 64 * 1024
+# Presentation bounds mirrored from the core card contract (the core
+# already enforces them; these re-bound whatever actually arrives so a
+# malformed or hostile upstream can never crash or flood the page).
+CLARIFY_MAX_CHOICES = 8
+CLARIFY_MAX_QUESTION_CHARS = 2000
+CLARIFY_MAX_CHOICE_CHARS = 500
+CLARIFY_ID_MAX_CHARS = 128
+# A response list can never legitimately exceed the card's choice bound
+# plus its Other; anything larger is refused before ever proxying.
+CLARIFY_MAX_RESPONSE_ITEMS = 16
 
 # ---- composer / hermes plumbing --------------------------------------
 # The binary is invoked by absolute path with a list argv (never a
@@ -557,21 +664,86 @@ _children = set()
 _children_lock = threading.Lock()
 
 # Transcript participants: the user side is the person at the keyboard;
-# the assistant side renders as the owning profile's identity. No image
-# assets exist or are fetched — every participant is a plain letter
-# badge derived from the label, so a clean install renders identically.
+# the assistant side renders as the owning profile's identity. Every
+# participant is a letter badge derived from the label, with the
+# optional local avatar image (see the avatar constants above) layered
+# on top when the profile provides one — the letter is always the
+# fallback, so a clean install renders identically.
 USER_LABEL = "You"
 
 # Identity for the main "default" profile (the main state.db).
 DEFAULT_PROFILE_LABEL = "Hermes"
 
 
+def _avatar_file(home, filename):
+    """One trusted home directory + the fixed avatar filename -> the
+    only path an avatar may ever be served from. Nothing here derives
+    from request input."""
+    return os.path.join(home, AVATAR_DIR_NAME, filename)
+
+
+def _avatar_served_file(home, filename):
+    """The avatar path for one trusted home when it may be served, else
+    None — a plain regular file, within the size bound, resolving
+    inside the configured home root (the same boundary discovery
+    enforces for the databases)."""
+    path = _avatar_file(home, filename)
+    try:
+        if not os.path.isfile(path):
+            return None
+        if os.path.getsize(path) > AVATAR_MAX_BYTES:
+            return None
+        if not _db_stays_in_home(path, _home_root()):
+            return None
+    except OSError:
+        return None
+    return path
+
+
+def profile_avatar_url(profile):
+    """The served avatar URL for one profile name, or "" (letter badge
+    only). The profile must be one discover_dbs() serves; the file is
+    its own optional mission-control/avatar.png."""
+    home = profile_home(profile)
+    if home is None:
+        return ""
+    if _avatar_served_file(home, PROFILE_AVATAR_FILE) is None:
+        return ""
+    return "/avatar/" + quote(profile, safe="")
+
+
+def user_avatar_url():
+    """The served avatar URL for the person at the keyboard, or "".
+
+    One optional user.png under the main home's mission-control
+    directory — the main home is exactly the root every served DB
+    must live in, so the user avatar follows the same boundary."""
+    home = os.path.dirname(os.path.abspath(MAIN_DB))
+    if _avatar_served_file(home, USER_AVATAR_FILE) is None:
+        return ""
+    return USER_AVATAR_PATH
+
+
+def avatar_img(url, label, size):
+    """The escaped <img> that layers one avatar over its letter badge
+    ("" when there is no avatar for this identity)."""
+    if not url:
+        return ""
+    return ('<img class="av-img" src="%s" alt="%s" width="%d"'
+            ' height="%d">' % (html.escape(url, quote=True),
+                               html.escape(label, quote=True),
+                               size, size))
+
+
 def profile_identity(profile):
-    """DB profile name -> its display identity dict {label, letter}.
+    """DB profile name -> its display identity dict {label, letter,
+    avatar}.
 
     The label is a safe humanization of the profile name ("my_bot" ->
     "My Bot"); the main "default" profile renders as "Hermes". The
-    letter is the badge initial taken from that label.
+    letter is the badge initial taken from that label. avatar is the
+    served URL of the profile's optional local image, "" when it has
+    none — the letter badge renders either way.
     """
     name = str(profile or "").strip()
     if not name or name == "default":
@@ -579,7 +751,8 @@ def profile_identity(profile):
     else:
         label = " ".join(name.replace("_", " ").replace("-", " ")
                          .split()).title() or DEFAULT_PROFILE_LABEL
-    return {"label": label, "letter": (label[:1] or "H").upper()}
+    return {"label": label, "letter": (label[:1] or "H").upper(),
+            "avatar": profile_avatar_url(name or "default")}
 
 # Display caps: the SQL-level substr keeps any single row at 4000 chars
 # (an 80 KB tool result never leaves the DB whole) and a tool bubble
@@ -2429,12 +2602,11 @@ def mission_control_ids():
 # The token for a profile lives in the .env beside its state.db. It is
 # read fresh from disk (never cached across passes, never logged) and
 # only ever leaves the process as an in-memory Authorization header.
-def load_discord_token(db_path):
-    """The DISCORD_BOT_TOKEN from the .env beside one profile's DB, or
-    None (no file, no key, empty value). Parsed line-wise with
-    split('=', 1) so '=' inside the value survives; surrounding quotes
-    are stripped. The value is never written anywhere."""
-    env_path = os.path.join(os.path.dirname(db_path), ".env")
+def load_env_value(env_path, name):
+    """One KEY's value from a .env file, or None (no file, no such key,
+    empty value). Parsed line-wise with split('=', 1) so '=' inside the
+    value survives; surrounding quotes are stripped. The value is never
+    written anywhere."""
     try:
         with open(env_path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -2442,13 +2614,181 @@ def load_discord_token(db_path):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, value = line.split("=", 1)
-                if key.strip() != "DISCORD_BOT_TOKEN":
+                if key.strip() != name:
                     continue
                 value = value.strip().strip('"').strip("'").strip()
                 return value or None
     except OSError:
         pass
     return None
+
+
+def load_discord_token(db_path):
+    """The DISCORD_BOT_TOKEN from the .env beside one profile's DB, or
+    None. The value is never written anywhere."""
+    return load_env_value(os.path.join(os.path.dirname(db_path), ".env"),
+                          "DISCORD_BOT_TOKEN")
+
+
+# ---- core-API clarify client -----------------------------------------
+# Reads and answers the core's per-session clarify routes for the
+# transcript page only. Fail-closed on every axis: no key means no
+# call, an error never reaches the page as a crash, and nothing beyond
+# the bounded card fields ever crosses in either direction.
+
+
+def clarify_api_key(profile, dbs):
+    """The API_SERVER_KEY authorized for this profile's clarify routes,
+    or None. The default profile's key comes from the .env beside the
+    main DB; a named profile's key comes ONLY from the .env beside its
+    own state.db — never the main file, so a named profile without its
+    own key simply has no key. The value never leaves this process
+    except as one request's Authorization header."""
+    if profile == "default":
+        env_path = os.path.join(os.path.dirname(MAIN_DB), ".env")
+    else:
+        db_path = dbs.get(profile)
+        if not db_path:
+            return None
+        env_path = os.path.join(os.path.dirname(db_path), ".env")
+    return load_env_value(env_path, "API_SERVER_KEY")
+
+
+def clarify_request(method, profile, session_id, dbs, payload=None):
+    """One authenticated core clarify call -> (status, obj, err).
+
+    err is None only on a 2xx whose body parsed (or was empty);
+    otherwise it is a bounded safe string carrying the HTTP status or
+    the failure class alone — never the key, never the upstream body
+    (exception text is reduced to its class name so a URL can never
+    leak either). The body read is capped at CLARIFY_MAX_BODY_BYTES +
+    1; larger is an error. The key appears only in the Authorization
+    header of this one request object.
+    """
+    key = clarify_api_key(profile, dbs)
+    if not key:
+        return 0, None, "no API key configured"
+    url = (CLARIFY_API_BASE.rstrip("/") + "/p/"
+           + quote(profile, safe="") + "/api/sessions/"
+           + quote(session_id, safe="") + "/clarify")
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + key)
+    req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    raw = b""
+    try:
+        with urllib.request.urlopen(
+                req, timeout=CLARIFY_TIMEOUT_SECONDS) as resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            raw = resp.read(CLARIFY_MAX_BODY_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        status = exc.code or 0
+        try:
+            raw = exc.read(CLARIFY_MAX_BODY_BYTES + 1)
+        except OSError:
+            raw = b""
+    except Exception as exc:  # keep the page alive no matter what
+        # Never include the exception text: it could echo the URL or
+        # environment. The class name is enough — and this arm also
+        # catches the http.client read errors (IncompleteRead and kin)
+        # that are neither OSError nor ValueError.
+        return 0, None, "request failed (%s)" % type(exc).__name__
+    if len(raw) > CLARIFY_MAX_BODY_BYTES:
+        return status, None, "response too large"
+    obj = None
+    if raw:
+        try:
+            obj = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            obj = None
+    if status < 200 or status >= 300:
+        return status, obj, "upstream HTTP %d" % status
+    if raw and obj is None:
+        return status, None, "unparseable response body"
+    return status, obj, None
+
+
+def clarify_fetch_card(profile, session_id, dbs):
+    """(card, err): the bounded pending clarify card for one session.
+
+    card is None with err None when the core affirmatively reports no
+    pending clarify ({"pending_clarify": null}); a dict {clarify_id,
+    question, choices, multi_select} when one is pending; None with a
+    safe err string on any failure. The upstream card is re-validated
+    and re-bounded here — a malformed or hostile card is an error,
+    never a crash and never rendered."""
+    status, obj, err = clarify_request("GET", profile, session_id, dbs)
+    if err is not None:
+        return None, err
+    if not isinstance(obj, dict):
+        return None, "unexpected response shape"
+    pending = obj.get("pending_clarify")
+    if pending is None:
+        return None, None
+    if not isinstance(pending, dict):
+        return None, "unexpected response shape"
+    cid = pending.get("clarify_id")
+    question = pending.get("question")
+    if not isinstance(cid, str) or not cid.strip() \
+            or len(cid) > CLARIFY_ID_MAX_CHARS:
+        return None, "unexpected response shape"
+    if not isinstance(question, str):
+        return None, "unexpected response shape"
+    choices_raw = pending.get("choices")
+    choices = None
+    if choices_raw is not None:
+        if not isinstance(choices_raw, list):
+            return None, "unexpected response shape"
+        cleaned = []
+        for choice in choices_raw[:CLARIFY_MAX_CHOICES]:
+            if not isinstance(choice, str) or not choice.strip():
+                return None, "unexpected response shape"
+            cleaned.append(choice.strip()[:CLARIFY_MAX_CHOICE_CHARS])
+        choices = cleaned
+    return {
+        "clarify_id": cid,
+        "question": question.strip()[:CLARIFY_MAX_QUESTION_CHARS],
+        "choices": choices,
+        "multi_select": bool(pending.get("multi_select")),
+    }, None
+
+
+def valid_clarify_response(resp):
+    """True when resp is exactly one of the two response shapes the
+    core accepts: a non-empty string, or a non-empty list (bounded by
+    CLARIFY_MAX_RESPONSE_ITEMS) of non-empty strings. Numbers, dicts,
+    booleans, null and empty shapes are refused before proxying."""
+    if isinstance(resp, str):
+        return bool(resp.strip()) and len(resp) <= MAX_TEXT_CHARS
+    if isinstance(resp, list) and resp \
+            and len(resp) <= CLARIFY_MAX_RESPONSE_ITEMS:
+        return all(isinstance(item, str) and item.strip()
+                   and len(item) <= MAX_TEXT_CHARS for item in resp)
+    return False
+
+
+def feed_clarify(profile, session_id, dbs, archived):
+    """The feed/poll shape of the pending clarify, or None on error.
+
+    {active, id, html} — html being the exact escaped card markup the
+    page renders. An archived session skips the upstream call entirely
+    (its card would be unanswerable) and reports none. None (the caller
+    omits the field) on any API error so an open page keeps its current
+    card instead of flashing it away on a blip; {active: False} only
+    ever means the core affirmatively reported no pending clarify."""
+    if archived:
+        return {"active": False, "id": "", "html": ""}
+    card, err = clarify_fetch_card(profile, session_id, dbs)
+    if err is not None:
+        return None
+    if card is None:
+        return {"active": False, "id": "", "html": ""}
+    return {"active": True, "id": card["clarify_id"],
+            "html": render_clarify_card(card)}
 
 
 def _discord_wait_turn():
@@ -3538,6 +3878,13 @@ body {
   transition: border-radius 0.15s ease, background-color 0.15s ease,
               color 0.15s ease;
 }
+/* an optional local avatar image fills the disc; the letter badge it
+   covers is the fallback when the file is absent or fails to load */
+.rail-ico .av-img {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block; border-radius: inherit;
+}
+.rail-ico .av-img.is-broken { display: none; }
 .rail-item:hover .rail-ico, .rail-item.is-selected .rail-ico {
   border-radius: 16px;
 }
@@ -3709,6 +4056,13 @@ details.convsec[open] .convsec-caret::before { transform: rotate(90deg); }
   background: var(--composer); color: var(--muted);
   font-size: 12px; font-weight: 700;
 }
+/* the optional avatar photo sits on top of the letter badge; the
+   error listener below adds is-broken so the letter shows through */
+.avatar .av-img {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  border-radius: 50%; object-fit: cover; display: block;
+}
+.avatar .av-img.is-broken { display: none; }
 .conv .avatar .pres {
   position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px;
   border-radius: 50%; background: var(--green);
@@ -4153,6 +4507,15 @@ body.view-list .main {
 # window.MC exposes re-bind hooks so the inbox's refresh swap can
 # re-apply everything to the fresh rows.
 SIDEBAR_JS = """"use strict";
+// Cover photos are optional: when an avatar image element fails to
+// load, hide it (capture phase — img error events do not bubble) so
+// the letter badge underneath shows instead.
+document.addEventListener("error", function (e) {
+  var t = e.target;
+  if (t && t.tagName === "IMG" && t.classList.contains("av-img")) {
+    t.classList.add("is-broken");
+  }
+}, true);
 window.MC = (function () {
   var input = document.getElementById("filter");
   var countEl = document.getElementById("shown");
@@ -4530,11 +4893,12 @@ CHAT_SHELL = Template("""<!DOCTYPE html>
 $csrf_meta
 <title>Mission Control &mdash; transcript: $title</title>
 <style>$shell_css
+$clarify_css
 $live_css
 $typing_css
 $waiting_css</style>
 </head>
-<body class="view-chat" data-mode="$mode" data-profile="$profile_attr" data-session="$session_attr" data-poll-ms="$poll_ms" data-last-id="$last_id" data-archived="$archived_state">
+<body class="view-chat" data-mode="$mode" data-profile="$profile_attr" data-session="$session_attr" data-poll-ms="$poll_ms" data-last-id="$last_id" data-av-user="$avatar_user_attr" data-archived="$archived_state">
 
 $sidebar
 <main class="main">
@@ -4556,7 +4920,7 @@ $rows$typing_row$waiting_row      </ol>
 $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     </div>
   </div>
-  <form class="composer" id="composer" autocomplete="off">
+$clarify_card  <form class="composer" id="composer" autocomplete="off">
     <p class="composer-flash" id="composer-flash" role="status" hidden></p>
     <div class="composer-box">
       <textarea id="composer-text" rows="1" placeholder="$composer_placeholder" aria-label="Message text"$composer_disabled></textarea>
@@ -4579,6 +4943,10 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var pollMs = parseInt(body.getAttribute("data-poll-ms"), 10) || 2000;
   var busyPollMs = 700;   // while a reply is in flight, land it sooner
   var cursor = parseInt(body.getAttribute("data-last-id"), 10) || 0;
+  // The user's optional avatar URL ("" when none is served): the
+  // optimistic twin of a sent message layers it over the U badge
+  // exactly like the server-rendered rows do.
+  var avUserSrc = body.getAttribute("data-av-user") || "";
 
   var mainEl = document.querySelector(".main");
   var scroller = document.getElementById("scroller");
@@ -4610,6 +4978,11 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var archived = body.getAttribute("data-archived") === "1";  // closed
   var flashTimer = null;
   var pollTimer = null;
+  // A pending clarify card is server-rendered above the composer; the
+  // feed keeps it current (applyClarify). While one is live the normal
+  // composer stays disabled — the card is the only way to answer.
+  var clarifyActive = !!document.getElementById("clarify-card");
+  var clarifying = false;  // a clarify answer POST is on the wire
 
   // ---- same-origin POSTs --------------------------------------------
   // The page carries this server's CSRF token in a meta tag; every
@@ -4646,8 +5019,10 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var turnResponded = true;
 
   // The composer's open placeholder is whatever the server rendered;
-  // while the session is closed both the banner and this swap apply.
+  // while the session is closed both the banner and this swap apply,
+  // and while a clarify card is live the placeholder points up at it.
   var CLOSED_PLACEHOLDER = "This session is closed.";
+  var CLARIFY_PLACEHOLDER = "Answer the question above";
   var openPlaceholder = box ? (box.getAttribute("placeholder") || "") : "";
 
   // One place that makes the page match the session's archive state:
@@ -4657,6 +5032,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   // change lands on an open page without a reload).
   function applySessionState(st) {
     if (!st || typeof st !== "object") return;
+    var wasArchived = archived;
     archived = !!st.archived;
     if (toggleBtn) {
       toggleBtn.textContent = archived ? "Reopen" : "Close";
@@ -4668,10 +5044,16 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     }
     if (closedBanner) closedBanner.hidden = !archived;
     if (box) {
-      box.disabled = archived || sending;
-      box.placeholder = archived ? CLOSED_PLACEHOLDER : openPlaceholder;
+      box.disabled = archived || sending || clarifyActive;
+      box.placeholder = archived ? CLOSED_PLACEHOLDER
+        : clarifyActive ? CLARIFY_PLACEHOLDER : openPlaceholder;
     }
-    if (sendBtn) sendBtn.disabled = archived || sending;
+    if (sendBtn) sendBtn.disabled = archived || sending || clarifyActive;
+    // An archive-state transition moves this session's sidebar row into
+    // or out of the Closed disclosure — re-render it from the server's
+    // own classification, only on the transition itself (never per
+    // poll), exactly like the busy-state transition in the feed handler.
+    if (wasArchived !== archived) refreshSidebar();
   }
 
   function reduced() {
@@ -4850,6 +5232,17 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     letter.setAttribute("aria-hidden", "true");
     letter.textContent = "U";
     av.appendChild(letter);
+    // The optional user photo over the letter, same layering as the
+    // server-rendered rows; skipped entirely when none is served.
+    if (avUserSrc) {
+      var img = document.createElement("img");
+      img.className = "av-img";
+      img.src = avUserSrc;
+      img.alt = "You";
+      img.width = 40;
+      img.height = 40;
+      av.appendChild(img);
+    }
     var msgBody = document.createElement("div");
     msgBody.className = "msg-body";
     var head = document.createElement("div");
@@ -4918,6 +5311,176 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     setSending(false);  // both modes: the composer comes back
     if (box) { box.value = text; autosize(); }
     showFlash(msg, 9000);
+  }
+
+  // ---- clarify card ---------------------------------------------------
+  // The pending clarify question renders as an escaped server-built
+  // card above the composer. Single-select choices submit themselves
+  // on click; multi-select toggles and answers through Submit (the
+  // UI-only Other contributes its typed text, never the label
+  // "Other"); free-text questions use the input. The card freezes
+  // while its answer is on the wire; a refusal flashes a safe note and
+  // re-polls (a new clarify id replaces the card and resets the
+  // selection, the same id preserves it exactly as the user left it).
+  // Answers go to the local clarify proxy with the exact clarify_id —
+  // never to /reply, never as a normal message.
+  function clarifyFlash(cardEl, msg) {
+    if (!cardEl) return;
+    var f = cardEl.querySelector(".clarify-flash");
+    if (!f) return;
+    f.textContent = msg;
+    f.hidden = false;
+    window.setTimeout(function () { f.hidden = true; }, 6000);
+  }
+
+  function setClarifyDisabled(cardEl, on) {
+    if (!cardEl) return;
+    var els = cardEl.querySelectorAll("button, input");
+    for (var i = 0; i < els.length; i++) els[i].disabled = on;
+  }
+
+  function submitClarify(response) {
+    var cardEl = document.getElementById("clarify-card");
+    if (!cardEl || clarifying) return;
+    clarifying = true;
+    setClarifyDisabled(cardEl, true);  // frozen while the answer sends
+    postJson(sessionUrl("/clarify"), {
+      clarify_id: cardEl.getAttribute("data-clarify-id") || "",
+      response: response
+    }).then(function (resp) {
+      return resp.json().catch(function () { return null; })
+        .then(function () { return resp.status; });
+    }).then(function (status) {
+      clarifying = false;
+      if (status === 200) {
+        // Resolved: drop the card at once; the next poll confirms.
+        applyClarify({ active: false, id: "", html: "" });
+        return;
+      }
+      // Refused or stale: recover safely and re-poll for the truth —
+      // a new clarify id replaces the card, the same one stays put.
+      setClarifyDisabled(cardEl, false);
+      clarifyFlash(cardEl, status === 400
+        ? "That answer was refused; adjust it and try again."
+        : "This question is no longer waiting; refreshing.");
+      window.setTimeout(pollOnce, 400);
+    }).catch(function () {
+      clarifying = false;
+      setClarifyDisabled(cardEl, false);
+      clarifyFlash(cardEl, "Sending the answer failed; try again.");
+      window.setTimeout(pollOnce, 400);
+    });
+  }
+
+  function wireClarify() {
+    var cardEl = document.getElementById("clarify-card");
+    if (!cardEl || cardEl.getAttribute("data-wired") === "1") return;
+    cardEl.setAttribute("data-wired", "1");
+    var multi = cardEl.getAttribute("data-multi") === "1";
+    var otherBox = cardEl.querySelector(".clarify-other-box");
+    var otherToggle = cardEl.querySelector(".clarify-other-toggle");
+    var otherInput = cardEl.querySelector(".clarify-other-input");
+    var otherSend = cardEl.querySelector(".clarify-other-send");
+    var submitBtn = cardEl.querySelector(".clarify-submit");
+
+    function otherValue() {
+      return otherInput ? String(otherInput.value || "").trim() : "";
+    }
+
+    // One choice button: single-select submits itself at once;
+    // multi-select toggles. (The Other toggle carries no data-value —
+    // its label can never become a response.)
+    var btns = cardEl.querySelectorAll(".clarify-choice[data-value]");
+    for (var i = 0; i < btns.length; i++) {
+      (function (btn) {
+        btn.addEventListener("click", function () {
+          if (multi) {
+            var on = btn.getAttribute("aria-pressed") === "true";
+            btn.setAttribute("aria-pressed", on ? "false" : "true");
+          } else {
+            submitClarify(btn.getAttribute("data-value"));
+          }
+        });
+      })(btns[i]);
+    }
+
+    if (otherToggle) otherToggle.addEventListener("click", function () {
+      var on = otherToggle.getAttribute("aria-pressed") === "true";
+      otherToggle.setAttribute("aria-pressed", on ? "false" : "true");
+      if (otherBox) otherBox.hidden = on;
+      if (!on && otherInput) otherInput.focus();
+    });
+
+    if (otherSend) otherSend.addEventListener("click", function () {
+      var text = otherValue();
+      if (!text) {
+        clarifyFlash(cardEl, "Type an answer first.");
+        if (otherInput) otherInput.focus();
+        return;
+      }
+      submitClarify(text);
+    });
+
+    if (otherInput) otherInput.addEventListener("keydown",
+      function (e) {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          if (otherSend) otherSend.click();
+          else if (submitBtn) submitBtn.click();
+        }
+      });
+
+    if (submitBtn) submitBtn.addEventListener("click", function () {
+      // Multi-select: every toggled choice, plus the Other text when
+      // present — never the literal "Other" label, never an empty list.
+      var vals = [];
+      var sel = cardEl.querySelectorAll(
+        '.clarify-choice[data-value][aria-pressed="true"]');
+      for (var j = 0; j < sel.length; j++) {
+        vals.push(sel[j].getAttribute("data-value"));
+      }
+      var text = otherValue();
+      if (text) vals.push(text);
+      if (!vals.length) {
+        clarifyFlash(cardEl, "Pick at least one choice.");
+        return;
+      }
+      submitClarify(vals);
+    });
+  }
+
+  function applyClarify(cl) {
+    // No field at all (a core API error) leaves the page exactly as
+    // it is; {active: false} removes the card; an active card replaces
+    // the DOM only when its clarify id is NEW — the same id keeps the
+    // card untouched, selection included.
+    if (!cl || typeof cl !== "object") return;
+    var active = !!(cl.active && cl.id && cl.html);
+    var current = document.getElementById("clarify-card");
+    if (!active) {
+      if (current && current.parentNode) {
+        current.parentNode.removeChild(current);
+      }
+      if (clarifyActive) {
+        clarifyActive = false;
+        applySessionState({ archived: archived });
+      }
+      return;
+    }
+    if (current && current.getAttribute("data-clarify-id") === cl.id) {
+      return;
+    }
+    if (current && current.parentNode) {
+      current.parentNode.removeChild(current);
+    }
+    if (form && form.parentNode) {
+      form.insertAdjacentHTML("beforebegin", cl.html);
+    }
+    wireClarify();
+    clarifyActive = true;
+    applySessionState({ archived: archived });
+    syncComposerVar();
+    updateJump();
   }
 
   // The direct-children section rides every poll: swap it in place so
@@ -5055,6 +5618,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     if (data.note) showFlash(data.note, 9000);
     applySubagents(data.subagents);
     applySessionState(data.session_state);
+    applyClarify(data.clarify);
     if (grew) {
       if (emptyState) emptyState.hidden = true;
       if (stick) toBottom();
@@ -5090,8 +5654,8 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   }
   function setSending(on) {
     sending = on;
-    if (box) box.disabled = on || archived;
-    if (sendBtn) sendBtn.disabled = on || archived;
+    if (box) box.disabled = on || archived || clarifyActive;
+    if (sendBtn) sendBtn.disabled = on || archived || clarifyActive;
     if (!on) autosize();
   }
 
@@ -5164,7 +5728,8 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   }
 
   function send() {
-    if (sending || locked || holding || archived || !box) return;
+    if (sending || locked || holding || archived || clarifyActive ||
+        !box) return;
     var text = box.value;
     if (!text.trim()) { box.focus(); return; }
     // The message is on screen before anything leaves the client, so a
@@ -5311,12 +5876,140 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   setTyping();
   setWaiting();
   applySessionState({ archived: archived });
+  wireClarify();   // a server-rendered card is interactive from boot
   schedulePoll();
 })();
 </script>
 </body>
 </html>
 """)
+
+
+# The pending clarify card rides the chat shell (never /new: no session
+# means nothing can be asking), so its CSS is a token render_chat()
+# fills in and render_new() leaves empty.
+CLARIFY_CARD_CSS = """/* ---- clarify card ------------------------------------------------------
+   A pending clarify question as a Discord-style embed pinned directly
+   above the composer while the agent waits for the answer. */
+.clarify-card {
+  flex: none; margin: 0 16px 12px; padding: 10px 14px 12px;
+  background: var(--embed); border-radius: 4px;
+  border-left: 4px solid var(--blurple);
+}
+.clarify-tag {
+  display: inline-block; margin-bottom: 6px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px;
+  color: var(--agent-name); text-transform: uppercase;
+}
+.clarify-question {
+  margin: 0 0 8px; font-size: 14px; line-height: 20px;
+  color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.clarify-choices {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.clarify-choice {
+  height: 30px; padding: 0 12px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--field);
+  color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clarify-choice:hover:not(:disabled) {
+  border-color: var(--blurple); color: var(--ink);
+}
+.clarify-choice:focus-visible {
+  outline: 2px solid var(--blurple); outline-offset: 1px;
+}
+.clarify-choice[aria-pressed="true"] {
+  background: var(--blurple); border-color: var(--blurple); color: #fff;
+}
+.clarify-choice:disabled { opacity: 0.5; cursor: default; }
+.clarify-other-box {
+  display: flex; gap: 6px; margin-top: 8px; min-width: 0;
+}
+.clarify-other-box[hidden] { display: none; }
+.clarify-other-input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px;
+  border-radius: 4px; border: 1px solid var(--line);
+  background: var(--field); color: var(--ink-2); font: inherit;
+  font-size: 13px;
+}
+.clarify-other-input:focus { outline: none; border-color: var(--blurple); }
+.clarify-send {
+  flex: none; height: 34px; padding: 0 14px; border: none;
+  border-radius: 4px; background: var(--blurple); color: #fff;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.clarify-send:hover:not(:disabled) { background: var(--blurple-hover); }
+.clarify-send:focus-visible {
+  outline: 2px solid var(--blurple); outline-offset: 1px;
+}
+.clarify-send:disabled { opacity: 0.5; cursor: default; }
+.clarify-submit { display: block; margin-top: 8px; }
+.clarify-flash {
+  margin: 8px 0 0; font-size: 12px; color: var(--yellow);
+}
+.clarify-flash[hidden] { display: none; }
+@media (max-width: 900px) { .clarify-card { margin: 0 12px 8px; } }
+"""
+
+
+def render_clarify_card(card):
+    """The pending clarify card -> its escaped Discord-style embed HTML
+    (rendered directly above the composer).
+
+    Every field is HTML-escaped, question and choices included; each
+    choice value also rides a data-value attribute (escaped with
+    quotes) so the client sends back exactly what it received. "Other"
+    is a UI-only affordance — its label is never a response — and the
+    open-text input covers both free-text questions and the Other
+    path. The card-level Submit button exists only for multi-select
+    cards; a single-select choice submits itself the moment it is
+    clicked."""
+    if not card:
+        return ""
+    esc = html.escape
+    multi = bool(card.get("multi_select"))
+    choices = card.get("choices") or []
+    out = [
+        '<div class="clarify-card" id="clarify-card" '
+        'data-clarify-id="%s" data-multi="%d" role="group" '
+        'aria-label="Clarification question">\n'
+        % (esc(card["clarify_id"], quote=True), 1 if multi else 0),
+        '  <span class="clarify-tag">Clarify</span>\n',
+        '  <p class="clarify-question">%s</p>\n' % esc(card["question"]),
+    ]
+    if choices:
+        out.append('  <div class="clarify-choices">\n')
+        for choice in choices:
+            out.append(
+                '    <button type="button" class="clarify-choice" '
+                'data-value="%s">%s</button>\n'
+                % (esc(choice, quote=True), esc(choice)))
+        out.append('    <button type="button" class="clarify-choice '
+                   'clarify-other-toggle" aria-pressed="false" '
+                   'data-other="1">Other</button>\n')
+        out.append('  </div>\n')
+    # The open-text input: visible from the start on a free-text
+    # question, revealed by the Other toggle otherwise. Its own send
+    # button exists only when it is the sole submit path (single
+    # select); a multi-select card answers through its own Submit.
+    other_send = "" if (multi and choices) else (
+        '    <button type="button" class="clarify-send '
+        'clarify-other-send">Submit</button>\n')
+    out.append(
+        '  <div class="clarify-other-box"%s>\n'
+        '    <input class="clarify-other-input" type="text" '
+        'placeholder="Type your answer" aria-label="Your answer">\n'
+        '%s'
+        '  </div>\n' % ("" if not choices else " hidden", other_send))
+    if multi and choices:
+        out.append('  <button type="button" class="clarify-send '
+                   'clarify-submit">Submit</button>\n')
+    out.append('  <p class="clarify-flash" role="status" hidden></p>\n')
+    out.append('</div>\n')
+    return "".join(out)
 
 
 # The typing indicator and the live activity strip exist only on a real
@@ -5432,11 +6125,11 @@ WAITING_CSS = """/* ---- waiting-for-first-response row ------------------------
 """
 
 # A %-format exactly like TYPING_ROW: render_chat() fills in the
-# session profile's identity, render_new() the default profile's — the
-# waiting row shows on both pages, because a first send on /new waits
-# for its first response too.
+# session profile's identity (label, letter, optional avatar image),
+# render_new() the default profile's — the waiting row shows on both
+# pages, because a first send on /new waits for its first response too.
 WAITING_ROW = """    <li class="msg from-agent waiting-row" id="waiting-row" hidden>
-      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span></span>
+      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span>%s</span>
       <div class="msg-body">
         <div class="msg-head"><span class="msg-author">%s</span></div>
         <p class="text waiting-text" role="status"><i class="w-dot" aria-hidden="true"></i><span>Waiting for first response&hellip;</span></p>
@@ -5445,10 +6138,10 @@ WAITING_ROW = """    <li class="msg from-agent waiting-row" id="waiting-row" hid
 """
 
 # A %-format (not $tokens: substituted values are never re-scanned) —
-# render_chat() fills in the current chat profile's label and badge
-# letter.
+# render_chat() fills in the current chat profile's label, badge letter
+# and optional avatar image.
 TYPING_ROW = """    <li class="msg from-agent typing-row" id="typing-row" hidden>
-      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span></span>
+      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span>%s</span>
       <div class="msg-body">
         <div class="msg-head"><span class="msg-author">%s</span></div>
         <p class="text typing-dots" role="status" aria-label="%s is working"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i></p>
@@ -5495,9 +6188,10 @@ def render_rail(active_profile, presence):
             '<a class="rail-item%s" href="/?profile=%s"'
             ' data-profile-filter="%s" title="%s" aria-label="%s chats">'
             '<span class="rail-ico">'
-            '<span aria-hidden="true">%s</span></span>%s</a>\n'
+            '<span aria-hidden="true">%s</span>%s</span>%s</a>\n'
             % (sel, esc(key), esc(key), esc(ident["label"]),
-               esc(ident["label"]), esc(ident["letter"]), pres))
+               esc(ident["label"]), esc(ident["letter"]),
+               avatar_img(ident["avatar"], ident["label"], 48), pres))
     return '<nav class="rail" aria-label="Profiles">\n%s</nav>\n' % \
         "".join(items)
 
@@ -5555,7 +6249,7 @@ def render_conv_row(now, r, selected=None):
         ' data-profile="%s">'
         '<a class="conv-link" href="%s">'
         '<span class="avatar" title="profile: %s">'
-        '<span aria-hidden="true">%s</span>%s</span>'
+        '<span aria-hidden="true">%s</span>%s%s</span>'
         '<div class="conv-main">'
         '<div class="conv-top">'
         '<h2 class="conv-title" title="%s">%s</h2>'
@@ -5570,6 +6264,7 @@ def render_conv_row(now, r, selected=None):
         % (sel, esc(blob), esc(r["state"]), esc(r["profile"]),
            esc(url), esc(ident["label"]),
            esc(ident["letter"]),
+           avatar_img(ident["avatar"], ident["label"], 32),
            pres,
            esc("%s \N{BULLET} %s" % (title, ident["label"])), esc(title),
            archived_chip,
@@ -5580,11 +6275,16 @@ def render_conv_row(now, r, selected=None):
 
 
 def render_conv_sections(now, rows, selected=None):
-    """Rows -> the honest sections (Active / Closed / Open · completed /
-    Open · unfinished), newest-first inside each, with count badges.
+    """Rows -> the honest sections (Active / Open · completed /
+    Open · unfinished / Closed), newest-first inside each, with count
+    badges.
 
-    Active and Completed always render (stable hooks + count badges),
-    Incomplete and Closed only when they have members. Closed is a
+    Every open section renders before Closed: the buckets are filled
+    from the state each row already carries before the first section
+    is emitted, so a closed session never precedes an open one however
+    newer its last activity is. Active and Completed always render
+    (stable hooks + count badges), Incomplete and Closed only when
+    they have members. Closed is a
     native <details> disclosure with no "open" attribute in the served
     HTML — first visit (and every no-JS reload) lands collapsed, like a
     collapsed Discord category; the client script restores the user's
@@ -5745,7 +6445,7 @@ def render_sidebar(now, rows, notes, selected=None, active_profile="",
         '  </div>\n'
         '  <footer class="sb-user">'
         '<span class="avatar">'
-        '<span aria-hidden="true">U</span></span>'
+        '<span aria-hidden="true">U</span>%s</span>'
         '<span class="sb-user-meta">'
         '<span class="sb-user-name">You</span>'
         '<span class="sb-user-status">%s</span>'
@@ -5753,7 +6453,7 @@ def render_sidebar(now, rows, notes, selected=None, active_profile="",
         '</nav>\n'
         % (rail, "".join(chips), len(rows), noscript,
            hooks, notes_block, no_rows_hidden, esc(no_rows_msg),
-           sections, status))
+           sections, avatar_img(user_avatar_url(), "You", 32), status))
 
 
 def render(now, rows, notes, active_profile=""):
@@ -5860,10 +6560,12 @@ def render_chat_text(it, cont="", identity=None):
         av_letter = "U"
         av_title = "user message"
         author = USER_LABEL
+        av_img = avatar_img(user_avatar_url(), USER_LABEL, 40)
     else:
         av_letter = identity["letter"]
         av_title = "%s (assistant)" % identity["label"]
         author = identity["label"]
+        av_img = avatar_img(identity["avatar"], identity["label"], 40)
     if cont:
         # Continuation: no avatar, no author — a small timestamp in the
         # gutter, revealed while the row is hovered (CSS).
@@ -5874,18 +6576,19 @@ def render_chat_text(it, cont="", identity=None):
             '<div class="msg-body"><p class="text">%s</p></div></li>\n'
             % (side, cont, esc(fmt_time(it["ts"])),
                esc(fmt_hhmm(it["ts"])), esc(it["text"])))
-    # Plain letter badge: no image assets exist, so there is nothing to
-    # load and nothing to break.
+    # Letter badge with the optional avatar image layered on top; when
+    # the file is missing the img never renders, and when it fails
+    # mid-load the error listener hides it — the letter always shows.
     return (
         '<li class="msg %s">'
         '<span class="avatar" title="%s">'
-        '<span aria-hidden="true">%s</span></span>'
+        '<span aria-hidden="true">%s</span>%s</span>'
         '<div class="msg-body">'
         '<div class="msg-head"><span class="msg-author">%s</span>'
         '<span class="mtime" title="%s">%s</span></div>'
         '<p class="text">%s</p></div></li>\n'
         % (side, esc(av_title),
-           esc(av_letter), esc(author), esc(fmt_time(it["ts"])),
+           esc(av_letter), av_img, esc(author), esc(fmt_time(it["ts"])),
            esc(fmt_short(it["ts"])), esc(it["text"])))
 
 
@@ -6077,8 +6780,15 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
     closed_banner = (
         '<div class="closed-banner" id="closed-banner" role="status"%s>'
         'Session closed</div>\n' % ("" if archived else " hidden"))
+    # The pending clarify card (already-escaped HTML, "" when none):
+    # while one is active the composer renders disabled with the
+    # clarify placeholder — the question above is the only way to answer.
+    clarify_html = chat.get("clarify_card") or ""
+    card_active = bool(clarify_html)
     if archived:
         placeholder = "This session is closed."
+    elif card_active:
+        placeholder = "Answer the question above"
     else:
         placeholder = "Message %s\N{HORIZONTAL ELLIPSIS}" % ident["label"]
 
@@ -6108,7 +6818,7 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         session_toggle=session_toggle,
         closed_banner=closed_banner,
         archived_state="1" if archived else "0",
-        composer_disabled=" disabled" if archived else "",
+        composer_disabled=" disabled" if (archived or card_active) else "",
         # Direct subagent children sit just under the header; ""
         # (nothing at all) when the session has none.
         subagents=render_subagents(now, chat["profile"],
@@ -6127,15 +6837,24 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         rows="".join(parts),
         poll_ms=FEED_POLL_MS,
         last_id=chat["last_id"],
+        # The pending clarify card above the composer, escaped HTML
+        # straight from the core card ("" when none is pending).
+        clarify_card=clarify_html,
+        clarify_css=CLARIFY_CARD_CSS,
+        avatar_user_attr=esc(user_avatar_url()),
         live_css=LIVE_CSS,
         typing_css=TYPING_CSS,
         waiting_css=WAITING_CSS,
         typing_row=TYPING_ROW % (esc(ident["label"]),
                                  esc(ident["letter"]),
+                                 avatar_img(ident["avatar"],
+                                            ident["label"], 40),
                                  esc(ident["label"]),
                                  esc(ident["label"])),
         waiting_row=WAITING_ROW % (esc(ident["label"]),
                                    esc(ident["letter"]),
+                                   avatar_img(ident["avatar"],
+                                              ident["label"], 40),
                                    esc(ident["label"])),
         typing_selector='"#typing-row"',
         composer_placeholder=esc(placeholder),
@@ -6196,6 +6915,10 @@ def render_new(inbox_rows=None, inbox_notes=None):
         rows="",
         poll_ms=FEED_POLL_MS,
         last_id=0,
+        # Nor a clarify card: no session means nothing can be asking.
+        clarify_card="",
+        clarify_css="",
+        avatar_user_attr=esc(user_avatar_url()),
         live_css="",
         typing_css="",
         # The waiting row rides /new too: after the launch is accepted
@@ -6205,6 +6928,8 @@ def render_new(inbox_rows=None, inbox_notes=None):
         typing_row="",
         waiting_row=WAITING_ROW % (esc(new_ident["label"]),
                                    esc(new_ident["letter"]),
+                                   avatar_img(new_ident["avatar"],
+                                              new_ident["label"], 40),
                                    esc(new_ident["label"])),
         typing_selector='""',
         composer_placeholder=esc(
@@ -6280,6 +7005,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_avatar(self, path):
+        """Serve one fixed avatar PNG (never any other file).
+
+        The path arrives already resolved by the avatar URL helpers —
+        a fixed filename inside a trusted home, re-checked here (size
+        cap included) so a file that changed on disk since its URL was
+        rendered can neither grow the response without bound nor
+        escape: anything but a serveable PNG is the themed 404, and
+        the page's letter badge shows instead.
+        """
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read(AVATAR_MAX_BYTES + 1)
+        except OSError:
+            self._not_found("There is no avatar at this address.")
+            return
+        if len(body) > AVATAR_MAX_BYTES:
+            self._not_found("There is no avatar at this address.")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", AVATAR_CONTENT_TYPE)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", AVATAR_CACHE_CONTROL)
         self.end_headers()
         self.wfile.write(body)
 
@@ -6365,6 +7116,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send_page(200, render_new(*self._inbox()).encode("utf-8"))
             return
 
+        # GET /avatar/<profile> and GET /avatar-user: the optional local
+        # avatar PNGs, by their fixed filenames inside a home this server
+        # already trusts. Anything else — an unknown profile, a missing,
+        # swapped, or oversized file — is the themed 404; the letter
+        # badge the img covers is the fallback everywhere.
+        if path == USER_AVATAR_PATH:
+            home = os.path.dirname(os.path.abspath(MAIN_DB))
+            served = _avatar_served_file(home, USER_AVATAR_FILE)
+            if served is None:
+                self._not_found("There is no avatar at this address.")
+            else:
+                self._send_avatar(served)
+            return
+        m = AVATAR_PATH_RE.match(path)
+        if m is not None:
+            home = profile_home(unquote(m.group(1)))
+            served = (_avatar_served_file(home, PROFILE_AVATAR_FILE)
+                      if home is not None else None)
+            if served is None:
+                self._not_found("There is no avatar at this address.")
+            else:
+                self._send_avatar(served)
+            return
+
         # GET /s/<profile>/<id>/feed?after=<message_id>: the transcript
         # page's JSON delta poll.
         m = FEED_PATH_RE.match(path)
@@ -6412,6 +7187,11 @@ class Handler(BaseHTTPRequestHandler):
         if chat is None:
             self._not_found("Unknown profile or session id.")
             return
+        # The pending clarify card rides the initial render too (""
+        # when none is pending, the core is unreachable, or the session
+        # is closed — never a failed page).
+        cl = feed_clarify(profile, session_id, dbs, chat["archived"])
+        chat["clarify_card"] = cl["html"] if cl else ""
         self._send_page(200, render_chat(chat, *self._inbox())
                         .encode("utf-8"))
 
@@ -6440,7 +7220,10 @@ class Handler(BaseHTTPRequestHandler):
         activity is the recomputed live strip snapshot: {active,
         state, pending_count, names, html}, html being the exact
         markup the page renders ("" when there is nothing to show). A
-        finished job's failure note rides along exactly once.
+        finished job's failure note rides along exactly once. clarify
+        (backwards-compatible addition, omitted on any core API error
+        so an open page keeps its current card) is the pending clarify
+        card {active, id, html} from the authenticated core GET.
         """
         dbs = {name: db_path for db_path, name in discover_dbs()}
         if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
@@ -6517,6 +7300,15 @@ class Handler(BaseHTTPRequestHandler):
             # reload. Backwards-compatible addition.
             "session_state": feed["session_state"],
         }
+        # The pending clarify card, as {active, id, html}: active false
+        # removes a visible card, a new id replaces it (selection
+        # resets), the same id preserves it. Omitted entirely whenever
+        # the core clarify GET fails, so a blip never flashes a card
+        # away — and never fails the poll.
+        clarify = feed_clarify(profile, session_id, dbs,
+                               feed["session_state"]["archived"])
+        if clarify is not None:
+            payload["clarify"] = clarify
         if note:
             payload["note"] = note
         self._send_json(200, payload)
@@ -6580,6 +7372,10 @@ class Handler(BaseHTTPRequestHandler):
         m = REPLY_PATH_RE.match(path)
         if m is not None:
             self._post_reply(unquote(m.group(1)), unquote(m.group(2)))
+            return
+        m = CLARIFY_PATH_RE.match(path)
+        if m is not None:
+            self._post_clarify(unquote(m.group(1)), unquote(m.group(2)))
             return
         m = ARCHIVE_PATH_RE.match(path)
         if m is not None:
@@ -6680,6 +7476,109 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(202, {"ok": True, "job": job_id,
                               "status_url": "/s/new/" + job_id})
 
+    def _clarify_body(self):
+        """(error, clarify_id, response) for a clarify POST: a bounded
+        JSON object {"clarify_id": 1-128-char string, "response": a
+        non-empty string or a short list of non-empty strings}. error
+        is None only for a fully valid payload; every malformed body is
+        one canned 400, so nothing beyond the safe status set — and
+        never an upstream or echo detail — ever answers."""
+        raw_len = self.headers.get("Content-Length")
+        if raw_len is None:
+            return "length", "", None
+        try:
+            length = int(raw_len)
+        except ValueError:
+            return "length", "", None
+        if length <= 0 or length > MAX_BODY_BYTES:
+            return "length", "", None
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+        if ctype.strip().lower() != "application/json":
+            return "ctype", "", None
+        try:
+            raw = self.rfile.read(length)
+        except OSError:
+            return "read", "", None
+        if len(raw) != length:
+            return "read", "", None
+        try:
+            obj = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return "json", "", None
+        if not isinstance(obj, dict):
+            return "json", "", None
+        clarify_id = obj.get("clarify_id")
+        if not isinstance(clarify_id, str):
+            return "clarify_id", "", None
+        clarify_id = clarify_id.strip()
+        if not clarify_id or len(clarify_id) > CLARIFY_ID_MAX_CHARS:
+            return "clarify_id", "", None
+        response = obj.get("response")
+        if not valid_clarify_response(response):
+            return "response", "", None
+        if isinstance(response, str):
+            response = response.strip()
+        else:
+            response = [item.strip() for item in response]
+        return None, clarify_id, response
+
+    def _post_clarify(self, profile, session_id):
+        """POST /s/<profile>/<id>/clarify — answer the pending clarify.
+
+        Validates the profile/session pair, the body shape, the
+        session's existence and open state locally, then proxies the
+        core API's clarify POST carrying exactly the clarify_id the
+        client holds. Only 200/400/404/409/503 JSON ever answers, every
+        error a canned safe string (the upstream body is never echoed);
+        nothing here touches /reply or writes any user message.
+        """
+        dbs = {name: db_path for db_path, name in discover_dbs()}
+        if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
+            self.close_connection = True
+            self._send_json(404, {"ok": False,
+                                  "error": "unknown profile or session"})
+            return
+        err, clarify_id, response = self._clarify_body()
+        if err is not None:
+            self._send_json(400, {"ok": False, "error": "bad request body"})
+            return
+        try:
+            exists, _cwd, archived = load_session_cwd(profile, session_id,
+                                                      dbs)
+        except sqlite3.Error:
+            self._send_json(503, {"ok": False,
+                                  "error": "session lookup failed"})
+            return
+        if not exists:
+            self._send_json(404, {"ok": False, "error": "unknown session"})
+            return
+        # A closed session refuses clarify answers even when a stale
+        # client still shows the card.
+        if archived:
+            self._send_json(409, {"ok": False,
+                                  "error": "the session is closed"})
+            return
+        status, _obj, err = clarify_request(
+            "POST", profile, session_id, dbs,
+            {"clarify_id": clarify_id, "response": response})
+        if err is None and status == 200:
+            self._send_json(200, {"ok": True, "resolved": True,
+                                  "clarify_id": clarify_id})
+        elif status == 400:
+            self._send_json(400, {"ok": False,
+                                  "error": "invalid clarify response"})
+        elif status == 404:
+            self._send_json(404, {"ok": False,
+                                  "error": "no pending clarify"})
+        elif status == 409:
+            self._send_json(409, {"ok": False,
+                                  "error": "clarify not pending"})
+        else:
+            # Any other upstream verdict — auth failure, 5xx, timeout,
+            # unparseable — reads as an availability problem from here.
+            self._send_json(503, {"ok": False,
+                                  "error": "clarify upstream unavailable"})
+
     def _get_new_job(self, job_id):
         """GET /s/new/<job> — the bounded status object for one launch.
 
@@ -6749,36 +7648,41 @@ def main(argv=None):
 
         signal.signal(signal.SIGTERM, _stop)
 
-    # A non-loopback bind is a deliberate act: say plainly what it
-    # exposes. The server has NO authentication — anyone who can reach
-    # the address can read every session and send replies.
-    if not _is_loopback(args.host):
-        print("WARNING: binding %s — Mission Control has no built-in "
-              "authentication. Anyone who can reach this address can "
-              "read the session transcript and send messages. Keep it "
-              "on a trusted private network or put an authenticating "
-              "proxy in front." % args.host, flush=True)
-
-    # The Discord -> DB archive mirror: exactly one daemon thread, its
-    # first pass immediately, then every DISCORD_SYNC_INTERVAL_SECONDS
-    # until the stop event. Proof servers opt out with --no-discord-sync.
+    # From here on everything runs inside the stop-guard: a SIGTERM (or
+    # Ctrl-C) that lands mid-startup — say, between the flushed startup
+    # line and the serve loop — is caught here, not traced out of main.
     sync_thread = None
-    if not args.no_discord_sync:
-        sync_thread = threading.Thread(
-            target=discord_sync_loop, name="discord-sync", daemon=True)
-        sync_thread.start()
-
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    # Report the port actually bound: --port 0 asks the OS for a free
-    # port, which is how a test (or anything else that must not race
-    # for a fixed number) gets one — server_address carries the real
-    # value back after the bind.
-    bound_port = httpd.server_address[1]
-    print("serving on http://%s:%d/ (home: %s, profiles: %s%s)"
-          % (args.host, bound_port, display_hermes_home(),
-             ", ".join(p for _, p in discover_dbs()),
-             "" if sync_thread else ", discord-sync off"), flush=True)
+    httpd = None
     try:
+        # A non-loopback bind is a deliberate act: say plainly what it
+        # exposes. The server has NO authentication — anyone who can
+        # reach the address can read every session and send replies.
+        if not _is_loopback(args.host):
+            print("WARNING: binding %s — Mission Control has no built-in "
+                  "authentication. Anyone who can reach this address can "
+                  "read the session transcript and send messages. Keep it "
+                  "on a trusted private network or put an authenticating "
+                  "proxy in front." % args.host, flush=True)
+
+        # The Discord -> DB archive mirror: exactly one daemon thread,
+        # its first pass immediately, then every
+        # DISCORD_SYNC_INTERVAL_SECONDS until the stop event. Proof
+        # servers opt out with --no-discord-sync.
+        if not args.no_discord_sync:
+            sync_thread = threading.Thread(
+                target=discord_sync_loop, name="discord-sync", daemon=True)
+            sync_thread.start()
+
+        httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+        # Report the port actually bound: --port 0 asks the OS for a
+        # free port, which is how a test (or anything else that must not
+        # race for a fixed number) gets one — server_address carries the
+        # real value back after the bind.
+        bound_port = httpd.server_address[1]
+        print("serving on http://%s:%d/ (home: %s, profiles: %s%s)"
+              % (args.host, bound_port, display_hermes_home(),
+                 ", ".join(p for _, p in discover_dbs()),
+                 "" if sync_thread else ", discord-sync off"), flush=True)
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
@@ -6786,7 +7690,8 @@ def main(argv=None):
         _discord_sync_stop.set()
         if sync_thread is not None:
             sync_thread.join(timeout=DISCORD_TIMEOUT_SECONDS + 2)
-        httpd.server_close()
+        if httpd is not None:
+            httpd.server_close()
         terminate_children()
 
 
