@@ -463,8 +463,9 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
+        "cronjob_manage": "action",
         "execute_code": "code", "browser_exec": "code",
-        "delegate_agent": "goal", "delegate_agent": "goal",
+        "delegate_agent": "goal", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
 
@@ -499,7 +500,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         preview = _oneline(str(goal))
         return _truncate_preview(preview, max_len) if preview else None
 
-    if tool_name == "process":
+    if tool_name == "process_manage":
         action = args.get("action", "")
         sid = args.get("session_id", "")
         data = args.get("data", "")
@@ -514,7 +515,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         parts = [p for p in parts if p]
         return " ".join(parts) if parts else None
 
-    if tool_name == "todo":
+    if tool_name == "todo_list":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         if todos_arg is None:
@@ -660,12 +661,12 @@ _TOOL_VERBS: dict[str, str] = {
     "skills_list": "Listing skills",
     "skill_manage": "Updating skill",
     "delegate_agent": "Delegating",
-    # Hidden registry alias — replayed old-name calls keep the same verb.
-    "delegate_agent": "Delegating",
+    "delegate_task": "Delegating",
     "cronjob": "Scheduling",
+    "cronjob_manage": "Scheduling",
     "clarify": "Asking",
     "memory": "Updating memory",
-    "todo": "Updating tasks",
+    "todo_list": "Updating tasks",
 }
 
 # Verbs that read better without the raw argument preview appended.
@@ -718,7 +719,7 @@ def tool_verb_connector(tool_name: str) -> str:
 # "Dispatching". Without the split, a CLI/TUI spinner shows "Delegating" for
 # an instantaneous background dispatch and "nothing happened" for a long
 # blocking one.
-_DELEGATE_TOOL_NAMES = frozenset({"delegate_agent", "delegate_agent"})
+_DELEGATE_TOOL_NAMES = frozenset({"delegate_agent", "delegate_task"})
 
 
 def _delegate_mode_verb(tool_name: str, args: dict | None) -> str | None:
@@ -1455,7 +1456,7 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
-    if tool_name == "process":
+    if tool_name == "process_manage":
         action = args.get("action", "?")
         sid = args.get("session_id", "")[:12]
         labels = {"list": "ls processes", "poll": f"poll {sid}", "log": f"log {sid}",
@@ -1495,7 +1496,7 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
     if tool_name == "browser_vision":
         return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
-    if tool_name == "todo":
+    if tool_name == "todo_list":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         # Parse result for completion progress
@@ -1554,7 +1555,7 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
-    if tool_name == "cronjob":
+    if tool_name == "cronjob_manage":
         action = args.get("action", "?")
         if action == "create":
             skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])

@@ -29,6 +29,21 @@ export interface AudioSpeakResponse {
   provider?: string
 }
 
+/** `POST /api/audio/tts-lease` — TTS engine warm-up / release driven by speech toggles. */
+export interface AudioTtsLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `installed` | `noop` | `error`. */
+  action?: string
+  provider?: string
+  /** Resident local models dropped (release path). */
+  released?: number
+  error?: string
+}
+
 export interface ElevenLabsVoice {
   label: string
   name: string
@@ -716,6 +731,10 @@ export interface SessionRuntimeInfo {
 }
 
 export interface UsageStats {
+  /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
+  avg_tps?: number
+  /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
+  cache_hit_pct?: number
   calls: number
   context_max?: number
   context_percent?: number

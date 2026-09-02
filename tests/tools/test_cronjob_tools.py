@@ -509,7 +509,7 @@ class TestAgentCannotSetModelPin:
 
         updated = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "update",
                     "job_id": job_id,
@@ -543,7 +543,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         created = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "create",
                     "name": "Continuable cron canary",
@@ -560,7 +560,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         stored = get_job(created["job_id"])
         assert stored is not None
         assert stored.get("attach_to_session") is True
-        listing = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listing = json.loads(registry.dispatch("cronjob_manage", {"action": "list"}))
         listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
         assert listed.get("attach_to_session") is True
 
@@ -570,7 +570,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         created = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "create",
                     "name": "plain",
@@ -584,7 +584,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         updated = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "update",
                     "job_id": created["job_id"],
@@ -600,7 +600,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         disabled = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "update",
                     "job_id": created["job_id"],
@@ -613,7 +613,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         stored = get_job(created["job_id"])
         assert stored is not None
         assert stored.get("attach_to_session") is False
-        listing = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listing = json.loads(registry.dispatch("cronjob_manage", {"action": "list"}))
         listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
         assert listed.get("attach_to_session") is False
 
@@ -623,7 +623,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         created = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "create",
                     "schedule": "1h",
@@ -636,7 +636,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         assert stored is not None
         assert "attach_to_session" not in stored
         # And the formatted list output must not invent the field either.
-        listed = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listed = json.loads(registry.dispatch("cronjob_manage", {"action": "list"}))
         formatted = next(
             j for j in listed["jobs"] if j["job_id"] == created["job_id"]
         )
