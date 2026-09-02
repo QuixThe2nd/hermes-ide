@@ -7,6 +7,7 @@ reply because Discord cannot attach a reference via message.edit.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 
 from gateway.config import PlatformConfig
@@ -502,12 +503,15 @@ def _make_root_turn_harness(
     reply_to_mode="first",
     db_author_id=None,
     fetch_message=None,
+    forum_parent=False,
 ):
     """Adapter + fakes for root-turn mention-fallback tests.
 
     The parent-channel @mention spawned a thread whose id equals the root
     message id, and the root message itself lives in the parent channel —
     the exact shape that makes a MessageReference unattachable.
+    ``forum_parent=True`` flips the parent to a forum channel (type 15),
+    where the starter message instead lives in the thread itself.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = DiscordAdapter(
@@ -527,6 +531,8 @@ def _make_root_turn_harness(
             )
         )
     parent = SimpleNamespace(id=_PARENT_CHANNEL_ID, fetch_message=fetch_message)
+    if forum_parent:
+        parent.type = 15  # forum channel — `_is_forum_parent` reads this attr
     thread = SimpleNamespace(
         id=_ROOT_MESSAGE_ID,
         parent_id=_PARENT_CHANNEL_ID,
@@ -667,6 +673,37 @@ class TestDiscordRootTurnMentionFallback:
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
+    async def test_forum_starter_final_references_thread_not_mention_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        """Forum post starter: reference attaches in the thread — no mention.
+
+        The starter shares the id signature of an auto-thread root (its id
+        equals the post thread id), but it lives in the thread itself, so
+        the mention fallback must not fire and the reference anchors to
+        the thread channel.
+        """
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, db_author_id="4242", forum_parent=True
+            )
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Final answer",
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is not None
+        assert sent_messages[0]["reference"].message_id == _ROOT_MESSAGE_ID
+        assert sent_messages[0]["reference"].channel_id == _ROOT_MESSAGE_ID
+        assert "<@" not in sent_messages[0]["content"]
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_reply_to_mode_off_means_no_reference_and_no_mention(
         self, monkeypatch, tmp_path
     ):
@@ -726,3 +763,312 @@ class TestDiscordRootTurnMentionFallback:
         assert len(sent_messages) == 1
         assert len(sent_messages[0]["content"]) <= adapter.MAX_MESSAGE_LENGTH
         assert sent_messages[0]["content"].startswith("<@4242> ")
+
+
+class TestDiscordRootTurnAllModeReplyReference:
+    """reply_to_mode=all: root-turn finals are real replies, not standalone pings.
+
+    The inline-mention fallback is a 'first'-mode mechanism; 'all' anchors a
+    MessageReference to the parent channel — where the root message actually
+    lives — on every chunk of the final.
+    """
+
+    @pytest.mark.asyncio
+    async def test_root_turn_final_references_parent_channel_on_every_chunk(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id="4242"
+            )
+        )
+        long_answer = ("answer sentence. " * 300).strip()
+
+        result = await adapter.send(
+            parent_id,
+            long_answer,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            reference = msg["reference"]
+            assert reference is not None
+            assert reference.message_id == _ROOT_MESSAGE_ID
+            assert reference.channel_id == _PARENT_CHANNEL_ID
+            assert reference.fail_if_not_exists is False
+            assert "<@" not in msg["content"]
+        # The reference is ids-built — no author lookup round trip.
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_forum_starter_final_stays_anchored_to_post_thread(
+        self, monkeypatch, tmp_path
+    ):
+        """Forum post starter in all mode: reference stays in the thread.
+
+        The starter matches the auto-thread signature (id == thread id)
+        with a parent to re-anchor to, but re-anchoring would point the
+        reference at a forum channel that does not contain the starter
+        message — every chunk must reference the thread itself.
+        """
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch,
+                tmp_path,
+                reply_to_mode="all",
+                db_author_id="4242",
+                forum_parent=True,
+            )
+        )
+        long_answer = ("answer sentence. " * 300).strip()
+
+        result = await adapter.send(
+            parent_id,
+            long_answer,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            reference = msg["reference"]
+            assert reference is not None
+            assert reference.message_id == _ROOT_MESSAGE_ID
+            assert reference.channel_id == _ROOT_MESSAGE_ID
+            assert reference.fail_if_not_exists is False
+            assert "<@" not in msg["content"]
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_interim_send_stays_standalone_in_all_mode(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id="4242"
+            )
+        )
+
+        result = await adapter.send(
+            parent_id,
+            "Working on it...",
+            reply_to=root_id,
+            metadata={"notify": True, "_interim_send": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert sent_messages[0]["reference"] is None
+        assert "<@" not in sent_messages[0]["content"]
+        assert parent.fetch_message.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Cold-cache parent resolution — fetched threads have no cached parent
+# ---------------------------------------------------------------------------
+
+
+def _make_cold_cache_harness(monkeypatch, tmp_path, *, reply_to_mode, forum_parent):
+    """Root-turn fakes modeling a thread fetched cold from the API.
+
+    ``send`` resolves its thread through ``fetch_channel`` when the client
+    cache misses, and in discord.py 2.7.1 a fetched thread resolves
+    ``parent`` through its guild's channel cache — empty for the guild
+    the ``fetch_channel`` factory builds.  Modeled here by a thread with
+    NO ``parent`` attribute and a ``get_channel`` that misses the parent
+    id, so the forum classification can only come from the ``fetch_channel``
+    fallback.  That fetch returns a ``discord.ForumChannel`` instance —
+    the exact class production's ``_is_forum_parent`` isinstance-checks —
+    rather than a mock attribute that merely looks forum-shaped.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
+    )
+    sent_messages = []
+
+    async def _send(content=None, reference=None, **_):
+        msg = SimpleNamespace(
+            id=len(sent_messages) + 100, content=content, reference=reference
+        )
+        sent_messages.append({"content": content, "reference": reference, "id": msg.id})
+        return msg
+
+    if forum_parent:
+        parent = discord.ForumChannel()
+        parent.id = _PARENT_CHANNEL_ID
+    else:
+        # ChannelType.text (0) — a plain parent channel, never a forum.
+        parent = SimpleNamespace(id=_PARENT_CHANNEL_ID, type=0)
+
+    # The cold thread: no `parent` attribute at all, like a Thread whose
+    # guild channel cache is empty.
+    thread = SimpleNamespace(
+        id=_ROOT_MESSAGE_ID,
+        parent_id=_PARENT_CHANNEL_ID,
+        send=AsyncMock(side_effect=_send),
+    )
+
+    def get_channel(channel_id):
+        # Cold client cache — every lookup misses.
+        return None
+
+    async def fetch_channel(channel_id):
+        channel_id = int(channel_id)
+        if channel_id == _ROOT_MESSAGE_ID:
+            return thread
+        if channel_id == _PARENT_CHANNEL_ID:
+            return parent
+        return None
+
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(side_effect=get_channel),
+        fetch_channel=AsyncMock(side_effect=fetch_channel),
+    )
+    adapter.format_message = lambda content: content
+    return adapter, thread, sent_messages
+
+
+def _parent_fetch_count(adapter):
+    """How many times the parent channel was fetched over the API."""
+    return sum(
+        1
+        for call in adapter._client.fetch_channel.await_args_list
+        if call.args == (int(_PARENT_CHANNEL_ID),)
+    )
+
+
+class TestDiscordRootTurnColdCacheParentResolution:
+    """Forum starters must stay thread-referenced even from a cold cache.
+
+    ``send`` may resolve its thread through ``fetch_channel``; the fetched
+    thread has no cached parent, and ``client.get_channel(parent_id)``
+    misses when the parent channel is uncached too.  The forum-parent
+    check used to answer "not forum" there, treating a forum starter like
+    an auto-thread root and re-anchoring its reply to the forum channel —
+    where the starter message does not live, so Discord silently dropped
+    the reply ping.
+    """
+
+    @pytest.mark.asyncio
+    async def test_forum_starter_cold_cache_references_thread_on_every_chunk_all_mode(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch, tmp_path, reply_to_mode="all", forum_parent=True
+        )
+        # The cold-cache shape the fix exists for.
+        assert not hasattr(thread, "parent")
+        assert adapter._client.get_channel(int(_PARENT_CHANNEL_ID)) is None
+
+        long_answer = ("answer sentence. " * 300).strip()
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            long_answer,
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            reference = msg["reference"]
+            assert reference is not None
+            assert reference.message_id == _ROOT_MESSAGE_ID
+            # The post thread holds the starter — never the forum channel.
+            assert reference.channel_id == _ROOT_MESSAGE_ID
+            assert reference.fail_if_not_exists is False
+            assert "<@" not in (msg["content"] or "")
+        # The parent was resolved over the API exactly once for the send
+        # (thread fetch + one parent fetch, memoized).
+        assert _parent_fetch_count(adapter) == 1
+
+    @pytest.mark.asyncio
+    async def test_forum_starter_cold_cache_first_mode_references_thread_without_mention(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch, tmp_path, reply_to_mode="first", forum_parent=True
+        )
+
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            ("answer sentence. " * 300).strip(),
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        first_reference = sent_messages[0]["reference"]
+        assert first_reference is not None
+        assert first_reference.message_id == _ROOT_MESSAGE_ID
+        assert first_reference.channel_id == _ROOT_MESSAGE_ID
+        for msg in sent_messages[1:]:
+            assert msg["reference"] is None
+        # The reference attaches — the inline-mention fallback must not fire.
+        assert all("<@" not in (m["content"] or "") for m in sent_messages)
+        assert _parent_fetch_count(adapter) == 1
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_text_parent_still_reanchors_reference_all_mode(
+        self, monkeypatch, tmp_path
+    ):
+        """Cold text-channel parents must stay classified as root turns.
+
+        The API-resolved parent is a plain text channel here — the lookup
+        that recovers forum starters must not over-classify and swallow
+        the root-turn fallback for ordinary auto-threads.
+        """
+        adapter, _thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch, tmp_path, reply_to_mode="all", forum_parent=False
+        )
+
+        long_answer = ("answer sentence. " * 300).strip()
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            long_answer,
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            reference = msg["reference"]
+            assert reference is not None
+            assert reference.message_id == _ROOT_MESSAGE_ID
+            # The root message lives in the parent channel.
+            assert reference.channel_id == _PARENT_CHANNEL_ID
+            assert reference.fail_if_not_exists is False
+            assert "<@" not in (msg["content"] or "")
+        assert _parent_fetch_count(adapter) == 1
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_text_parent_first_mode_keeps_mention_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch, tmp_path, reply_to_mode="first", forum_parent=False
+        )
+        _seed_recovery_author(adapter, _ROOT_MESSAGE_ID, 4242)
+
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            ("answer sentence. " * 300).strip(),
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            assert msg["reference"] is None
+        assert sent_messages[0]["content"].startswith("<@4242> ")
+        assert sum("<@4242>" in (m["content"] or "") for m in sent_messages) == 1
+        # One parent fetch served both the reference build and the mention
+        # fallback's re-check — the memoized answer, not a second API call.
+        assert _parent_fetch_count(adapter) == 1
