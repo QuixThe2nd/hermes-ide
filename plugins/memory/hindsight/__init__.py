@@ -34,6 +34,7 @@ import asyncio
 import atexit
 import contextvars
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -355,15 +356,30 @@ def _get_loop() -> asyncio.AbstractEventLoop:
     with _loop_lock:
         if _loop is not None and _loop.is_running():
             return _loop
-        _loop = asyncio.new_event_loop()
+        loop = asyncio.new_event_loop()
+        _loop = loop
+        started = threading.Event()
 
-        def _run():
-            asyncio.set_event_loop(_loop)
-            _loop.run_forever()
+        def _run(loop=loop):
+            asyncio.set_event_loop(loop)
+            loop.call_soon(started.set)
+            loop.run_forever()
 
         _loop_thread = threading.Thread(target=_run, daemon=True, name="hindsight-loop")
         _loop_thread.start()
-        return _loop
+        # Block until the loop is actually spinning. There is a window between
+        # thread start and run_forever() where is_running() is still False; a
+        # second thread calling _get_loop() in that window would mint a second
+        # loop, orphaning the first along with every client session bound to
+        # it (all later calls on the orphan block until their timeout).
+        started.wait(timeout=5.0)
+        return loop
+
+
+def _on_hindsight_loop_thread() -> bool:
+    """Return True when the calling thread IS the shared Hindsight loop thread."""
+    thread = _loop_thread
+    return thread is not None and threading.current_thread() is thread
 
 
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
@@ -820,6 +836,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        # Serializes client (re)construction so concurrent first-use callers
+        # (foreground tool thread, prefetch thread, writer thread) can't each
+        # build a client and leak all but the last one.
+        self._client_lock = threading.Lock()
         # Bank defaults (retain mission + seeded directives) apply once, on
         # first client creation — see _apply_bank_defaults().
         self._bank_defaults_applied = False
@@ -1269,62 +1289,94 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
 
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
+        """Return the cached Hindsight client (created once, reused).
+
+        The client is constructed ON the shared Hindsight event loop, never on
+        the calling thread. The SDK client (and its lazily-created aiohttp
+        ClientSession) binds to whatever event loop is current where it is
+        first used; if that happens on a caller thread's loop, every later
+        call that _run_sync() schedules onto the shared loop fails with
+        aiohttp's "Timeout context manager should be used inside a task"
+        (aiohttp.helpers.TimerContext finds no current task on the session's
+        loop). Construction on the loop keeps construct/use/retry/close all on
+        one owning loop no matter which thread triggers the first call
+        (foreground tool, prefetch, writer, bank defaults, session switch).
+        """
         if self._client is None:
-            if self._mode == "local_embedded":
-                available, reason = _check_local_runtime()
-                if not available:
-                    raise RuntimeError(
-                        "Hindsight local runtime is unavailable"
-                        + (f": {reason}" if reason else "")
-                    )
-                try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
-                except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
-                HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
-                if llm_provider in {"openai_compatible", "openrouter"}:
-                    llm_provider = "openai"
-                logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
-                kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
-                    llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
-                    llm_model=self._config.get("llm_model", ""),
-                )
-                if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
-                idle_timeout = _parse_int_setting(
-                    self._config.get("idle_timeout")
-                    if self._config.get("idle_timeout") is not None
-                    else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
-                    _DEFAULT_IDLE_TIMEOUT,
-                )
-                self._idle_timeout = idle_timeout
-                kwargs["idle_timeout"] = idle_timeout
-                self._client = HindsightEmbedded(**kwargs)
-            else:
-                _ensure_cloud_client_dependency()
-                from hindsight_client import Hindsight
-                timeout = self._timeout or _DEFAULT_TIMEOUT
-                kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
-                             self._api_url, bool(self._api_key), kwargs["timeout"])
-                self._client = Hindsight(**kwargs)
+            with self._client_lock:
+                if self._client is None:
+                    if _on_hindsight_loop_thread():
+                        # Already on the owning loop (e.g. an operation lambda
+                        # that itself needs a client): build in place. Going
+                        # through _run_sync here would deadlock — the loop
+                        # thread would block on a future only it can run.
+                        self._client = self._build_client()
+                    else:
+                        # run_coroutine_threadsafe snapshots the submitter's
+                        # contextvars context (profile secret scope under
+                        # multiplex_profiles), so get_secret() inside
+                        # _build_client still resolves profile-scoped keys.
+                        self._client = self._run_sync(self._create_client())
         # First client creation is also where bank defaults go out —
         # initialize() stays lazy (it never builds a client), so this is the
         # earliest point the Banks API is actually reachable. No-op on every
         # later call via the _bank_defaults_applied flag.
         self._apply_bank_defaults()
         return self._client
+
+    def _build_client(self):
+        """Construct the SDK client object. Must run ON the owning loop."""
+        if self._mode == "local_embedded":
+            available, reason = _check_local_runtime()
+            if not available:
+                raise RuntimeError(
+                    "Hindsight local runtime is unavailable"
+                    + (f": {reason}" if reason else "")
+                )
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure
+                _lazy_ensure("memory.hindsight", prompt=False)
+            except ImportError:
+                pass
+            except Exception as _e:
+                raise ImportError(str(_e))
+            from hindsight import HindsightEmbedded
+            HindsightEmbedded.__del__ = lambda self: None
+            llm_provider = self._config.get("llm_provider", "")
+            if llm_provider in {"openai_compatible", "openrouter"}:
+                llm_provider = "openai"
+            logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
+                         self._config.get("profile", "hermes"), llm_provider)
+            kwargs = dict(
+                profile=self._config.get("profile", "hermes"),
+                llm_provider=llm_provider,
+                llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
+                llm_model=self._config.get("llm_model", ""),
+            )
+            if self._llm_base_url:
+                kwargs["llm_base_url"] = self._llm_base_url
+            idle_timeout = _parse_int_setting(
+                self._config.get("idle_timeout")
+                if self._config.get("idle_timeout") is not None
+                else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
+                _DEFAULT_IDLE_TIMEOUT,
+            )
+            self._idle_timeout = idle_timeout
+            kwargs["idle_timeout"] = idle_timeout
+            return HindsightEmbedded(**kwargs)
+        _ensure_cloud_client_dependency()
+        from hindsight_client import Hindsight
+        timeout = self._timeout or _DEFAULT_TIMEOUT
+        kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
+                     self._api_url, bool(self._api_key), kwargs["timeout"])
+        return Hindsight(**kwargs)
+
+    async def _create_client(self):
+        """Async wrapper so _build_client() executes on the owning loop."""
+        return self._build_client()
 
     def _apply_bank_defaults(self) -> None:
         """Apply bank missions and seed the default recall directives.
@@ -1352,13 +1404,19 @@ class HindsightMemoryProvider(MemoryProvider):
 
         retain_mission = self._bank_retain_mission or _DEFAULT_BANK_RETAIN_MISSION
         reflect_mission = self._bank_mission or None
+        # Same PATCH payload the sync Hindsight.update_bank_config() wrapper
+        # builds — {"updates": {non-None kwargs}} — sent via its async twin.
+        # The sync wrapper must NOT be used here: it runs the request via
+        # asyncio.get_event_loop().run_until_complete() on the CALLING thread,
+        # binding the SDK's aiohttp session to that thread's loop instead of
+        # the shared Hindsight loop every other call is scheduled on.
+        updates: Dict[str, Any] = {"retain_mission": retain_mission}
+        if reflect_mission is not None:
+            updates["reflect_mission"] = reflect_mission
+        request_timeout = float(self._timeout or _DEFAULT_TIMEOUT)
         try:
             self._run_hindsight_operation(
-                lambda c: c.update_bank_config(
-                    bank_id=self._bank_id,
-                    retain_mission=retain_mission,
-                    reflect_mission=reflect_mission,
-                )
+                lambda c: c._aupdate_bank_config(self._bank_id, updates)
             )
             logger.debug("Hindsight bank config applied: bank=%s, retain_mission=%s, reflect_mission=%s",
                          self._bank_id,
@@ -1369,8 +1427,16 @@ class HindsightMemoryProvider(MemoryProvider):
                            self._bank_id, exc)
 
         try:
+            # Async-only generated API (client.directives.*) — the high-level
+            # Hindsight.list_directives()/create_directive() are sync
+            # _run_async wrappers with the same wrong-loop problem as above.
+            # The create body is sent as a plain dict because it serializes
+            # identically to CreateDirectiveRequest and keeps this path free
+            # of SDK model imports (hindsight-client is a lazy dependency).
             response = self._run_hindsight_operation(
-                lambda c: c.list_directives(bank_id=self._bank_id)
+                lambda c: c.directives.list_directives(
+                    self._bank_id, _request_timeout=request_timeout
+                )
             )
             existing = {
                 str(getattr(item, "name", "") or "")
@@ -1385,11 +1451,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 continue
             try:
                 self._run_hindsight_operation(
-                    lambda c, d=directive: c.create_directive(
-                        bank_id=self._bank_id,
-                        name=d["name"],
-                        content=d["content"],
-                        priority=d["priority"],
+                    lambda c, d=directive: c.directives.create_directive(
+                        self._bank_id,
+                        {
+                            "name": d["name"],
+                            "content": d["content"],
+                            "priority": d["priority"],
+                            "is_active": True,
+                        },
+                        _request_timeout=request_timeout,
                     )
                 )
             except Exception as exc:
@@ -1655,10 +1725,27 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
     def _run_hindsight_operation(self, operation):
-        """Run an async Hindsight client operation, retrying once after idle shutdown."""
+        """Run an async Hindsight client operation, retrying once after idle shutdown.
+
+        The operation callable is invoked INSIDE a coroutine on the shared
+        Hindsight loop, never on the calling thread. hindsight-client ships
+        several methods as sync ``_run_async`` wrappers that execute on
+        ``asyncio.get_event_loop()`` of whichever thread calls them; when such
+        a call runs on a foreground/writer/prefetch thread it binds the SDK's
+        aiohttp session to that thread's loop, and every subsequent call
+        scheduled here fails with aiohttp's "Timeout context manager should
+        be used inside a task". Evaluating the callable on the owning loop
+        keeps construct/use/retry/close on one loop.
+        """
+        async def _invoke(client):
+            result = operation(client)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
         client = self._get_client()
         try:
-            return self._run_sync(operation(client))
+            return self._run_sync(_invoke(client))
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
@@ -1666,10 +1753,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
                 exc,
             )
-            self._client = None
+            with self._client_lock:
+                self._client = None
             client = self._get_client()
-            self._client = client
-            return self._run_sync(operation(client))
+            with self._client_lock:
+                # _get_client() normally caches this itself; the explicit
+                # store keeps the retried client cached even when _get_client
+                # is stubbed out (tests) or raced by another first-use thread.
+                self._client = client
+            return self._run_sync(_invoke(client))
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
