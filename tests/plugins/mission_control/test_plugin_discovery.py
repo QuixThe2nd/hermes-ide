@@ -4,8 +4,9 @@ mission_control.
 The plugin is CLI-only: it must load through the real PluginManager as
 a default-enabled bundled plugin, register exactly one CLI command,
 contribute no model tools, and keep the server module's imports to the
-stdlib plus the repo's own hermes_constants (TASK.md's
-generic-safe-defaults contract). Nothing here runs the server.
+stdlib plus the repo's own hermes_constants — generic, safe defaults
+only, with no personal or machine-specific literals. Nothing here runs
+the server.
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_DIR = REPO_ROOT / "plugins" / "mission_control"
 
-# Personal/machine-specific strings that must never ship in the plugin
-# (TASK.md: generic identities, paths, and deployment guidance only).
+# Personal/machine-specific strings that must never ship in the plugin:
+# generic identities, paths, and deployment guidance only.
 FORBIDDEN_STRINGS = (
     "/root/.hermes",
     "/root/hermes-agent",
@@ -48,6 +49,22 @@ def _write_config(home, data: dict) -> None:
     (home / "config.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
 
 
+@pytest.fixture
+def plugin_manager(hermes_home, monkeypatch):
+    """One real PluginManager against the throwaway home.
+
+    The manager is unloaded in teardown so the registrations its
+    discovery installs (CLI command entries, hook slots) are disposed
+    and never leak into tests that run later in the same process."""
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(REPO_ROOT / "plugins"))
+
+    from hermes_cli.plugins import PluginManager
+
+    mgr = PluginManager()
+    yield mgr
+    mgr.unload()
+
+
 def test_plugin_yaml_is_backend_cli_only_and_default_enabled():
     meta = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
     assert meta["name"] == "mission_control"
@@ -58,11 +75,22 @@ def test_plugin_yaml_is_backend_cli_only_and_default_enabled():
 
 
 def test_no_personal_or_machine_specific_strings_ship():
-    for name in ("server.py", "cli.py", "__init__.py", "README.md",
-                 "plugin.yaml"):
-        text = (PLUGIN_DIR / name).read_text(encoding="utf-8")
+    # Every text file the plugin ships is scanned — not a fixed name
+    # list a future file could fall outside of — so the deny list
+    # judges the whole product, and the literals above live only in
+    # this test, never in a shipped file.
+    scanned = 0
+    for path in sorted(PLUGIN_DIR.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue  # a binary carries no literals to leak
+        scanned += 1
         for needle in FORBIDDEN_STRINGS:
-            assert needle not in text, (name, needle)
+            assert needle not in text, (path.name, needle)
+    assert scanned >= 5  # server.py, cli.py, __init__.py, README, yaml
 
 
 def test_no_static_assets_or_images_ship():
@@ -157,47 +185,32 @@ def test_cli_registers_serve_subcommand():
     assert mission_control_command(missing) == 2
 
 
-def test_bundled_default_enabled_loads_and_registers_cli(hermes_home,
-                                                          monkeypatch):
+def test_bundled_default_enabled_loads_and_registers_cli(
+        hermes_home, plugin_manager):
     _write_config(hermes_home, {"plugins": {"enabled": []}})
-    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(REPO_ROOT / "plugins"))
-
-    from hermes_cli.plugins import PluginManager
-
-    mgr = PluginManager()
-    mgr.discover_and_load()
-    loaded = mgr._plugins.get("mission_control")
+    plugin_manager.discover_and_load()
+    loaded = plugin_manager._plugins.get("mission_control")
     assert loaded is not None
     assert loaded.enabled is True
     assert loaded.error is None
-    assert "mission_control" in mgr._cli_commands
-    entry = mgr._cli_commands["mission_control"]
+    assert "mission_control" in plugin_manager._cli_commands
+    entry = plugin_manager._cli_commands["mission_control"]
     assert entry["setup_fn"] and entry["handler_fn"]
 
 
-def test_plugin_contributes_no_model_tools(hermes_home, monkeypatch):
-    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(REPO_ROOT / "plugins"))
-
-    from hermes_cli.plugins import PluginManager
-
-    mgr = PluginManager()
-    mgr.discover_and_load()
-    tool_names = set(mgr._plugin_tool_names) if hasattr(
-        mgr, "_plugin_tool_names") else set()
+def test_plugin_contributes_no_model_tools(hermes_home, plugin_manager):
+    plugin_manager.discover_and_load()
+    tool_names = set(plugin_manager._plugin_tool_names) if hasattr(
+        plugin_manager, "_plugin_tool_names") else set()
     assert not any("mission_control" in n or "mission_control" in str(n)
                    for n in tool_names)
 
 
-def test_explicit_disable_wins(hermes_home, monkeypatch):
+def test_explicit_disable_wins(hermes_home, plugin_manager):
     _write_config(
         hermes_home, {"plugins": {"enabled": [], "disabled":
                                   ["mission_control"]}})
-    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(REPO_ROOT / "plugins"))
-
-    from hermes_cli.plugins import PluginManager
-
-    mgr = PluginManager()
-    mgr.discover_and_load()
-    loaded = mgr._plugins["mission_control"]
+    plugin_manager.discover_and_load()
+    loaded = plugin_manager._plugins["mission_control"]
     assert loaded.enabled is False
     assert loaded.error == "disabled via config"

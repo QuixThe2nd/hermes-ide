@@ -162,8 +162,8 @@ Interactive layer (all same-origin, relative URLs, stdlib only):
   strip owns the tail instead. The typing dots appear only while the
   feed reports busy === true, never on /new, never merely because a
   send is waiting, and never beside the waiting row or the strip.
-- POST /s/<profile>/<id>/reply — body text/plain or application/json
-  {"text": ...}; validates the session exists in that profile DB (404)
+- POST /s/<profile>/<id>/reply — body application/json {"text": ...};
+  validates the session exists in that profile DB (404)
   and rejects empty text (400). Replies 202 immediately and runs
   `hermes --resume <id> chat --oneshot -q <text>` (cwd from the session
   row when present) in a background thread — one in-flight reply per
@@ -426,6 +426,25 @@ _discord_last_request = 0.0
 _discord_cooldown_until = 0.0
 _discord_sync_stop = threading.Event()
 
+# ---- archive ownership (user actions vs the background mirror) --------
+# One rule: a user-confirmed close/reopen always wins over a background
+# snapshot that was already in flight when the user acted. Every profile
+# DB carries a monotonically increasing epoch; a user mutation bumps it
+# (and writes) while holding _archive_epoch_lock, and the sync pass
+# re-checks the epoch under the same lock right before it applies a
+# fetched snapshot — a snapshot whose epoch moved is stale and is
+# discarded whole, never partially applied. Because both writers hold
+# the same lock across their transactional DB writes, the database is
+# never left holding a mix of the two.
+_archive_epoch_lock = threading.Lock()
+_archive_epochs = {}
+
+
+def _archive_epoch(db_path):
+    """Current archive epoch for one profile DB (0 when never bumped)."""
+    with _archive_epoch_lock:
+        return _archive_epochs.get(db_path, 0)
+
 # ---- composer / hermes plumbing --------------------------------------
 # The binary is invoked by absolute path with a list argv (never a
 # shell), so message text can never be shell-interpreted. Hermes output
@@ -470,6 +489,42 @@ HERMES_TIMEOUT_SECONDS = 900
 # messages have no business approaching either.
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 32000
+
+# ---- cross-site request forgery boundary --------------------------------
+# Every state-changing route (reply, /s/new, close/reopen) rejects
+# browser-simple cross-origin requests BEFORE the body is parsed or any
+# state changes, using three header-only checks (see Handler.do_POST):
+# an Origin header naming another host, a content type other than
+# application/json (an HTML form can only produce the "simple" types),
+# or a missing/wrong X-CSRF-Token — a non-simple header no form can
+# carry and a cross-origin fetch cannot send without a preflight this
+# server never grants. The token is one cryptographically random value
+# per server process, created lazily on the first page render, emitted
+# ONLY to pages this process serves (a <meta> tag), validated in
+# constant time, and never logged or echoed back.
+CSRF_HEADER = "X-CSRF-Token"
+CSRF_META_NAME = "mission-control-csrf"
+_csrf_token = None
+_csrf_lock = threading.Lock()
+
+
+def csrf_token():
+    """This server process's CSRF token, minted on first use.
+
+    Lazy so merely importing the module (tests, the CLI wiring) never
+    spends entropy; per process so two servers never share a token.
+    """
+    global _csrf_token
+    with _csrf_lock:
+        if _csrf_token is None:
+            _csrf_token = secrets.token_urlsafe(32)
+        return _csrf_token
+
+
+def csrf_meta_tag():
+    """The <meta> element carrying the token into a served page."""
+    return ('<meta name="%s" content="%s">'
+            % (CSRF_META_NAME, html.escape(csrf_token(), quote=True)))
 
 # The feed's poll cadence (client-side); the script polls faster while a
 # reply is in flight so the answer lands promptly.
@@ -535,6 +590,12 @@ def profile_identity(profile):
 # other path).
 CHAT_DETAIL_CHARS = 400
 CHAT_TEXT_CHARS = 4000
+# The codex_message_items source bound. The SQL projections above and
+# codex_commentary_text() must agree on this number: SQL selects the
+# value only when its character length is within it, and the parser
+# rejects anything longer, so an oversized blob can never be sliced
+# into an accepted truncated prefix from either side.
+CODEX_ITEMS_MAX_CHARS = 4000
 
 # Distinct tool-name chips in a collapsed group's summary line; past
 # this a "+N more" chip keeps mixed runs to one readable row.
@@ -551,33 +612,40 @@ WHERE id = ?
 """
 
 # The transcript page itself: every displayable row, newest-first in
-# SQL, reversed in Python into display order (timestamp, id) — there is
-# no row cap, a 1700-event session renders all 1700. substr() caps
-# content at 4000 characters before it leaves the DB; tool JSON is
-# never selected whole. idx_messages_session (session_id, timestamp)
-# serves the scan.
+# SQL, reversed in Python into display order. Row id is the one
+# authoritative chronology — AUTOINCREMENT insertion order, unique and
+# monotone, immune to the non-monotonic timestamps a tool result or a
+# clock skew can write — so the page, the full feed and every delta
+# poll all agree on one order and the id cursor can never skip or
+# reorder. There is no row cap, a 1700-event session renders all 1700.
+# substr() caps content at 4000 characters before it leaves the DB;
+# tool JSON is never selected whole.
 # The lifecycle columns (assistant tool_calls carrier, tool result id,
 # finish_reason) feed tool-call/activity matching; tool_calls is
 # substr-capped too, so arguments never leave the DB unbounded.
 # The trailing column is the Codex commentary fallback: a Codex
 # tool-call assistant row carries its narration only in
 # codex_message_items while content stays '', so exactly those rows
-# also select a substr-bounded slice of that JSON (never the whole
-# blob) for chat_messages to parse defensively. Every other row —
-# user, tool, or an assistant row with content — selects '' there,
-# so content stays the sole authority and is never duplicated.
+# also select that JSON for chat_messages to parse defensively — but
+# ONLY whole and only within CODEX_ITEMS_MAX_CHARS (length() counts
+# characters for TEXT): an oversized value selects '' so SQL can never
+# hand the parser a truncated prefix, even when the first 4000
+# characters happen to parse as valid JSON followed by padding. Every
+# other row — user, tool, or an assistant row with content — selects ''
+# there, so content stays the sole authority and is never duplicated.
 CHAT_PAGE_SQL = """
 SELECT role, tool_name, timestamp, id, substr(content, 1, 4000),
        substr(IFNULL(tool_calls, ''), 1, 2000), tool_call_id,
        finish_reason,
        CASE WHEN role = 'assistant' AND IFNULL(content, '') = ''
-            THEN substr(IFNULL(codex_message_items, ''), 1, 4000)
-            ELSE '' END
+             AND length(IFNULL(codex_message_items, ''))
+                 BETWEEN 1 AND 4000
+            THEN codex_message_items ELSE '' END
 FROM messages
 WHERE session_id = ?
   AND role != 'session_meta'
   AND IFNULL(display_kind, '') != 'hidden'
-ORDER BY timestamp DESC, id DESC
+ORDER BY id DESC
 """
 
 # Newest row id in a session — the feed cursor. MAX over every row
@@ -587,27 +655,59 @@ FEED_LAST_ID_SQL = """
 SELECT MAX(id) FROM messages WHERE session_id = ?
 """
 
-# Rows newer than the cursor, oldest-first, same display filters,
-# lifecycle columns and Codex commentary fallback column as the
-# transcript page (the empty-content assistant carrier recovers its
-# narration identically in a delta poll). LIMIT keeps one
-# pathological catch-up bounded; when the limit bites, the cursor stops
-# at the newest row actually returned so nothing is silently skipped.
+# Rows newer than the cursor, oldest-first by the same authoritative
+# id order as the page, same display filters, lifecycle columns and
+# Codex commentary fallback column as the transcript page (the
+# empty-content assistant carrier recovers its narration identically
+# in a delta poll). LIMIT keeps one pathological catch-up bounded;
+# when the limit bites, the cursor stops at the newest row actually
+# returned so nothing is silently skipped.
 FEED_AFTER_SQL = """
 SELECT role, tool_name, timestamp, id, substr(content, 1, 4000),
        substr(IFNULL(tool_calls, ''), 1, 2000), tool_call_id,
        finish_reason,
        CASE WHEN role = 'assistant' AND IFNULL(content, '') = ''
-            THEN substr(IFNULL(codex_message_items, ''), 1, 4000)
-            ELSE '' END
+             AND length(IFNULL(codex_message_items, ''))
+                 BETWEEN 1 AND 4000
+            THEN codex_message_items ELSE '' END
 FROM messages
 WHERE session_id = ?
   AND id > ?
   AND role != 'session_meta'
   AND IFNULL(display_kind, '') != 'hidden'
-ORDER BY timestamp ASC, id ASC
+ORDER BY id ASC
 LIMIT ?
 """
+
+# Delta-feed group seam: when a delta's oldest row is a tool result,
+# the collapsed group it belongs to may have started in an earlier
+# poll. These are the rows immediately older than the delta — same
+# projection and filters, newest-first — so load_feed can rebuild the
+# COMPLETE maximal tool group (see FEED_BACKFILL_MAX) instead of
+# letting one run render as two adjacent groups across polls.
+FEED_BACKFILL_SQL = """
+SELECT role, tool_name, timestamp, id, substr(content, 1, 4000),
+       substr(IFNULL(tool_calls, ''), 1, 2000), tool_call_id,
+       finish_reason,
+       CASE WHEN role = 'assistant' AND IFNULL(content, '') = ''
+             AND length(IFNULL(codex_message_items, ''))
+                 BETWEEN 1 AND 4000
+            THEN codex_message_items ELSE '' END
+FROM messages
+WHERE session_id = ?
+  AND id < ?
+  AND role != 'session_meta'
+  AND IFNULL(display_kind, '') != 'hidden'
+ORDER BY id DESC
+LIMIT ?
+"""
+# Bound on the seam rebuild. A run of consecutive tool rows longer
+# than this, split exactly at a poll boundary, is re-rendered from
+# this many rows back; the client-side merge then no longer
+# recognizes the older element and appends instead of replacing (two
+# adjacent groups, correct order, no lost rows — a reload shows the
+# full run). One bounded backfill, never a page-wide rescan.
+FEED_BACKFILL_MAX = 200
 
 # The LIMIT above bounds only one after>0 catch-up poll — never the
 # transcript itself. When it bites, the cursor stops at the newest row
@@ -747,18 +847,37 @@ TRIGGERING_BLOCK_RE = re.compile(r"^\s*\[Triggering message id:[^\]]*\]\s*")
 SENDER_PREFIX_RE = re.compile(r"^\[[^\]\s]+\]\s+")
 BLANK_RUN_RE = re.compile(r"(?:[ \t]*\n){3,}")
 
+# Lone UTF-16 surrogates can reach Python strings only through escaped
+# JSON ("\ud800") — SQLite TEXT and utf-8 decoding cannot produce one.
+# They are unencodable: any response write (utf-8) would raise
+# UnicodeEncodeError, so every display-bound string replaces them with
+# U+FFFD. Properly paired astral characters are single code points in a
+# Python str and never match.
+LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def sanitize_text(text):
+    """One string -> the same string with lone surrogates replaced by
+    U+FFFD, so nothing downstream (HTML escape, JSON body, utf-8 write)
+    can raise UnicodeEncodeError."""
+    if not text:
+        return text
+    if not LONE_SURROGATE_RE.search(text):
+        return text
+    return LONE_SURROGATE_RE.sub("\N{REPLACEMENT CHARACTER}", text)
+
 
 def clean_preview(text):
     """Raw message text -> display preview: envelope stripped, extra
-    blank lines collapsed, ends trimmed. Newlines survive (the preview
-    cell renders pre-wrap)."""
+    blank lines collapsed, ends trimmed, lone surrogates replaced.
+    Newlines survive (the preview cell renders pre-wrap)."""
     if not text:
         return ""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = TRIGGERING_BLOCK_RE.sub("", text, count=1)
     text = SENDER_PREFIX_RE.sub("", text, count=1)
     text = BLANK_RUN_RE.sub("\n\n", text)
-    return text.strip()
+    return sanitize_text(text).strip()
 
 
 def clamp_label(text):
@@ -780,6 +899,21 @@ def discover_dbs():
         if os.path.isfile(path):
             found.append((path, os.path.basename(os.path.dirname(path))))
     return found
+
+
+def profile_home(profile):
+    """Trusted HERMES_HOME directory for one profile name, or None.
+
+    The only source is the discovered DB mapping: the name must be one
+    discover_dbs() returned, and the home is that entry's DB parent —
+    the main home for "default", the profile's own directory (each
+    profile is a full HERMES_HOME) for a named one. Nothing here ever
+    builds a path from request input, so a crafted profile name can
+    only ever resolve to a home this server actually discovered."""
+    for db_path, name in discover_dbs():
+        if name == profile:
+            return os.path.dirname(os.path.abspath(db_path))
+    return None
 
 
 def load_last_lines(con, session_ids):
@@ -1091,12 +1225,17 @@ def load_subagents(con, profile, parent_id):
 # dispatched them, so they belong in its Sub-agents section instead of
 # the inbox. Both links are discovered from durable read-only artifacts
 # (job request/status/prompt files, messages rows) — never guessed from
-# source='cli' or profile != default. Every unresolved link fails open:
-# malformed, locked, ambiguous or merely unmatched stays an ordinary
-# top-level row, never guessed onto a parent. A profile may exist purely
-# to receive dispatched work, but that is a fact about the data, never
-# evidence — hiding one of its sessions requires the same durable job
-# proof as any other profile.
+# source='cli' or profile != default. A prompt-and-window job match is
+# inference, so it additionally requires the candidate session's own
+# source to explicitly mark a non-human worker run
+# (LINEAGE_WORKER_SOURCES); a terminal launch needs no such gate
+# because the parent's own tool result recorded the child's session
+# id. Every unresolved link fails open: malformed, locked, ambiguous,
+# human-facing or merely unmatched stays an ordinary top-level row,
+# never guessed onto a parent. A profile may exist purely to receive
+# dispatched work, but that is a fact about the data, never evidence —
+# hiding one of its sessions requires the same durable job proof as
+# any other profile.
 
 # Job artifacts live under each owner home: <home>/research_jobs/rj_*.
 RESEARCH_JOBS_DIR = "research_jobs"
@@ -1161,14 +1300,35 @@ WHERE role = 'tool'
 # Worker-DB candidates for job matching: sessions started inside the
 # union of that profile's job windows (bounded even when a stale job
 # widens the range — the per-job window still decides every match).
+# The candidate's own source rides along: a job match is inference
+# (prompt bytes + time window against a durable job artifact), so it
+# may only ever claim a session whose source EXPLICITLY marks a
+# non-human worker run. A human-facing session — CLI, API, Discord,
+# Telegram, the mission-control composer itself — keeps its inbox row
+# even when its first prompt and start time happen to match a job.
 LINEAGE_WORKER_CANDIDATES_SQL = """
 SELECT id, title, display_name, started_at, last_activity_at,
-       ended_at, end_reason
+       ended_at, end_reason, IFNULL(source, '')
 FROM sessions
 WHERE hidden = 0
   AND started_at >= ?
   AND started_at <= ?
 """
+
+# The explicit non-human worker sources a job match may claim. Anything
+# else — the human-facing surfaces, a blank source, or an unknown tag —
+# fails open: the session stays a top-level inbox row rather than being
+# guessed onto a parent. Terminal-launch links need no source gate;
+# they rest on the parent's own recorded session_id line, not on
+# inference. "research-worker" is the deep_research runner's tag for
+# its lane/synthesis runs (the canonical -p spawn contract); runs
+# spawned before that tagging are 'cli' and honestly stay unlinked.
+LINEAGE_WORKER_SOURCES = frozenset((
+    "subagent",         # delegate_tool children
+    "tool",             # sessions launched by a tool integration
+    "kanban",           # kanban board workers
+    "research-worker",  # deep_research lane/synthesis runs
+))
 
 # The exact first user message of the candidates — the prompt text a
 # job dispatched — capped at LINEAGE_PROMPT_MAX_CHARS (the same cap a
@@ -1260,7 +1420,11 @@ def _lineage_job_specs(dbs, profiles, now):
     then stay unlinked and keep their top-level rows — when its
     artifacts are malformed, its origin.hermes_home is not the home it
     was found under, its worker is not a discovered *other* profile,
-    or its window lies entirely outside the product window."""
+    or its window lies entirely outside the product window. Every
+    field is validated BEFORE any set or dict use (a worker_profile
+    that is not a non-empty string is skipped, never allowed to reach
+    the profiles set membership test), and one malformed job only
+    skips itself: the rest of the pass keeps its links."""
     home_profile = {os.path.realpath(os.path.dirname(path)): p
                     for path, p in dbs}
     horizon = now - WINDOW_SECONDS - LINEAGE_SKEW_SECONDS
@@ -1274,53 +1438,72 @@ def _lineage_job_specs(dbs, profiles, now):
         for name in names:
             if not name.startswith("rj_"):
                 continue
-            jdir = os.path.join(base, name)
-            req = _read_json_capped(os.path.join(jdir, "request.json"))
-            status = _read_json_capped(os.path.join(jdir, "status.json"))
-            if not isinstance(req, dict) or not isinstance(status, dict):
-                continue
-            origin = req.get("origin")
-            if not isinstance(origin, dict):
-                continue
-            parent_id = origin.get("session_id")
-            origin_home = origin.get("hermes_home")
-            worker = req.get("worker_profile")
-            created = req.get("created_at")
             try:
-                home = (os.path.realpath(origin_home)
-                        if isinstance(origin_home, str) else None)
-            except (OSError, ValueError):
-                home = None
-            if not (isinstance(parent_id, str)
-                    and SESSION_ID_RE.fullmatch(parent_id)
-                    and home_profile.get(home) == owner
-                    and worker in profiles and worker != owner
-                    and isinstance(created, (int, float)) and created > 0):
-                continue
-            ends = [created]
-            for key in ("updated_at", "completed_at"):
-                val = status.get(key)
-                if isinstance(val, (int, float)) and val > 0:
-                    ends.append(val)
-            lo = created - LINEAGE_SKEW_SECONDS
-            hi = max(ends) + LINEAGE_SKEW_SECONDS
-            if hi < horizon:
-                continue
-            prompts = set()
-            pdir = os.path.join(jdir, "prompts")
-            try:
-                pnames = sorted(os.listdir(pdir))
-            except OSError:
-                pnames = []
-            for pname in pnames:
-                text = _read_prompt(os.path.join(pdir, pname))
-                if text:
-                    prompts.add(text)
-            if not prompts:
-                continue
-            specs.append({"parent": (owner, parent_id), "worker": worker,
-                          "lo": lo, "hi": hi, "prompts": prompts})
+                spec = _lineage_job_spec(
+                    os.path.join(base, name), owner, home_profile,
+                    profiles, horizon)
+            except Exception:
+                continue  # one malformed job never discards the others
+            if spec is not None:
+                specs.append(spec)
     return specs
+
+
+def _lineage_job_spec(jdir, owner, home_profile, profiles, horizon):
+    """One job directory -> its spec, or None when it may not link.
+
+    All the defensive validation lives here so a single bad artifact
+    (unparseable JSON, a non-string worker_profile, an origin home that
+    is not the home the job was found under) skips exactly this job."""
+    req = _read_json_capped(os.path.join(jdir, "request.json"))
+    status = _read_json_capped(os.path.join(jdir, "status.json"))
+    if not isinstance(req, dict) or not isinstance(status, dict):
+        return None
+    origin = req.get("origin")
+    if not isinstance(origin, dict):
+        return None
+    parent_id = origin.get("session_id")
+    origin_home = origin.get("hermes_home")
+    worker = req.get("worker_profile")
+    created = req.get("created_at")
+    if not (isinstance(parent_id, str)
+            and SESSION_ID_RE.fullmatch(parent_id)):
+        return None
+    if not (isinstance(worker, str) and worker
+            and worker in profiles and worker != owner):
+        return None
+    try:
+        home = (os.path.realpath(origin_home)
+                if isinstance(origin_home, str) else None)
+    except (OSError, ValueError):
+        home = None
+    if home_profile.get(home) != owner:
+        return None
+    if not (isinstance(created, (int, float)) and created > 0):
+        return None
+    ends = [created]
+    for key in ("updated_at", "completed_at"):
+        val = status.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            ends.append(val)
+    lo = created - LINEAGE_SKEW_SECONDS
+    hi = max(ends) + LINEAGE_SKEW_SECONDS
+    if hi < horizon:
+        return None
+    prompts = set()
+    pdir = os.path.join(jdir, "prompts")
+    try:
+        pnames = sorted(os.listdir(pdir))
+    except OSError:
+        pnames = []
+    for pname in pnames:
+        text = _read_prompt(os.path.join(pdir, pname))
+        if text:
+            prompts.add(text)
+    if not prompts:
+        return None
+    return {"parent": (owner, parent_id), "worker": worker,
+            "lo": lo, "hi": hi, "prompts": prompts}
 
 
 def _lineage_lookup(con_path, ids):
@@ -1354,7 +1537,12 @@ def _lineage_job_children(specs, dbs_by_profile):
     One windowed candidates query plus one batched first-user-message
     query per worker profile — never one query per child. A candidate
     links to every spec whose window contains its started_at and whose
-    prompts byte-contain its first user message; multiple parents are
+    prompts byte-contain its first user message, and ONLY when the
+    candidate's own source is an explicitly non-human worker source
+    (LINEAGE_WORKER_SOURCES): a human-facing CLI/API/Discord/Telegram
+    session keeps its inbox row even when its first prompt and start
+    time match a job — prompt bytes plus a time window are inference,
+    never proof a person did not type them. Multiple parents are
     resolved (or rejected) by the caller. A first user message whose
     original character length exceeds LINEAGE_PROMPT_MAX_CHARS is
     rejected before that comparison — its capped read is only a prefix,
@@ -1389,8 +1577,10 @@ def _lineage_job_children(specs, dbs_by_profile):
         except sqlite3.Error:
             continue  # locked/unreadable worker DB -> its runs stay
                       # unlinked (they keep their top-level rows)
-        for sid, title, display_name, started, last, ended, end_reason \
-                in cands:
+        for sid, title, display_name, started, last, ended, end_reason, \
+                source in cands:
+            if source not in LINEAGE_WORKER_SOURCES:
+                continue  # human-facing/blank/unknown: never a child
             text, src_chars = firsts.get(sid, (None, 0))
             if not text:
                 continue
@@ -1462,15 +1652,18 @@ def build_lineage(now):
     """One bounded, defensive pass -> {"children": {parent key:
     [child, ...]}, "child_keys": set of (profile, id)}.
 
-    Keys are (profile, session id). Two confident links are honoured —
-    delegate_research jobs (worker sessions whose first user message
-    exactly matches a job prompt inside that job's window, claimed for
-    the job's origin session once that session exists in its owner
-    DB) and terminal launches (a standalone session_id line resolving
-    to exactly one *other* discovered profile). A child claimed by
-    more than one parent, or whose id does not resolve cleanly, is
-    ambiguous and dropped — unlinked, so it keeps its inbox row
-    rather than being guessed onto either parent."""
+    Keys are (profile, session id) — the child's identity, so the same
+    session id in two profiles is two different children and never
+    collides. Two confident links are honoured — delegate_research jobs
+    (worker sessions whose first user message exactly matches a job
+    prompt inside that job's window AND whose own source explicitly
+    marks a non-human worker run, claimed for the job's origin session
+    once that session exists in its owner DB) and terminal launches (a
+    standalone session_id line resolving to exactly one *other*
+    discovered profile). A child claimed by more than one parent, or
+    whose id does not resolve cleanly, is ambiguous and dropped —
+    unlinked, so it keeps its inbox row rather than being guessed onto
+    either parent."""
     dbs = discover_dbs()
     profiles = {p for _, p in dbs}
     dbs_by_profile = {p: path for path, p in dbs}
@@ -1545,7 +1738,11 @@ def build_lineage(now):
         })
         child_keys.add(key)
     for kids in children.values():
-        kids.sort(key=lambda c: (c["started"] or 0, str(c["id"])))
+        # Explicit stable order: started_at, then session id, then the
+        # child's profile — two children of one parent can never share
+        # all three, so the section renders identically every rebuild.
+        kids.sort(key=lambda c: (c["started"] or 0, str(c["id"]),
+                                 c["profile"]))
     return {"children": children, "child_keys": child_keys}
 
 
@@ -1576,15 +1773,21 @@ def subagents_for(con, profile, session_id):
     """The children a conversation page and its feed polls show: the
     same-profile source='subagent' children plus the confidently
     linked cross-profile children of the lineage index, merged into
-    one oldest-first list whose rows each carry their own profile."""
+    one oldest-first list whose rows each carry their own profile.
+
+    The 50-child bound (SUBAGENT_MAX_CHILDREN) is applied AFTER the
+    merge, over the combined same- and cross-profile list, with the
+    same explicit tie-breaker build_lineage sorts by — so a parent
+    with runaway dispatches renders a bounded section no matter which
+    DBs its children landed in."""
     children = load_subagents(con, profile, session_id)
     linked = lineage_index(time.time())["children"].get(
         (profile, session_id))
     if linked:
-        children = sorted(children + linked,
-                          key=lambda c: (c.get("started") or 0,
-                                         str(c["id"])))
-    return children
+        children = children + linked
+    children.sort(key=lambda c: (c.get("started") or 0, str(c["id"]),
+                                 c.get("profile", "")))
+    return children[:SUBAGENT_MAX_CHILDREN]
 
 
 # ---- live tool activity (/s/<profile>/<id> + /feed) ------------------
@@ -1597,24 +1800,84 @@ def subagents_for(con, profile, session_id):
 # Keys whose values are redacted at any depth of a parsed argument
 # object (matched as substrings of the lowercased key, so
 # "github_token" or "PASSWORD" both redact), plus the same words in
-# textual "key=value" / "key: value" forms inside string values.
-SECRET_KEY_WORDS = ("password", "passwd", "secret", "token", "api_key",
-                    "apikey", "authorization", "cookie", "credential")
+# textual "key=value" / "key: value" forms inside string values. Each
+# keyword's own underscore is [_-]? in the patterns, so the hyphenated
+# spelling ("x-api-key", "access-key") is the same keyword.
+SECRET_KEY_WORDS = ("password", "passwd", "passphrase", "secret", "token",
+                    "api_key", "apikey", "access_key", "auth", "authorization",
+                    "cookie", "credential")
 SECRET_KEY_RE = re.compile(
-    "(?i)(?:%s)" % "|".join(w.replace("_", "_?") for w in SECRET_KEY_WORDS))
-SECRET_TEXT_RE = re.compile(
-    r"(?i)\b(%s)\b(\s*[=:]\s*)(\S+)" % "|".join(SECRET_KEY_WORDS))
+    "(?i)(?:%s)" % "|".join(w.replace("_", "[_-]?")
+                            for w in SECRET_KEY_WORDS))
 REDACTED = "[REDACTED]"
+
+# The one bounded redaction boundary every UI-exposed tool argument and
+# tool-result detail passes through, in order (each pattern's output is
+# opaque to the ones after it):
+#
+# 1. Authorization header values — the keyword plus its whole
+#    credential, scheme word included in the match so "Authorization:
+#    Bearer <token>" can never leave "<token>" (or mask only "Bearer")
+#    behind. Handles quoting and the common delimiter characters.
+# 2. Standalone bearer tokens with no keyword in front of them.
+# 3. Credential-bearing URLs and DB URIs — scheme://user:pass@… keeps
+#    the scheme and host shape, replaces the whole userinfo.
+# 4. Key/value secret assignments, quoted or bare — the FULL value is
+#    replaced (a quoted phrase like password: "hunter two" is one
+#    match, not a masked first word plus a leaked remainder).
+AUTH_VALUE_RE = re.compile(
+    r"(?i)\b(authorization|proxy[-_]authorization)\b(\s*[=:]\s*)"
+    r"(?:bearer|basic|digest|token|oauth|negotiate|hmac|mutual)[ \t]+"
+    r"[^\s,;\"'<>)]+"
+    r"|\b(authorization|proxy[-_]authorization)\b(\s*[=:]\s*)"
+    r"[^\s,;\"'<>)]+")
+BEARER_TOKEN_RE = re.compile(
+    r"(?i)\b(bearer)[ \t]+[A-Za-z0-9._~+/\-=]{8,}")
+URL_USERINFO_RE = re.compile(
+    r"(?i)\b(?:[a-z][a-z0-9+.\-]*)://(?:[^\s/@:\[\"']+)?(?::[^\s/@\[\"']*)?@")
+# Compound names count too ("github_token: …", "x-api-key: …",
+# "SESSION_SECRET=…"), so the keyword may carry a run of identifier
+# characters — underscores AND hyphens. The value may not be the
+# redaction marker itself (keeps the pass idempotent and a following
+# quote alive).
+SECRET_ASSIGN_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9_-]*(?:%s))[\"']?([ \t]*[:=][ \t]*)"
+    r"(?!\[REDACTED\])(\"[^\"]*\"|'[^']*'|[^\s,;&>]+)"
+    % "|".join(w.replace("_", "[_-]?") for w in SECRET_KEY_WORDS))
 
 
 def redact_secret_text(text):
-    """One string -> the same string with obvious textual secret
-    assignments (password=…, token: …) masked. Runs on every string
-    that can reach an argument summary."""
+    """One string -> the same string with credential-shaped content
+    masked, value-complete rather than first-token-only.
+
+    Runs on every string that can reach a tool argument summary, a tool
+    detail block, or a Discord error line: Authorization headers
+    (keyword + scheme + full credential), bare bearer tokens,
+    user:password URL/DB-URI userinfo, and password/token/api-key style
+    assignments with their full quoted or bare value. Useful
+    non-secret text (paths, commands, ordinary words) passes through.
+    """
     if not text:
         return text
-    return SECRET_TEXT_RE.sub(
+
+    def _auth_sub(m):
+        # group layout alternates (keyword, sep) between the two arms
+        keyword = m.group(1) or m.group(3)
+        sep = m.group(2) or m.group(4)
+        # The scheme word and the credential go together — keeping the
+        # scheme would only hand a later pass a bare "Bearer <masked>"
+        # fragment. One replacement, whole value.
+        return keyword + sep + REDACTED
+
+    text = AUTH_VALUE_RE.sub(_auth_sub, text)
+    text = BEARER_TOKEN_RE.sub(
+        lambda m: m.group(1) + " " + REDACTED, text)
+    text = URL_USERINFO_RE.sub(
+        lambda m: m.group(0).split("://", 1)[0] + "://" + REDACTED + "@",
+        text)
+    text = SECRET_ASSIGN_RE.sub(
         lambda m: m.group(1) + m.group(2) + REDACTED, text)
+    return text
 
 
 def redact_secrets(value):
@@ -1726,7 +1989,7 @@ def summarize_arguments(raw):
                         + "\N{HORIZONTAL ELLIPSIS}"
             parts.append("%s=%s" % (key, val))
     text = " ".join(parts) if parts else " ".join(raw.split())
-    text = redact_secret_text(text)
+    text = sanitize_text(redact_secret_text(text))
     if len(text) > ARGS_SUMMARY_CHARS:
         text = text[:ARGS_SUMMARY_CHARS - 1].rstrip() \
             + "\N{HORIZONTAL ELLIPSIS}"
@@ -1888,6 +2151,29 @@ def compute_activity(con, session_id, now, busy_job=False, busy_since=None):
     return act
 
 
+def _row_renders_text(row):
+    """True when chat_messages would show this row as a text bubble.
+
+    The delta-feed seam backfill walks rows backwards and must stop at
+    exactly the rows that end a tool group; this mirrors chat_messages'
+    drop rules ([SILENT], whitespace-only text, and empty assistant
+    carriers with nothing recoverable are transparent — they never
+    separate two tool rows that render as one group).
+    """
+    role = row[0]
+    if role not in ("user", "assistant"):
+        return False
+    text = row[4] if isinstance(row[4], str) else ""
+    if text == "[SILENT]":
+        return False
+    if clean_preview(text):
+        return True
+    if role == "assistant" and not text:
+        codex = row[8] if len(row) > 8 else ""
+        return bool(clean_preview(codex_commentary_text(codex)))
+    return False
+
+
 def load_feed(profile, session_id, dbs, after, busy_job=False,
               busy_since=None):
     """One feed poll: display items newer than `after`, plus the next
@@ -1898,13 +2184,25 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
     conversation. Rows are filtered exactly like the page (session_meta,
     hidden and [SILENT] never survive chat_messages, and an
     empty-content assistant carrier recovers its Codex commentary the
-    same way), consecutive tools
-    arrive as one group, and last_id is the MAX row id — including
-    skipped rows — unless an after>0 catch-up poll hit its LIMIT, in
-    which case it stops at the newest row actually returned so nothing
-    is jumped over. Returns None
-    when the session id isn't in that profile's DB. sqlite3.Error
-    propagates for the caller to answer as a JSON 500.
+    same way), consecutive tools arrive as one group, and last_id is the
+    MAX row id — including skipped rows — unless an after>0 catch-up
+    poll hit its LIMIT, in which case it stops at the newest row
+    actually returned so nothing is jumped over. Row id is the one
+    authoritative chronology everywhere (see CHAT_PAGE_SQL), so a
+    non-monotonic timestamp can never reorder a delta against the page
+    that came before it. Returns None when the session id isn't in that
+    profile's DB. sqlite3.Error propagates for the caller to answer as
+    a JSON 500.
+
+    Delta polls keep maximal tool runs maximal: when the delta's oldest
+    row is a tool, the run it belongs to may have started in an earlier
+    poll, so the bounded FEED_BACKFILL_SQL window of immediately
+    preceding rows is walked backwards (tools join, transparent rows
+    are stepped over, any text-rendering row stops the walk) and the
+    COMPLETE group is re-rendered with the first_id it has always had.
+    The client replaces its older, shorter group element on the
+    first_id match, so one run split across polls still renders as one
+    group and never merges across intervening text.
 
     The activity snapshot is recomputed on every poll, independently of
     the cursor: a delta poll that returns no rows must still report a
@@ -1927,10 +2225,26 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
             rows = con.execute(
                 FEED_AFTER_SQL, (session_id, after, FEED_CATCHUP_MAX)
             ).fetchall()
-            # Not capped -> the cursor can safely jump to the session tip
-            # (skipped rows included); capped -> stop at what was sent.
+            # Cursor math uses the delta alone — backfilled rows are
+            # older than the cursor by construction and never affect
+            # it. Not capped -> the cursor can safely jump to the
+            # session tip (skipped rows included); capped -> stop at
+            # what was sent.
             last_id = tip if len(rows) < FEED_CATCHUP_MAX else \
                 max([r[3] for r in rows] + [after])
+            if rows and rows[0][0] == "tool":
+                back = con.execute(
+                    FEED_BACKFILL_SQL,
+                    (session_id, rows[0][3], FEED_BACKFILL_MAX)
+                ).fetchall()
+                prefix = []
+                for row in back:  # newest -> oldest
+                    if row[0] == "tool":
+                        prefix.append(row)
+                    elif _row_renders_text(row):
+                        break
+                prefix.reverse()
+                rows = prefix + rows
         else:
             rows = con.execute(CHAT_PAGE_SQL, (session_id,)).fetchall()
             rows.reverse()
@@ -2202,18 +2516,33 @@ def discord_sync_once(now):
     shape); on any partial failure the profile is skipped whole — an
     absent thread is never inferred archived from incomplete data.
     Per-profile outcomes are one safe stderr line each (profile, status
-    class, path class only — never bodies or headers)."""
+    class, path class only — never bodies or headers).
+
+    A snapshot is only a candidate: the profile's archive epoch is read
+    before the fetch, and re-checked under _archive_epoch_lock before
+    the snapshot is applied (also under the lock). If the user closed or
+    reopened anything while the fetch was in flight, the epoch moved and
+    the stale snapshot is discarded whole — the user-confirmed state
+    wins by construction, and no transaction here can interleave with a
+    user-mutation transaction on the same lock."""
     for db_path, profile in discover_dbs():
         token = load_discord_token(db_path)
         if not token:
             continue
+        epoch = _archive_epoch(db_path)
         active, err = fetch_active_thread_ids(token)
         if err is not None:
             sys.stderr.write("discord-sync: %s skipped: %s\n"
                              % (profile, err))
             continue
         try:
-            changed = apply_discord_snapshot(db_path, active, now)
+            with _archive_epoch_lock:
+                if _archive_epochs.get(db_path, 0) != epoch:
+                    sys.stderr.write(
+                        "discord-sync: %s snapshot superseded by a user "
+                        "action; keeping user state\n" % profile)
+                    continue
+                changed = apply_discord_snapshot(db_path, active, now)
         except sqlite3.Error:
             sys.stderr.write("discord-sync: %s db write failed\n"
                              % profile)
@@ -2252,8 +2581,11 @@ def set_session_archived(profile, session_id, dbs, desired):
     carries discord_changed/sync_pending and says the background sync
     will retry, without a local affected count. A non-Discord (or
     threadless) session flips only its own row — no Discord claim is
-    made. The payload always carries
-    ok/archived/discord/thread_id/affected (or a bounded safe error)."""
+    made. Every local write bumps the profile's archive epoch and runs
+    under _archive_epoch_lock, so a background snapshot fetched before
+    the user acted can never overwrite this result. The payload always
+    carries ok/archived/discord/thread_id/affected (or a bounded safe
+    error)."""
     db_path = dbs[profile]
     try:
         con = sqlite3.connect("file:" + quote(db_path) + "?mode=ro",
@@ -2293,33 +2625,44 @@ def set_session_archived(profile, session_id, dbs, desired):
                          "error": "Discord did not confirm the new "
                                   "state; nothing was changed"}
         try:
-            conw = sqlite3.connect(db_path, timeout=5.0)
-            try:
-                conw.execute("BEGIN IMMEDIATE")
-                affected = conw.execute(
-                    SET_ARCHIVE_BY_THREAD_SQL,
-                    (archived_now, thread_id)).rowcount
-                mismatch = conw.execute(
-                    COUNT_THREAD_MISMATCH_SQL,
-                    (thread_id, archived_now)).fetchone()[0]
-                if mismatch:
-                    raise sqlite3.Error("read-back mismatch")
-                conw.commit()
-            except sqlite3.Error:
-                conw.rollback()
-                # Discord already confirmed the change — do NOT claim
-                # "nothing was changed". Say what happened honestly:
-                # Discord flipped, the local mirror did not, and the
-                # background sync will reconcile. affected is omitted:
-                # no local row count was durably written.
-                return 500, {"ok": False, **base,
-                             "discord_changed": True,
-                             "sync_pending": True,
-                             "error": "Discord state changed but the "
-                                      "local mirror failed; the "
-                                      "background sync will retry"}
-            finally:
-                conw.close()
+            with _archive_epoch_lock:
+                # The user mutation owns this DB until the transaction
+                # lands: bump the epoch first so any snapshot the
+                # background sync already fetched for this profile is
+                # stale from this instant on, then write under the same
+                # lock so neither path can interleave.
+                _archive_epochs[db_path] = \
+                    _archive_epochs.get(db_path, 0) + 1
+                conw = sqlite3.connect(db_path, timeout=5.0)
+                try:
+                    conw.execute("BEGIN IMMEDIATE")
+                    affected = conw.execute(
+                        SET_ARCHIVE_BY_THREAD_SQL,
+                        (archived_now, thread_id)).rowcount
+                    mismatch = conw.execute(
+                        COUNT_THREAD_MISMATCH_SQL,
+                        (thread_id, archived_now)).fetchone()[0]
+                    if mismatch:
+                        raise sqlite3.Error("read-back mismatch")
+                    conw.commit()
+                except sqlite3.Error:
+                    conw.rollback()
+                    # Discord already confirmed the change — do NOT claim
+                    # "nothing was changed". Say what happened honestly:
+                    # Discord flipped, the local mirror did not, and the
+                    # background sync will reconcile. affected is omitted:
+                    # no local row count was durably written. The epoch
+                    # stays bumped: the failed write left local state
+                    # untouched and the user's confirmed Discord state
+                    # must still win over any older snapshot.
+                    return 500, {"ok": False, **base,
+                                 "discord_changed": True,
+                                 "sync_pending": True,
+                                 "error": "Discord state changed but the "
+                                          "local mirror failed; the "
+                                          "background sync will retry"}
+                finally:
+                    conw.close()
         except sqlite3.Error:
             return 500, {"ok": False, **base,
                          "discord_changed": True,
@@ -2329,25 +2672,31 @@ def set_session_archived(profile, session_id, dbs, desired):
                                   "background sync will retry"}
         return 200, {"ok": True, "affected": affected, **base}
     try:
-        conw = sqlite3.connect(db_path, timeout=5.0)
-        try:
-            conw.execute("BEGIN IMMEDIATE")
-            affected = conw.execute(
-                SET_ARCHIVE_BY_ID_SQL, (archived_now, session_id)
-            ).rowcount
-            mismatch = conw.execute(
-                COUNT_ID_MISMATCH_SQL, (session_id, archived_now)
-            ).fetchone()[0]
-            if mismatch:
-                raise sqlite3.Error("read-back mismatch")
-            conw.commit()
-        except sqlite3.Error:
-            conw.rollback()
-            return 500, {"ok": False, "affected": 0, **base,
-                         "error": "local update failed; nothing was "
-                                  "changed"}
-        finally:
-            conw.close()
+        with _archive_epoch_lock:
+            # Same ownership rule as the Discord-confirmed branch: the
+            # epoch bump plus the write happen together under the lock
+            # so an in-flight snapshot can never land over this one.
+            _archive_epochs[db_path] = \
+                _archive_epochs.get(db_path, 0) + 1
+            conw = sqlite3.connect(db_path, timeout=5.0)
+            try:
+                conw.execute("BEGIN IMMEDIATE")
+                affected = conw.execute(
+                    SET_ARCHIVE_BY_ID_SQL, (archived_now, session_id)
+                ).rowcount
+                mismatch = conw.execute(
+                    COUNT_ID_MISMATCH_SQL, (session_id, archived_now)
+                ).fetchone()[0]
+                if mismatch:
+                    raise sqlite3.Error("read-back mismatch")
+                conw.commit()
+            except sqlite3.Error:
+                conw.rollback()
+                return 500, {"ok": False, "affected": 0, **base,
+                             "error": "local update failed; nothing was "
+                                      "changed"}
+            finally:
+                conw.close()
     except sqlite3.Error:
         return 500, {"ok": False, "affected": 0, **base,
                      "error": "database error; nothing was changed"}
@@ -2365,16 +2714,27 @@ SESSION_ID_LINE_RE = re.compile(
     r"([A-Za-z0-9_.-]+)")
 
 
-def run_hermes(args, cwd=None):
+def run_hermes(args, cwd=None, home=None):
     """Run one hermes invocation to completion; (exit_code, stdout,
     stderr). Output is captured here and never leaves this function's
     callers — it is parsed for the session id / exit code only, never
     logged or served. A child that outruns HERMES_TIMEOUT_SECONDS is
     killed and reported as exit code 124. Children are registered for
-    shutdown cleanup while they live."""
+    shutdown cleanup while they live.
+
+    home is the trusted HERMES_HOME for this run (profile_home()'s
+    answer). With it the child runs against exactly the profile whose
+    DB the request was validated against — without it the child would
+    inherit this server's own HERMES_HOME and silently write the
+    default profile. argv is a list, never shell=True; the env is a
+    plain copy with one variable pinned."""
+    env = None
+    if home:
+        env = dict(os.environ)
+        env["HERMES_HOME"] = home
     try:
         proc = subprocess.Popen(
-            [resolve_hermes_bin()] + args, cwd=cwd,
+            [resolve_hermes_bin()] + args, cwd=cwd, env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
             errors="replace")
@@ -2451,14 +2811,19 @@ def resolve_new_session_id(parsed, pre_ids):
 
 def reply_worker(profile, session_id, cwd, text):
     """Background job behind POST .../reply: run the resumed oneshot,
-    then release the session. A non-zero exit leaves a short note (exit
-    code only — never hermes output) for the feed to deliver once."""
+    then release the session. The child runs with the trusted home of
+    the profile the POST was validated against (a profile that has
+    since vanished resolves to no home and the job just fails — code
+    -1, same note). A non-zero exit leaves a short note (exit code
+    only — never hermes output) for the feed to deliver once."""
     key = (profile, session_id)
     code = -1
     try:
-        code, _out, _err = run_hermes(
-            ["--resume", session_id, "chat", "--oneshot", "-q", text],
-            cwd if cwd and os.path.isdir(cwd) else None)
+        home = profile_home(profile)
+        if home is not None:
+            code, _out, _err = run_hermes(
+                ["--resume", session_id, "chat", "--oneshot", "-q", text],
+                cwd if cwd and os.path.isdir(cwd) else None, home=home)
     finally:
         with _jobs_lock:
             _jobs.pop(key, None)
@@ -2639,7 +3004,10 @@ def new_session_worker(job_id, text):
     Under the launch lock (one at a time, keeping the fresh-row
     correlation unambiguous): snapshot the mission-control rows, start
     the watcher that publishes the correlated session id while the
-    child runs, run the oneshot to completion, then settle the job
+    child runs, run the oneshot to completion (with the trusted home
+    of the main DB pinned in the child's environment, so the fresh
+    session lands in the profile this server actually lists as
+    "default"), then settle the job
     exactly once — done when the child exited 0 and an id resolved,
     failed otherwise. Never retries. A failure after the session row
     already appeared also leaves the feed a one-shot note (exit code
@@ -2663,7 +3031,7 @@ def new_session_worker(job_id, text):
             try:
                 code, out, err = run_hermes(
                     ["chat", "--oneshot", "--source", NEW_SESSION_SOURCE,
-                     "-q", text])
+                     "-q", text], home=profile_home("default"))
                 parsed = parse_session_id(out, err)
             finally:
                 stop.set()
@@ -2732,32 +3100,82 @@ def start_new_session(text):
     return job_id, None
 
 
+# Structural bounds for codex_message_items parsing, all enforced by
+# codex_commentary_text itself so direct callers get the same contract
+# the SQL projection gives the page and feed. The persisted production
+# shape is a small list of flat message items (item dict -> content
+# list -> block dict -> text string, depth 4); everything past these
+# caps is rejected whole.
+CODEX_ITEMS_MAX_ITEMS = 32   # top-level message items in one value
+CODEX_ITEM_MAX_BLOCKS = 32   # content blocks in one message item
+CODEX_ITEMS_MAX_DEPTH = 6    # JSON nesting depth (legitimate max: 4)
+
+
+def _codex_depth_ok(data):
+    """True when the parsed JSON nests no deeper than the cap.
+
+    Iterative on purpose — no recursion that a deep blob could turn
+    into a RecursionError, and a hard node budget (32k) so even a
+    wide-but-shallow blob costs bounded work. Depth counts container
+    levels: the top-level value is 0, its members 1, and so on.
+    """
+    seen = 0
+    stack = [(data, 0)]
+    while stack:
+        node, depth = stack.pop()
+        seen += 1
+        if seen > 32000 or depth > CODEX_ITEMS_MAX_DEPTH:
+            return False
+        if isinstance(node, dict):
+            stack.extend((v, depth + 1) for v in node.values())
+        elif isinstance(node, list):
+            stack.extend((v, depth + 1) for v in node)
+    return True
+
+
 def codex_commentary_text(raw):
     """Bounded codex_message_items JSON -> visible assistant commentary.
 
     A Codex tool-call assistant row keeps content='' and stores its
     narration in codex_message_items instead; this recovers that visible
-    text — and only that. The value must parse as JSON into message
-    items (the item dict itself, or a list holding them) whose type is
-    "message" and role "assistant", and only content blocks typed
-    output_text/text contribute, each solely through its string "text"
-    field. Reasoning items, function calls and their arguments, tool
-    results, bare-string content and arbitrary nested strings match none
-    of those shapes, so they can never surface. Anything else —
-    malformed, truncated (the SQL bound can cut the JSON mid-way),
-    legacy or wrong-type values — yields "" and never raises, so the
-    page and the feed keep working. Recovered text is clamped to
-    CHAT_TEXT_CHARS, the same cap content itself gets in SQL.
+    text — and only that. The persisted shape (agent/codex_responses_
+    adapter.py) is message items whose type is "message" and role
+    "assistant", carrying a normalized "status" always and a "phase"
+    exactly when the run wrote one. Visible narration is ONLY the
+    complete commentary phase: status must be "completed" (never
+    "in_progress" or "incomplete") and phase exactly "commentary" —
+    phase-less items, "analysis", "reasoning", "final",
+    "final_answer", failed and cancelled variants all yield "". Only
+    content blocks typed output_text/text contribute, each solely
+    through its string "text" field; reasoning items, function calls
+    and their arguments, tool results, bare-string content and
+    arbitrary nested strings match none of those shapes, so they can
+    never surface.
+
+    Input is bounded before parsing: anything longer than
+    CODEX_ITEMS_MAX_CHARS is rejected whole (never sliced into an
+    accepted truncated prefix), as is anything structurally past the
+    item-count, block-count or nesting-depth caps. Malformed JSON
+    (and JSON deep enough that json.loads itself raises) yields ""
+    and never propagates. Recovered text is sanitized of lone
+    surrogates and clamped to CHAT_TEXT_CHARS, the same cap content
+    itself gets in SQL.
     """
     if not isinstance(raw, str) or not raw:
+        return ""
+    if len(raw) > CODEX_ITEMS_MAX_CHARS:
         return ""
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
         return ""
+    if not _codex_depth_ok(data):
+        return ""
     if isinstance(data, dict):
         items = (data,)
     elif isinstance(data, list):
+        if len(data) > CODEX_ITEMS_MAX_ITEMS:
+            return ""
         items = data
     else:
         return ""
@@ -2767,8 +3185,13 @@ def codex_commentary_text(raw):
             continue
         if item.get("type") != "message" or item.get("role") != "assistant":
             continue
+        if item.get("status") != "completed":
+            continue
+        if item.get("phase") != "commentary":
+            continue
         blocks = item.get("content")
-        if not isinstance(blocks, list):
+        if not isinstance(blocks, list) \
+                or len(blocks) > CODEX_ITEM_MAX_BLOCKS:
             continue
         parts = [b["text"] for b in blocks
                  if isinstance(b, dict)
@@ -2778,7 +3201,7 @@ def codex_commentary_text(raw):
             texts.append("\n".join(parts))
     if not texts:
         return ""
-    return "\n\n".join(texts)[:CHAT_TEXT_CHARS]
+    return sanitize_text("\n\n".join(texts))[:CHAT_TEXT_CHARS]
 
 
 def chat_messages(rows):
@@ -2820,9 +3243,15 @@ def chat_messages(rows):
                 out.append({"kind": "text", "role": role, "ts": ts,
                             "id": row_id, "text": body})
         elif role == "tool":
+            # Tool-result details are UI-exposed tool output: the same
+            # redaction boundary as argument summaries, applied BEFORE
+            # the display slice so a credential can never survive at
+            # the tail of the clamp, and sanitized so a lone surrogate
+            # cannot kill the page encoding.
+            detail = sanitize_text(redact_secret_text(text))
             out.append({"kind": "tool", "ts": ts, "id": row_id,
                         "tool": tool_name or "tool",
-                        "detail": text[:CHAT_DETAIL_CHARS].strip()})
+                        "detail": detail[:CHAT_DETAIL_CHARS].strip()})
     return out
 
 
@@ -2835,7 +3264,10 @@ def chat_items(msgs):
     rows, so tools separated only by an empty assistant carrier merge
     into the same group. The empty case is [] and only []. A group's id
     is its newest row's id (items are chronological), so the feed cursor
-    advances past the whole group.
+    advances past the whole group, and first_id is its oldest row's id —
+    the seam identity a delta poll's client-side merge matches (see
+    load_feed) so one run split across polls still renders as one
+    group.
     """
     out = []
     for m in msgs:
@@ -2844,7 +3276,8 @@ def chat_items(msgs):
                 out[-1]["items"].append(m)
                 out[-1]["id"] = m["id"]
             else:
-                out.append({"kind": "tools", "items": [m], "id": m["id"]})
+                out.append({"kind": "tools", "items": [m],
+                            "id": m["id"], "first_id": m["id"]})
         else:
             out.append(m)
     return out
@@ -3598,7 +4031,7 @@ window.MC = (function () {
   var profileFilter = "";
   try {
     var pm = /[?&]profile=([^&]*)/.exec(window.location.search);
-    if (pm) profileFilter = decodeURIComponent(pm[1].replace(/\+/g, " "));
+    if (pm) profileFilter = decodeURIComponent(pm[1].replace(/\\+/g, " "));
   } catch (e0) {}
 
   var savedQuery = "";
@@ -3855,6 +4288,7 @@ PAGE_SHELL = Template("""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta http-equiv="refresh" content="$refresh_seconds">
+$csrf_meta
 <title>Mission Control &mdash; chats, last 24 hours</title>
 <style>$shell_css</style>
 </head>
@@ -3960,6 +4394,7 @@ CHAT_SHELL = Template("""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
+$csrf_meta
 <title>Mission Control &mdash; transcript: $title</title>
 <style>$shell_css
 $live_css
@@ -4042,6 +4477,23 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var archived = body.getAttribute("data-archived") === "1";  // closed
   var flashTimer = null;
   var pollTimer = null;
+
+  // ---- same-origin POSTs --------------------------------------------
+  // The page carries this server's CSRF token in a meta tag; every
+  // state-changing request sends it in the non-simple X-CSRF-Token
+  // header alongside a JSON content type, which is exactly the shape a
+  // plain HTML form cannot produce.
+  var csrfMeta = document.querySelector(
+    'meta[name="mission-control-csrf"]');
+  var CSRF = csrfMeta ? (csrfMeta.getAttribute("content") || "") : "";
+  function postJson(url, body) {
+    return window.fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 "X-CSRF-Token": CSRF },
+      body: typeof body === "string" ? body : JSON.stringify(body || {})
+    });
+  }
   // Last-request-wins guard over /feed responses: a poll that started
   // before a newer one (or before an accepted send bumped this) never
   // applies its stale busy verdict — it is dropped, and the newer poll
@@ -4195,7 +4647,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var TICK_ORDER = { sending: 0, sent: 1, delivered: 2, read: 3 };
 
   function normText(s) {
-    return String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   }
 
   function paintTicks(ticks, state) {
@@ -4407,9 +4859,33 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
         adoptServerRow(twin, m.html, m.id);
         grew = true;
       } else if (m.html) {
-        // new rows land just before the typing row, so it stays last
-        if (typingRow) typingRow.insertAdjacentHTML("beforebegin", m.html);
-        else if (list) list.insertAdjacentHTML("beforeend", m.html);
+        // Tool-group seam: when this poll re-delivers a maximal run
+        // the page already drew part of (same first row id), replace
+        // the older, shorter group instead of appending — one run
+        // stays one group however its rows split across polls, and
+        // the first_id match can never bridge intervening text.
+        var merged = false;
+        if (m.kind === "tools" && typeof m.first_id === "number" &&
+            list) {
+          var prev = (typingRow && typingRow.parentNode === list)
+            ? typingRow.previousElementSibling
+            : list.lastElementChild;
+          if (prev && prev.classList.contains("tool-group") &&
+              prev.getAttribute("data-first-id") ===
+                String(m.first_id)) {
+            prev.insertAdjacentHTML("beforebegin", m.html);
+            if (prev.parentNode) prev.parentNode.removeChild(prev);
+            merged = true;
+          }
+        }
+        if (!merged) {
+          // new rows land just before the typing row, so it stays last
+          if (typingRow) {
+            typingRow.insertAdjacentHTML("beforebegin", m.html);
+          } else if (list) {
+            list.insertAdjacentHTML("beforeend", m.html);
+          }
+        }
         grew = true;
       }
       cursor = m.id;
@@ -4568,11 +5044,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     updateJump();
     setSending(true);
     var url = mode === "new" ? "/s/new" : sessionUrl("/reply");
-    window.fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text })
-    }).then(function (resp) {
+    postJson(url, { text: text }).then(function (resp) {
       if (mode === "new") {
         // "Sending\N{HORIZONTAL ELLIPSIS}" ends the moment the POST
         // resolves: a 202 is an accepted launch (job polling owns the
@@ -4652,7 +5124,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     var action = toggleBtn.getAttribute("data-action") ||
                  (archived ? "reopen" : "close");
     toggleBtn.disabled = true;
-    window.fetch(sessionUrl("/" + action), { method: "POST" })
+    postJson(sessionUrl("/" + action), {})
       .then(function (resp) {
         return resp.json().catch(function () { return null; })
           .then(function (data) { return { status: resp.status, data: data }; });
@@ -5165,6 +5637,7 @@ def render(now, rows, notes, active_profile=""):
     return PAGE_SHELL.substitute(
         shell_css=SHELL_CSS,
         sidebar_js=SIDEBAR_JS,
+        csrf_meta=csrf_meta_tag(),
         refresh_seconds=REFRESH_SECONDS,
         sidebar=render_sidebar(now, rows, notes,
                                active_profile=active_profile,
@@ -5180,7 +5653,10 @@ def render_tool_group(tools):
     tool-name chips (a name per distinct tool, "name xN" when repeated);
     opening it lists the tools chronologically, each with its optional
     400-char detail disclosure. Styled flat and slim on purpose — a
-    bookkeeping row, never a chat bubble.
+    bookkeeping row, never a chat bubble. The <li> carries the run's
+    oldest row id as data-first-id: the client-side seam merge matches
+    it to replace (not append) when a later poll re-delivers the same
+    maximal group grown at its new end.
     """
     esc = html.escape
     n = len(tools)
@@ -5218,15 +5694,15 @@ def render_tool_group(tools):
                esc(fmt_short(t["ts"])), detail))
 
     return (
-        '<li class="tool-group"><details class="tg">'
+        '<li class="tool-group" data-first-id="%d"><details class="tg">'
         '<summary class="tg-sum">'
         '<span class="tg-count">%s</span>'
         '<span class="tg-chips">%s</span>'
         '<span class="tg-when" title="%s">%s</span>'
         '</summary><ol class="tg-list">%s</ol>'
         '</details></li>\n'
-        % (esc(label), "".join(chips), esc(span_full), esc(span),
-           "".join(rows)))
+        % (tools[0]["id"], esc(label), "".join(chips), esc(span_full),
+           esc(span), "".join(rows)))
 
 
 def render_chat_text(it, cont="", identity=None):
@@ -5477,6 +5953,7 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         mode="chat",
         shell_css=SHELL_CSS,
         sidebar_js=SIDEBAR_JS,
+        csrf_meta=csrf_meta_tag(),
         # The same rail + conversation sidebar the inbox renders, with
         # this session's row selected and its profile lit in the rail.
         sidebar=render_sidebar(
@@ -5558,6 +6035,7 @@ def render_new(inbox_rows=None, inbox_notes=None):
         mode="new",
         shell_css=SHELL_CSS,
         sidebar_js=SIDEBAR_JS,
+        csrf_meta=csrf_meta_tag(),
         sidebar=render_sidebar(time.time(), inbox_rows or [],
                                inbox_notes or [],
                                active_profile="default",
@@ -5676,9 +6154,10 @@ class Handler(BaseHTTPRequestHandler):
         """Read one small composer body -> (error_status, text).
 
         error_status is None when the body parsed, else the HTTP status
-        to answer with (411/413/400). An application/json body must be
-        an object with a string "text"; anything else is read as UTF-8
-        plain text. MAX_BODY_BYTES caps the read before it starts.
+        to answer with (411/413/400). The body must be application/json
+        (enforced earlier by the CSRF gate; re-checked here so direct
+        callers inherit the same rule) holding an object with a string
+        "text". MAX_BODY_BYTES caps the read before it starts.
         """
         raw_len = self.headers.get("Content-Length")
         if raw_len is None:
@@ -5698,19 +6177,16 @@ class Handler(BaseHTTPRequestHandler):
         if len(raw) != length:
             return 400, ""
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0]
-        if ctype.strip().lower() == "application/json":
-            try:
-                obj = json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                return 400, ""
-            if not isinstance(obj, dict) \
-                    or not isinstance(obj.get("text"), str):
-                return 400, ""
-            return None, obj["text"]
+        if ctype.strip().lower() != "application/json":
+            return 415, ""
         try:
-            return None, raw.decode("utf-8")
-        except UnicodeDecodeError:
+            obj = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
             return 400, ""
+        if not isinstance(obj, dict) \
+                or not isinstance(obj.get("text"), str):
+            return 400, ""
+        return None, obj["text"]
 
     def _composer_text(self):
         """(error_status, message_text) for a composer POST: the body
@@ -5869,6 +6345,11 @@ class Handler(BaseHTTPRequestHandler):
                  # the plain text ("" for tool groups) lets the client
                  # match a stored user row against its optimistic twin
                  "text": it.get("text", ""),
+                 # tools groups carry the run's oldest row id: the seam
+                 # identity for the client-side merge that keeps one
+                 # maximal group whole when its rows span two polls
+                 **({"first_id": it["first_id"]}
+                    if it["kind"] == "tools" else {}),
                  "html": render_chat_item(it, feed_ident)}
                 for it in feed["items"]],
             "last_id": feed["last_id"],
@@ -5907,7 +6388,57 @@ class Handler(BaseHTTPRequestHandler):
             payload["note"] = note
         self._send_json(200, payload)
 
+    def _csrf_gate(self):
+        """Header-only forgery check for every state-changing route.
+
+        Returns None when the request may proceed, else the HTTP status
+        to answer with (403/415). Runs before any POST handler parses a
+        body, touches SQLite or calls Discord, so a browser-simple
+        cross-origin request can never mutate anything:
+
+        - Origin (when the client sends one) must name this server —
+          compared against the Host header, never against a configured
+          list, so the rule holds on any bind address. Absent Origin is
+          a non-browser client and still faces the two checks below.
+        - The content type must be application/json exactly. An HTML
+          form can only send the "simple" types, so this alone stops
+          every forged form post.
+        - X-CSRF-Token must equal this process's token, in constant
+          time. A non-simple header forces a CORS preflight for
+          cross-origin fetches — which this server never approves — and
+          forms cannot set it at all.
+
+        The token value is never included in the response or the log.
+        """
+        origin = self.headers.get("Origin")
+        if origin:
+            host = self.headers.get("Host")
+            try:
+                origin_host = urlsplit(origin).netloc
+            except ValueError:
+                origin_host = ""
+            if not host or origin_host != host:
+                return 403
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+        if ctype.strip().lower() != "application/json":
+            return 415
+        sent = self.headers.get(CSRF_HEADER) or ""
+        if not secrets.compare_digest(sent, csrf_token()):
+            return 403
+        return None
+
     def do_POST(self):
+        # The forgery gate runs before anything else: no route below may
+        # parse a body or mutate state until the request proved it came
+        # from a page this process served.
+        refused = self._csrf_gate()
+        if refused is not None:
+            # A rejected request's body was never read; do not let a
+            # half-consumed connection be reused.
+            self.close_connection = True
+            self._send_json(refused, {"ok": False,
+                                      "error": "request refused"})
+            return
         # Only the path picks the route; a query string never does.
         path = urlsplit(self.path).path
         if path == "/s/new":
@@ -5927,15 +6458,25 @@ class Handler(BaseHTTPRequestHandler):
     def _post_archive(self, profile, session_id, action):
         """POST /s/<profile>/<id>/(close|reopen) — archive/unarchive.
 
-        Empty body allowed (any body is ignored). The heavy lifting —
-        Discord verify-then-mirror for thread sessions, local-only flip
-        otherwise — lives in set_session_archived; this wrapper only
-        validates the profile/session pair and ships the JSON. Never
-        runs on an unknown profile or session."""
+        The body is ignored but still drained (the client sends an empty
+        JSON object so the content-type rule holds uniformly). The heavy
+        lifting — Discord verify-then-mirror for thread sessions,
+        local-only flip otherwise — lives in set_session_archived; this
+        wrapper only validates the profile/session pair and ships the
+        JSON. Never runs on an unknown profile or session."""
         dbs = {name: db_path for db_path, name in discover_dbs()}
         if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
+            self.close_connection = True
             self._send_json(404, {"ok": False,
                                   "error": "unknown profile or session"})
+            return
+        err, _text = self._read_body_text()
+        if err is not None and err != 400:
+            # 400 ("{}" has no "text" key) is fine here — the body is
+            # ignored by design; only size/shape failures matter, and
+            # the read itself has already drained the connection.
+            self.close_connection = True
+            self._send_json(err, {"ok": False, "error": "bad request body"})
             return
         status, payload = set_session_archived(
             profile, session_id, dbs, action == "close")
@@ -5951,6 +6492,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         dbs = {name: db_path for db_path, name in discover_dbs()}
         if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
+            self.close_connection = True
             self._send_json(404, {"ok": False,
                                   "error": "unknown profile or session"})
             return
@@ -6031,14 +6573,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _is_loopback(host):
-    """True when host binds a loopback interface only (this machine)."""
+    """True when host binds a loopback interface only (this machine).
+
+    An empty host is a wildcard bind (every interface), NOT loopback —
+    only the explicit names count: "localhost", 127.0.0.0/8, ::1."""
     name = str(host or "").strip()
-    if name in ("", "localhost"):
+    if name == "localhost":
         return True
     try:
         return ipaddress.ip_address(name.strip("[]")).is_loopback
     except ValueError:
-        return False  # a hostname or non-loopback address: warn
+        return False  # a hostname, wildcard, or non-loopback address
 
 
 def main(argv=None):
@@ -6091,8 +6636,13 @@ def main(argv=None):
         sync_thread.start()
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    # Report the port actually bound: --port 0 asks the OS for a free
+    # port, which is how a test (or anything else that must not race
+    # for a fixed number) gets one — server_address carries the real
+    # value back after the bind.
+    bound_port = httpd.server_address[1]
     print("serving on http://%s:%d/ (home: %s, profiles: %s%s)"
-          % (args.host, args.port, display_hermes_home(),
+          % (args.host, bound_port, display_hermes_home(),
              ", ".join(p for _, p in discover_dbs()),
              "" if sync_thread else ", discord-sync off"), flush=True)
     try:

@@ -25,6 +25,7 @@ contain it (the transcript itself legitimately does).
 import importlib.util
 import itertools
 import json
+import html
 import os
 import re
 import shutil
@@ -188,6 +189,7 @@ class ServerCase(unittest.TestCase):
         con.commit()
         con.close()
         self.mod = load_server(self.tmp, self.db)
+        self._csrf = None
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0),
                                          self.mod.Handler)
         self.port = self.httpd.server_address[1]
@@ -283,6 +285,21 @@ class ServerCase(unittest.TestCase):
 
     # ---- HTTP helpers ----------------------------------------------
 
+    def csrf_token(self):
+        """The token a real client mines from a served page's meta tag.
+
+        The server emits its per-process CSRF token only to pages it
+        serves, so this is exactly how the shipped client obtains it."""
+        if self._csrf is None:
+            status, page = self.request("GET", "/new")
+            self.assertEqual(status, 200)
+            m = re.search(
+                r'<meta name="mission-control-csrf" content="([^"]*)"',
+                page)
+            self.assertIsNotNone(m, "served page carries the CSRF meta")
+            self._csrf = html.unescape(m.group(1))
+        return self._csrf
+
     def request(self, method, path, obj=None):
         url = "http://127.0.0.1:%d%s" % (self.port, path)
         data = None
@@ -290,6 +307,11 @@ class ServerCase(unittest.TestCase):
         if obj is not None:
             data = json.dumps(obj).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        if method == "POST":
+            # The real UI's send shape: same-origin, JSON body, the
+            # token in a non-simple header.
+            headers["Origin"] = "http://127.0.0.1:%d" % self.port
+            headers["X-CSRF-Token"] = self.csrf_token()
         req = urllib.request.Request(url, data=data, headers=headers,
                                      method=method)
         try:
@@ -297,6 +319,10 @@ class ServerCase(unittest.TestCase):
                 return resp.status, resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            # the server deliberately closes refused connections
+            return (exc.reason.errno if hasattr(exc.reason, "errno")
+                    else 0), ""
 
     def request_json(self, method, path, obj=None):
         status, body = self.request(method, path, obj)
@@ -681,9 +707,9 @@ class TestFirstResponseScoping(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def rows(self, *specs):
-        """specs are (role, content[, tool_name]) appended to one
-        session; returns an open read-only connection for
-        compute_activity."""
+        """specs are (role, content[, tool_name[, tool_calls[,
+        tool_call_id]]]) appended to one session; returns an open
+        read-only connection for compute_activity."""
         sid = "s_scope"
         con = sqlite3.connect(self.db)
         con.execute("INSERT OR REPLACE INTO sessions (id, source, title,"
@@ -694,8 +720,12 @@ class TestFirstResponseScoping(unittest.TestCase):
             role = spec[0]
             con.execute(
                 "INSERT INTO messages (session_id, role, content,"
-                " tool_name, timestamp) VALUES (?,?,?,?,?)",
-                (sid, role, spec[1], spec[2] if len(spec) > 2 else None,
+                " tool_name, tool_calls, tool_call_id, timestamp)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (sid, role, spec[1],
+                 spec[2] if len(spec) > 2 else None,
+                 spec[3] if len(spec) > 3 else None,
+                 spec[4] if len(spec) > 4 else None,
                  1000.0 + i))
         con.commit()
         con.close()
@@ -748,6 +778,71 @@ class TestFirstResponseScoping(unittest.TestCase):
                                             busy_job=False)
             self.assertFalse(act["active"])
             self.assertEqual(self.mod.render_activity(act), "")
+        finally:
+            con.close()
+
+    def test_pending_tool_calls_until_their_results_land(self):
+        """The pending lifecycle: a carrier's calls are pending (name,
+        state, bounded args summary) until a tool row echoes the id
+        back; each result resolves exactly its own call, and once the
+        last one lands the strip's state derives from the result."""
+        calls = json.dumps([
+            {"id": "call_a", "function": {
+                "name": "read_file",
+                "arguments": "{\"path\": \"/etc/hosts\"}"}},
+            {"id": "call_b", "function": {
+                "name": "http",
+                "arguments": "{\"url\": \"https://example.com\"}"}},
+        ])
+        con = self.rows(
+            ("user", "the turn"),
+            ("assistant", "", None, calls),
+        )
+        try:
+            act = self.mod.compute_activity(con, "s_scope", 2000.0,
+                                            busy_job=True)
+            self.assertEqual([p["name"] for p in act["pending"]],
+                             ["read_file", "http"])
+            self.assertEqual(act["pending_count"], 2)
+            self.assertEqual(act["names"], ["read_file", "http"])
+            self.assertEqual(act["state"], act["pending"][-1]["state"])
+            self.assertIn("path=/etc/hosts", act["pending"][0]["args"])
+            strip = self.mod.render_activity(act)
+            self.assertIn("read_file", strip)
+            self.assertIn("http", strip)
+        finally:
+            con.close()
+
+        # one result resolves only its own call
+        con = self.rows(
+            ("user", "the turn"),
+            ("assistant", "", None, calls),
+            ("tool", "done", "read_file", None, "call_a"),
+        )
+        try:
+            act = self.mod.compute_activity(con, "s_scope", 2000.5,
+                                            busy_job=True)
+            self.assertEqual([p["name"] for p in act["pending"]],
+                             ["http"])
+            self.assertEqual(act["state"], act["pending"][0]["state"])
+        finally:
+            con.close()
+
+        # the last result resolves the turn: no pending work left, and
+        # the state names the result it is now thinking after
+        con = self.rows(
+            ("user", "the turn"),
+            ("assistant", "", None, calls),
+            ("tool", "done", "read_file", None, "call_a"),
+            ("tool", "done", "http", None, "call_b"),
+        )
+        try:
+            act = self.mod.compute_activity(con, "s_scope", 2001.0,
+                                            busy_job=True)
+            self.assertEqual(act["pending"], [])
+            self.assertEqual(act["pending_count"], 0)
+            self.assertTrue(act["active"])
+            self.assertEqual(act["state"], "Thinking after http")
         finally:
             con.close()
 
@@ -806,6 +901,60 @@ class TestJobRegistryBound(unittest.TestCase):
             sorted(payload),
             ["error", "job", "ok", "session_id", "status", "url"])
         self.assertIsNone(mod.new_job_payload("missing"))
+
+
+class TestLiveSubagents(ServerCase):
+    """The Sub-agents section is live: a child dispatched after the
+    page loaded appears on the next feed poll — the poll payload
+    carries the whole replacement section — and the client source
+    swaps it in place."""
+
+    def test_feed_poll_replaces_the_subagents_section(self):
+        self.add_session("s_parent", source="discord",
+                         title="dispatching chat")
+        self.add_message("s_parent", "user", "go research that")
+        _status, page = self.request("GET", "/s/default/s_parent")
+        self.assertNotIn('id="subagents"', page)
+        self.assertIn("applySubagents", page)  # the client swap path
+
+        # a same-profile subagent lands while the page is open
+        con = sqlite3.connect(self.db)
+        now = time.time()
+        con.execute(
+            "INSERT INTO sessions (id, source, title, started_at,"
+            " last_activity_at, archived, hidden, parent_session_id)"
+            " VALUES ('s_child','subagent','child goal text',?,?,0,0,"
+            " 's_parent')", (now - 30, now - 5))
+        con.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp)"
+            " VALUES ('s_child','user','the dispatched goal',?)",
+            (now - 30,))
+        con.commit()
+        con.close()
+
+        feed = self.poll_status(
+            "/s/default/s_parent/feed?after=0",
+            lambda p: p["subagents"]["count"] == 1)
+        self.assertEqual(feed["subagents"]["ids"], ["s_child"])
+        self.assertIn("child goal text", feed["subagents"]["html"])
+        self.assertIn('href="/s/default/s_child"',
+                      feed["subagents"]["html"])
+
+        # a reload renders the same section server-side
+        _status, page2 = self.request("GET", "/s/default/s_parent")
+        self.assertIn('id="subagents"', page2)
+        self.assertIn("child goal text", page2)
+
+        # and the section leaves again when the child is hidden — the
+        # replacement is a full swap, not an append-only list
+        con = sqlite3.connect(self.db)
+        con.execute("UPDATE sessions SET hidden = 1 WHERE id = 's_child'")
+        con.commit()
+        con.close()
+        gone = self.poll_status(
+            "/s/default/s_parent/feed?after=0",
+            lambda p: p["subagents"]["count"] == 0)
+        self.assertEqual(gone["subagents"]["html"], "")
 
 
 if __name__ == "__main__":

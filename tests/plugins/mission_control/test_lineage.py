@@ -14,16 +14,19 @@ inbox as ordinary top-level chats.
 The invariant under test, in one sentence: a worker session is hidden
 from the top level exactly when one job's artifacts uniquely prove it
 (prompt byte-equality inside the job's time window, origin session
-existing, no competing parent), and every weaker case — no match, an
+existing, no competing parent, and the run's own source explicitly
+marking a non-human worker), and every weaker case — no match, an
 oversize or wrapped prompt, a missing origin, an out-of-window start,
-an ambiguous collision, or simply an unrelated CLI chat — keeps its
-top-level row.
+an ambiguous collision, a human-facing source like 'cli', or simply an
+unrelated chat — keeps its top-level row.
 
 Each test builds a throwaway profile tree (default + researcher state
 DBs plus research_jobs/) with the production schema, points the
-server's DB discovery at it, and asserts on the three consumers of the
-lineage result: load_sessions() (top-level listing and its totals) and
-subagents_for() (the parent page's child rendering).
+server's DB discovery at it, and asserts on the consumers of the
+lineage result: load_sessions() (top-level listing and its totals),
+subagents_for() (the parent page's child rendering), and — for the
+bounds and identity rules — the rendered page HTML and the feed's
+serialized children, the two public surfaces a browser actually sees.
 """
 
 import json
@@ -250,17 +253,37 @@ class LineageFixture(unittest.TestCase):
                       encoding="utf-8") as fh:
                 fh.write(text)
 
+    def add_profile_db(self, name):
+        """One more worker-profile DB under the fixture home."""
+        path = os.path.join(self.root, "profiles", name, "state.db")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        con = sqlite3.connect(path)
+        try:
+            con.execute(SCHEMA_SESSIONS)
+            con.execute(SCHEMA_MESSAGES)
+            con.execute(SCHEMA_LEASES)
+            con.commit()
+        finally:
+            con.close()
+        return path
+
     # ---- workers and parents ---------------------------------------
 
-    def add_worker(self, sid, title, prompt, started=None):
-        """A researcher-profile run dispatched with exactly `prompt`."""
+    def add_worker(self, sid, title, prompt, started=None, db=None,
+                   source="research-worker"):
+        """A worker-profile run dispatched with exactly `prompt`.
+
+        source defaults to the deep_research runner's worker tag: the
+        explicit non-human marking a job match requires before it may
+        claim a session. Tests pass source="cli" (or "") to build the
+        human-facing false match that must keep its inbox row."""
         started = (self.base + 5) if started is None else started
-        self.add_session(self.researcher_db, sid, source="cli",
+        self.add_session(db or self.researcher_db, sid, source=source,
                          title=title, started=started,
                          last=started + 60, ended=started + 60)
-        self.add_message(self.researcher_db, sid, "user", prompt,
+        self.add_message(db or self.researcher_db, sid, "user", prompt,
                          started)
-        self.add_message(self.researcher_db, sid, "assistant",
+        self.add_message(db or self.researcher_db, sid, "assistant",
                          "done", started + 60)
 
     def add_parent(self, sid, title="Research dispatch", started=None):
@@ -286,6 +309,21 @@ class LineageFixture(unittest.TestCase):
             return server.subagents_for(con, profile, sid)
         finally:
             con.close()
+
+    def _dbs(self):
+        return {name: db_path for db_path, name in server.discover_dbs()}
+
+    def parent_page_html(self, profile, sid):
+        """The public /s/<profile>/<sid> page HTML."""
+        self._reset_lineage()
+        chat = server.load_chat(profile, sid, self._dbs())
+        return server.render_chat(chat)
+
+    def feed_children(self, profile, sid):
+        """The feed poll's serialized children, in rendered order."""
+        self._reset_lineage()
+        feed = server.load_feed(profile, sid, self._dbs(), 0)
+        return feed["subagents"]
 
 
 class TestPromptShapes(LineageFixture):
@@ -551,6 +589,313 @@ class TestConsumers(LineageFixture):
                          ["20260902_100100_worker11b"])
         self.assertEqual(kids[0]["profile"], "researcher")
         self.assertEqual(kids[0]["label"], "Dispatched run")
+
+
+class TestWorkerSourceGate(LineageFixture):
+    """Prompt bytes plus a time window are inference, never proof."""
+
+    def test_human_facing_cli_false_match_keeps_inbox_row(self):
+        """The false positive the gate exists for: a researcher-profile
+        chat a person typed at their own CLI whose first prompt and
+        start time exactly match a job. It must stay an inbox row and
+        never become a child, while its worker-tagged twin (same
+        prompt, same minute) links — the source is the only differing
+        evidence. Asserted on the public surfaces, not just the
+        helper's sets."""
+        prompt = "Prompt a human could coincidentally repeat verbatim."
+        self.add_parent("20260902_100000_origin20")
+        self.add_job("rj_test0020", "20260902_100000_origin20",
+                     {"lane_0.md": prompt})
+        self.add_worker("20260902_100100_worker20a",
+                        "Human's own chat", prompt, source="cli")
+        self.add_worker("20260902_100100_worker20b",
+                        "Dispatched run", prompt)
+
+        rows, keys = self.top_level()
+        self.assertIn(("researcher", "20260902_100100_worker20a"), keys)
+        self.assertNotIn(("researcher", "20260902_100100_worker20b"),
+                         keys)
+        kids = self.children_of("default", "20260902_100000_origin20")
+        self.assertEqual([k["id"] for k in kids],
+                         ["20260902_100100_worker20b"])
+
+        # The page and the feed — what a browser sees — agree.
+        page = self.parent_page_html("default",
+                                     "20260902_100000_origin20")
+        self.assertIn('href="/s/researcher/20260902_100100_worker20b"',
+                      page)
+        self.assertNotIn("20260902_100100_worker20a", page)
+        feed = self.feed_children("default", "20260902_100000_origin20")
+        self.assertEqual([c["id"] for c in feed],
+                         ["20260902_100100_worker20b"])
+
+    def test_blank_source_false_match_keeps_inbox_row(self):
+        """A blank source is unknown, not worker: it fails open to the
+        inbox rather than being claimed by inference."""
+        prompt = "Prompt repeated by an untagged legacy run."
+        self.add_parent("20260902_100000_origin21")
+        self.add_job("rj_test0021", "20260902_100000_origin21",
+                     {"lane_0.md": prompt})
+        self.add_worker("20260902_100100_worker21",
+                        "Legacy untagged run", prompt, source="")
+
+        _rows, keys = self.top_level()
+        self.assertIn(("researcher", "20260902_100100_worker21"), keys)
+        kids = self.children_of("default", "20260902_100000_origin21")
+        self.assertEqual(kids, [])
+
+
+class TestMalformedMetadata(LineageFixture):
+    """One bad artifact skips only itself; nothing ever raises."""
+
+    def mutate_job_request(self, job_id, **fields):
+        """Rewrite fields into one written job's request.json."""
+        path = os.path.join(self.root, "research_jobs", job_id,
+                            "request.json")
+        with open(path, encoding="utf-8") as fh:
+            req = json.load(fh)
+        req.update(fields)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(req, fh)
+
+    def test_worker_profile_list_skips_only_that_job(self):
+        """worker_profile must be a non-empty string: a JSON list there
+        must be skipped before any set-membership use, discarding only
+        its own job's link while the sibling job's link stands."""
+        good = "The valid sibling job's dispatched prompt."
+        bad = "The malformed job's dispatched prompt."
+        self.add_parent("20260902_100000_origin30")
+        self.add_parent("20260902_100000_origin31")
+        self.add_job("rj_test0030", "20260902_100000_origin30",
+                     {"lane_0.md": bad})
+        self.add_job("rj_test0031", "20260902_100000_origin31",
+                     {"lane_0.md": good})
+        self.mutate_job_request("rj_test0030",
+                                worker_profile=["researcher", 7])
+        self.add_worker("20260902_100100_worker30a",
+                        "Malformed job's run", bad)
+        self.add_worker("20260902_100100_worker30b",
+                        "Valid job's run", good)
+
+        _rows, keys = self.top_level()  # must not raise
+        self.assertIn(("researcher", "20260902_100100_worker30a"), keys)
+        self.assertNotIn(("researcher", "20260902_100100_worker30b"),
+                         keys)
+        self.assertEqual(
+            self.children_of("default", "20260902_100000_origin30"), [])
+        self.assertEqual(
+            [k["id"] for k in
+             self.children_of("default", "20260902_100000_origin31")],
+            ["20260902_100100_worker30b"])
+
+    def test_other_malformed_shapes_skip_only_their_job(self):
+        """A string created_at, a non-dict origin, and an unparseable
+        request.json each skip exactly their own job; the fourth,
+        well-formed job beside them still links."""
+        prompt = "Prompt only the valid job dispatched."
+        self.add_parent("20260902_100000_origin32")
+        self.add_parent("20260902_100000_origin33")
+        self.add_parent("20260902_100000_origin34")
+        self.add_parent("20260902_100000_origin35")
+        self.add_job("rj_test0032", "20260902_100000_origin32",
+                     {"lane_0.md": prompt}, created="yesterday")
+        self.add_job("rj_test0033", "20260902_100000_origin33",
+                     {"lane_0.md": prompt})
+        self.mutate_job_request("rj_test0033", origin=None)
+        self.add_job("rj_test0034", "20260902_100000_origin34",
+                     {"lane_0.md": prompt})
+        with open(os.path.join(self.root, "research_jobs", "rj_test0034",
+                               "request.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{not json at all")
+        self.add_job("rj_test0035", "20260902_100000_origin35",
+                     {"lane_0.md": prompt})
+        self.add_worker("20260902_100100_worker35",
+                        "The valid job's run", prompt,
+                        started=self.base + 10)
+
+        _rows, keys = self.top_level()  # must not raise
+        self.assertNotIn(("researcher", "20260902_100100_worker35"),
+                         keys)
+        self.assertEqual(
+            [k["id"] for k in
+             self.children_of("default", "20260902_100000_origin35")],
+            ["20260902_100100_worker35"])
+        for origin in ("20260902_100000_origin32",
+                       "20260902_100000_origin33",
+                       "20260902_100000_origin34"):
+            self.assertEqual(self.children_of("default", origin), [])
+
+    def test_overlapping_jobs_each_link_their_own_worker(self):
+        """Two jobs whose windows overlap but whose prompts differ each
+        claim exactly their own worker — overlap alone is never
+        ambiguity (that needs one worker claimed by two parents)."""
+        pa = "Prompt dispatched by the earlier overlapping job."
+        pb = "Prompt dispatched by the later overlapping job."
+        self.add_parent("20260902_100000_origin36")
+        self.add_parent("20260902_100000_origin37")
+        self.add_job("rj_test0036", "20260902_100000_origin36",
+                     {"lane_0.md": pa}, created=self.base,
+                     completed=self.base + 300)
+        self.add_job("rj_test0037", "20260902_100000_origin37",
+                     {"lane_0.md": pb}, created=self.base + 30,
+                     completed=self.base + 330)
+        self.add_worker("20260902_100100_worker36a",
+                        "Earlier job's run", pa, started=self.base + 60)
+        self.add_worker("20260902_100100_worker37b",
+                        "Later job's run", pb, started=self.base + 90)
+
+        _rows, keys = self.top_level()
+        self.assertNotIn(("researcher", "20260902_100100_worker36a"),
+                         keys)
+        self.assertNotIn(("researcher", "20260902_100100_worker37b"),
+                         keys)
+        self.assertEqual(
+            [k["id"] for k in
+             self.children_of("default", "20260902_100000_origin36")],
+            ["20260902_100100_worker36a"])
+        self.assertEqual(
+            [k["id"] for k in
+             self.children_of("default", "20260902_100000_origin37")],
+            ["20260902_100100_worker37b"])
+
+
+class TestChildIdentityAndBounds(LineageFixture):
+    """(profile, session id) identity and the merged 50-child bound."""
+
+    def test_duplicate_ids_across_profiles_are_distinct_children(self):
+        """The same session id in two worker profiles is two children:
+        each links to its own parent, each leaves the inbox by its own
+        (profile, id) key, and the page/feed links are
+        profile-qualified."""
+        shared = "20260902_100100_dup60"
+        p_researcher = "Question dispatched to the researcher profile."
+        p_analyst = "Question dispatched to the analyst profile."
+        analyst_db = self.add_profile_db("analyst")
+        self.add_parent("20260902_100000_origin60a")
+        self.add_parent("20260902_100000_origin60b")
+        self.add_job("rj_test0060a", "20260902_100000_origin60a",
+                     {"lane_0.md": p_researcher}, worker="researcher")
+        self.add_job("rj_test0060b", "20260902_100000_origin60b",
+                     {"lane_0.md": p_analyst}, worker="analyst")
+        self.add_worker(shared, "Researcher run", p_researcher)
+        self.add_worker(shared, "Analyst run", p_analyst, db=analyst_db)
+
+        _rows, keys = self.top_level()
+        self.assertNotIn(("researcher", shared), keys)
+        self.assertNotIn(("analyst", shared), keys)
+        kids_a = self.children_of("default", "20260902_100000_origin60a")
+        self.assertEqual([(k["profile"], k["id"]) for k in kids_a],
+                         [("researcher", shared)])
+        kids_b = self.children_of("default", "20260902_100000_origin60b")
+        self.assertEqual([(k["profile"], k["id"]) for k in kids_b],
+                         [("analyst", shared)])
+
+        page = self.parent_page_html("default",
+                                     "20260902_100000_origin60a")
+        self.assertIn('href="/s/researcher/%s"' % shared, page)
+        self.assertNotIn('href="/s/analyst/%s"' % shared, page)
+        feed = self.feed_children("default",
+                                  "20260902_100000_origin60a")
+        self.assertEqual([c["profile"] for c in feed], ["researcher"])
+
+    def test_fifty_bound_applies_after_merging_profiles(self):
+        """30 same-profile subagents plus 25 linked researcher workers
+        is 55 children of one parent: the 50-child bound is applied
+        after the merge — over the combined list, ordered oldest-first
+        — on both the page and the feed, keeping the 50 earliest
+        starts and cutting the 5 latest."""
+        parent = "20260902_100000_origin61"
+        self.add_parent(parent)
+        prompts = {"lane_%02d.md" % i: "Fifty-bound lane %02d prompt." % i
+                   for i in range(25)}
+        self.add_job("rj_test0061", parent, prompts)
+        sids = []
+        for i in range(55):
+            sid = "20260902_100100_kid%02d" % i
+            started = self.base + i  # one second apart: strict order
+            if i < 30:
+                self.add_session(self.default_db, sid, source="subagent",
+                                 title="Subagent %02d" % i,
+                                 started=started, last=started + 30,
+                                 ended=started + 30,
+                                 parent_session_id=parent)
+            else:
+                self.add_worker(sid, "Worker %02d" % (i - 30),
+                                prompts["lane_%02d.md" % (i - 30)],
+                                started=started)
+            sids.append(sid)
+
+        rows, keys = self.top_level()
+        # Every linked worker leaves the inbox — including the five the
+        # display bound later cuts; the parent and nothing else moves.
+        for i in range(30, 55):
+            self.assertNotIn(("researcher", sids[i]), keys)
+        self.assertIn(("default", parent), keys)
+
+        kids = self.children_of("default", parent)
+        self.assertEqual(len(kids), server.SUBAGENT_MAX_CHILDREN)
+        self.assertEqual([k["id"] for k in kids], sids[:50])
+        self.assertEqual([k["id"] for k in kids][-1], sids[49])
+
+        # The public page: a bounded section with the count badge and
+        # profile-qualified links, oldest first, newest five absent.
+        page = self.parent_page_html("default", parent)
+        self.assertIn(
+            '<span class="sa-count">%d</span>'
+            % server.SUBAGENT_MAX_CHILDREN, page)
+        self.assertEqual(page.count('class="sa-item"'),
+                         server.SUBAGENT_MAX_CHILDREN)
+        self.assertIn('href="/s/default/%s"' % sids[0], page)
+        self.assertIn('href="/s/researcher/%s"' % sids[49], page)
+        for i in range(50, 55):
+            self.assertNotIn(sids[i], page)
+
+        # The feed ships the same bounded ordered list.
+        feed = self.feed_children("default", parent)
+        self.assertEqual([c["id"] for c in feed], sids[:50])
+
+    def test_equal_starts_order_by_id_then_profile(self):
+        """The explicit tie-breaker: children sharing a started_at sort
+        by session id, then profile. One parent's four same-start
+        children — researcher workers "a..." and "c...", plus the same
+        id "b..." in both worker profiles — render in exactly that
+        order on the helper, the feed and the page, on every rebuild."""
+        parent = "20260902_100000_origin62"
+        self.add_parent(parent)
+        tie = self.base + 5
+        analyst_db = self.add_profile_db("analyst")
+        self.add_job("rj_test0062a", parent,
+                     {"lane_0.md": "Tie-breaker researcher prompt."},
+                     worker="researcher")
+        self.add_job("rj_test0062b", parent,
+                     {"lane_0.md": "Tie-breaker analyst prompt."},
+                     worker="analyst")
+        self.add_worker("20260902_100100_aworker", "Researcher a",
+                        "Tie-breaker researcher prompt.", started=tie)
+        self.add_worker("20260902_100100_cworker", "Researcher c",
+                        "Tie-breaker researcher prompt.", started=tie)
+        self.add_worker("20260902_100100_bdup", "Analyst b",
+                        "Tie-breaker analyst prompt.", started=tie,
+                        db=analyst_db)
+        self.add_worker("20260902_100100_bdup", "Researcher b",
+                        "Tie-breaker researcher prompt.", started=tie)
+        order = [("researcher", "20260902_100100_aworker"),
+                 ("analyst", "20260902_100100_bdup"),
+                 ("researcher", "20260902_100100_bdup"),
+                 ("researcher", "20260902_100100_cworker")]
+
+        for _ in range(2):  # stable across rebuilds
+            self.assertEqual(
+                [(k["profile"], k["id"])
+                 for k in self.children_of("default", parent)], order)
+        self.assertEqual(
+            [(c["profile"], c["id"])
+             for c in self.feed_children("default", parent)], order)
+        page = self.parent_page_html("default", parent)
+        positions = [page.index('href="/s/%s/%s"' % key)
+                     for key in order]
+        self.assertEqual(positions, sorted(positions))
 
 
 if __name__ == "__main__":

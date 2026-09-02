@@ -12,12 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
-import socket
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -63,14 +62,13 @@ CREATE TABLE messages (
 """
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 def _make_home(root: Path) -> Path:
-    """A throwaway Hermes home with one default-profile session."""
+    """A throwaway Hermes home with one default-profile session.
+
+    The commentary carrier carries the exact persisted shape the
+    Codex responses adapter writes: a message item with role
+    "assistant", a normalized "status" of "completed", and the
+    "commentary" phase — anything less is not recovered as text."""
     home = root / ".hermes"
     db = home / "state.db"
     db.parent.mkdir(parents=True)
@@ -86,8 +84,9 @@ def _make_home(root: Path) -> Path:
          None, None, None),
         ("tool", "", now - 100, "read_file", None, None),
         ("assistant", "", now - 90, None, None,
-         '[{"type": "message", "role": "assistant", "phase":'
-         ' "commentary", "content": [{"type": "output_text",'
+         '[{"type": "message", "role": "assistant", "status":'
+         ' "completed", "phase": "commentary", "content":'
+         ' [{"type": "output_text",'
          ' "text": "Stepping into the repo to check the failing '
          'tests."}]}]'),
         ("assistant", "all green now", now - 5, None, None, None),
@@ -117,32 +116,43 @@ def _get_text(url: str) -> tuple[int, str]:
 
 
 class _ServeProcess:
-    """One real ``mission_control serve`` subprocess under test."""
+    """One real ``mission_control serve`` subprocess under test.
+
+    The server is started with ``--port 0`` and its actually-bound
+    port is read back from the startup line — no free-port probe that
+    could close its socket before the server binds it, so the
+    close-before-bind race is structurally gone. Nothing temporary is
+    created besides the caller's home."""
 
     def __init__(self, home: Path, *extra_args: str):
-        self.tmp = tempfile.mkdtemp(prefix="mc-serve-test-")
         self._all_output = ""
         env = dict(os.environ)
         env["HERMES_HOME"] = str(home)
         env.setdefault("HERMES_BUNDLED_PLUGINS", str(REPO_ROOT / "plugins"))
-        self.port = _free_port()
         argv = [sys.executable, "-m", "hermes_cli.main",
                 "mission_control", "serve",
-                "--port", str(self.port)] + list(extra_args)
+                "--port", "0"] + list(extra_args)
         self.proc = subprocess.Popen(
             argv, cwd=str(REPO_ROOT), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace")
+        self.port = 0
 
     def wait_ready(self, timeout: float = 60.0) -> str:
-        """Block until the startup line lands; return output so far."""
+        """Block until the startup line lands; return output so far.
+
+        The bound port is parsed out of the same line ("serving on
+        http://host:port/") the server prints from its real
+        server_address, so `self.port` is exact."""
         deadline = time.time() + timeout
         lines: list[str] = []
         while time.time() < deadline:
             line = self.proc.stdout.readline()
             if line:
                 lines.append(line)
-                if "serving on http://" in line:
+                m = re.search(r"serving on http://[^:/]+:(\d+)/", line)
+                if m:
+                    self.port = int(m.group(1))
                     return "".join(lines)
                 if "Traceback" in line:
                     raise AssertionError(
