@@ -86,6 +86,32 @@ def adapter(monkeypatch):
     return adapter
 
 
+# Inherited auth/channel routing gates.  The gateway process exports its
+# resolved DISCORD_* gates into the environment, so a test run inside that
+# process (or any shell with the live .env sourced) inherits them: a live
+# DISCORD_ALLOWED_CHANNELS drops every fixture channel before the branch
+# under test, and a live DISCORD_FREE_RESPONSE_CHANNELS silently disables
+# auto-threading.  Each test re-declares the subset it cares about.
+_INHERITED_DISCORD_GATE_VARS = (
+    "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_ALLOWED_USERS",
+    "DISCORD_ALLOWED_GUILDS",
+    "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOW_ALL_USERS",
+    "DISCORD_IGNORED_CHANNELS",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_AUTO_THREAD",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_discord_gate_env(monkeypatch):
+    """Clear the operator's live gate env for every test in this file."""
+    for var in _INHERITED_DISCORD_GATE_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 def make_message(*, channel, content: str, mentions=None):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
@@ -345,6 +371,106 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter._auto_create_thread = AsyncMock()
 
     message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+# ── auto_thread config/env precedence ─────────────────────────────────
+
+# Snowflake-shaped fixture IDs for these tests — distinct 19-digit
+# 2026-era values, all synthetic.
+_AUTO_THREAD_SOURCE_CHANNEL_ID = 1544731520947220992
+_AUTO_THREAD_THREAD_CHANNEL_ID = 1544731531488350208
+_AUTO_THREAD_CLIENT_USER_ID = 271190857634097155
+
+
+def _make_extra_adapter(monkeypatch, extra=None):
+    """Adapter carrying explicit config ``extra`` (per-profile YAML values)."""
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+
+    config = PlatformConfig(
+        enabled=True, token="fake-token", extra=dict(extra or {})
+    )
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=_AUTO_THREAD_CLIENT_USER_ID)
+    )
+    adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+def _clean_auto_thread_env(monkeypatch):
+    """Hermetic auto-thread env: no inherited gates, mention not required.
+
+    The autouse fixture clears the inherited gates for the whole module;
+    the config-precedence tests still call this so their setup stays
+    self-contained (and safe to copy into modules without the fixture).
+    """
+    for var in _INHERITED_DISCORD_GATE_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_config_false_disables_auto_threading(monkeypatch):
+    """``discord.auto_thread: false`` is honored with no env var set.
+
+    The adapter used to read only ``os.getenv("DISCORD_AUTO_THREAD")``,
+    ignoring the config value whenever the YAML→env bridge hadn't run.
+    """
+    adapter = _make_extra_adapter(monkeypatch, extra={"auto_thread": False})
+    _clean_auto_thread_env(monkeypatch)
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=_AUTO_THREAD_THREAD_CHANNEL_ID))
+
+    message = make_message(channel=FakeTextChannel(channel_id=_AUTO_THREAD_SOURCE_CHANNEL_ID), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_defaults_true_without_config_or_env(monkeypatch):
+    """Neither config nor env set → auto-threading stays on (default true)."""
+    adapter = _make_extra_adapter(monkeypatch)
+    _clean_auto_thread_env(monkeypatch)
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=_AUTO_THREAD_THREAD_CHANNEL_ID))
+
+    message = make_message(channel=FakeTextChannel(channel_id=_AUTO_THREAD_SOURCE_CHANNEL_ID), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_env_overrides_config_false(monkeypatch):
+    """Explicit DISCORD_AUTO_THREAD=true wins over ``auto_thread: false``."""
+    adapter = _make_extra_adapter(monkeypatch, extra={"auto_thread": False})
+    _clean_auto_thread_env(monkeypatch)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=_AUTO_THREAD_THREAD_CHANNEL_ID))
+
+    message = make_message(channel=FakeTextChannel(channel_id=_AUTO_THREAD_SOURCE_CHANNEL_ID), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_env_false_overrides_config_true(monkeypatch):
+    """Explicit DISCORD_AUTO_THREAD=false wins over ``auto_thread: true``."""
+    adapter = _make_extra_adapter(monkeypatch, extra={"auto_thread": True})
+    _clean_auto_thread_env(monkeypatch)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=_AUTO_THREAD_THREAD_CHANNEL_ID))
+
+    message = make_message(channel=FakeTextChannel(channel_id=_AUTO_THREAD_SOURCE_CHANNEL_ID), content="hello")
     await adapter._handle_message(message)
 
     adapter._auto_create_thread.assert_not_awaited()

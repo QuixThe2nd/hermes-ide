@@ -44,6 +44,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import discord  # noqa: E402  (mock installed above / by the gateway conftest)
+
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -420,3 +422,281 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
 
 
+
+
+# ---------------------------------------------------------------------------
+# Proven-invalid reply references must never be replayed (50035 / 10008)
+# ---------------------------------------------------------------------------
+
+_DIFFERENT_CHANNEL_50035 = (
+    "400 Bad Request (error code: 50035): "
+    "In message_reference: Cannot reply to a message in a different channel"
+)
+
+
+def _assert_no_replay_after_rejection(reference_sequence):
+    """A reference Discord rejected must never appear in a later attempt.
+
+    ``reference_sequence`` holds, in order, the reference carried by every
+    send attempt of one logical delivery; a truthy marker stands in for
+    attempts whose reference is only observable as present (the native
+    voice POST's payload).  The first non-null entry is the rejected one;
+    every later attempt must carry NO reference at all — these fallback
+    paths deliver standalone, never rebuilding an equal reference to
+    re-fire the same rejection.
+    """
+    rejected_seen = False
+    for ref in reference_sequence:
+        if rejected_seen:
+            assert ref is None, (
+                "a Discord-rejected reference was replayed on a later attempt"
+            )
+        elif ref is not None:
+            rejected_seen = True
+
+
+# Snowflake-shaped fixture IDs — distinct 19-digit 2026-era values, all
+# synthetic (no live Discord entity is referenced).
+_SEND_CHANNEL_ID = 1544731250112936960
+_SEND_REPLY_MESSAGE_ID = 1544731280947221504
+_SEND_MESSAGE_ID_BASE = 1544731400000000000
+
+# 19 payload bytes — same size as the reviewer's real-discord.py probe.
+_VOICE_OGG_BYTES = b"ogg-voice-payloads!"
+
+
+class _LifecycleFile:
+    """``discord.File`` stand-in with the real 2.x single-use semantics.
+
+    Verified against discord.py 2.7.1: a File wraps its buffer and stubs
+    ``fp.close`` against aiohttp, so a File is single-use through its
+    READ POSITION — the uploader reads the buffer to EOF and a File
+    object reused after that upload presents an exhausted buffer (zero
+    bytes).  ``close()`` on a non-owner File leaves the caller's buffer
+    open; consumption, not closure, is what makes the object spent.  The
+    voice tests patch ``discord.File`` with this class because the test
+    environment's mocked ``discord.File`` is an attribute-less Mock.
+    """
+
+    def __init__(self, fp, filename=None, **_):
+        self.fp = fp
+        self.filename = filename or "unknown"
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FileLifecycleChannel:
+    """Channel fake modeling the real discord.py 2.x file-send lifecycle.
+
+    On every file-carrying attempt the uploader READS the file's buffer
+    from its current position to EOF — ``discord.File`` stubs ``fp.close``
+    against aiohttp, so a File is single-use through its read position:
+    after one send the buffer sits at EOF — and the send context then
+    closes the File.  A ``message_reference`` anchored outside the channel
+    is rejected with the 50035 different-channel error AFTER the upload
+    was consumed, exactly like the real API round trip.  A retry that
+    reuses the consumed File therefore records an empty payload — the
+    zero-byte upload the round-2 reviewer measured against real
+    discord.py 2.7.1.
+    """
+
+    def __init__(self, *, reject_references=False):
+        self.id = _SEND_CHANNEL_ID
+        self.attempts = []
+        self.reject_references = reject_references
+
+    async def send(self, *, file=None, reference=None, **_):
+        payload = None
+        if file is not None:
+            payload = file.fp.read()  # consumed from the current position
+            file.close()  # discord.py closes the File after the request
+        self.attempts.append({"file": file, "payload": payload, "reference": reference})
+        if reference is not None and self.reject_references:
+            raise RuntimeError(_DIFFERENT_CHANNEL_50035)
+        return SimpleNamespace(id=_SEND_MESSAGE_ID_BASE + len(self.attempts))
+
+
+class TestProvenInvalidReferenceFallbacks:
+    """Every fallback path drops a Discord-rejected reference before retrying.
+
+    Once Discord answers 50035 "Cannot reply to a message in a different
+    channel" (or the system-message 50035, or 10008) the verdict is
+    permanent for that reference: replaying it in the markdown fallback,
+    the file fallback, or a later chunk just re-fires the same rejection
+    and can lose the delivery entirely (the 2026-09-02 root-final loss).
+    """
+
+    @pytest.mark.asyncio
+    async def test_text_chunk_50035_different_channel_retries_standalone(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+        send_calls = []
+
+        async def fake_send(*, content, reference=None):
+            send_calls.append({"content": content, "reference": reference})
+            if reference is not None:
+                raise RuntimeError(_DIFFERENT_CHANNEL_50035)
+            return SimpleNamespace(id=_SEND_MESSAGE_ID_BASE + len(send_calls))
+
+        channel = SimpleNamespace(
+            id=_SEND_CHANNEL_ID, send=AsyncMock(side_effect=fake_send)
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _chat_id: channel,
+            fetch_channel=AsyncMock(),
+        )
+
+        long_text = "A" * (adapter.MAX_MESSAGE_LENGTH + 50)
+        result = await adapter.send(
+            str(_SEND_CHANNEL_ID),
+            long_text,
+            reply_to=str(_SEND_REPLY_MESSAGE_ID),
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        # The reported message is the standalone retry, not a lost send.
+        assert result.message_id == str(_SEND_MESSAGE_ID_BASE + 2)
+        references = [call["reference"] for call in send_calls]
+        assert references[0] is not None
+        assert references[0].message_id == _SEND_REPLY_MESSAGE_ID
+        assert references[0].channel_id == _SEND_CHANNEL_ID
+        # The rejected reference is retried standalone immediately and
+        # never rebuilt for the later chunks.
+        assert references[1:] == [None, None]
+        _assert_no_replay_after_rejection(references)
+
+    @pytest.mark.asyncio
+    async def test_agent_progress_embed_50035_markdown_fallback_drops_reference(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+        sent_calls = []
+
+        async def fake_send(**kwargs):
+            sent_calls.append(kwargs)
+            if kwargs.get("reference") is not None:
+                raise RuntimeError(_DIFFERENT_CHANNEL_50035)
+            return SimpleNamespace(id=_SEND_MESSAGE_ID_BASE + len(sent_calls))
+
+        channel = SimpleNamespace(
+            id=_SEND_CHANNEL_ID,
+            send=AsyncMock(side_effect=fake_send),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _chat_id: channel,
+            fetch_channel=AsyncMock(),
+        )
+
+        result = await adapter.send(
+            str(_SEND_CHANNEL_ID),
+            "Claude Code Agent: http://192.168.30.20:8787/",
+            reply_to=str(_SEND_REPLY_MESSAGE_ID),
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        assert len(sent_calls) == 2
+        assert sent_calls[0]["reference"] is not None
+        # The embed send was rejected on its reference; the markdown
+        # fallback must not replay it.
+        assert sent_calls[1]["reference"] is None
+        assert "Claude Code Agent" in sent_calls[1]["content"]
+        _assert_no_replay_after_rejection(
+            [call.get("reference") for call in sent_calls]
+        )
+
+    @pytest.mark.asyncio
+    async def test_voice_native_50035_file_fallback_drops_reference(
+        self, tmp_path, monkeypatch
+    ):
+        audio = tmp_path / "voice.ogg"
+        audio.write_bytes(_VOICE_OGG_BYTES)
+        monkeypatch.setattr(discord, "File", _LifecycleFile)
+
+        channel = _FileLifecycleChannel()
+        request = AsyncMock(side_effect=RuntimeError(_DIFFERENT_CHANNEL_50035))
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _chat_id: channel,
+            fetch_channel=AsyncMock(),
+            http=SimpleNamespace(request=request),
+        )
+
+        result = await adapter.send_voice(
+            str(_SEND_CHANNEL_ID),
+            str(audio),
+            reply_to=str(_SEND_REPLY_MESSAGE_ID),
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        # The native voice POST carried the reference...
+        native_payload = _native_voice_payload(request)
+        assert (
+            native_payload["message_reference"]["message_id"]
+            == str(_SEND_REPLY_MESSAGE_ID)
+        )
+        # ...Discord rejected it, and the file fallback delivered the
+        # audio standalone without ever replaying it — a FRESH file
+        # carrying the complete original bytes.
+        assert len(channel.attempts) == 1
+        assert channel.attempts[0]["reference"] is None
+        assert channel.attempts[0]["payload"] == _VOICE_OGG_BYTES
+        _assert_no_replay_after_rejection(
+            [_DIFFERENT_CHANNEL_50035]  # marker: the rejected native POST
+            + [attempt["reference"] for attempt in channel.attempts]
+        )
+
+    @pytest.mark.asyncio
+    async def test_voice_file_50035_retries_with_fresh_file_standalone(
+        self, tmp_path, monkeypatch
+    ):
+        """A rejected reference is dropped AND the retry re-uploads the bytes.
+
+        ``discord.File`` is single-use: the first (rejected) file send
+        consumed the buffer — its read position sits at EOF.  The
+        standalone retry must therefore carry a freshly built File with
+        the complete original bytes; reusing the consumed object uploads
+        zero bytes while still reporting success (the round-2 blocker).
+        """
+        audio = tmp_path / "voice.ogg"
+        audio.write_bytes(_VOICE_OGG_BYTES)
+        monkeypatch.setattr(discord, "File", _LifecycleFile)
+
+        channel = _FileLifecycleChannel(reject_references=True)
+        # The native POST fails for an unrelated reason (voice flags), so
+        # the reference survives into the file fallback — where Discord
+        # rejects it and the retry must go standalone.
+        request = AsyncMock(side_effect=RuntimeError("500 voice flags unsupported"))
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _chat_id: channel,
+            fetch_channel=AsyncMock(),
+            http=SimpleNamespace(request=request),
+        )
+
+        result = await adapter.send_voice(
+            str(_SEND_CHANNEL_ID),
+            str(audio),
+            reply_to=str(_SEND_REPLY_MESSAGE_ID),
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        assert result.message_id == str(_SEND_MESSAGE_ID_BASE + 2)
+        assert len(channel.attempts) == 2
+        assert channel.attempts[0]["reference"] is not None
+        assert channel.attempts[1]["reference"] is None
+        # The rejection happened on the FIRST file attempt — from there on
+        # the reference is gone.  (The native POST failed for an unrelated
+        # reason, so it is not part of the rejection sequence.)
+        _assert_no_replay_after_rejection(
+            [attempt["reference"] for attempt in channel.attempts]
+        )
+        # Single-use File lifecycle: the standalone retry carries a
+        # DISTINCT fresh file whose buffer still holds the full payload.
+        assert channel.attempts[0]["payload"] == _VOICE_OGG_BYTES
+        assert channel.attempts[1]["payload"] == _VOICE_OGG_BYTES
+        assert channel.attempts[1]["file"] is not channel.attempts[0]["file"]

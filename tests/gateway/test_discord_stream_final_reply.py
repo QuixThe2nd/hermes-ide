@@ -4,6 +4,7 @@ Interim streaming previews, commentary, and tool progress stay standalone
 (no MessageReference ping). The completed answer is delivered as a fresh
 reply because Discord cannot attach a reference via message.edit.
 """
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -478,8 +479,68 @@ class TestDiscordStreamConsumerFreshFinal:
 # ---------------------------------------------------------------------------
 
 
-_ROOT_MESSAGE_ID = 9001  # auto-thread signature: thread id == root message id
-_PARENT_CHANNEL_ID = 777
+# Snowflake-shaped fixture IDs — distinct 17–19-digit values in the
+# 2026-era Discord range.  All are synthetic; no live entity is modeled.
+_ROOT_MESSAGE_ID = 1544728193026457601  # auto-thread signature: thread id == root
+_PARENT_CHANNEL_ID = 1544720986135749120
+_IN_THREAD_REPLY_ID = 1544728355012983264  # ordinary in-thread reply target
+_ROOT_AUTHOR_ID = 271190857634097154  # root author (user snowflake)
+_FETCHED_AUTHOR_ID = 462391875021346816  # author served by parent.fetch_message
+_FAKE_MESSAGE_ID_BASE = 1544728400000000000
+
+_ROOT_MENTION = f"<@{_ROOT_AUTHOR_ID}>"  # inline ping carried by chunk 0
+
+# ``truncate_message``'s " (1/2)" continuation markers — stripped per chunk
+# so content-preservation assertions compare the delivered body exactly.
+_CHUNK_INDICATOR_RE = re.compile(r" \(\d+/\d+\)$")
+
+
+def _recover_body(sent_messages, mention: str = _ROOT_MENTION) -> str:
+    """Body as delivered: drop the one mention prefix and chunk indicators.
+
+    Byte-exact — no whitespace normalization: the point of the recovery is
+    proving the splitter's own chunk bytes (interior spaces included) are
+    untouched by the mention prefix.  The mention either rides the first
+    chunk (remove it plus its one separating space) or ships as its own
+    first message (drop that message entirely).
+    """
+    parts = []
+    for index, msg in enumerate(sent_messages):
+        content = _CHUNK_INDICATOR_RE.sub("", msg["content"] or "")
+        if index == 0:
+            if content in (mention, mention + " "):
+                continue  # mention-only first message
+            if content.startswith(mention + " "):
+                content = content[len(mention) + 1 :]
+        parts.append(content)
+    return "".join(parts)
+
+
+def _expected_body_chunks(adapter, content) -> list:
+    """Chunks the splitter itself produces for the mention-free body."""
+    return adapter._cap_split_chunks(
+        adapter.truncate_message(
+            adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH
+        )
+    )
+
+
+def _assert_delivered_body_chunks_exact(sent_messages, mention, expected_chunks):
+    """Delivered chunks ARE the splitter's body chunks, byte-for-byte.
+
+    The mention must not move any split boundary: either it rides chunk 0
+    (chunk 0 = mention + one space + the original first chunk) or it ships
+    as its own first message — in both shapes the remaining delivered
+    chunks equal ``expected_chunks`` exactly, indicators and interior
+    whitespace included.
+    """
+    delivered = [msg["content"] or "" for msg in sent_messages]
+    first = delivered[0]
+    if first in (mention, mention + " "):
+        assert delivered[1:] == expected_chunks
+    else:
+        assert first.startswith(mention + " ")
+        assert [first[len(mention) + 1 :]] + delivered[1:] == expected_chunks
 
 
 def _seed_recovery_author(adapter, message_id, author_id):
@@ -512,22 +573,42 @@ def _make_root_turn_harness(
     the exact shape that makes a MessageReference unattachable.
     ``forum_parent=True`` flips the parent to a forum channel (type 15),
     where the starter message instead lives in the thread itself.
+
+    The thread's ``send`` models Discord's real message_reference
+    validation, not mere object construction: any reference whose
+    ``channel_id`` differs from the send channel is rejected with the
+    same 50035 the 2026-09-02 incident produced, so a cross-channel
+    anchor (e.g. re-anchoring a root final to the parent channel) fails
+    the send instead of silently "constructing fine".  Every attempt —
+    accepted or rejected — is recorded on ``thread.send_attempts``.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = DiscordAdapter(
         PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     )
     sent_messages = []
+    send_attempts = []
 
     async def _send(content, reference=None):
-        msg = SimpleNamespace(id=len(sent_messages) + 100, content=content, reference=reference)
+        send_attempts.append({"content": content, "reference": reference})
+        if reference is not None and int(reference.channel_id) != _ROOT_MESSAGE_ID:
+            raise RuntimeError(
+                "400 Bad Request (error code: 50035): "
+                "In message_reference: Cannot reply to a message in a "
+                "different channel"
+            )
+        msg = SimpleNamespace(
+            id=_FAKE_MESSAGE_ID_BASE + len(sent_messages) + 1,
+            content=content,
+            reference=reference,
+        )
         sent_messages.append({"content": content, "reference": reference, "id": msg.id})
         return msg
 
     if fetch_message is None:
         fetch_message = AsyncMock(
             return_value=SimpleNamespace(
-                id=_ROOT_MESSAGE_ID, author=SimpleNamespace(id=5150)
+                id=_ROOT_MESSAGE_ID, author=SimpleNamespace(id=_FETCHED_AUTHOR_ID)
             )
         )
     parent = SimpleNamespace(id=_PARENT_CHANNEL_ID, fetch_message=fetch_message)
@@ -537,6 +618,7 @@ def _make_root_turn_harness(
         id=_ROOT_MESSAGE_ID,
         parent_id=_PARENT_CHANNEL_ID,
         send=AsyncMock(side_effect=_send),
+        send_attempts=send_attempts,
     )
 
     def get_channel(channel_id):
@@ -571,7 +653,7 @@ class TestDiscordRootTurnMentionFallback:
     ):
         """Root-turn final: reference can't attach → inline mention, chunk 0 only."""
         adapter, _thread, _parent, sent_messages, root_id, parent_id = (
-            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
         long_answer = ("answer sentence. " * 300).strip()
 
@@ -585,15 +667,18 @@ class TestDiscordRootTurnMentionFallback:
         assert result.success is True
         assert len(sent_messages) >= 2
         assert all(msg["reference"] is None for msg in sent_messages)
-        assert sent_messages[0]["content"].startswith("<@4242> ")
-        assert sum(msg["content"].count("<@4242>") for msg in sent_messages) == 1
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+        # Later chunks mention NO user at all — not merely "not again".
+        for msg in sent_messages[1:]:
+            assert "<@" not in msg["content"]
 
     @pytest.mark.asyncio
     async def test_author_from_recovery_db_skips_fetch_message(
         self, monkeypatch, tmp_path
     ):
         adapter, _thread, parent, sent_messages, root_id, parent_id = (
-            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
 
         result = await adapter.send(
@@ -605,7 +690,7 @@ class TestDiscordRootTurnMentionFallback:
 
         assert result.success is True
         assert parent.fetch_message.await_count == 0
-        assert sent_messages[0]["content"].startswith("<@4242> ")
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
 
     @pytest.mark.asyncio
     async def test_author_missing_from_db_falls_back_to_fetch_message(
@@ -624,7 +709,9 @@ class TestDiscordRootTurnMentionFallback:
 
         assert result.success is True
         parent.fetch_message.assert_awaited_once_with(_ROOT_MESSAGE_ID)
-        assert sent_messages[0]["content"].startswith("<@5150> ")
+        assert sent_messages[0]["content"].startswith(
+            f"<@{_FETCHED_AUTHOR_ID}> "
+        )
 
     @pytest.mark.asyncio
     async def test_both_author_lookups_fail_sends_clean(
@@ -662,13 +749,13 @@ class TestDiscordRootTurnMentionFallback:
         result = await adapter.send(
             parent_id,
             "Final answer",
-            reply_to="8888",
+            reply_to=str(_IN_THREAD_REPLY_ID),
             metadata={"notify": True, "thread_id": root_id},
         )
 
         assert result.success is True
         assert sent_messages[0]["reference"] is not None
-        assert sent_messages[0]["reference"].message_id == 8888
+        assert sent_messages[0]["reference"].message_id == _IN_THREAD_REPLY_ID
         assert "<@" not in sent_messages[0]["content"]
         assert parent.fetch_message.await_count == 0
 
@@ -685,7 +772,7 @@ class TestDiscordRootTurnMentionFallback:
         """
         adapter, _thread, parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(
-                monkeypatch, tmp_path, db_author_id="4242", forum_parent=True
+                monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID), forum_parent=True
             )
         )
 
@@ -709,7 +796,7 @@ class TestDiscordRootTurnMentionFallback:
     ):
         adapter, _thread, parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(
-                monkeypatch, tmp_path, reply_to_mode="off", db_author_id="4242"
+                monkeypatch, tmp_path, reply_to_mode="off", db_author_id=str(_ROOT_AUTHOR_ID)
             )
         )
 
@@ -727,8 +814,8 @@ class TestDiscordRootTurnMentionFallback:
 
     @pytest.mark.asyncio
     async def test_interim_send_never_mentions(self, monkeypatch, tmp_path):
-        adapter, _thread, parent, sent_messages, root_id, parent_id = (
-            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+        adapter, thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
 
         result = await adapter.send(
@@ -739,16 +826,95 @@ class TestDiscordRootTurnMentionFallback:
         )
 
         assert result.success is True
-        assert sent_messages[0]["reference"] is None
+        # Exactly one send — no second ping-carrying message hiding behind
+        # the first clean one — and every attempt is mention/reference-free.
+        assert len(sent_messages) == 1
+        assert len(thread.send_attempts) == 1
+        for attempt in thread.send_attempts:
+            assert attempt["reference"] is None
+            assert "<@" not in (attempt["content"] or "")
         assert sent_messages[0]["content"] == "Working on it..."
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_at_cap_chunk_stays_within_max_length_after_prefix(
+    async def test_exact_body_preserved_at_mention_induced_boundary(
         self, monkeypatch, tmp_path
     ):
-        adapter, _thread, _parent, sent_messages, root_id, parent_id = (
-            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id="4242")
+        """The exact 2000-character boundary probe (round-2 blocker 1).
+
+        ``"A" * 1980 + " " + "B" * 19`` is exactly one unsplit message on
+        its own; prefixing the 8-character mention before the split moved
+        the split boundary so ``truncate_message``'s whitespace advance
+        (``.lstrip()``) ate the body's interior space — logical chunk
+        lengths ``[7, 1980, 19]``, recovered body 1999 chars, first
+        mismatch at offset 1980.  The body is now split FIRST and the
+        mention ships without moving any boundary, so the delivered body
+        is byte-for-byte the original, interior space included.
+        """
+        adapter, thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
+        )
+        body = "A" * 1980 + " " + "B" * 19
+        assert len(body) == adapter.MAX_MESSAGE_LENGTH
+
+        result = await adapter.send(
+            parent_id,
+            body,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        # The mention cannot ride the single at-cap body chunk, so it
+        # ships as its own first message and the body chunk is untouched.
+        assert [msg["content"] for msg in sent_messages] == [
+            _ROOT_MENTION + " ",
+            body,
+        ]
+        assert _recover_body(sent_messages) == body
+        # The interior space at the old loss point is intact.
+        assert _recover_body(sent_messages)[1980] == " "
+        _assert_delivered_body_chunks_exact(
+            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, body)
+        )
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_mention_rides_short_body_byte_exact(self, monkeypatch, tmp_path):
+        """A mention that fits rides chunk 0 with zero body disturbance."""
+        adapter, thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
+        )
+        # 8-char prefix + body == exactly the cap: the tightest inline fit.
+        body = "z" * (adapter.MAX_MESSAGE_LENGTH - len(_ROOT_MENTION) - 1)
+
+        result = await adapter.send(
+            parent_id,
+            body,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert [msg["content"] for msg in sent_messages] == [
+            _ROOT_MENTION + " " + body
+        ]
+        assert _recover_body(sent_messages) == body
+
+    @pytest.mark.asyncio
+    async def test_mention_prefix_at_cap_body_chunks_byte_for_byte(
+        self, monkeypatch, tmp_path
+    ):
+        """An at-cap body keeps every original byte when the mention ships.
+
+        The at-cap body is a single unsplit chunk; the mention cannot ride
+        it, so it goes out as its own first message and the body chunk is
+        byte-for-byte the splitter's output — no re-split, no clipped or
+        whitespace-eaten tail (the earlier round lost the space after the
+        mention and any displaced suffix).
+        """
+        adapter, thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
         )
         at_cap = "x" * adapter.MAX_MESSAGE_LENGTH
 
@@ -760,26 +926,107 @@ class TestDiscordRootTurnMentionFallback:
         )
 
         assert result.success is True
-        assert len(sent_messages) == 1
-        assert len(sent_messages[0]["content"]) <= adapter.MAX_MESSAGE_LENGTH
-        assert sent_messages[0]["content"].startswith("<@4242> ")
+        for msg in sent_messages:
+            assert len(msg["content"]) <= adapter.MAX_MESSAGE_LENGTH
+            assert msg["reference"] is None
+        _assert_delivered_body_chunks_exact(
+            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, at_cap)
+        )
+        # Space-free body: recovery is byte-exact, no normalization.
+        assert _recover_body(sent_messages) == at_cap
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+        for msg in sent_messages[1:]:
+            assert "<@" not in msg["content"]
+
+    @pytest.mark.asyncio
+    async def test_mention_prefix_multi_cap_content_exact_across_chunks(
+        self, monkeypatch, tmp_path
+    ):
+        """A multi-cap root final keeps every body chunk byte-for-byte."""
+        adapter, thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
+        )
+        body = "y" * (adapter.MAX_MESSAGE_LENGTH * 2 + 7)
+
+        result = await adapter.send(
+            parent_id,
+            body,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 3
+        for msg in sent_messages:
+            assert len(msg["content"]) <= adapter.MAX_MESSAGE_LENGTH
+            assert msg["reference"] is None
+        # The snowflake-width mention does not fit beside chunk 0's
+        # indicator reserve, so it ships as its own first message —
+        # without displacing so much as one byte of any body chunk.
+        _assert_delivered_body_chunks_exact(
+            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, body)
+        )
+        # Space-free body: full recovery, byte-for-byte, indicators gone.
+        assert _recover_body(sent_messages) == body
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_mention_prefix_wordy_multi_chunk_preserves_every_word(
+        self, monkeypatch, tmp_path
+    ):
+        """Word-boundary splits keep the splitter's exact chunk bytes.
+
+        The body chunks are compared byte-for-byte against what the
+        splitter itself produces for the mention-free body — the property
+        the mention prefix must not disturb — and every word of the final
+        answer still ships, in order, with the mention prepended exactly
+        once.
+        """
+        adapter, _thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
+        )
+        words = [f"word{idx:05d}" for idx in range(600)]
+        content = " ".join(words)
+
+        result = await adapter.send(
+            parent_id,
+            content,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        _assert_delivered_body_chunks_exact(
+            sent_messages, _ROOT_MENTION, _expected_body_chunks(adapter, content)
+        )
+        # Every word ships, in order — recovered by pattern, because the
+        # splitter drops the whitespace it splits on (adjacent words
+        # across a boundary concatenate) yet never loses a word or any of
+        # its letters.
+        assert re.findall(r"word\d{5}", _recover_body(sent_messages)) == words
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
 
 
 class TestDiscordRootTurnAllModeReplyReference:
-    """reply_to_mode=all: root-turn finals are real replies, not standalone pings.
+    """reply_to_mode=all root turns: exactly one mention, never a cross-channel
+    reference.
 
-    The inline-mention fallback is a 'first'-mode mechanism; 'all' anchors a
-    MessageReference to the parent channel — where the root message actually
-    lives — on every chunk of the final.
+    A text-channel auto-thread holds no user-authored message to reply to —
+    the root lives in the parent channel — so anchoring the 'all'-mode
+    reference there made Discord reject the entire final (50035 "Cannot
+    reply to a message in a different channel"; the 2026-09-02 incident).
+    The fake thread ``send`` in the harness enforces that validation, so
+    the pre-fix parent-anchored reference fails these tests outright.
     """
 
     @pytest.mark.asyncio
-    async def test_root_turn_final_references_parent_channel_on_every_chunk(
+    async def test_root_turn_final_mentions_once_and_never_builds_reference(
         self, monkeypatch, tmp_path
     ):
-        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+        adapter, thread, parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(
-                monkeypatch, tmp_path, reply_to_mode="all", db_author_id="4242"
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id=str(_ROOT_AUTHOR_ID)
             )
         )
         long_answer = ("answer sentence. " * 300).strip()
@@ -793,14 +1040,58 @@ class TestDiscordRootTurnAllModeReplyReference:
 
         assert result.success is True
         assert len(sent_messages) >= 2
+        # Discord's validation never fired: no send attempt — successful or
+        # rejected — ever carried a reference anchored outside the thread.
+        assert thread.send_attempts
+        for attempt in thread.send_attempts:
+            assert attempt["reference"] is None
+        for msg in sent_messages:
+            assert msg["reference"] is None
+        # Exactly one inline mention of the root author, on the first chunk;
+        # later chunks carry neither mention nor reference.
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+        for msg in sent_messages[1:]:
+            assert "<@" not in msg["content"]
+        # The author came from the recovery ledger — no API round trip.
+        assert parent.fetch_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_in_thread_final_all_mode_references_every_chunk(
+        self, monkeypatch, tmp_path
+    ):
+        """Ordinary in-thread finals keep real reply chips in 'all' mode.
+
+        A reply_to that is NOT the root-turn signature (its id differs from
+        the thread id) is a normal in-thread message: every chunk of the
+        final is a real reply anchored to the send channel, with no inline
+        mention.
+        """
+        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id=str(_ROOT_AUTHOR_ID)
+            )
+        )
+        long_answer = ("answer sentence. " * 300).strip()
+
+        result = await adapter.send(
+            parent_id,
+            long_answer,
+            reply_to=str(_IN_THREAD_REPLY_ID),
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
         for msg in sent_messages:
             reference = msg["reference"]
             assert reference is not None
-            assert reference.message_id == _ROOT_MESSAGE_ID
-            assert reference.channel_id == _PARENT_CHANNEL_ID
+            assert reference.message_id == _IN_THREAD_REPLY_ID
+            # Anchored to the send channel — the fake send would have
+            # rejected anything else.
+            assert reference.channel_id == _ROOT_MESSAGE_ID
             assert reference.fail_if_not_exists is False
             assert "<@" not in msg["content"]
-        # The reference is ids-built — no author lookup round trip.
         assert parent.fetch_message.await_count == 0
 
     @pytest.mark.asyncio
@@ -819,7 +1110,7 @@ class TestDiscordRootTurnAllModeReplyReference:
                 monkeypatch,
                 tmp_path,
                 reply_to_mode="all",
-                db_author_id="4242",
+                db_author_id=str(_ROOT_AUTHOR_ID),
                 forum_parent=True,
             )
         )
@@ -847,9 +1138,9 @@ class TestDiscordRootTurnAllModeReplyReference:
     async def test_interim_send_stays_standalone_in_all_mode(
         self, monkeypatch, tmp_path
     ):
-        adapter, _thread, parent, sent_messages, root_id, parent_id = (
+        adapter, thread, parent, sent_messages, root_id, parent_id = (
             _make_root_turn_harness(
-                monkeypatch, tmp_path, reply_to_mode="all", db_author_id="4242"
+                monkeypatch, tmp_path, reply_to_mode="all", db_author_id=str(_ROOT_AUTHOR_ID)
             )
         )
 
@@ -861,8 +1152,14 @@ class TestDiscordRootTurnAllModeReplyReference:
         )
 
         assert result.success is True
-        assert sent_messages[0]["reference"] is None
-        assert "<@" not in sent_messages[0]["content"]
+        # Exactly one send — no second ping-carrying message hiding behind
+        # the first clean one — and every attempt is mention/reference-free
+        # even in 'all' mode.
+        assert len(sent_messages) == 1
+        assert len(thread.send_attempts) == 1
+        for attempt in thread.send_attempts:
+            assert attempt["reference"] is None
+            assert "<@" not in (attempt["content"] or "")
         assert parent.fetch_message.await_count == 0
 
 
@@ -871,7 +1168,15 @@ class TestDiscordRootTurnAllModeReplyReference:
 # ---------------------------------------------------------------------------
 
 
-def _make_cold_cache_harness(monkeypatch, tmp_path, *, reply_to_mode, forum_parent):
+def _make_cold_cache_harness(
+    monkeypatch,
+    tmp_path,
+    *,
+    reply_to_mode,
+    forum_parent,
+    fail_parent_fetch=0,
+    parent_fetch_message=None,
+):
     """Root-turn fakes modeling a thread fetched cold from the API.
 
     ``send`` resolves its thread through ``fetch_channel`` when the client
@@ -883,16 +1188,33 @@ def _make_cold_cache_harness(monkeypatch, tmp_path, *, reply_to_mode, forum_pare
     fallback.  That fetch returns a ``discord.ForumChannel`` instance —
     the exact class production's ``_is_forum_parent`` isinstance-checks —
     rather than a mock attribute that merely looks forum-shaped.
+
+    ``fail_parent_fetch`` makes the first N parent lookups raise a
+    transient error (the parent stays unresolvable → unknown tri-state).
+    ``parent_fetch_message`` attaches a ``fetch_message`` to a text parent
+    so the root-author API fallback can be exercised cold.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = DiscordAdapter(
         PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     )
     sent_messages = []
+    send_attempts = []
 
     async def _send(content=None, reference=None, **_):
+        # Same Discord-side validation as the root-turn harness: a
+        # message_reference anchored outside the send channel is a 50035.
+        send_attempts.append({"content": content, "reference": reference})
+        if reference is not None and int(reference.channel_id) != _ROOT_MESSAGE_ID:
+            raise RuntimeError(
+                "400 Bad Request (error code: 50035): "
+                "In message_reference: Cannot reply to a message in a "
+                "different channel"
+            )
         msg = SimpleNamespace(
-            id=len(sent_messages) + 100, content=content, reference=reference
+            id=_FAKE_MESSAGE_ID_BASE + len(sent_messages) + 1,
+            content=content,
+            reference=reference,
         )
         sent_messages.append({"content": content, "reference": reference, "id": msg.id})
         return msg
@@ -903,6 +1225,8 @@ def _make_cold_cache_harness(monkeypatch, tmp_path, *, reply_to_mode, forum_pare
     else:
         # ChannelType.text (0) — a plain parent channel, never a forum.
         parent = SimpleNamespace(id=_PARENT_CHANNEL_ID, type=0)
+        if parent_fetch_message is not None:
+            parent.fetch_message = parent_fetch_message
 
     # The cold thread: no `parent` attribute at all, like a Thread whose
     # guild channel cache is empty.
@@ -910,17 +1234,23 @@ def _make_cold_cache_harness(monkeypatch, tmp_path, *, reply_to_mode, forum_pare
         id=_ROOT_MESSAGE_ID,
         parent_id=_PARENT_CHANNEL_ID,
         send=AsyncMock(side_effect=_send),
+        send_attempts=send_attempts,
     )
 
     def get_channel(channel_id):
         # Cold client cache — every lookup misses.
         return None
 
+    parent_fetch_state = {"failed": 0}
+
     async def fetch_channel(channel_id):
         channel_id = int(channel_id)
         if channel_id == _ROOT_MESSAGE_ID:
             return thread
         if channel_id == _PARENT_CHANNEL_ID:
+            if parent_fetch_state["failed"] < fail_parent_fetch:
+                parent_fetch_state["failed"] += 1
+                raise RuntimeError("503 Service Unavailable (transient)")
             return parent
         return None
 
@@ -1014,17 +1344,139 @@ class TestDiscordRootTurnColdCacheParentResolution:
         assert _parent_fetch_count(adapter) == 1
 
     @pytest.mark.asyncio
-    async def test_cold_cache_text_parent_still_reanchors_reference_all_mode(
+    async def test_cold_cache_text_parent_all_mode_mentions_once_without_reference(
         self, monkeypatch, tmp_path
     ):
         """Cold text-channel parents must stay classified as root turns.
 
         The API-resolved parent is a plain text channel here — the lookup
         that recovers forum starters must not over-classify and swallow
-        the root-turn fallback for ordinary auto-threads.
+        the mention fallback for ordinary auto-threads.  The final still
+        carries no reference in 'all' mode: re-anchoring to the parent is
+        the cross-channel 50035 the fake send rejects.
         """
-        adapter, _thread, sent_messages = _make_cold_cache_harness(
+        adapter, thread, sent_messages = _make_cold_cache_harness(
             monkeypatch, tmp_path, reply_to_mode="all", forum_parent=False
+        )
+        _seed_recovery_author(adapter, _ROOT_MESSAGE_ID, _ROOT_AUTHOR_ID)
+
+        long_answer = ("answer sentence. " * 300).strip()
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            long_answer,
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for attempt in thread.send_attempts:
+            assert attempt["reference"] is None
+        for msg in sent_messages:
+            assert msg["reference"] is None
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sum(_ROOT_MENTION in (m["content"] or "") for m in sent_messages) == 1
+        for msg in sent_messages[1:]:
+            assert "<@" not in (msg["content"] or "")
+        assert _parent_fetch_count(adapter) == 1
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_text_parent_first_mode_keeps_mention_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        adapter, _thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch, tmp_path, reply_to_mode="first", forum_parent=False
+        )
+        _seed_recovery_author(adapter, _ROOT_MESSAGE_ID, _ROOT_AUTHOR_ID)
+
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            ("answer sentence. " * 300).strip(),
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        for msg in sent_messages:
+            assert msg["reference"] is None
+        assert sent_messages[0]["content"].startswith(_ROOT_MENTION + " ")
+        assert sum(_ROOT_MENTION in (m["content"] or "") for m in sent_messages) == 1
+        # Later chunks mention NO user at all — not merely "not again".
+        for msg in sent_messages[1:]:
+            assert "<@" not in (msg["content"] or "")
+        # One parent fetch served both the reference build and the mention
+        # fallback's re-check — the memoized answer, not a second API call.
+        assert _parent_fetch_count(adapter) == 1
+
+    @pytest.mark.asyncio
+    async def test_cold_text_root_no_db_author_fetches_parent_message_once_for_mention(
+        self, monkeypatch, tmp_path
+    ):
+        """Cold caches + no ledger author: the fetched parent is REUSED.
+
+        The forum classification resolves the parent over the API; the
+        author lookup used to only ``get_channel()`` — missing exactly in
+        this shape — so a cold text-root final shipped with no ping at
+        all.  The shared parent resolution means ``parent.fetch_message``
+        runs exactly once and the final carries exactly one first-chunk
+        root-author mention.
+        """
+        fetch_message = AsyncMock(
+            return_value=SimpleNamespace(
+                id=_ROOT_MESSAGE_ID, author=SimpleNamespace(id=_FETCHED_AUTHOR_ID)
+            )
+        )
+        adapter, thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch,
+            tmp_path,
+            reply_to_mode="first",
+            forum_parent=False,
+            parent_fetch_message=fetch_message,
+        )
+
+        result = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            ("answer sentence. " * 300).strip(),
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert result.success is True
+        assert len(sent_messages) >= 2
+        fetch_message.assert_awaited_once_with(_ROOT_MESSAGE_ID)
+        # The classification's parent fetch is the ONLY fetch — the author
+        # lookup reused the resolved parent instead of re-resolving it.
+        assert _parent_fetch_count(adapter) == 1
+        for attempt in thread.send_attempts:
+            assert attempt["reference"] is None
+        assert sent_messages[0]["content"].startswith(
+            f"<@{_FETCHED_AUTHOR_ID}> "
+        )
+        assert sum(f"<@{_FETCHED_AUTHOR_ID}>" in (m["content"] or "") for m in sent_messages) == 1
+        for msg in sent_messages[1:]:
+            assert "<@" not in (msg["content"] or "")
+
+    @pytest.mark.asyncio
+    async def test_transient_parent_fetch_failure_unknown_forum_keeps_thread_reference(
+        self, monkeypatch, tmp_path
+    ):
+        """A failed parent lookup must not masquerade as a text root.
+
+        ``fetch_channel(parent_id)`` can fail transiently; swallowing that
+        as "not forum" used to strip a valid forum starter's reply chip
+        and risked inline-mentioning it.  The chosen unknown fallback is
+        the weakest safe classification — NOT a text root — so the
+        reference stays anchored to the send channel (for a forum starter
+        that is the correct, attaching chip) and the mention stays
+        suppressed.  The failure is never cached.
+        """
+        adapter, thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch,
+            tmp_path,
+            reply_to_mode="all",
+            forum_parent=True,
+            fail_parent_fetch=1,
         )
 
         long_answer = ("answer sentence. " * 300).strip()
@@ -1041,34 +1493,64 @@ class TestDiscordRootTurnColdCacheParentResolution:
             reference = msg["reference"]
             assert reference is not None
             assert reference.message_id == _ROOT_MESSAGE_ID
-            # The root message lives in the parent channel.
-            assert reference.channel_id == _PARENT_CHANNEL_ID
-            assert reference.fail_if_not_exists is False
+            assert reference.channel_id == _ROOT_MESSAGE_ID
             assert "<@" not in (msg["content"] or "")
+        # Unknown is not a cached answer: neither cache holds the parent.
+        assert _PARENT_CHANNEL_ID not in adapter._root_turn_parent_forum_cache
+        assert _PARENT_CHANNEL_ID not in adapter._root_turn_parent_channel_cache
         assert _parent_fetch_count(adapter) == 1
 
     @pytest.mark.asyncio
-    async def test_cold_cache_text_parent_first_mode_keeps_mention_fallback(
+    async def test_transient_parent_fetch_failure_unknown_text_retries_next_send(
         self, monkeypatch, tmp_path
     ):
-        adapter, _thread, sent_messages = _make_cold_cache_harness(
-            monkeypatch, tmp_path, reply_to_mode="first", forum_parent=False
-        )
-        _seed_recovery_author(adapter, _ROOT_MESSAGE_ID, 4242)
+        """Unknown text parent: safe standalone-reference fallback, then retry.
 
-        result = await adapter.send(
+        For a genuinely text root whose parent is unresolvable, the chosen
+        unknown fallback keeps the thread-anchored reference — Discord
+        either silently drops it (``fail_if_not_exists=False``) or rejects
+        it, and the send-side retry delivers standalone; either way the
+        final ships with no cross-channel 50035 and no mention.  Because
+        the failure is uncached, the next send re-resolves the parent and
+        the mention fallback fires properly.
+        """
+        adapter, _thread, sent_messages = _make_cold_cache_harness(
+            monkeypatch,
+            tmp_path,
+            reply_to_mode="first",
+            forum_parent=False,
+            fail_parent_fetch=1,
+        )
+        _seed_recovery_author(adapter, _ROOT_MESSAGE_ID, _ROOT_AUTHOR_ID)
+
+        first = await adapter.send(
             str(_PARENT_CHANNEL_ID),
-            ("answer sentence. " * 300).strip(),
+            "First final",
             reply_to=str(_ROOT_MESSAGE_ID),
             metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
         )
 
-        assert result.success is True
-        assert len(sent_messages) >= 2
-        for msg in sent_messages:
-            assert msg["reference"] is None
-        assert sent_messages[0]["content"].startswith("<@4242> ")
-        assert sum("<@4242>" in (m["content"] or "") for m in sent_messages) == 1
-        # One parent fetch served both the reference build and the mention
-        # fallback's re-check — the memoized answer, not a second API call.
+        assert first.success is True
+        assert len(sent_messages) == 1
+        # Weakest safe classification: thread-anchored reference kept (the
+        # fake send accepts same-channel references), mention suppressed.
+        reference = sent_messages[0]["reference"]
+        assert reference is not None
+        assert reference.channel_id == _ROOT_MESSAGE_ID
+        assert "<@" not in (sent_messages[0]["content"] or "")
         assert _parent_fetch_count(adapter) == 1
+
+        second = await adapter.send(
+            str(_PARENT_CHANNEL_ID),
+            "Second final",
+            reply_to=str(_ROOT_MESSAGE_ID),
+            metadata={"notify": True, "thread_id": str(_ROOT_MESSAGE_ID)},
+        )
+
+        assert second.success is True
+        # The transient failure was not cached: this send re-fetched the
+        # parent, classified it as text, and pinged the root author.
+        assert _parent_fetch_count(adapter) == 2
+        assert sent_messages[1]["reference"] is None
+        assert sent_messages[1]["content"].startswith(_ROOT_MENTION + " ")
+        assert "<@" not in (sent_messages[0]["content"] or "")

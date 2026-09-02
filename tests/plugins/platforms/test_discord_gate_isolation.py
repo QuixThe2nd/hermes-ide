@@ -36,6 +36,7 @@ GATE_VARS = [
     "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
     "DISCORD_ALLOW_BOTS",
+    "DISCORD_AUTO_THREAD",
 ]
 
 
@@ -338,6 +339,53 @@ class TestYamlBridgeSeeding:
         # ...but process-global env stays clean: no cross-profile leak.
         assert os.getenv("DISCORD_ALLOWED_CHANNELS") is None
         assert os.getenv("DISCORD_ALLOWED_USERS") is None
+
+    def test_auto_thread_seeded_into_extra_and_bridged_single_profile(
+        self, monkeypatch
+    ):
+        """``discord.auto_thread`` reaches the adapter's per-profile config.
+
+        The value is seeded into ``extra`` (where ``_gate_raw`` reads it,
+        so scoped multiplex profiles and lost first-writer env races can't
+        drop it) AND bridged into the legacy env var for single-profile
+        deployments.
+        """
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        seeded = _apply_yaml_config({}, {"auto_thread": False})
+
+        assert seeded["auto_thread"] == "false"
+        assert os.environ["DISCORD_AUTO_THREAD"] == "false"
+
+    def test_auto_thread_explicit_env_keeps_override_precedence(self, monkeypatch):
+        """An explicit DISCORD_AUTO_THREAD is never clobbered by config."""
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        seeded = _apply_yaml_config({}, {"auto_thread": False})
+
+        # Documented precedence: env wins over the YAML value...
+        assert os.environ["DISCORD_AUTO_THREAD"] == "true"
+        # ...while extra still carries the config value for the adapter's
+        # own per-profile resolution to fall back to.
+        assert seeded["auto_thread"] == "false"
+
+    def test_auto_thread_scoped_load_seeds_extra_without_env_write(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({"SOME": "scope"})
+        try:
+            seeded = _apply_yaml_config({}, {"auto_thread": False})
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert seeded["auto_thread"] == "false"
+        # No process-global leak from a profile-scoped load.
+        assert os.getenv("DISCORD_AUTO_THREAD") is None
 
     def test_first_writer_env_does_not_mask_second_profile_extras(self, monkeypatch):
         """End-to-end shape of the original repro: profile A bridges env first;
