@@ -516,12 +516,19 @@ def _recover_body(sent_messages, mention: str = _ROOT_MENTION) -> str:
     return "".join(parts)
 
 
-def _expected_body_chunks(adapter, content) -> list:
-    """Chunks the splitter itself produces for the mention-free body."""
+def _expected_body_chunks(adapter, content, reserve: int = 0) -> list:
+    """Chunks the splitter itself produces for the mention-free body.
+
+    ``reserve`` mirrors the send path's slot booking — the standalone
+    mention message ships OUTSIDE the body chunk sequence but inside the
+    anti-flood cap, so a mention that cannot ride chunk 0 tightens the
+    body's own cap by one.
+    """
     return adapter._cap_split_chunks(
         adapter.truncate_message(
             adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH
-        )
+        ),
+        reserve=reserve,
     )
 
 
@@ -1005,6 +1012,114 @@ class TestDiscordRootTurnMentionFallback:
         # across a boundary concatenate) yet never loses a word or any of
         # its letters.
         assert re.findall(r"word\d{5}", _recover_body(sent_messages)) == words
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_standalone_mention_never_exceeds_split_cap(
+        self, monkeypatch, tmp_path
+    ):
+        """A capped body plus standalone mention still fits the ceiling (P2).
+
+        A root-turn final whose body alone fills the anti-flood cap (seven
+        body chunks + truncation notice) and whose mention cannot ride
+        chunk 0 — the indicator-tight first chunk leaves no room for the
+        21-char snowflake mention — used to insert the mention as a NINTH
+        message.  The standalone mention is itself an outbound message, so
+        it consumes one of the cap's slots: the body is capped one slot
+        tighter (six body chunks) and the notice still reports the body
+        characters that were dropped rather than silently omitting them.
+        """
+        adapter, thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
+        )
+        # 16 body chunks of unbroken filler: chunk 0 (1986 chars + the
+        # " (1/16)" indicator) leaves no room beside the mention, and the
+        # body alone overflows the eight-message cap.
+        body = "y" * 30_000
+
+        result = await adapter.send(
+            parent_id,
+            body,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        # The exact cap — the standalone mention is an outbound message and
+        # must fit INSIDE the ceiling (this is the assertion the unfixed
+        # adapter failed with nine messages).
+        assert len(sent_messages) == adapter.MAX_SPLIT_MESSAGES
+        # The exact sequence: mention-only first message, six untouched
+        # body chunks, then the truncation notice.
+        expected = _expected_body_chunks(adapter, body, reserve=1)
+        assert len(expected) == adapter.MAX_SPLIT_MESSAGES - 1
+        assert [msg["content"] for msg in sent_messages] == [
+            _ROOT_MENTION + " "
+        ] + expected
+        # Every outbound message respects Discord's per-message ceiling and
+        # carries no reference (the mention IS the reply notification).
+        for msg in sent_messages:
+            assert len(msg["content"]) <= adapter.MAX_MESSAGE_LENGTH
+            assert msg["reference"] is None
+        # The dropped body is reported, never silently omitted: the notice
+        # counts exactly the body characters beyond the six kept chunks.
+        notice = sent_messages[-1]["content"]
+        assert "Response truncated" in notice
+        assert "delivery limit" in notice
+        splitter_chunks = adapter.truncate_message(
+            adapter.format_message(body), adapter.MAX_MESSAGE_LENGTH
+        )
+        dropped_chars = sum(len(c) for c in splitter_chunks[len(expected) - 1 :])
+        assert str(dropped_chars) in notice
+        assert dropped_chars > 0
+        # Exactly one mention across the whole sequence.
+        assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
+        for msg in sent_messages[1:]:
+            assert "<@" not in msg["content"]
+        # No reference was ever attempted, in any mode's fallback path.
+        for attempt in thread.send_attempts:
+            assert attempt["reference"] is None
+
+    @pytest.mark.asyncio
+    async def test_mention_riding_capped_body_keeps_byte_exact_chunks(
+        self, monkeypatch, tmp_path
+    ):
+        """When the mention fits, a capped body is untouched by it.
+
+        A short first line pins chunk 0 well under the per-message cap, so
+        the mention rides it even though the body overflows into the
+        eight-message cap.  The cap then needs no reserved slot and every
+        delivered chunk is byte-for-byte the splitter's own output with
+        the mention prepended to chunk 0 only.
+        """
+        adapter, _thread, _parent, sent_messages, root_id, parent_id = (
+            _make_root_turn_harness(monkeypatch, tmp_path, db_author_id=str(_ROOT_AUTHOR_ID))
+        )
+        body = "x" * 1900 + "\n" + "y" * 30_000
+
+        result = await adapter.send(
+            parent_id,
+            body,
+            reply_to=root_id,
+            metadata={"notify": True, "thread_id": root_id},
+        )
+
+        assert result.success is True
+        # Expectation built from the splitter + cap directly: the mention
+        # fits, so this path is byte-identical before and after the
+        # standalone-mention slot fix — a pure non-regression guard.
+        expected = adapter._cap_split_chunks(
+            adapter.truncate_message(
+                adapter.format_message(body), adapter.MAX_MESSAGE_LENGTH
+            )
+        )
+        assert len(expected) == adapter.MAX_SPLIT_MESSAGES
+        # Precondition: the mention genuinely rides chunk 0 (it fits).
+        assert len(expected[0]) + len(_ROOT_MENTION) + 1 <= adapter.MAX_MESSAGE_LENGTH
+        delivered = [msg["content"] for msg in sent_messages]
+        assert delivered == [_ROOT_MENTION + " " + expected[0]] + expected[1:]
+        assert len(sent_messages) == adapter.MAX_SPLIT_MESSAGES
+        assert "Response truncated" in sent_messages[-1]["content"]
         assert sum(msg["content"].count(_ROOT_MENTION) for msg in sent_messages) == 1
 
 
