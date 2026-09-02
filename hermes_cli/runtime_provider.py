@@ -1483,6 +1483,18 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
+    if not cfg_api_key:
+        # A promoted fallback route (v41 Ox Alpha retirement) — or a
+        # hand-written config — may reference its credential by env-var
+        # name (``key_env`` / ``api_key_env``) instead of inlining it.
+        # Resolve the reference exactly as fallback entries do, so a custom
+        # fallback keeps authenticating after graduating to the primary
+        # ``model:`` section instead of degrading to "no-key-required" and
+        # 401ing. The resolved secret is used in memory only — never
+        # written back into config.
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        cfg_api_key = resolve_entry_api_key(model_cfg) or ""
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,

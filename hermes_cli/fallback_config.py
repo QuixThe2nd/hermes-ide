@@ -77,6 +77,46 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+# ── Retired Ox Alpha preview route ─────────────────────────────────────
+# openrouter/stealth/ox-alpha was a one-week experiment whose server-side
+# preview has ended: the route still resolves but every request now fails.
+# The v41 config migration scrubs it from config.yaml, and the
+# session-resume paths consult the same identity so a route persisted while
+# it was live cannot be restored over the migrated config. One source of
+# truth for both — the exact route, nothing looser.
+RETIRED_OX_ALPHA_PROVIDER = "openrouter"
+RETIRED_OX_ALPHA_MODEL = "stealth/ox-alpha"
+
+
+def is_retired_ox_alpha_route(
+    provider: object, model: object, base_url: object = ""
+) -> bool:
+    """True only for the exact retired ``openrouter/stealth/ox-alpha`` route.
+
+    Provider and model are case/whitespace normalized. An explicit
+    ``openrouter`` provider always names the retired route. A bare or
+    ``auto`` provider infers OpenRouter for this vendor-namespaced model id
+    — unless a custom ``base_url`` is configured, which the runtime resolves
+    as a custom endpoint before any OpenRouter inference (mirroring the
+    resolve_runtime_provider host gate); only a base_url ON openrouter.ai
+    keeps the inferred route. Any other named provider serving the same
+    model id is a different, still-valid route and never matches.
+    """
+    if str(model or "").strip().lower() != RETIRED_OX_ALPHA_MODEL:
+        return False
+    normalized = str(provider or "").strip().lower()
+    if normalized == RETIRED_OX_ALPHA_PROVIDER:
+        return True
+    if normalized not in ("", "auto"):
+        return False
+    url = str(base_url or "").strip()
+    if not url:
+        return True
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(url, "openrouter.ai")
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 

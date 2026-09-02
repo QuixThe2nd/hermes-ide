@@ -309,7 +309,7 @@ class TestRunTickModelsIntegration:
         # legacy `remaining`. Kimi must parse, rename, and land a scored
         # position instead of surfacing a provider error.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / ".env").write_text('KIMI_API_KEY="kimi-key"\n')
+        (tmp_path / ".env").write_text('KIMI_API_KEY="kimi-key"\n', encoding="utf-8")
         monkeypatch.setattr(core, "discord_headers", lambda: {"Authorization": "Bot x"})
         # grok joins as a plain stubbed row; kimi keeps its real HTTP path
         monkeypatch.setattr(

@@ -5731,6 +5731,18 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             else:
                 provider = ""
 
+    # Retired Ox Alpha route: the v41 config migration scrubbed
+    # openrouter/stealth/ox-alpha from config.yaml because every request on
+    # it now fails. A session row persisted while the route was live must
+    # not restore it over the migrated (promoted) config — resume with the
+    # profile's current model instead, exactly like the exempt sessions
+    # above. Exact-route match only: a custom provider/base_url serving the
+    # same model id is a different, still-valid route and keeps restoring.
+    from hermes_cli.fallback_config import is_retired_ox_alpha_route
+
+    if is_retired_ox_alpha_route(provider, model, base_url):
+        return {}
+
     if model:
         # Use the same dict-shaped override that live /model switches use so a
         # DB-restored session can preserve custom endpoint metadata across both

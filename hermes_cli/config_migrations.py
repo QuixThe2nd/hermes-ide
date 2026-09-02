@@ -40,6 +40,14 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, Dict, List, Tuple
 
+# Imported at module level (unlike hermes_cli.config, see the header):
+# fallback_config imports nothing beyond typing, so no cycle can form.
+from hermes_cli.fallback_config import (
+    RETIRED_OX_ALPHA_MODEL,
+    RETIRED_OX_ALPHA_PROVIDER,
+    is_retired_ox_alpha_route,
+)
+
 #: Auto-migration support floor. Configs whose on-disk ``_config_version`` is
 #: below this are NOT auto-migrated any more (policy decision, July 2026):
 #: v12 predates roughly two years of releases, and carrying the sub-v12
@@ -890,14 +898,28 @@ def _migrate_to_40(results: Dict[str, Any], quiet: bool) -> None:
 # preview has ended: the route still resolves but every request fails, and
 # the quota plugins no longer give it synthetic unlimited-wallet treatment.
 # The v41 migration strips it from existing configs so upgraded installs
-# stop routing into a dead model.
-_RETIRED_OX_ALPHA_PROVIDER = "openrouter"
-_RETIRED_OX_ALPHA_MODEL = "stealth/ox-alpha"
+# stop routing into a dead model. The route identity (and the shared
+# predicate the session-resume paths consult) lives in
+# hermes_cli.fallback_config — module-level import is safe here: that
+# module imports nothing beyond typing, so the deliberate absence of a
+# module-level ``hermes_cli.config`` import (see the header) is preserved.
 
 #: Fallback-entry fields that keep meaning when the entry graduates to the
 #: primary ``model:`` section (endpoint, credential reference, per-route
 #: replay policy). Everything else on a fallback entry is fallback-specific.
 _PROMOTABLE_ROUTE_FIELDS = ("base_url", "api_mode", "api_key", "key_env", "api_key_env", "reasoning_echo")
+
+#: Model-section keys owned by the primary route itself: the model id under
+#: the canonical ``default`` key and its legacy aliases, the provider, the
+#: ``api``/``api_base`` endpoint-credential aliases, and every promotable
+#: route field. Promotion replaces these and preserves everything else —
+#: an upgrade must not reset unrelated model-level controls such as
+#: ``streaming``, ``max_tokens``, ``context_length``, ``default_headers``,
+#: ``lmstudio_load_mode``, or ``openai_runtime``.
+_ROUTE_OWNED_MODEL_KEYS = (
+    ("default", "model", "name", "provider", "api", "api_base")
+    + _PROMOTABLE_ROUTE_FIELDS
+)
 
 
 def _route_part(value: Any) -> str:
@@ -910,13 +932,15 @@ def _is_retired_ox_alpha_entry(entry: Any) -> bool:
 
     Provider and model are case/whitespace normalized, so ``OpenRouter`` /
     `` Stealth/OX-Alpha `` also matches — but no other openrouter model
-    (and no other provider) ever does.
+    (and no other provider) ever does. Unlike the primary matcher below,
+    a fallback entry must name the provider explicitly: the chain only
+    accepts entries with both halves, so there is nothing to infer.
     """
     if not isinstance(entry, dict):
         return False
     return (
-        _route_part(entry.get("provider")) == _RETIRED_OX_ALPHA_PROVIDER
-        and _route_part(entry.get("model")) == _RETIRED_OX_ALPHA_MODEL
+        _route_part(entry.get("provider")) == RETIRED_OX_ALPHA_PROVIDER
+        and _route_part(entry.get("model")) == RETIRED_OX_ALPHA_MODEL
     )
 
 
@@ -929,22 +953,32 @@ def _primary_routes_retired_model(raw_model: Any) -> bool:
     the provider omitted, or explicitly ``auto`` — infers the same
     OpenRouter route an explicit ``provider: openrouter`` pins. A named
     custom provider serving the same model id is a different route and is
-    never matched here.
+    never matched here; so is a bare/``auto`` primary whose custom
+    ``base_url`` makes the runtime resolve a custom endpoint (e.g. a local
+    server) instead of inferring OpenRouter — v41 must preserve that route.
+
+    A dict-valued id (``model.default: {provider: ..., model: ...}``) is
+    flattened with the canonical ``split_model_config_default`` splitter —
+    the same one ``_get_model_config`` uses at load time — so the supported
+    nested shape is recognized here too and cannot slip past the scrub only
+    to be flattened back into the dead route after the version is stamped.
     """
     if isinstance(raw_model, dict):
-        model_id = ""
+        raw_id: Any = None
         for key in ("default", "model", "name"):
-            model_id = _route_part(raw_model.get(key))
-            if model_id:
+            if raw_model.get(key) not in (None, ""):
+                raw_id = raw_model.get(key)
                 break
-        provider = _route_part(raw_model.get("provider"))
+        from hermes_cli.config import split_model_config_default
+
+        model_id, nested_provider = split_model_config_default(raw_id)
+        # Nested provider wins, outer ``provider`` is the fallback — exactly
+        # the precedence _get_model_config applies when it flattens.
+        provider = nested_provider or raw_model.get("provider")
+        base_url = raw_model.get("base_url")
     else:
-        model_id = _route_part(raw_model)
-        provider = ""
-    return (
-        model_id == _RETIRED_OX_ALPHA_MODEL
-        and provider in {"", "auto", _RETIRED_OX_ALPHA_PROVIDER}
-    )
+        model_id, provider, base_url = raw_model, None, None
+    return is_retired_ox_alpha_route(provider, model_id, base_url)
 
 
 def _filter_fallback_collection(
@@ -965,6 +999,36 @@ def _filter_fallback_collection(
     return raw, 0
 
 
+def _promoted_model_config(previous: Any, promotee: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the promoted ``model`` section from the retired primary's one.
+
+    Starts from the previous dict (when the primary was dict-shaped) and
+    replaces only the route-owned keys (``_ROUTE_OWNED_MODEL_KEYS``): the id
+    becomes the promotee's model under the canonical ``default`` key — a
+    nested or aliased previous id is flattened/removed, never left behind as
+    the retired route — the provider becomes the promotee's, and each
+    promotable route field is set from the promotee or dropped when the
+    promotee doesn't carry it, so the retired route's endpoint cannot leak
+    onto the promoted one. Every non-route field (``streaming``,
+    ``max_tokens``, ``context_length``, ``default_headers``,
+    ``lmstudio_load_mode``, ``openai_runtime``, …) is preserved as-is. A
+    string-shaped or absent previous primary yields the fresh minimal dict.
+    """
+    new_model: Dict[str, Any] = {}
+    if isinstance(previous, dict):
+        new_model = {
+            key: value
+            for key, value in previous.items()
+            if key not in _ROUTE_OWNED_MODEL_KEYS
+        }
+    new_model["default"] = promotee["model"]
+    new_model["provider"] = promotee["provider"]
+    for field in _PROMOTABLE_ROUTE_FIELDS:
+        if field in promotee:
+            new_model[field] = promotee[field]
+    return new_model
+
+
 def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 40 → 41: retire the openrouter/stealth/ox-alpha route ──
     # See _RETIRED_OX_ALPHA_* above. Three scrub rules:
@@ -975,9 +1039,10 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     # * a retired primary promotes the first surviving fallback in effective
     #   chain order — fallback_providers first, then fallback_model, exactly
     #   as hermes_cli.fallback_config.get_fallback_chain defines it — into
-    #   model.default, carrying its provider and route metadata, and that
-    #   route's occurrences leave the fallback collections so it is not
-    #   simultaneously primary and fallback #1;
+    #   model.default, carrying its provider and route metadata (route-owned
+    #   keys only — unrelated model-level controls survive the promotion),
+    #   and that route's occurrences leave the fallback collections so it is
+    #   not simultaneously primary and fallback #1;
     # * a retired primary with no surviving fallback is unset to the
     #   DEFAULT_CONFIG empty model value with a warning to run
     #   `hermes model` — a replacement provider/credential is never guessed.
@@ -1035,14 +1100,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     if primary_retired:
         touched = True
         if promotee is not None:
-            new_model: Dict[str, Any] = {
-                "default": promotee["model"],
-                "provider": promotee["provider"],
-            }
-            for field in _PROMOTABLE_ROUTE_FIELDS:
-                if field in promotee:
-                    new_model[field] = promotee[field]
-            config["model"] = new_model
+            config["model"] = _promoted_model_config(config.get("model"), promotee)
         else:
             config["model"] = _c.DEFAULT_CONFIG["model"]
 
