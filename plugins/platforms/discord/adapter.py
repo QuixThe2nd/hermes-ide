@@ -1545,6 +1545,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # the parent on every root-turn final send (twice per send in
         # 'first' mode: reference build + mention fallback).
         self._root_turn_parent_forum_cache: Dict[int, bool] = {}
+        # Resolved parent-channel objects for root-turn sends (parent_id ->
+        # channel).  One shared resolution serves both the forum
+        # classification and the root-author ``fetch_message``, so a
+        # cold-cache send pays at most one ``fetch_channel`` per parent and
+        # the author lookup can reuse a parent the classification just
+        # fetched over the API.
+        self._root_turn_parent_channel_cache: Dict[int, Any] = {}
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
@@ -3769,27 +3776,41 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._add_reaction(message, "❌")
 
     @staticmethod
-    def _message_reference_from_ids(
-        message_id,
-        channel,
-        *,
-        channel_id=None,
-    ) -> "discord.MessageReference":
+    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
         """ids-built reply reference — no fetch_message round trip.
 
         Discord resolves message_reference from the ids alone, and
         fail_if_not_exists=False keeps sends to deleted targets working
         exactly as the fetched form did (a dead target degrades to the
-        send-side 10008 retry instead of a fetch failure).
-
-        ``channel_id`` anchors the reference outside the send channel —
-        the parent channel for auto-threaded root turns.
+        send-side 10008 retry instead of a fetch failure).  The reference
+        always anchors to the send channel — Discord rejects a
+        ``message_reference`` whose ``channel_id`` names any other channel
+        (50035 "Cannot reply to a message in a different channel").
         """
         return discord.MessageReference(
             message_id=int(message_id),
-            channel_id=channel_id if channel_id is not None else getattr(channel, "id", None),
+            channel_id=getattr(channel, "id", None),
             guild_id=getattr(getattr(channel, "guild", None), "id", None),
             fail_if_not_exists=False,
+        )
+
+    @staticmethod
+    def _reference_proven_invalid(err_text: str) -> bool:
+        """True when Discord's error text proves a ``message_reference`` invalid.
+
+        Both 50035 forms — "Cannot reply to a system message" and "Cannot
+        reply to a message in a different channel" (the 2026-09-02
+        root-final loss) — plus 10008 Unknown Message for a deleted target
+        are permanent verdicts about THIS reference: every retry re-fires
+        the identical rejection.  Callers must drop the reference (never
+        rebuild or replay it in a fallback, later chunk, or sibling path)
+        and deliver the content standalone instead.
+        """
+        if "error code: 10008" in err_text:
+            return True
+        return "error code: 50035" in err_text and (
+            "Cannot reply to a system message" in err_text
+            or "Cannot reply to a message in a different channel" in err_text
         )
 
     def _final_send_wants_ping(
@@ -3836,28 +3857,58 @@ class DiscordAdapter(BasePlatformAdapter):
                 return False
         except (ValueError, TypeError):
             return False
-        return not await self._root_turn_parent_is_forum(channel, parent_id)
+        forum = await self._root_turn_parent_is_forum(channel, parent_id)
+        # Unknown parent (cold caches + failed fetch) classifies as the
+        # weakest safe option: NOT a text root.  The thread-anchored
+        # reference this keeps either attaches (it was a forum starter),
+        # is silently dropped by ``fail_if_not_exists=False`` (a text
+        # root), or — should Discord instead resolve the message globally
+        # and reject it — falls to the send-side proven-invalid retry,
+        # which delivers standalone.  The inline mention stays suppressed
+        # either way, so a transiently mis-read forum starter can never be
+        # pinged and a text root never gets a cross-channel 50035.
+        return forum is False
 
-    async def _root_turn_parent_is_forum(self, channel, parent_id) -> bool:
-        """True when the send channel is a forum post thread.
+    async def _root_turn_parent_is_forum(self, channel, parent_id) -> Optional[bool]:
+        """Tri-state forum classification for the send channel's parent.
 
-        Forum post threads carry their own starter message; the forum
-        parent never holds it — unlike the text-channel auto-threads the
-        root-turn fallback exists for.  The parent resolves from the
-        cached ``channel.parent`` first, then the client channel cache
-        (same lookup ``_root_turn_author_from_parent`` uses); when both
-        miss — ``send`` may hold a thread fetched straight from the API,
-        whose guild has nothing cached — a ``fetch_channel`` resolves the
-        parent over HTTP.  Only when that also fails is the answer "not
-        forum" so the fallback still fires conservatively.  Resolved
-        answers are memoized (``_root_turn_parent_forum_cache``) so the
-        HTTP fallback costs at most one fetch per parent channel.
+        ``True`` — the parent is a forum channel: the post thread carries
+        its own starter message, so a thread-anchored reference attaches.
+        ``False`` — a text parent: the auto-thread root-turn signature the
+        mention fallback exists for.  ``None`` — the parent could not be
+        resolved (cold caches + ``fetch_channel`` failure); callers must
+        treat unknown as "not a text root" (see
+        ``_root_turn_reference_is_unattachable``).  Resolved answers are
+        memoized (``_root_turn_parent_forum_cache``) so the HTTP fallback
+        costs at most one fetch per parent channel; ``None`` is never
+        cached, so a transient failure retries on the next send.
         """
         try:
             parent_key = int(parent_id)
         except (ValueError, TypeError):
             return False
         cached = self._root_turn_parent_forum_cache.get(parent_key)
+        if cached is not None:
+            return cached
+        parent = await self._root_turn_resolve_parent(channel, parent_key)
+        if parent is None:
+            return None
+        is_forum = self._is_forum_parent(parent)
+        self._root_turn_parent_forum_cache[parent_key] = is_forum
+        return is_forum
+
+    async def _root_turn_resolve_parent(self, channel, parent_key):
+        """Resolve the parent-channel object behind a root-turn thread.
+
+        Tried in cost order: the thread's cached ``parent`` attribute,
+        then the client channel cache, then one ``fetch_channel`` over the
+        API — ``send`` can hold a thread fetched straight from the API,
+        whose guild has nothing cached.  The resolved object is memoized
+        (``_root_turn_parent_channel_cache``) so the forum classification
+        and the root-author ``fetch_message`` share a single lookup.
+        Failures resolve to ``None`` and are never cached.
+        """
+        cached = self._root_turn_parent_channel_cache.get(parent_key)
         if cached is not None:
             return cached
         parent = getattr(channel, "parent", None)
@@ -3875,18 +3926,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug(
                         "[%s] Parent-channel lookup for %s failed: %s",
                         self.name,
-                        parent_id,
+                        parent_key,
                         e,
                     )
                     parent = None
-        if parent is None:
-            # Unresolvable (cold cache + fetch failure): answer "not forum"
-            # uncached so the conservative fallback fires but a later send
-            # retries the lookup.
-            return False
-        is_forum = self._is_forum_parent(parent)
-        self._root_turn_parent_forum_cache[parent_key] = is_forum
-        return is_forum
+        if parent is not None:
+            self._root_turn_parent_channel_cache[parent_key] = parent
+        return parent
 
     async def _reply_reference_for_send(
         self,
@@ -3903,25 +3949,22 @@ class DiscordAdapter(BasePlatformAdapter):
         and the stream consumer's fresh-final send).
 
         Auto-threaded root turns (thread id == root message id, root lives
-        in the parent channel) can never attach a reference against the
-        send channel.  ``reply_to_mode='first'`` and ``'off'`` return
-        ``None`` — ``send`` pings via an inline mention instead
-        (``_final_mention_prefix``).  ``reply_to_mode='all'`` still sends a
-        real reply: the reference anchors to the parent channel, where the
-        root message actually lives.  Forum post starters share the id
+        in the parent channel) can never attach a reference in ANY mode:
+        the thread holds no user-authored message to reply to, and
+        anchoring the reference to the parent channel — where the root
+        message actually lives — makes Discord reject the whole send
+        (50035 "Cannot reply to a message in a different channel"; the
+        2026-09-02 root-final delivery loss).  Every mode returns ``None`` —
+        ``send`` pings via an inline mention instead
+        (``_final_mention_prefix``).  Forum post starters share the id
         signature but their starter message lives in the thread itself,
         so they keep the default thread-anchored reference.
         """
         if not self._final_send_wants_ping(reply_to, metadata):
             return None
-        root_turn = await self._root_turn_reference_is_unattachable(reply_to, channel)
-        if root_turn and self._reply_to_mode != "all":
+        if await self._root_turn_reference_is_unattachable(reply_to, channel):
             return None
         try:
-            if root_turn:
-                return self._message_reference_from_ids(
-                    reply_to, channel, channel_id=channel.parent_id
-                )
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:
             logger.debug("Could not build reply-to reference: %s", e)
@@ -3939,11 +3982,18 @@ class DiscordAdapter(BasePlatformAdapter):
         return self._with_discord_recovery_db(_op)
 
     async def _root_turn_author_from_parent(self, reply_to: str, channel) -> Optional[str]:
-        """Author of the root message, fetched from its parent channel."""
-        if not self._client:
+        """Author of the root message, fetched from its parent channel.
+
+        Shares ``_root_turn_resolve_parent`` with the forum classification
+        (cache → client cache → one API fetch), so a cold-cache send whose
+        parent was just fetched over the API still resolves the author —
+        the old ``get_channel``-only lookup missed exactly there.
+        """
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id is None or not self._client:
             return None
         try:
-            parent = self._client.get_channel(int(channel.parent_id))
+            parent = await self._root_turn_resolve_parent(channel, parent_id)
             if parent is None:
                 return None
             message = await parent.fetch_message(int(reply_to))
@@ -3962,18 +4012,17 @@ class DiscordAdapter(BasePlatformAdapter):
         """Inline ``<@id> `` ping for finals whose reply reference can't attach.
 
         Only the same notify-worthy finals that would otherwise get a
-        ``MessageReference`` are considered, and never under
-        ``reply_to_mode='all'`` — there every final carries a real reply
-        reference anchored in the parent channel, so an inline mention
-        would double-ping.  The root author comes from the local recovery
+        ``MessageReference`` are considered — root turns in every mode
+        except ``reply_to_mode='off'`` (no pings at all).  There is no
+        reference to double-ping against: the thread holds no
+        user-authored message to reply to, so this mention IS the reply
+        notification.  The root author comes from the local recovery
         ledger first (no API round trip), falling back to a
         ``fetch_message`` in the parent channel; when both fail the send
         proceeds with no mention and no reference — the pre-fallback
         behavior.
         """
         if not self._final_send_wants_ping(reply_to, metadata):
-            return ""
-        if self._reply_to_mode == "all":
             return ""
         if not await self._root_turn_reference_is_unattachable(reply_to, channel):
             return ""
@@ -4090,13 +4139,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+            # Build the reference from ids — no fetch_message round trip.
+            # Computed once up front so the agent-progress embed and the
+            # text path share it; a Discord-proven rejection in either
+            # path clears it for every later attempt of this send.
+            reference = await self._reply_reference_for_send(reply_to, channel, metadata)
+
             agent_progress = _agent_progress_embed_payload(content)
             if agent_progress:
                 agent_url, markdown_progress, build_embed = agent_progress
                 if self._is_forum_parent(channel):
                     content = markdown_progress
                 else:
-                    reference = await self._reply_reference_for_send(reply_to, channel, metadata)
                     try:
                         msg = await channel.send(
                             embed=build_embed(agent_url),
@@ -4122,6 +4176,17 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
                         return result
                     except Exception as e:
+                        if reference is not None and self._reference_proven_invalid(str(e)):
+                            # Discord already rejected this reference —
+                            # drop it so the markdown fallback below (and
+                            # any later chunk) can't replay a rejection
+                            # Discord has already proven permanent.
+                            logger.warning(
+                                "[%s] Reply target %s rejected the reply reference; dropping it before the markdown fallback",
+                                self.name,
+                                reply_to,
+                            )
+                            reference = None
                         logger.debug(
                             "[%s] agent progress embed send failed; falling back to markdown link: %s",
                             self.name,
@@ -4141,31 +4206,37 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return result
 
-            # Format and split message if needed
+            # Auto-threaded root turns can never attach a reference — ping
+            # the root author inline instead of losing the reply
+            # notification to fail_if_not_exists=False.
+            mention_prefix = ""
+            if reference is None:
+                mention_prefix = await self._final_mention_prefix(
+                    reply_to, channel, metadata
+                )
+
+            # Format and split the BODY first, then attach the mention
+            # without re-splitting.  Prefixing the pre-split input moved
+            # every split boundary, and ``truncate_message``'s whitespace
+            # advance (``.lstrip()``) then deleted body content at the new
+            # boundary — a near-limit single-chunk final ("A"*1980 + " "
+            # + "B"*19) lost its interior space (recovered 1999 of 2000
+            # chars).  The prefix now rides body chunk 0 only while the
+            # joined chunk still fits the cap; otherwise it ships as its
+            # own short first message and every body chunk stays
+            # byte-for-byte what the splitter produced.
             formatted = self.format_message(content)
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
+            if mention_prefix and chunks:
+                first_len = len(mention_prefix) + len(chunks[0])
+                if first_len <= self.MAX_MESSAGE_LENGTH:
+                    chunks[0] = mention_prefix + chunks[0]
+                else:
+                    chunks.insert(0, mention_prefix)
 
             message_ids = []
-            # Build the reference from ids — no fetch_message round trip.
-            reference = await self._reply_reference_for_send(reply_to, channel, metadata)
-            if reference is None:
-                # Auto-threaded root turns can never attach a reference —
-                # ping the root author inline instead of losing the reply
-                # notification to fail_if_not_exists=False.
-                mention_prefix = await self._final_mention_prefix(
-                    reply_to, channel, metadata
-                )
-                if mention_prefix and chunks:
-                    # The prefixed first chunk may now exceed the cap —
-                    # re-truncate (dropping a few trailing chars on an
-                    # already-maximal chunk is fine; the full response is
-                    # in the session logs).
-                    chunks[0] = self.truncate_message(
-                        mention_prefix + chunks[0],
-                        self.MAX_MESSAGE_LENGTH,
-                    )[0]
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -4178,17 +4249,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         reference=chunk_reference,
                     )
                 except Exception as e:
-                    err_text = str(e)
                     if (
                         chunk_reference is not None
-                        and (
-                            (
-                                "error code: 50035" in err_text
-                                and "Cannot reply to a system message" in err_text
-                            )
-                            or "error code: 10008" in err_text
-                        )
+                        and self._reference_proven_invalid(str(e))
                     ):
+                        # Discord has already proven this reference invalid —
+                        # never retry it.  Deliver the chunk standalone and
+                        # drop the anchor so later chunks ('all' mode reuses
+                        # `reference`) can't rebuild the same rejection.
                         logger.warning(
                             "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
                             self.name,
@@ -4952,22 +5020,36 @@ class DiscordAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=str(msg_data["id"]))
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
+                if reference is not None and self._reference_proven_invalid(str(voice_err)):
+                    # Discord already rejected this reference on the native
+                    # voice POST — the file fallback must not replay a
+                    # rejection Discord has already proven permanent.
+                    logger.warning(
+                        "[%s] Reply target %s rejected the reply reference; dropping it before the file fallback",
+                        self.name,
+                        reply_to,
+                    )
+                    reference = None
                 file = discord.File(io.BytesIO(file_data), filename=filename)
                 try:
                     msg = await channel.send(file=file, reference=reference)
                 except Exception as send_err:
-                    err_text = str(send_err)
                     if (
                         reference is not None
-                        and (
-                            (
-                                "error code: 50035" in err_text
-                                and "Cannot reply to a system message" in err_text
-                            )
-                            or "error code: 10008" in err_text
-                        )
+                        and self._reference_proven_invalid(str(send_err))
                     ):
-                        msg = await channel.send(file=file, reference=None)
+                        # Proven-invalid reference (never retried): deliver
+                        # the file standalone instead of losing the send.
+                        # The first send CONSUMED ``file`` — discord.File
+                        # is single-use through its read position (the
+                        # uploader read the buffer to EOF) — so the retry
+                        # must build a fresh File over the original bytes;
+                        # reusing the spent object uploads zero bytes while
+                        # still reporting success.
+                        retry_file = discord.File(
+                            io.BytesIO(file_data), filename=filename
+                        )
+                        msg = await channel.send(file=retry_file, reference=None)
                     else:
                         raise
                 return SendResult(success=True, message_id=str(msg.id))
@@ -7857,6 +7939,23 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = self._gate_raw("allow_all_users", "DISCORD_ALLOW_ALL_USERS")
         return str(raw or "").strip().lower() in {"true", "1", "yes"}
 
+    def _discord_auto_thread_enabled(self) -> bool:
+        """Per-profile ``discord.auto_thread`` flag (default true).
+
+        Resolved through the same config/env precedence as the other gates:
+        an explicit ``DISCORD_AUTO_THREAD`` env value wins (documented
+        override precedence), then the profile's ``auto_thread`` config
+        (``config.extra``, seeded from YAML ``discord.auto_thread`` by
+        ``_apply_yaml_config``), then the historical default true — a raw
+        ``os.getenv("DISCORD_AUTO_THREAD")`` read ignored the config value
+        entirely wherever the YAML→env bridge hadn't run or had lost the
+        first-writer race.
+        """
+        raw = self._gate_raw("auto_thread", "DISCORD_AUTO_THREAD")
+        if raw is None or str(raw).strip() == "":
+            return True
+        return str(raw).strip().lower() in {"true", "1", "yes"}
+
     def _gateway_allow_all_users(self) -> bool:
         """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
         return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
@@ -9810,7 +9909,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            auto_thread = self._discord_auto_thread_enabled()
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -11868,8 +11967,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["free_response_channels"] = str(frc)
         if not _skip_env_bridge and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
             os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
-    if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
-        os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    # auto_thread: seeded into extra so the adapter's per-profile
+    # precedence helper (_gate_raw: explicit env first, then config) honors
+    # ``discord.auto_thread`` even when the env bridge is skipped
+    # (multiplexed secondary profiles) or lost the first-writer race.
+    at_cfg = (
+        discord_cfg["auto_thread"] if "auto_thread" in discord_cfg
+        else platform_extra_cfg.get("auto_thread")
+    )
+    if at_cfg is not None:
+        seeded_extra["auto_thread"] = str(at_cfg).lower()
+        if not _skip_env_bridge and not os.getenv("DISCORD_AUTO_THREAD"):
+            os.environ["DISCORD_AUTO_THREAD"] = str(at_cfg).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     backfill_cfg = discord_cfg.get("missed_message_backfill")
