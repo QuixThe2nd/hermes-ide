@@ -26637,8 +26637,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # init on the loop thread before the first read.
                 await self._warm_goals_session_db("loop wakeup")
 
+                # Every SessionDB call in this scan runs off the loop thread.
+                # fire_tick()/complete_tick() are writes (BEGIN IMMEDIATE) that
+                # take the writer lock; a slow writer elsewhere (FTS merge, WAL
+                # checkpoint, a long flush) holding it while the watcher blocked
+                # the loop on the same lock froze the gateway for 90+ s until
+                # the liveness watchdog force-exited. list_active_loops() reads
+                # via _read_ctx (lock-free under WAL) but still convoys on the
+                # writer lock when WAL is unavailable, so it goes off-loop too.
+                # _run_in_executor_with_context keeps the profile HERMES_HOME
+                # override alive under multiplex, like the warm-up above.
+                active_loops = await self._run_in_executor_with_context(list_active_loops)
+
                 now = time.time()
-                for sid, state in list_active_loops():
+                for sid, state in active_loops:
                     if state.awaiting_response or now < state.next_due_at:
                         continue
                     route = state.route or {}
@@ -26686,7 +26698,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     mgr = LoopManager(session_id=sid)
                     if not mgr.is_due(now):
                         continue
-                    wakeup = mgr.fire_tick()
+                    wakeup = await self._run_in_executor_with_context(mgr.fire_tick)
                     if not wakeup:
                         continue
                     try:
@@ -26723,7 +26735,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # path and never hit the post-turn completion hook —
                         # complete the tick immediately (caps + scheduling).
                         if wakeup.lstrip().startswith("/"):
-                            mgr.complete_tick("")
+                            await self._run_in_executor_with_context(mgr.complete_tick, "")
                     except Exception as exc:
                         logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
                         try:

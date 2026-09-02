@@ -5575,9 +5575,10 @@ def compress_context(
             else:
                 agent.context_compressor._verify_compaction_cleared_threshold = True
 
-        # Clear the file-read dedup cache.  After compression the original
-        # read content is summarised away — if the model re-reads the same
-        # file it needs the full content, not a "file unchanged" stub.
+        # Advance file-read dedup to a fresh generation while preserving the
+        # mtime map. The first read of each unchanged key returns full content
+        # that compaction may have omitted; later reads return lightweight
+        # stubs. Stub-hit counters restart at the same boundary (#84857).
         try:
             from tools.file_tools import reset_file_dedup
             reset_file_dedup(task_id)
