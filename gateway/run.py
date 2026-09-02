@@ -2174,6 +2174,19 @@ from agent.replay_cleanup import (  # noqa: E402
     strip_stale_dangerous_confirmations,
 )
 
+# Transparent forced-interruption recovery: victims of a gateway bounce (as
+# opposed to sessions that accepted a cooperative restart) resume below the
+# LLM boundary — unresolved replayable calls re-run through the normal
+# dispatcher instead of the model being told the process restarted.
+from gateway.forced_resume_replay import (  # noqa: E402
+    build_victim_replay_plan,
+    claim_forced_recovery_ownership,
+    execute_victim_replay,
+    is_forced_interruption_reason,
+    plan_forced_resume_turn,
+    trim_incomplete_assistant_text_tail,
+)
+
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
 _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
@@ -2181,7 +2194,12 @@ _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
 
 def _is_auto_continue_noise(content: Any) -> bool:
     """Return True if this user-message content is a gateway-injected
-    auto-continue note that should NOT be replayed as a real user turn."""
+    auto-continue note that should NOT be replayed as a real user turn.
+
+    Forced-interruption victims no longer contribute here: their recovery
+    injects no note at all (transparent continuation), so nothing of
+    theirs needs hiding from replay.
+    """
     if not isinstance(content, str):
         return False
     return (
@@ -4871,6 +4889,27 @@ def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
         return False
     final_response = str(agent_result.get("final_response") or "").strip()
     return not final_response or final_response == error_text
+
+
+def _is_forced_recovery_control_outcome(agent_result: Any) -> bool:
+    """True for the typed CONTROL outcome of an internal forced-recovery
+    failure (blocked replay, lost ownership, unprovable durability, failed
+    text-tail trim).
+
+    A forced victim must never see recovery prose or acquire a synthetic
+    row: the outcome carries ``forced_recovery_control`` and NO text
+    (``final_response`` is None).  Every boundary that would deliver,
+    normalize, or persist a result — response extraction, the
+    empty-response fabricator, user-row persistence, delivery — stands
+    down for it instead, while ``_should_clear_resume_pending_after_turn``
+    already keeps ``resume_pending`` set (failed + error).  Cooperative
+    parked-session guidance is untouched: only forced victims produce
+    this outcome.
+    """
+    return (
+        isinstance(agent_result, dict)
+        and agent_result.get("forced_recovery_control") is True
+    )
 
 
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
@@ -7746,11 +7785,13 @@ class TurnRunner:
         # Replacing the live transcript with that shorter copy causes
         # immediate same-session amnesia. Only applies when we reused a
         # cached agent bound to this exact session_id.
+        _live_history_selected = False
         if reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id:
             _selected = _select_cached_agent_history(
                 agent_history, getattr(agent, "_session_messages", None)
             )
-            if _selected is not agent_history:
+            _live_history_selected = _selected is not agent_history
+            if _live_history_selected:
                 logger.warning(
                     "Persisted transcript lagged live cached history for "
                     "session %s (disk=%d, memory=%d); preserving live "
@@ -7903,6 +7944,21 @@ class TurnRunner:
         # message so stale guidance never replays as user-authored text.
         _persist_user_message_override: Optional[Any] = ctx.persist_user_message
         _persist_user_timestamp_override: Optional[float] = ctx.persist_user_timestamp
+        # Forced-interruption victims with no real user text resume as a
+        # continuation of the interrupted turn (the ordinary in-loop seam),
+        # not as a new user turn.  Set by the resume_pending branch below.
+        _continue_interrupted_turn = False
+        # Text-only recovery fail-closed flag: the incomplete assistant
+        # tail could not be trimmed from the durable transcript, so the
+        # continuation must NOT run (a new assistant row would append
+        # straight after the incomplete one).
+        _text_recovery_failed = False
+        # Typed BLOCKED outcome for a forced recovery that must not reach
+        # the model this turn: replay/persistence failure, or the
+        # cross-worker recovery claim was lost/unprovable.  Carries the
+        # machine-readable error code for the result row; resume_pending
+        # deliberately stays set (failed turns never clear it).
+        _forced_recovery_blocked: Optional[str] = None
 
         # Prepend pending model switch note so the model knows about the switch
         _pending_notes = getattr(self._runner, '_pending_model_notes', {})
@@ -7975,25 +8031,361 @@ class TurnRunner:
             and _interruption_is_fresh
         )
 
+        # Bound early: the approval notify closure below reads this
+        # variable, and a replay that registers the gateway notify
+        # callback BEFORE the normal turn's own binding (forced victims
+        # re-run tool calls ahead of the model call) must never observe it
+        # unassigned.
+        _approval_session_key = ctx.session_key or ""
+
+        # Deliver user text that a losing recovery worker QUEUED while the
+        # exact prior batch was still open (below): it becomes this turn's
+        # message — byte-for-byte — at the first LEGAL boundary (the batch
+        # is now closed, or this worker owns its recovery).  Queue order is
+        # preserved when fresh text raced in too; the queued bytes stay a
+        # contiguous verbatim segment.
+        _queued_resume_text = None
+        _pending_resume_text_map = getattr(self._runner, "_pending_resume_user_text", None)
+        if isinstance(_pending_resume_text_map, dict) and ctx.session_key:
+            _queued_resume_text = _pending_resume_text_map.pop(ctx.session_key, None)
+        if isinstance(_queued_resume_text, str) and _queued_resume_text:
+            if isinstance(ctx.message, str) and ctx.message.strip():
+                ctx.message = f"{_queued_resume_text}\n\n{ctx.message}"
+            else:
+                ctx.message = _queued_resume_text
+
         if _is_resume_pending:
             _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-            # The empty-message case is the auto-resume startup turn
-            # synthesized by _schedule_resume_pending_sessions — there is
-            # no NEW user message to address.  Guidance is adapter-aware:
-            # interactive platforms report the restore and ask what next;
-            # non-interactive event platforms (webhook, API server)
-            # continue the interrupted work instead, because nobody is
-            # present to answer and an acknowledgement would silently
-            # abandon the task (#57056).
-            _resume_adapter = self._runner._adapter_for_source(ctx.source)
-            _interactive_resume = bool(
-                getattr(_resume_adapter, "interactive_resume", True)
-            )
-            ctx.message, _persist_user_message_override = _prepare_resume_pending_message(
-                _reason, ctx.message, interactive=_interactive_resume,
-            )
+            if is_forced_interruption_reason(_reason):
+                # Forced victim (drain-timeout restart/shutdown, crash, or
+                # any legacy/generic marker): recover BELOW the LLM
+                # boundary.  No restart prose, no restore acknowledgement,
+                # no synthetic restart user message — the model must not
+                # learn that the process bounced.  Re-run the unresolved
+                # calls of the final interrupted batch through the normal
+                # dispatcher and continue the original turn as if the
+                # process had stayed alive.  With real user text the turn
+                # is an ordinary new user message AFTER the completed
+                # batch; with no user text (the synthesized auto-resume
+                # event) the turn continues through the ordinary
+                # in-loop seam — zero synthetic rows either way.
+                # Cross-worker ownership FIRST: the trim + replay +
+                # continuation below is ONE recovery, and two workers that
+                # loaded the same tail (startup resume racing a drain
+                # pickup) must not both run it — the loser would trim the
+                # same tail and land a second assistant row
+                # (user,assistant,assistant,assistant).  The claim is a
+                # durable compare-and-swap on the session's exact tail
+                # digest; the loser stands down BEFORE any provider
+                # execution.
+                _recovery_claim = claim_forced_recovery_ownership(
+                    self._runner.session_store,
+                    ctx.session_id,
+                    ctx.history,
+                )
+                _recovery_proceed = _recovery_claim == "claimed"
+                # Inert defaults so the guards below are meaningful on a
+                # stood-down turn: no batch, no outcome, no continuation.
+                _replay_plan = build_victim_replay_plan([])
+                _replay_outcome = None
+                def _queue_resume_user_text(text: str) -> None:
+                    """Preserve raced-in user text byte-for-byte (queue order
+                    kept when several messages piled up) for the first legal
+                    boundary — the consumption point near the top of the
+                    next turn for this session."""
+                    _pending_map = getattr(
+                        self._runner, "_pending_resume_user_text", None
+                    )
+                    if not isinstance(_pending_map, dict):
+                        _pending_map = {}
+                        self._runner._pending_resume_user_text = _pending_map
+                    if not ctx.session_key:
+                        return
+                    _already_queued = _pending_map.get(ctx.session_key)
+                    if isinstance(_already_queued, str) and _already_queued:
+                        _pending_map[ctx.session_key] = (
+                            f"{_already_queued}\n\n{text}"
+                        )
+                    else:
+                        _pending_map[ctx.session_key] = text
+
+                if not _recovery_proceed and isinstance(ctx.message, str) and ctx.message.strip():
+                    # Real user text arrived while another worker owns the
+                    # recovery of the OLD tail.  The message is real work —
+                    # dropping it loses user input, replaying the forced
+                    # path duplicates the winner's continuation — so the
+                    # turn may start only at a LEGAL boundary: after the
+                    # EXACT prior batch is provably durably closed.  One
+                    # reload is not proof: re-plan the reloaded durable
+                    # transcript and require the interrupted batch to be
+                    # GONE (no replay work, no fail-closed-only batch, no
+                    # malformed identity).  While the batch is still open
+                    # the loser stands down and QUEUES the text
+                    # byte-for-byte for the owner / the next legal turn.
+                    _reloaded_history = None
+                    _load_transcript = getattr(
+                        self._runner.session_store, "load_transcript", None
+                    )
+                    if callable(_load_transcript):
+                        try:
+                            _reloaded_history = _load_transcript(ctx.session_id)
+                        except Exception:
+                            logger.warning(
+                                "Transparent resume: transcript reload after "
+                                "losing the recovery claim raised",
+                                exc_info=True,
+                            )
+                            _reloaded_history = None
+                    if isinstance(_reloaded_history, list):
+                        ctx.history = _reloaded_history
+                        agent_history, observed_group_context, cursor_recovery_note = (
+                            _build_gateway_agent_history(
+                                ctx.history,
+                                channel_prompt=ctx.channel_prompt,
+                                inject_timestamps=_message_timestamps_enabled(
+                                    ctx.user_config
+                                ),
+                                hermes_session_id=ctx.session_id,
+                            )
+                        )
+                        _history_media_paths = _collect_history_media_paths(agent_history)
+                        _reloaded_plan = build_victim_replay_plan(ctx.history)
+                        _batch_still_open = bool(
+                            _reloaded_plan.identity_malformed
+                            or _reloaded_plan.has_replay_work
+                            or (
+                                _reloaded_plan.batch_present
+                                and _reloaded_plan.fail_closed_calls
+                            )
+                        )
+                        if _batch_still_open:
+                            # The winner has not durably closed the exact
+                            # batch: do NOT start an ordinary turn on top of
+                            # a tail another worker may be rewriting.  Queue
+                            # the text byte-for-byte and stand down with a
+                            # typed blocked outcome; recovery stays pending.
+                            _queue_resume_user_text(ctx.message)
+                            logger.warning(
+                                "Transparent resume for %s: recovery claim=%s "
+                                "and the interrupted batch is still open; "
+                                "queuing user text (%d bytes) for the legal "
+                                "boundary instead of starting an ordinary "
+                                "turn",
+                                ctx.session_key,
+                                _recovery_claim,
+                                len(ctx.message),
+                            )
+                            ctx.message = None
+                            _forced_recovery_blocked = (
+                                f"forced_recovery_{_recovery_claim}_batch_open"
+                            )
+                    else:
+                        # Cannot even reload: block rather than run a turn
+                        # against a tail another worker may be rewriting.
+                        # The text cannot be proven safe to run OR drop —
+                        # re-queue it exactly like the open-batch case so
+                        # the next attempt re-evaluates.
+                        _queue_resume_user_text(ctx.message)
+                        ctx.message = None
+                        _forced_recovery_blocked = (
+                            f"forced_recovery_{_recovery_claim}_reload_failed"
+                        )
+                elif not _recovery_proceed:
+                    # No user text: this is the synthesized auto-resume
+                    # event duplicating a recovery another worker owns (or
+                    # the claim was unprovable).  Stand down entirely — no
+                    # trim, no replay, no model call; the winner completes
+                    # the turn, and a failed result keeps resume_pending
+                    # set so an abandoned claim is retried after its TTL.
+                    logger.warning(
+                        "Transparent resume for %s: recovery claim=%s; "
+                        "standing down (another worker owns this recovery "
+                        "or the tail moved)",
+                        ctx.session_key,
+                        _recovery_claim,
+                    )
+                    _forced_recovery_blocked = f"forced_recovery_{_recovery_claim}"
+                if _recovery_proceed:
+                    _resume_turn = plan_forced_resume_turn(ctx.message)
+                    ctx.message = _resume_turn.message
+                    _persist_user_message_override = _resume_turn.persist_user_message
+                    _continue_interrupted_turn = _resume_turn.continue_interrupted_turn
+                    # Replay against whichever exact raw history is
+                    # AUTHORITATIVE.  Cached/live selection is not proof the
+                    # final batch completed: the live memory of a reused agent
+                    # can hold exactly the dangling assistant(tool_calls) batch
+                    # the bounce left behind (the FTS-corruption selection at
+                    # #50502), and skipping the replay there hands the provider
+                    # a dangling, unanswerable tail.
+                    _replay_source = agent_history if _live_history_selected else ctx.history
+                    _replay_plan = build_victim_replay_plan(_replay_source)
+                    # The re-run goes through the NORMAL dispatcher, whose
+                    # approval middleware resolves the session from the
+                    # current contextvar and notifies through the gateway
+                    # callback.  Bind BOTH before replay — with the same
+                    # cleanup/finally semantics as the normal turn below —
+                    # so a replayed approval-requiring call observes the
+                    # real session key and callback instead of the empty
+                    # key that strands approval prompts.
+                    _replay_approval_token = set_current_session_key(
+                        _approval_session_key
+                    )
+                    register_gateway_notify(_approval_session_key, _approval_notify_sync)
+                    try:
+                        _replay_outcome = execute_victim_replay(
+                            agent,
+                            _replay_plan,
+                            raw_history=_replay_source,
+                            session_store=self._runner.session_store,
+                            session_id=ctx.session_id,
+                            effective_task_id=ctx.session_id or "",
+                        )
+                    finally:
+                        unregister_gateway_notify(_approval_session_key)
+                        reset_current_session_key(_replay_approval_token)
+                if _replay_outcome is not None and _replay_outcome.repaired_history is not None:
+                    if _live_history_selected:
+                        # The repaired live rows already are agent-format
+                        # history — adopt them directly (they were selected
+                        # precisely because they are the authority).
+                        agent_history = _replay_outcome.repaired_history
+                    else:
+                        # The repaired RAW transcript replaces ctx.history,
+                        # then history rebuilds through the SAME cleanup
+                        # pipeline so the model sees a well-formed tail
+                        # (strippers now see the fresh results as the
+                        # batch's answers).
+                        ctx.history = _replay_outcome.repaired_history
+                        agent_history, observed_group_context, cursor_recovery_note = (
+                            _build_gateway_agent_history(
+                                ctx.history,
+                                channel_prompt=ctx.channel_prompt,
+                                inject_timestamps=_message_timestamps_enabled(
+                                    ctx.user_config
+                                ),
+                                hermes_session_id=ctx.session_id,
+                            )
+                        )
+                    _history_media_paths = _collect_history_media_paths(agent_history)
+                elif _replay_outcome is not None and _replay_outcome.failure:
+                    # BLOCKED outcome: a failed/incomplete replay must
+                    # never reach the model.  The existing
+                    # effect-disposition rows the history builder already
+                    # produced stay the tail's owner; the typed error code
+                    # below skips the model call, emits no synthetic
+                    # answer, and (failed turns never clear it) keeps
+                    # resume_pending set for a bounded retry.
+                    logger.warning(
+                        "Transparent resume: victim replay failed (%s); "
+                        "blocking the turn instead of invoking the model",
+                        _replay_outcome.failure,
+                    )
+                    _forced_recovery_blocked = "forced_resume_replay_failed"
+                if not _replay_plan.batch_present and _continue_interrupted_turn:
+                    # Text-only interruption: the turn died while the model
+                    # was mid-text, leaving an incomplete trailing assistant
+                    # row.  A transparent continuation cannot extend that
+                    # row, and appending a new assistant row after it would
+                    # persist the invalid user→assistant→assistant sequence
+                    # strict providers reject.  Resume from the ORIGINAL
+                    # LEGAL BOUNDARY by excluding the incomplete tail — the
+                    # model regenerates its answer as an ordinary response.
+                    # Never a synthetic user/system row.  (A real user
+                    # message instead appends AFTER the tail, which is
+                    # already legal alternation — no trim needed there.)
+                    _text_tail, _dropped_live = trim_incomplete_assistant_text_tail(
+                        agent_history
+                    )
+                    if _dropped_live:
+                        agent_history = _text_tail
+                    _durable_tail, _dropped_durable = trim_incomplete_assistant_text_tail(
+                        ctx.history
+                    )
+                    if _dropped_durable:
+                        _rewrite = getattr(
+                            self._runner.session_store, "rewrite_transcript", None
+                        )
+                        if not callable(_rewrite):
+                            # No durable store to reconcile (test doubles,
+                            # legacy duck-typed stores): the model-facing
+                            # trim above already keeps the request valid.
+                            ctx.history = _durable_tail
+                        else:
+                            try:
+                                _rewritten = _rewrite(
+                                    ctx.session_id,
+                                    _durable_tail,
+                                    active_only=True,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Text-only resume: durable tail trim raised",
+                                    exc_info=True,
+                                )
+                                _rewritten = False
+                            if _rewritten:
+                                ctx.history = _durable_tail
+                                if not _live_history_selected:
+                                    agent_history, observed_group_context, cursor_recovery_note = (
+                                        _build_gateway_agent_history(
+                                            ctx.history,
+                                            channel_prompt=ctx.channel_prompt,
+                                            inject_timestamps=_message_timestamps_enabled(
+                                                ctx.user_config
+                                            ),
+                                            hermes_session_id=ctx.session_id,
+                                        )
+                                    )
+                                    _history_media_paths = _collect_history_media_paths(
+                                        agent_history
+                                    )
+                            else:
+                                # Fail closed: without a durable trim the
+                                # continuation's new assistant row would
+                                # append straight after the incomplete one.
+                                # Do not fabricate the turn — mark the
+                                # recovery failed and let the caller below
+                                # skip the model call.
+                                logger.error(
+                                    "Text-only resume for %s: could not trim the "
+                                    "incomplete assistant tail from the durable "
+                                    "transcript; failing closed instead of "
+                                    "persisting an invalid role sequence",
+                                    ctx.session_key,
+                                )
+                                _text_recovery_failed = True
+            else:
+                # Cooperative restart: the session accepted
+                # COOPERATIVE_RESTART_STEER and expects the safe-pause
+                # guidance.  The empty-message case is the auto-resume
+                # startup turn synthesized by _schedule_resume_pending_
+                # sessions — there is no NEW user message to address.
+                # Guidance is adapter-aware: interactive platforms report
+                # the restore and ask what next; non-interactive event
+                # platforms (webhook, API server) continue the interrupted
+                # work instead, because nobody is present to answer and an
+                # acknowledgement would silently abandon the task (#57056).
+                _resume_adapter = self._runner._adapter_for_source(ctx.source)
+                _interactive_resume = bool(
+                    getattr(_resume_adapter, "interactive_resume", True)
+                )
+                ctx.message, _persist_user_message_override = (
+                    _prepare_resume_pending_message(
+                        _reason, ctx.message, interactive=_interactive_resume,
+                    )
+                )
             if cursor_recovery_note:
-                ctx.message = f"{cursor_recovery_note}\n\n{ctx.message}"
+                # Observed-group cursor recovery is ordinary context
+                # machinery (not restart prose).  For a pure continuation
+                # turn (no user text) it becomes the current message at the
+                # now-complete batch boundary rather than being dropped.
+                if isinstance(ctx.message, str) and ctx.message:
+                    ctx.message = f"{cursor_recovery_note}\n\n{ctx.message}"
+                else:
+                    ctx.message = cursor_recovery_note
+                # A current message now exists — this is no longer a pure
+                # continuation of the interrupted turn.
+                _continue_interrupted_turn = False
         elif _has_fresh_tool_tail:
             _persist_user_message_override = ctx.message
             ctx.message = (
@@ -8012,8 +8404,13 @@ class TurnRunner:
         _pending_notes = getattr(self._runner, "_pending_skills_reload_notes", None)
         if _pending_notes and ctx.session_key and ctx.session_key in _pending_notes:
             _srn = _pending_notes.pop(ctx.session_key, None)
-            if _srn:
+            if _srn and isinstance(ctx.message, str):
                 ctx.message = _srn + "\n\n" + ctx.message
+            elif _srn:
+                # Pure continuation turn (no current message): keep the
+                # note queued for the next real user turn rather than
+                # string-concatenating onto None.
+                _pending_notes[ctx.session_key] = _srn
 
         # Safety net: a startup auto-resume event carries empty
         # text and relies on the resume_pending branch above to supply the
@@ -8033,16 +8430,30 @@ class TurnRunner:
             _sn_reason = (
                 getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
             )
-            _sn_adapter = self._runner._adapter_for_source(ctx.source)
-            ctx.message = build_resume_recovery_note(
-                _sn_reason,
-                "",
-                interactive=bool(
-                    getattr(_sn_adapter, "interactive_resume", True)
-                ),
-            )
+            if is_forced_interruption_reason(_sn_reason):
+                # Forced victim: never fall back into restart prose here
+                # either.  With the resume_pending branch skipped there was
+                # no replay, so the rebuilt history's existing tail
+                # treatment (UNKNOWN orphan recovery / stripped read-only
+                # tails) is the authority — continue the interrupted turn
+                # silently through the ordinary in-loop seam.
+                ctx.message = None
+                _persist_user_message_override = None
+                _continue_interrupted_turn = True
+            else:
+                _sn_adapter = self._runner._adapter_for_source(ctx.source)
+                ctx.message = build_resume_recovery_note(
+                    _sn_reason,
+                    "",
+                    interactive=bool(
+                        getattr(_sn_adapter, "interactive_resume", True)
+                    ),
+                )
 
-        _approval_session_key = ctx.session_key or ""
+        # Approval context for the live turn (a forced victim's replay
+        # window bound the same key/callback above and unbound it in its
+        # own finally; `_approval_session_key` was computed early so both
+        # windows observe the identical value).
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
         # Compact thought-line token count: the gateway caches agents across
@@ -8106,6 +8517,14 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            if _continue_interrupted_turn:
+                # Transparent forced-interruption recovery: continue the
+                # interrupted assistant tool loop through the ordinary
+                # in-loop seam.  No user row is appended and every
+                # per-new-user-input side channel stays off, so the
+                # provider request is the same "continue after tool
+                # results" call an uninterrupted loop would make.
+                _conversation_kwargs["continue_interrupted_turn"] = True
             # Thread the platform-side inbound message id onto the persisted
             # user turn so a turn interrupted by a gateway restart is durably
             # recorded WITH its id — restart drain-window recovery dedups
@@ -8114,7 +8533,46 @@ class TurnRunner:
             # inbound id (NOT event_message_id, which is the reply anchor).
             if ctx.inbound_message_id is not None:
                 _conversation_kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+            if _text_recovery_failed:
+                # Fail closed without fabricating a turn: the text-only
+                # recovery could not durably exclude the incomplete
+                # assistant tail, so running the continuation would persist
+                # an invalid assistant→assistant sequence.  This is an
+                # INTERNAL forced-recovery failure: a typed CONTROL
+                # outcome, never text — nothing is delivered to the user
+                # and nothing is appended as a user/assistant/system row
+                # (the guards downstream of ``forced_recovery_control``
+                # enforce both).
+                result = {
+                    "final_response": None,
+                    "messages": [],
+                    "completed": False,
+                    "failed": True,
+                    "interrupted": False,
+                    "error": "forced_resume_text_tail_trim_failed",
+                    "forced_recovery_control": True,
+                }
+            elif _forced_recovery_blocked is not None:
+                # Typed BLOCKED control outcome: the victim replay could
+                # not prove durability/reservations, or another worker owns
+                # this recovery.  Do NOT call the model, do NOT emit a
+                # synthetic answer, do NOT clear resume_pending (a failed
+                # turn never does) so the recovery is retried — and deliver
+                # NOTHING: a forced victim must never see recovery prose or
+                # acquire a synthetic row.  The recovery stays invisible;
+                # queued user text (if any) is preserved for the next legal
+                # turn.
+                result = {
+                    "final_response": None,
+                    "messages": [],
+                    "completed": False,
+                    "failed": True,
+                    "interrupted": False,
+                    "error": _forced_recovery_blocked,
+                    "forced_recovery_control": True,
+                }
+            else:
+                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent
@@ -8318,6 +8776,38 @@ class TurnRunner:
         _effective_history_offset = (
             0 if (_session_was_split or _compacted_in_place) else len(agent_history)
         )
+
+        if _is_forced_recovery_control_outcome(result):
+            # Internal forced-recovery failure: the typed control outcome
+            # passes through UNTOUCHED — no fabricated prose from the
+            # empty-response normalizer, no ⚠️ error text, nothing for a
+            # delivery/persistence boundary to show or store.  A forced
+            # victim never sees recovery prose; ``resume_pending`` stays
+            # set through the ordinary failed-turn gate.
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": result.get("api_calls", 0),
+                "failed": True,
+                "failure_reason": result.get("failure_reason"),
+                "partial": result.get("partial", False),
+                "completed": result.get("completed"),
+                "interrupted": result.get("interrupted", False),
+                "interrupt_message": result.get("interrupt_message"),
+                "error": result.get("error"),
+                "compression_exhausted": result.get("compression_exhausted", False),
+                "compression_deferred": result.get("compression_deferred", False),
+                "tools": ctx.tools_holder[0] or [],
+                "history_offset": _effective_history_offset,
+                "compacted_in_place": _compacted_in_place,
+                "session_id": effective_session_id,
+                "last_prompt_tokens": _last_prompt_toks,
+                "input_tokens": _input_toks,
+                "output_tokens": _output_toks,
+                "model": _resolved_model,
+                "context_length": _context_length,
+                "forced_recovery_control": True,
+            }
 
         if not final_response:
             final_response = _normalize_empty_agent_response(
@@ -25222,7 +25712,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
+            # A forced-recovery CONTROL outcome is exempt by contract: the
+            # failed recovery must surface NO prose to the forced victim.
+            if not _intentional_silence and not _is_forced_recovery_control_outcome(
+                agent_result
+            ):
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
@@ -25402,6 +25896,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # forgets what was just asked.  Persist the user turn so the
             # conversation is preserved. (#7100)
             agent_failed_early = bool(agent_result.get("failed"))
+            _forced_recovery_control = _is_forced_recovery_control_outcome(agent_result)
             hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(
                 agent_result
             )
@@ -25428,11 +25923,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_entry.session_id,
                 )
             elif agent_failed_early:
-                logger.info(
-                    "Transient agent failure in session %s — persisting user "
-                    "message so conversation context is preserved on retry.",
-                    session_entry.session_id,
-                )
+                if _forced_recovery_control:
+                    # Internal forced-recovery failure: nothing may be
+                    # persisted — no user row (not even a synthetic blank
+                    # startup row), no assistant text, no synthetic turn.
+                    # The queued/raced user text, if any, was preserved
+                    # byte-for-byte by the recovery boundary itself.
+                    logger.info(
+                        "Forced-recovery control outcome in session %s "
+                        "(%s) — skipping transcript persistence; "
+                        "resume_pending retained.",
+                        session_entry.session_id,
+                        agent_result.get("error"),
+                    )
+                else:
+                    logger.info(
+                        "Transient agent failure in session %s — persisting user "
+                        "message so conversation context is preserved on retry.",
+                        session_entry.session_id,
+                    )
             elif hidden_reasoning_incomplete:
                 logger.warning(
                     "Suppressing hidden-reasoning-only incomplete gateway turn "
@@ -25533,6 +26042,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # entries that were stripped before the agent saw them.
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
+            elif _forced_recovery_control:
+                # Forced-recovery control outcome: NOTHING is persisted —
+                # not the raced user text (still queued byte-for-byte at
+                # the recovery boundary) and not a synthetic blank startup
+                # row for an internal auto-resume event.  The recovery
+                # stays retryable because resume_pending was not cleared.
+                pass
             elif agent_failed_early or hidden_reasoning_incomplete:
                 # Transient failure (429/timeout/5xx): persist only the user
                 # message so the next message can load a transcript that
@@ -25687,6 +26203,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Suppressing intentional silence marker for session %s",
                     session_entry.session_id,
+                )
+                response = ""
+
+            if _forced_recovery_control:
+                # Internal forced-recovery failure: deliver NOTHING — no
+                # recovery prose, no error hint, no typing follow-up.  The
+                # turn stays invisible to the forced victim; recovery is
+                # retried (resume_pending retained) or the owning worker
+                # completes it.
+                logger.info(
+                    "Suppressing delivery of forced-recovery control outcome "
+                    "for session %s (%s)",
+                    session_key,
+                    agent_result.get("error"),
                 )
                 response = ""
 
@@ -31940,6 +32470,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if isinstance(pending_skills_reload_notes, dict):
             pending_skills_reload_notes.pop(session_key, None)
+
+        # Queued forced-resume user text belongs to THIS conversation only:
+        # a boundary switch must never deliver it into the next one.
+        pending_resume_user_text = getattr(self, "_pending_resume_user_text", None)
+        if isinstance(pending_resume_user_text, dict):
+            pending_resume_user_text.pop(session_key, None)
 
         _sec_state = self._peek_session_state(session_key)
         if _sec_state is not None:

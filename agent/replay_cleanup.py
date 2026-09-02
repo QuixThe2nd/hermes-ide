@@ -39,6 +39,49 @@ def is_interrupted_tool_result(content: Any) -> bool:
     return False
 
 
+def dedupe_tool_results_keep_last(
+    tool_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep one result row per ``tool_call_id``, preferring a real result.
+
+    Transparent forced-interruption recovery
+    (``gateway.forced_resume_replay``) re-runs an interrupted call and
+    appends a fresh replacement result — the transcript is append-only, so
+    the stale interrupted row stays on disk ahead of it.  Replaying both to
+    the model would show two answers for one call, and the pre-API
+    sanitizer's duplicate-id pairing keeps the FIRST row, letting the
+    stale interrupted marker win over the replacement.
+
+    Preference rule for duplicate ids: the LAST non-interrupted row wins;
+    only when every row for an id is an interrupted marker does the last
+    marker stay.  Order alone is not authority — a batch can carry a real
+    completed result followed by a stale marker (interrupt, recovery,
+    another interrupt), and the stale marker must never overwrite a result
+    that actually landed.  Rows without a ``tool_call_id`` (or with an
+    empty one) are always kept.
+    """
+    last_index: Dict[str, int] = {}
+    last_real_index: Dict[str, int] = {}
+    for idx, row in enumerate(tool_results):
+        cid = str(row.get("tool_call_id") or "")
+        if not cid:
+            continue
+        last_index[cid] = idx
+        if not is_interrupted_tool_result(row.get("content", "")):
+            last_real_index[cid] = idx
+    if len(last_index) == len(tool_results):
+        return tool_results
+    keep_index = {
+        cid: last_real_index.get(cid, last_index[cid]) for cid in last_index
+    }
+    return [
+        row
+        for idx, row in enumerate(tool_results)
+        if not str(row.get("tool_call_id") or "")
+        or keep_index[str(row.get("tool_call_id") or "")] == idx
+    ]
+
+
 def strip_interrupted_tool_tails(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -49,6 +92,10 @@ def strip_interrupted_tool_tails(
     final tail by the time we rebuild replay history.  Remove any contiguous
     assistant(tool_calls) + tool-result block that contains an interrupted tool
     result, while preserving successful tool-call sequences intact.
+
+    Duplicate ``tool_call_id`` rows within one block collapse keep-last
+    (see :func:`dedupe_tool_results_keep_last`) so a transparent-recovery
+    replacement result supersedes its stale interrupted row.
     """
     if not agent_history:
         return agent_history
@@ -64,6 +111,7 @@ def strip_interrupted_tool_tails(
             while j < n and agent_history[j].get("role") == "tool":
                 tool_results.append(agent_history[j])
                 j += 1
+            tool_results = dedupe_tool_results_keep_last(tool_results)
             if tool_results and any(
                 is_interrupted_tool_result(m.get("content", ""))
                 for m in tool_results
