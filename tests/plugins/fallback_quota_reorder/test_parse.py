@@ -26,7 +26,7 @@ class TestParseChannelNameAccept:
 
 
 class TestParseResetsSegment:
-    """Trailing pending-reset segment rendered by quota_channels (Codex/Grok)."""
+    """Trailing pending-reset segment rendered by quota_channels (Codex/Grok/z.ai)."""
 
     def test_zero_resets(self):
         reading = parse_channel_name(
@@ -89,14 +89,16 @@ class TestParseResetsSegment:
         assert not reading.reset_count
         assert reading.reset_expiry_seconds is None
 
-    def test_zai_resets_segment_with_expiry_stays_inert(self):
+    def test_zai_resets_segment_with_expiry_parses(self):
+        # z.ai has a resets API, so its segment reaches the reading like
+        # Codex/Grok
         reading = parse_channel_name(
             "zai", f"z.ai: 70% {BULLET} 7d left {BULLET} 1 reset in 2d"
         )
         assert reading is not None
         assert reading.pct == 70
-        assert not reading.reset_count
-        assert reading.reset_expiry_seconds is None
+        assert reading.reset_count == 1
+        assert reading.reset_expiry_seconds == 2 * 86400
 
     def test_garbage_resets_segment_is_rejected(self):
         assert (

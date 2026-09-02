@@ -55,6 +55,11 @@ CODEX_RESET_CREDITS_URL = (
 )
 KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
+# Read-only manual reset-card list; the mutating
+# /biz/customer-package-reset/use endpoint is never called.
+ZAI_RESET_LIST_URL = (
+    "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL"
+)
 CURSOR_USAGE_URL = (
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 )
@@ -194,7 +199,7 @@ def _state_reading_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         "reset_seconds": entry["reset_seconds"],
         "label": entry["label"],
     }
-    # pending usage-limit resets (Codex/Grok rows) feed the shared
+    # pending usage-limit resets (Codex/Grok/z.ai rows) feed the shared
     # spendability score; rows without the fields stay in the legacy shape
     if "reset_count" in entry:
         persisted["reset_count"] = entry["reset_count"]
@@ -543,7 +548,34 @@ def format_kimi_name(remaining: int, reset_secs: float) -> str:
     return f"Kimi: {remaining}% \u2022 {format_reset_left(reset_secs)}"
 
 
-def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
+# Z.AI usage-limit window unit codes observed on the live payload:
+# unit 3 is the 5-hour rolling window, unit 6 the weekly one.
+ZAI_LIMIT_UNIT_FIVE_HOUR = 3
+
+# Z.AI emits naive `YYYY-MM-DD HH:MM:SS` platform timestamps; the platform's
+# documented dates are Singapore/China time, so they read as UTC+8 — never as
+# server-local or UTC wall time.
+ZAI_PLATFORM_TZ = timezone(timedelta(hours=8))
+ZAI_PLATFORM_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _zai_platform_epoch(value: Any) -> Optional[float]:
+    """Epoch seconds for a naive Z.AI platform timestamp read as UTC+8.
+
+    Anything but a clean `YYYY-MM-DD HH:MM:SS` string is unreadable — a
+    tz-qualified string is NOT reinterpreted, because guessing at a shape the
+    platform has never emitted would invent a clock.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.strptime(value.strip(), ZAI_PLATFORM_TIME_FORMAT)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=ZAI_PLATFORM_TZ).timestamp()
+
+
+def _zai_usage_limits(text: str) -> List[Mapping[str, Any]]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -562,21 +594,30 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
     for entry in limits:
         if not isinstance(entry, Mapping):
             raise QuotaChannelsError("z.ai: invalid limits fields in usage payload")
+    return limits
+
+
+def _zai_selected_window(limits: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    # The longest window is the plan's real quota horizon: larger unit
+    # (weeks > days > hours > minutes), then larger number, then the later
+    # reset edge. A 5h rolling window often resets LATER than the weekly
+    # one, so nextResetTime alone would pick the wrong window. Legacy
+    # entries without unit/number rank as (0, 0, ...) and only win when
+    # no window carries them — the old max-nextResetTime behavior.
+    return max(
+        limits,
+        key=lambda window: (
+            window.get("unit") or 0,
+            window.get("number") or 0,
+            window.get("nextResetTime") or 0,
+        ),
+    )
+
+
+def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
+    limits = _zai_usage_limits(text)
     try:
-        # The longest window is the plan's real quota horizon: larger unit
-        # (weeks > days > hours > minutes), then larger number, then the later
-        # reset edge. A 5h rolling window often resets LATER than the weekly
-        # one, so nextResetTime alone would pick the wrong window. Legacy
-        # entries without unit/number rank as (0, 0, ...) and only win when
-        # no window carries them — the old max-nextResetTime behavior.
-        weekly = max(
-            limits,
-            key=lambda window: (
-                window.get("unit") or 0,
-                window.get("number") or 0,
-                window.get("nextResetTime") or 0,
-            ),
-        )
+        weekly = _zai_selected_window(limits)
         used = int(weekly.get("percentage", 0))
         reset_ms = float(weekly.get("nextResetTime") or 0)
     except (AttributeError, TypeError, ValueError) as exc:
@@ -586,21 +627,94 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
     return remaining, reset_secs
 
 
+def _zai_reset_list_field(window: Mapping[str, Any]) -> str:
+    """Which reset-card list refills the quota window the z.ai row represents.
+
+    The row represents the longest declared span. A 5h-only payload (the
+    selected window is unit 3) is refilled by ``fiveHourResets``; anything
+    longer — the usual weekly (unit 6) row — is refilled by ``weekResets``,
+    because a weekly reset refills both the weekly and the 5h window. A 5h
+    reset must never score as a weekly full wallet, so the lists are never
+    mixed.
+    """
+    if window.get("unit") == ZAI_LIMIT_UNIT_FIVE_HOUR:
+        return "fiveHourResets"
+    return "weekResets"
+
+
+def parse_zai_reset_cards(
+    text: str,
+    window: Mapping[str, Any],
+    now_fn: NowFn = time.time,
+) -> ResetCredits:
+    """Usable manual reset cards from customer-package-reset/list.
+
+    Strict about the envelope — unreadable JSON, a non-200 ``code``, a
+    non-mapping ``data``, or a missing/mis-typed card list all raise so the
+    caller degrades with a ``reset_error`` instead of trusting a shape the
+    platform never emitted. Inside the list, only entries with
+    ``available is true`` count, and a card whose readable ``expireTime``
+    (naive platform time, read as UTC+8) is already past cannot be spent, so
+    it is not counted at all. A missing or malformed ``expireTime`` keeps
+    the card counted but contributes no horizon — no clock is invented.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise QuotaChannelsError("z.ai: invalid reset-list payload JSON") from exc
+    if not isinstance(payload, dict):
+        raise QuotaChannelsError("z.ai: invalid reset-list payload JSON")
+    if payload.get("code") is not None and payload.get("code") != 200:
+        raise QuotaChannelsError(f"z.ai: reset-list error response: {text[:200]}")
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        raise QuotaChannelsError("z.ai: invalid data in reset-list payload")
+    field = _zai_reset_list_field(window)
+    cards = data.get(field)
+    if not isinstance(cards, list):
+        raise QuotaChannelsError(f"z.ai: no {field} list in reset-list payload")
+    now = now_fn()
+    count = 0
+    horizons: List[float] = []
+    for card in cards:
+        if not isinstance(card, Mapping):
+            continue
+        if card.get("available") is not True:
+            continue
+        expires_at = _zai_platform_epoch(card.get("expireTime"))
+        if expires_at is None:
+            # the expiry is unknowable, but the card itself still counts
+            count += 1
+            continue
+        remaining = expires_at - now
+        if remaining <= 0:
+            # already past its expiry, so it is not genuinely spendable
+            continue
+        count += 1
+        horizons.append(remaining)
+    horizons.sort()
+    return ResetCredits(count, horizons[0] if horizons else None, tuple(horizons))
+
+
 def format_zai_name(
     remaining: int,
     reset_secs: float,
     *,
     tokens_7d: Optional[int] = None,
     preserved_token_segment: Optional[str] = None,
+    resets: Optional[ResetCredits] = None,
 ) -> str:
     reset_part = format_reset_left(reset_secs)
     if tokens_7d is not None:
-        mid = f"{format_compact_tokens(tokens_7d)} tok/7d"
+        name = f"z.ai: {remaining}% \u2022 {format_compact_tokens(tokens_7d)} tok/7d"
     elif preserved_token_segment:
-        mid = preserved_token_segment
+        name = f"z.ai: {remaining}% \u2022 {preserved_token_segment}"
     else:
-        return f"z.ai: {remaining}% \u2022 {reset_part}"
-    return f"z.ai: {remaining}% \u2022 {mid} \u2022 {reset_part}"
+        name = f"z.ai: {remaining}%"
+    name += f" \u2022 {reset_part}"
+    if resets is not None:
+        name += f" \u2022 {format_resets_segment(resets)}"
+    return name
 
 
 def parse_cursor_usage(
@@ -1163,6 +1277,43 @@ def fetch_zai_usage(
     return http_text(req, http_fn=http_fn)
 
 
+def fetch_zai_reset_list(
+    api_key: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, str]:
+    # read-only list of manual reset cards; same raw-key Authorization
+    # convention as the usage endpoints (a Bearer prefix is NOT used)
+    req = urllib.request.Request(
+        ZAI_RESET_LIST_URL,
+        headers={"Authorization": api_key, "User-Agent": "hermes-quota-channel"},
+    )
+    return http_text(req, http_fn=http_fn)
+
+
+def zai_reset_cards(
+    api_key: str,
+    window: Mapping[str, Any],
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[Optional[ResetCredits], Optional[str]]:
+    """Usable z.ai reset cards plus any fetch error; never raises.
+
+    A failed or unparseable reset-list lookup degrades to None so the caller
+    drops the resets segment and persists no reset fields, while the normal
+    quota reading stays fresh — the same graceful-degradation style as the
+    Codex details lookup.
+    """
+    try:
+        status, text = fetch_zai_reset_list(api_key, http_fn=http_fn)
+        if status != 200:
+            raise QuotaChannelsError(
+                f"z.ai reset-list endpoint returned {status}: {text[:200]}"
+            )
+        return parse_zai_reset_cards(text, window, now_fn=now_fn), None
+    except Exception as exc:
+        return None, redact_secrets(_error_text(exc), (api_key,))
+
+
 def fetch_cursor_usage(
     access: str,
     http_fn: HttpFn = default_http,
@@ -1282,19 +1433,34 @@ def run_kimi_provider(
 def _zai_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
-) -> Tuple[int, float]:
-    status, text = fetch_zai_usage(zai_api_key(), http_fn=http_fn)
+) -> Tuple[int, float, Optional[ResetCredits], Optional[str]]:
+    key = zai_api_key()
+    status, text = fetch_zai_usage(key, http_fn=http_fn)
     if status != 200:
         raise QuotaChannelsError(f"z.ai usage endpoint returned {status}: {text[:200]}")
-    return parse_zai_usage(text, now_fn=now_fn)
+    limits = _zai_usage_limits(text)
+    try:
+        window = _zai_selected_window(limits)
+        used = int(window.get("percentage", 0))
+        reset_ms = float(window.get("nextResetTime") or 0)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise QuotaChannelsError("z.ai: invalid limits fields in usage payload") from exc
+    remaining = max(0, 100 - used)
+    reset_secs = max(0.0, reset_ms / 1000 - now_fn())
+    # read-only reset-card lookup against the window the row represents; a
+    # failure degrades to None + a redacted error, never a stale quota read
+    resets, reset_error = zai_reset_cards(key, window, http_fn=http_fn, now_fn=now_fn)
+    return remaining, reset_secs, resets, reset_error
 
 
 def run_zai_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
-    remaining, reset_secs = _zai_quota_metrics(http_fn=http_fn, now_fn=now_fn)
-    return format_zai_name(remaining, reset_secs), reset_secs, "z.ai"
+    remaining, reset_secs, resets, _ = _zai_quota_metrics(
+        http_fn=http_fn, now_fn=now_fn
+    )
+    return format_zai_name(remaining, reset_secs, resets=resets), reset_secs, "z.ai"
 
 
 def _cursor_quota_metrics(
@@ -1402,8 +1568,9 @@ PROVIDER_RUNNERS = {
 }
 
 QUOTA_METRICS = {
-    # codex alone returns trailing pending-resets elements (same payload);
-    # every entry ends with reset_secs, which is all callers rely on.
+    # codex and zai return trailing pending-resets elements (ResetCredits and
+    # any reset fetch error); every entry ends with reset_secs, which is all
+    # callers rely on.
     "codex": _codex_quota_metrics,
     "kimi": _kimi_quota_metrics,
     "zai": _zai_quota_metrics,
@@ -1435,6 +1602,7 @@ def _format_channel_name(
             reset_secs,
             tokens_7d=tokens_7d,
             preserved_token_segment=preserved_token_segment,
+            resets=resets,
         )
     if key == "cursor":
         auto_remaining, api_remaining = metrics
@@ -1851,11 +2019,11 @@ def run_provider_quota(
     if key == "cursor":
         auto_remaining, api_remaining, reset_secs = raw
         fmt_metrics: Any = (auto_remaining, api_remaining)
-    elif key == "codex":
-        # Live `_codex_quota_metrics` returns (remaining, reset_secs,
-        # ResetCredits, reset_error). Existing tests (and any stub) still
-        # return the 3-tuple without the error or the 2-tuple without
-        # credits; missing pieces just omit the segment / the note.
+    elif key in ("codex", "zai"):
+        # Live `_codex_quota_metrics`/`_zai_quota_metrics` return (remaining,
+        # reset_secs, ResetCredits, reset_error). Existing tests (and any
+        # stub) still return the 3-tuple without the error or the 2-tuple
+        # without credits; missing pieces just omit the segment / the note.
         if len(raw) == 4:
             remaining, reset_secs, resets, reset_error = raw
         elif len(raw) == 3:
@@ -1877,8 +2045,8 @@ def run_provider_quota(
     if resets is not None:
         # pending usage-limit resets feed the shared spendability score; they
         # ride provider_info into the state reading and the debug output.
-        # resets=None means the credits block was unreadable (Codex), which
-        # adds no term and persists no fields.
+        # resets=None means the reset lookup was unreadable (Codex details /
+        # z.ai list), which adds no term and persists no fields.
         provider_info["reset_count"] = resets.count
         if resets.expiry_secs is not None:
             provider_info["reset_expiry_seconds"] = resets.expiry_secs

@@ -37,7 +37,7 @@ CHANNEL_KEY_TO_PROVIDER: Dict[str, str] = {
 # Providers with a manual usage-limit resets API — the only ones whose
 # pending resets earn the additive score term. Reset fields that leak into
 # any other provider's channel name, state row, or reading are inert.
-RESET_CREDIT_PROVIDERS = frozenset({"openai-codex", "xai-oauth"})
+RESET_CREDIT_PROVIDERS = frozenset({"openai-codex", "xai-oauth", "zai"})
 # the quota channel keys whose provider is in RESET_CREDIT_PROVIDERS
 RESET_CREDIT_CHANNEL_KEYS = frozenset(
     key
@@ -94,7 +94,8 @@ class QuotaReading:
     channel_name: str
     pct: int
     reset_seconds: float
-    # pending manual usage-limit resets (Codex/Grok only). ``reset_count`` of
+    # pending manual usage-limit resets (providers with a resets API only —
+    # Codex/Grok/z.ai). ``reset_count`` of
     # 0 means no extra wallets; ``reset_expiry_seconds`` of None means the
     # expiry is unknown, so the credit stays counted but scores nothing —
     # the usage-reset countdown is never borrowed as a stand-in.
@@ -217,7 +218,7 @@ def parse_channel_name(channel_key: str, channel_name: str) -> Optional[QuotaRea
                 else parse_countdown_seconds(int(match.group(6)), match.group(7))
             )
         else:
-            # Kimi/z.ai have no resets API: a resets segment that polluted
+            # Kimi/Cursor have no resets API: a resets segment that polluted
             # their name parses, but never reaches the reading
             reset_count = 0
             reset_expiry_seconds = None
@@ -624,7 +625,7 @@ def _reset_credit_count(reading: QuotaReading) -> int:
     """The pending-reset count that actually scores for ``reading``.
 
     Contract gate: only providers with a resets API
-    (``RESET_CREDIT_PROVIDERS`` — Codex/Grok) have reset credits, so a
+    (``RESET_CREDIT_PROVIDERS`` — Codex/Grok/z.ai) have reset credits, so a
     reset field injected into any other provider's reading counts as zero
     everywhere: no score term, no low-quota escape.
     """
@@ -672,8 +673,8 @@ def score_provider(
     other clock is borrowed as a stand-in. Without a richer list the legacy
     single-clock shape keeps its meaning: ``reset_count`` credits all on the
     one ``reset_expiry_seconds`` clock, which is exactly what a channel name
-    or a pre-list state row reports. Only Codex/Grok have a resets API at
-    all — reset fields on any other provider are inert (see
+    or a pre-list state row reports. Only Codex/Grok/z.ai have a resets API
+    at all — reset fields on any other provider are inert (see
     ``_reset_credit_count`` and ``_scored_reset_horizons``).
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
@@ -704,8 +705,8 @@ def is_low_quota(reading: QuotaReading) -> bool:
     spendable capacity, so it stays in the healthy bucket (even when that
     reset's expiry is unknown and it therefore scores nothing); only a
     genuinely empty wallet with zero pending resets sinks. Resets only exist
-    for Codex/Grok — an injected count on any other provider sinks with the
-    wallet it polluted.
+    for Codex/Grok/z.ai — an injected count on any other provider sinks with
+    the wallet it polluted.
     """
     return reading.pct < LOW_QUOTA_PCT and _reset_credit_count(reading) <= 0
 

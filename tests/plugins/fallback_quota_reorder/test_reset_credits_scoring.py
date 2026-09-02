@@ -329,7 +329,8 @@ class TestNoResetCreditsIsUnchanged:
         assert score_provider(legacy) == pytest.approx(0.43 * REFERENCE_HOURS / 72.0)
 
     def test_providers_without_a_resets_api_never_gain_a_term(self):
-        # Kimi / z.ai / Cursor channels never carry a resets segment
+        # Kimi / Cursor channels never carry a resets segment; a z.ai name
+        # without one scores the remaining term alone
         readings = readings_from_names({
             "kimi": f"Kimi: 80% {BULLET} 7d left",
             "zai": f"z.ai: 70% {BULLET} 7d left",
@@ -346,11 +347,11 @@ class TestNoResetCreditsIsUnchanged:
 
 
 class TestResetGate:
-    """Only Codex/Grok have a resets API; reset fields anywhere else are inert."""
+    """Only Codex/Grok/z.ai have a resets API; reset fields elsewhere are inert."""
 
     @pytest.mark.parametrize(
         "provider",
-        ["kimi-coding", "zai", "cursor", "openrouter"],
+        ["kimi-coding", "cursor", "openrouter"],
     )
     def test_injected_resets_score_exactly_like_zero(self, provider: str):
         polluted = _reading(
@@ -361,7 +362,7 @@ class TestResetGate:
 
     @pytest.mark.parametrize(
         "provider",
-        ["kimi-coding", "zai", "cursor", "openrouter"],
+        ["kimi-coding", "cursor", "openrouter"],
     )
     def test_injected_resets_never_lift_the_low_quota_sink(self, provider: str):
         assert is_low_quota(_reading(provider, 0, WEEK, reset_count=1))
@@ -369,7 +370,7 @@ class TestResetGate:
 
     @pytest.mark.parametrize(
         "provider",
-        ["kimi-coding", "zai", "cursor", "openrouter"],
+        ["kimi-coding", "cursor", "openrouter"],
     )
     def test_injected_resets_stay_inert_in_the_desired_order(
         self, provider: str
@@ -460,9 +461,11 @@ class TestLowQuotaSinkRule:
     def test_is_low_quota_requires_empty_and_reset_free(self):
         assert is_low_quota(_reading("zai", 4, WEEK))
         assert not is_low_quota(_reading("zai", 5, WEEK))
-        # resets only exist for Codex/Grok: an injected zai count is inert,
-        # so the emptied wallet sinks anyway
-        assert is_low_quota(_reading("zai", 0, WEEK, reset_count=1))
+        # resets only exist for Codex/Grok/z.ai: an injected kimi count is
+        # inert, so the emptied wallet sinks anyway
+        assert is_low_quota(_reading("kimi-coding", 0, WEEK, reset_count=1))
+        # z.ai has a resets API: its pending reset is real spendable capacity
+        assert not is_low_quota(_reading("zai", 0, WEEK, reset_count=1))
         assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=1))
         assert not is_low_quota(_reading("xai-oauth", 0, WEEK, reset_count=3))
 
@@ -790,7 +793,9 @@ class TestPreciseStateResets:
     def test_state_reset_fields_are_gated_to_reset_providers(
         self, monkeypatch, tmp_path
     ):
-        # reset fields polluting a non-Codex/Grok row never leave the state
+        # reset fields polluting a non-reset-provider row never leave the
+        # state; z.ai has a resets API, so its row flows through like
+        # Codex/Grok
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         save_state(
             {
@@ -811,9 +816,14 @@ class TestPreciseStateResets:
             now_fn=lambda: NOW,
         )
 
-        assert load_precise_reset_fields(1800, now_fn=lambda: NOW) == {}
+        assert load_precise_reset_fields(1800, now_fn=lambda: NOW) == {
+            "zai": (2, None)
+        }
 
-        names = {"kimi": f"Kimi: 80% {BULLET} 7d left"}
+        names = {
+            "kimi": f"Kimi: 80% {BULLET} 7d left",
+            "zai": f"z.ai: 70% {BULLET} 7d left",
+        }
         readings = readings_from_names(
             names,
             load_precise_readings(1800, now_fn=lambda: NOW),
@@ -822,6 +832,7 @@ class TestPreciseStateResets:
         assert readings["kimi-coding"].reset_count == 0
         assert readings["kimi-coding"].reset_expiry_seconds is None
         assert score_provider(readings["kimi-coding"]) == pytest.approx(0.8)
+        assert readings["zai"].reset_count == 2
 
     def test_stale_state_hides_reset_fields_too(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

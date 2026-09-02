@@ -30,7 +30,7 @@ Memory observability is crucial for a good agent, and stock Hermes provides almo
 
 The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates one Discord voice channel for each of six AI providers and orders them with the same score used by fallback routing:
 
-`quota_frac × (168h / hours_to_reset) + one full wallet per pending usage-limit reset (Codex/Grok), all × uptime_24h × uptime_1h`
+`quota_frac × (168h / hours_to_reset) + one full wallet per pending usage-limit reset (Codex/Grok/z.ai), all × uptime_24h × uptime_1h`
 
 OpenRouter appears as a virtual unlimited Ox Alpha row, and Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
 
