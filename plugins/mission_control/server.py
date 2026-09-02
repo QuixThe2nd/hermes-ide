@@ -4777,6 +4777,11 @@ window.MC = (function () {
 # freely and only $tokens are substituted. The body is the Discord-style
 # shell: $sidebar (rail + conversation sidebar) plus the select-a-chat
 # splash in the main panel. The inline script contains no "$" on purpose.
+# Every shell — this one, CHAT_SHELL and the error/404 chrome — declares
+# an empty inline data-URI icon: without one a browser auto-requests
+# /favicon.ico, and the 404 lands as an error-level console entry. The
+# data URI needs no shipped file and no host/port, so the no-external-
+# assets, domain-independent contract holds.
 PAGE_SHELL = Template("""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4785,6 +4790,7 @@ PAGE_SHELL = Template("""<!DOCTYPE html>
 <meta name="color-scheme" content="dark">
 <meta http-equiv="refresh" content="$refresh_seconds">
 $csrf_meta
+<link rel="icon" href="data:,">
 <title>Mission Control &mdash; chats, last 24 hours</title>
 <style>$shell_css</style>
 </head>
@@ -4891,6 +4897,7 @@ CHAT_SHELL = Template("""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 $csrf_meta
+<link rel="icon" href="data:,">
 <title>Mission Control &mdash; transcript: $title</title>
 <style>$shell_css
 $clarify_css
@@ -6942,6 +6949,7 @@ def error_page(exc):
     return (
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
         "<meta charset=\"utf-8\">\n<meta name=\"color-scheme\" content=\"dark\">\n"
+        "<link rel=\"icon\" href=\"data:,\">\n"
         "<title>Mission Control &mdash; error</title>\n"
         "<style>\n"
         "body { margin: 0; background: #313338; color: #dbdee1; font-family: system-ui,\n"
@@ -6961,6 +6969,7 @@ def not_found_page(detail):
     return (
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
         "<meta charset=\"utf-8\">\n<meta name=\"color-scheme\" content=\"dark\">\n"
+        "<link rel=\"icon\" href=\"data:,\">\n"
         "<title>Mission Control &mdash; not found</title>\n"
         "<style>\n"
         "body { margin: 0; background: #313338; color: #dbdee1; font-family: system-ui,\n"
