@@ -43,6 +43,7 @@ from gateway.run import (
     _prepare_resume_pending_message,
     _should_clear_resume_pending_after_turn,
     build_resume_recovery_note,
+    GatewayRunner,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -718,6 +719,92 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source == tg_source
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_event_borrows_remembered_reply_anchor_reply_only():
+    """The cooperative startup-resume turn's final reply must reuse the
+    session's remembered last REAL user message id as its reply anchor — the
+    same fallback the async/process synthetic injections use
+    (``_inject_watch_notification`` / loop wakeups) — so the resumed answer
+    still threads and pings on reply-semantic platforms after a restart.
+
+    The borrow is reply-only: the anchor rides ``reply_anchor_id`` (consumed
+    by ``_reply_anchor_for_event`` for trusted internal events) while the
+    event's ``message_id`` — its inbound identity — stays None, so nothing
+    downstream (inbound_message_id → turn-context platform_message_id,
+    transcript message_id stamps, the #47237 platform-id dedupe) can treat
+    the synthetic turn as owning that platform message.
+
+    Every other internal semantic of the synthesized event is untouched:
+    empty text (the ``_is_resume_pending`` branch owns the wording) and
+    ``internal=True`` (transcript typing, dedupe, and metadata writes keep
+    their internal gating).
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="anchor-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:anchor-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+        metadata={"_last_user_message_id": "999888777"},
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.text == ""
+    # Reply-only: the borrowed id must NOT become the event's inbound identity.
+    assert event.message_id is None
+    assert event.reply_anchor_id == "999888777"
+    # ... but it still threads the turn-final reply.
+    assert GatewayRunner._reply_anchor_for_event(event) == "999888777"
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_event_without_remembered_anchor_stays_none():
+    """A session with no remembered anchor (fresh session, or a platform that
+    carries no message ids) keeps the historical no-anchor behaviour — the
+    synthesized resume event carries neither an inbound ``message_id`` nor a
+    borrowed ``reply_anchor_id``."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="no-anchor-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:no-anchor-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.message_id is None
+    assert getattr(event, "reply_anchor_id", None) is None
+    assert GatewayRunner._reply_anchor_for_event(event) is None
 
 
 @pytest.mark.asyncio

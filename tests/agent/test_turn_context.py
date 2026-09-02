@@ -261,6 +261,28 @@ def test_user_message_preserves_platform_event_timestamp():
     assert ctx.messages[-1]["timestamp"] == 123.5
 
 
+def test_user_message_without_platform_id_never_stamps_one():
+    """A turn with no inbound platform id (e.g. the trusted-internal startup
+    resume turn, whose reply anchor rides ``MessageEvent.reply_anchor_id``
+    while ``message_id`` stays None) must persist its user row WITHOUT a
+    ``platform_message_id`` — restart drain-window recovery dedups via
+    ``has_platform_message_id`` against this stamp, so a synthetic turn
+    claiming the real user message's id would corrupt that check. The stamp
+    only appears when the gateway actually passed an inbound id.
+    """
+    agent = _FakeAgent()
+
+    ctx = _build(agent, persist_user_platform_id=None)
+
+    assert "platform_message_id" not in ctx.messages[-1]
+
+    # Contrast: a real inbound turn (gateway passes the raw inbound id) does
+    # stamp it — the resume turn's None must keep it absent, not break the
+    # mechanism.
+    ctx_real = _build(agent, persist_user_platform_id="999888777")
+    assert ctx_real.messages[-1]["platform_message_id"] == "999888777"
+
+
 # ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────
 #
 # The prologue is the ONLY place the per-turn synchronous

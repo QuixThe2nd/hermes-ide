@@ -190,6 +190,16 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
+    # Trusted-internal reply-only override: gateway-synthesized events (e.g.
+    # the startup auto-resume turn) borrow the session's remembered last REAL
+    # user message id purely as a reply anchor. The substitution applies HERE
+    # — in reply threading — and nowhere else: the event's ``message_id``
+    # stays None so inbound-identity persistence (turn-context
+    # platform_message_id, transcript message_id stamps) cannot claim it.
+    # Untrusted (non-internal) events never get the substitution.
+    message_id = getattr(event, "message_id", None)
+    if not message_id and getattr(event, "internal", False):
+        message_id = getattr(event, "reply_anchor_id", None)
     if (
         platform == "slack"
         and isinstance(raw_message, dict)
@@ -204,12 +214,12 @@ def _reply_anchor_for_event(event) -> str | None:
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
-        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
+        return message_id or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
-    return getattr(event, "message_id", None)
+    return message_id
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -2563,10 +2573,26 @@ class MessageEvent:
     timestamp: datetime = field(default_factory=datetime.now)
 
     # Whether this event may resolve gateway commands or pending control
-    # prompts. Kept last to preserve positional construction compatibility.
-    # Proactive plugin events set this to False so untrusted payload text
-    # remains conversational input.
+    # prompts. Proactive plugin events set this to False so untrusted payload
+    # text remains conversational input. Last of the legacy positional fields
+    # — new fields must be appended AFTER this one (and passed by keyword) so
+    # the historical 24-positional-argument constructor keeps binding every
+    # argument to the same field.
     allow_gateway_control: bool = True
+
+    # Reply-only anchor for trusted gateway-synthesized internal events.
+    # Startup auto-resume turns borrow the session's remembered last REAL
+    # user message id so their turn-final replies still thread and ping on
+    # reply-semantic platforms — but that id is NOT this event's inbound
+    # identity, so it must never ride ``message_id`` (which flows into
+    # ``inbound_message_id`` → ``persist_user_platform_id`` → transcript
+    # ``message_id``/``platform_message_id`` stamps and would claim a
+    # platform row the synthetic turn does not own). Consumed only by
+    # ``_reply_anchor_for_event``, and only for ``internal=True`` events —
+    # an inbound (untrusted) event can never use the override. Appended after
+    # the legacy fields and set by keyword only, to preserve the positional
+    # constructor ABI above.
+    reply_anchor_id: Optional[str] = None
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

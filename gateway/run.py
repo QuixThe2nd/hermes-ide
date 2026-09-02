@@ -15358,12 +15358,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
+            # system note before the turn runs. Borrow the session's
+            # remembered last REAL user message id (persisted by inbound
+            # turns, so it survives the restart) as the REPLY anchor so the
+            # resumed turn's final reply still threads and pings on
+            # reply-semantic platforms. The borrow is reply-only: it rides
+            # ``reply_anchor_id`` (consumed by _reply_anchor_for_event, and
+            # only for trusted internal events) while ``message_id`` stays
+            # None — the synthetic turn owns no platform message, so nothing
+            # downstream (inbound_message_id → turn-context
+            # platform_message_id, transcript message_id stamps, the
+            # #47237 platform-id dedupe) may treat it as inbound identity.
+            # A session with no remembered anchor keeps the historical
+            # no-anchor behaviour.
+            _anchor = (getattr(entry, "metadata", None) or {}).get(
+                "_last_user_message_id"
+            )
             event = MessageEvent(
                 text="",
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                reply_anchor_id=str(_anchor) if _anchor else None,
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -23174,10 +23190,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Remember the last REAL user message id per session (persisted via
         # session metadata, so it survives restarts). Synthetic injections —
         # async-delegation completions, background-process notifications, loop
-        # wakeups — carry no platform message_id of their own, which left their
-        # turn-final replies without a Discord/Telegram reply anchor and
-        # therefore without a user ping. Those injections now fall back to this
-        # remembered id (see _inject_watch_notification / _loop_wakeup_watcher).
+        # wakeups, the startup auto-resume turn — carry no platform message_id
+        # of their own, which left their turn-final replies without a
+        # Discord/Telegram reply anchor and therefore without a user ping.
+        # Those injections fall back to this remembered id as a reply-only
+        # anchor (see _inject_watch_notification / _loop_wakeup_watcher /
+        # _schedule_resume_pending_sessions — the resume turn via
+        # MessageEvent.reply_anchor_id so its message_id stays None).
         if not getattr(event, "internal", False) and getattr(event, "message_id", None):
             try:
                 await self.async_session_store.set_session_metadata(
