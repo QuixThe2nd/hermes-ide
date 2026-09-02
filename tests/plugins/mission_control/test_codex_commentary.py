@@ -447,6 +447,19 @@ class CommentaryDB(unittest.TestCase):
         con.commit()
         con.close()
         self.dbs = {"default": self.db}
+        # The connection boundary validates every opened path against the
+        # served home, so the shared module must be pointed at this
+        # fixture's home for the DB-backed tests below (the pure-function
+        # classes above never open a DB either way).
+        self._patchers = [
+            mock.patch.object(server, "MAIN_DB", self.db),
+            mock.patch.object(
+                server, "PROFILE_GLOB",
+                os.path.join(self.tmp, "no-such-profile", "*", "state.db")),
+        ]
+        for p in self._patchers:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._patchers])
         self.sid = "20260902_190023_924136cd"
         con = sqlite3.connect(self.db)
         con.execute("INSERT INTO sessions (id, source, title, started_at,"

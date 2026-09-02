@@ -113,7 +113,13 @@ def test_server_imports_stdlib_plus_repo_constants_only():
         elif isinstance(node, ast.ImportFrom) and node.level == 0 \
                 and node.module:
             imported.add(node.module.split(".")[0])
-    allowed = set(sys.stdlib_module_names) | {"hermes_constants"}
+    # hermes_state is the deliberate exception: the session listing is
+    # core-owned (SessionDB.list_sessions_rich owns the projection),
+    # so the server imports the read-only SessionDB from it. Nothing
+    # else from the repo may leak in — no CLI, no agents, no plugin
+    # package imports (the module stays standalone-loadable).
+    allowed = set(sys.stdlib_module_names) | {
+        "hermes_constants", "hermes_state"}
     assert imported <= allowed, imported - allowed
 
 

@@ -26,40 +26,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-SESSIONS_SCHEMA = """
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  source TEXT NOT NULL,
-  title TEXT,
-  display_name TEXT,
-  started_at REAL NOT NULL,
-  ended_at REAL,
-  end_reason TEXT,
-  last_activity_at REAL,
-  archived INTEGER NOT NULL DEFAULT 0,
-  hidden INTEGER NOT NULL DEFAULT 0,
-  cwd TEXT,
-  thread_id TEXT,
-  parent_session_id TEXT
-);
-"""
+# The production schema from core — the listing is served by the core
+# projection (list_sessions_rich), which also reads system_prompts;
+# the synthetic subset above predated that and made the fixture DB
+# unlistable.
+sys.path.insert(0, str(REPO_ROOT))
 
-MESSAGES_SCHEMA = """
-CREATE TABLE messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT,
-  tool_name TEXT,
-  tool_call_id TEXT,
-  tool_calls TEXT,
-  codex_message_items TEXT,
-  timestamp REAL NOT NULL,
-  finish_reason TEXT,
-  active INTEGER NOT NULL DEFAULT 1,
-  display_kind TEXT
-);
-"""
+from hermes_state_common import SCHEMA_SQL  # noqa: E402
+
+SESSIONS_SCHEMA = SCHEMA_SQL
+MESSAGES_SCHEMA = ""
 
 
 def _make_home(root: Path) -> Path:
@@ -74,7 +50,7 @@ def _make_home(root: Path) -> Path:
     db.parent.mkdir(parents=True)
     now = time.time()
     con = sqlite3.connect(str(db))
-    con.executescript(SESSIONS_SCHEMA + MESSAGES_SCHEMA)
+    con.executescript(SESSIONS_SCHEMA)
     con.execute(
         "INSERT INTO sessions (id, source, title, started_at,"
         " last_activity_at) VALUES ('sess-live', 'discord',"

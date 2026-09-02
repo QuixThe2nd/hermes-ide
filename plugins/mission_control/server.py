@@ -277,6 +277,7 @@ import re
 import secrets
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -290,6 +291,7 @@ from string import Template
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from hermes_constants import display_hermes_home, get_hermes_home
+from hermes_state import SessionDB
 
 WINDOW_SECONDS = 24 * 3600
 # State/profile discovery always flows through get_hermes_home() so a
@@ -302,23 +304,21 @@ PROFILE_GLOB = str(_HERMES_HOME / "profiles" / "*" / "state.db")
 # transitions feel live (the feed already polls every 2 s in chats).
 REFRESH_SECONDS = 10
 
-# Title falls back to display_name, then the session id. Sub-agent
-# sessions (source='subagent') never appear here: they live inside
-# their parent's conversation instead. The source test is the only
-# filter — Discord continuation sessions also carry a non-null
-# parent_session_id and must keep their inbox rows. ended_at feeds
-# the Completed classification. archived feeds the Closed section:
-# an archived session is Closed no matter what else is true.
-SESSION_SQL = """
-SELECT id, source, title, display_name, last_activity_at, ended_at,
-       archived
-FROM sessions
-WHERE hidden = 0
-  AND last_activity_at IS NOT NULL
-  AND last_activity_at >= ?
-  AND last_activity_at <= ?
-  AND IFNULL(source, '') != 'subagent'
-"""
+# This surface has no server pager, so the core listing is asked for
+# every row and the rolling closed-row window is applied after the
+# global open/closed partition (load_sessions) — never inside the
+# query, where it could strand an open conversation behind rows the
+# window kept.
+LIST_ALL_LIMIT = 1000000
+
+# ---- inbox listing ----------------------------------------------------
+# The inbox's session set and ordering are core-owned (load_sessions
+# reads SessionDB.list_sessions_rich; see there for the projection,
+# visibility and window rules). Title falls back to display_name, then
+# the session id; sub-agent sessions never appear as inbox rows — they
+# live inside their parent's conversation instead. ended_at feeds the
+# Completed classification. archived feeds the Closed section: an
+# archived session is Closed no matter what else is true.
 
 # Last message per session: the newest messages row with real text —
 # role 'user' or 'assistant' (session_meta and tool rows are never
@@ -1013,6 +1013,46 @@ WHERE source = ?
 ORDER BY started_at DESC, id DESC
 """
 
+# ---- canonical-chain variants ----------------------------------------
+# A conversation is the whole compression lineage Hermes core resolves
+# (root first, tip last — see _chain_ids), not the one row a URL names.
+# These are the transcript-page, feed, cursor, sub-agent and archive
+# statements above with only the session filter widened from "= ?" to
+# "IN (...)" over the chain members, so a root bookmark and the live
+# tip render the same transcript, the same sub-agent section, advance
+# the same cursor, and close/reopen flips the same set of rows. Row id
+# stays the one chronology: chain members' messages interleave by the
+# global AUTOINCREMENT id, which is exactly the order they were written.
+CHAT_PAGE_CHAIN_SQL = CHAT_PAGE_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+FEED_LAST_ID_CHAIN_SQL = FEED_LAST_ID_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+FEED_AFTER_CHAIN_SQL = FEED_AFTER_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+FEED_BACKFILL_CHAIN_SQL = FEED_BACKFILL_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+SUBAGENTS_CHAIN_SQL = SUBAGENTS_SQL.replace(
+    "WHERE parent_session_id = ?", "WHERE parent_session_id IN ({placeholders})")
+
+# Close/reopen for a non-Discord conversation flips every chain member
+# in one transaction (a Discord thread session keeps flipping by
+# thread_id, which continuation rows already share); the mismatch
+# read-back covers the same set.
+SET_ARCHIVE_BY_CHAIN_SQL = SET_ARCHIVE_BY_ID_SQL.replace(
+    "WHERE id = ?", "WHERE id IN ({placeholders})")
+COUNT_CHAIN_MISMATCH_SQL = """
+SELECT COUNT(*) FROM sessions
+WHERE id IN ({placeholders}) AND archived != ?
+"""
+
+# Root id -> display title for projected (tip) rows: search resolves a
+# root's title and id to the conversation its tip surfaces, so both
+# spellings ride the client search blob (render_conv_row's data-q).
+ROOT_TITLE_SQL = """
+SELECT id, COALESCE(NULLIF(title, ''), NULLIF(display_name, ''), id)
+FROM sessions WHERE id IN ({placeholders})
+"""
+
 # Discord envelopes wrap the real text in bookkeeping: a leading
 # "[Triggering message id: …]" block (the handle for reply/react/pin)
 # and a "[username]" sender prefix. Previews show the message itself.
@@ -1077,39 +1117,159 @@ def _home_root():
     return os.path.realpath(os.path.dirname(os.path.abspath(MAIN_DB)))
 
 
-def _db_stays_in_home(path, root):
-    """True when a candidate state.db fully resolves inside root.
+def _contained(path, root):
+    """True when a resolved path is root itself or lives under it."""
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return path == root or path.startswith(prefix)
+
+
+def _canonical_db(path, root):
+    """The canonical, contained database path for a candidate, or None.
 
     Every path component counts: a profile directory that is a symlink
     out of the home, or a state.db that is one, resolves outside root
     and is rejected here — before any connection is opened — so no
     read, write, spawn or token lookup can reach a database the home
-    did not configure. A candidate that cannot be resolved (missing,
-    broken, permission-denied, or racing away mid-check) answers False
-    instead of raising: discovery may only ever shrink."""
+    did not configure. The answer is the fully resolved real path (all
+    symlinks resolved NOW), which is the only spelling every later
+    connect, archive, transcript, spawn and mutation path may open. A
+    candidate that cannot be resolved (missing, broken,
+    permission-denied, or racing away mid-check) answers None instead
+    of raising: discovery may only ever shrink."""
     try:
         real = os.path.realpath(path)
+        if not os.path.isfile(real):
+            return None
     except OSError:
-        return False
-    prefix = root if root.endswith(os.sep) else root + os.sep
-    return real == root or real.startswith(prefix)
+        return None
+    return real if _contained(real, root) else None
+
+
+def _db_stays_in_home(path, root):
+    """True when a candidate state.db fully resolves inside root.
+
+    Containment question only, kept for the avatar boundary; the value
+    every database surface uses is the canonical path _canonical_db()
+    returns (see discover_dbs / _connect_db)."""
+    return _canonical_db(path, root) is not None
+
+
+def _db_file_identity(path):
+    """(st_dev, st_ino) of the file at path, or None when it cannot be
+    stated — the value compared at the connection boundary, so a path
+    that still resolves inside the home but was swapped to a different
+    file is told apart from the database discovery accepted."""
+    try:
+        st = os.stat(path)
+        return (st.st_dev, st.st_ino)
+    except OSError:
+        return None
+
+
+# Identity of every DB the most recent discovery pass accepted: canonical
+# path -> (st_dev, st_ino). Replaced whole by each discover_dbs() pass and
+# compared by _connect_db, so a check/open swap between discovery and the
+# connection answers as an unavailable database instead of opening a
+# different file.
+_db_identities = {}
+
+
+def _connect_db(path, write=False, timeout=2.0):
+    """Open one discovered database after boundary revalidation.
+
+    The canonical path is re-derived HERE, at the connection boundary —
+    not reused from a check that ran earlier — and the file identity is
+    compared with the last discovery pass both before the open and
+    after it. A component or file swapped in between therefore cannot
+    redirect SQLite outside the trusted Hermes home: an escaping swap
+    fails containment, a same-path different-file swap fails identity,
+    and the read-write flavor opens through mode=rw so a swapped-away
+    target can never be *created* either. Raises sqlite3.OperationalError
+    (the callers' existing degraded-answer path) when the candidate no
+    longer checks out."""
+    canonical = _canonical_db(path, _home_root())
+    if canonical is None:
+        raise sqlite3.OperationalError("database not available")
+    # The identity the open must land on: the one discovery recorded, or
+    # — for a caller connecting ahead of any discovery pass — the one
+    # stated just before the open. Either way the post-open restatement
+    # must still name the same file.
+    expected = _db_identities.get(canonical)
+    if expected is None:
+        expected = _db_file_identity(canonical)
+        if expected is None:
+            raise sqlite3.OperationalError("database not available")
+    elif _db_file_identity(canonical) != expected:
+        raise sqlite3.OperationalError("database changed under us")
+    if write:
+        # mode=rw, never rwc: a write open may flip an existing database,
+        # never conjure one somewhere a swap pointed at.
+        con = sqlite3.connect("file:" + quote(canonical) + "?mode=rw",
+                              uri=True, timeout=timeout)
+    else:
+        con = sqlite3.connect("file:" + quote(canonical) + "?mode=ro",
+                              uri=True, timeout=timeout)
+    try:
+        if _db_file_identity(canonical) != expected:
+            raise sqlite3.OperationalError("database changed under us")
+    except Exception:
+        con.close()
+        raise
+    return con
 
 
 def discover_dbs():
-    """Yield (path, profile name) for the main DB then each profile DB.
+    """Yield (canonical path, profile name) for the main DB then each
+    profile DB.
 
-    Every candidate must stay inside _home_root(): a profile directory
-    or state.db symlinked outside the configured home — and anything
-    missing or unreadable — is dropped before it is ever returned, so
-    every surface built on this mapping (inbox, chat, feed, lineage,
-    archive sync, spawns) can only ever touch in-root databases."""
+    Every candidate is resolved to its canonical real path HERE and only
+    that value is ever returned, so every later connect, archive,
+    transcript, spawn and mutation path opens the validated file, not
+    the original (possibly symlinked) spelling. A candidate that is
+    missing or unreadable, or whose profile directory or state.db
+    resolves outside _home_root(), is dropped before it is ever
+    returned, and so is a path alias: a second spelling that resolves
+    to a database already served (the main DB reached through a profile
+    symlink, or two profile names for one file) is refused rather than
+    double-served. Profile names come from the canonical directory, so
+    an alias can never rename or shadow a served profile.
+
+    The one exception is the main DB missing entirely: a path that
+    still resolves inside the home stays discovered (exactly as before
+    the canonicalization) so the listing reports it as a load-time
+    note instead of silently vanishing — _connect_db() still refuses
+    to open anything there, so a missing database can be named but
+    never read or written."""
     root = _home_root()
     found = []
-    if _db_stays_in_home(MAIN_DB, root):
-        found.append((MAIN_DB, "default"))
+    identities = {}
+    seen = set()
+    canon = _canonical_db(MAIN_DB, root)
+    if canon is None:
+        try:
+            real = os.path.realpath(MAIN_DB)
+        except OSError:
+            real = ""
+        if real and _contained(real, root):
+            canon = real
+    if canon is not None:
+        ident = _db_file_identity(canon)
+        found.append((canon, "default"))
+        seen.add(ident or canon)
+        identities[canon] = ident
     for path in sorted(glob.glob(PROFILE_GLOB)):
-        if os.path.isfile(path) and _db_stays_in_home(path, root):
-            found.append((path, os.path.basename(os.path.dirname(path))))
+        canon = _canonical_db(path, root)
+        if canon is None:
+            continue
+        ident = _db_file_identity(canon)
+        key = ident or canon
+        if key in seen:
+            continue  # an alias of a database already served
+        seen.add(key)
+        identities[canon] = ident
+        found.append((canon, os.path.basename(os.path.dirname(canon))))
+    _db_identities.clear()
+    _db_identities.update(identities)
     return found
 
 
@@ -1126,6 +1286,33 @@ def profile_home(profile):
         if name == profile:
             return os.path.dirname(os.path.abspath(db_path))
     return None
+
+
+def _chain_ids(db_path, session_id):
+    """Ids of the conversation *session_id* belongs to, root first.
+
+    The definition of "one conversation" is core-owned
+    (SessionDB.get_session_lineage_ids — the same chain the resume
+    readers count), so a compression root, any middle segment and the
+    live tip all resolve to the same list and every transcript, feed,
+    cursor and archive path below acts on the whole conversation. The
+    caller supplies the discovered canonical DB path; an unreadable DB
+    or an unknown id degrades to [session_id] — the page then renders
+    exactly the one segment it always could, never a wrong chain."""
+    try:
+        # tuning_pragmas=False: this server serves explicit discovered
+        # paths, so its connections take plain-SQLite defaults and never
+        # load config.yaml — the config read would materialize the
+        # ambient HERMES_HOME, which is not this server's to touch.
+        sdb = SessionDB(db_path, read_only=True, tuning_pragmas=False)
+    except Exception:
+        return [session_id]
+    try:
+        return sdb.get_session_lineage_ids(session_id) or [session_id]
+    except Exception:
+        return [session_id]
+    finally:
+        sdb.close()
 
 
 def load_last_lines(con, session_ids):
@@ -1238,80 +1425,130 @@ def classify_session(row, newest):
 def load_sessions(now):
     """Return (rows, notes) across all DBs; each DB failure becomes a note.
 
-    Every row carries its inbox section in r["state"] (active /
-    completed / incomplete): active means a live unexpired turn lease
-    names the session; completed means ended_at or a final assistant
-    answer; incomplete is the honest remainder. Lease and
-    newest-event lookups are one batched query each per DB — never
-    N+1 — and each degrades to a weaker classification plus at most
-    one note when the table/column is missing.
+    The listing itself is core-owned: every discovered DB is read
+    through SessionDB.list_sessions_rich(open_first=True,
+    order_by_last_active=True, include_archived=True), so compression-tip
+    projection, pinned back-fill, branch/reset visibility and hidden and
+    delegate filtering all follow the one definition Hermes core owns —
+    the surfaced row for a compressed conversation is its live tip,
+    never the always-ended root. This function attaches only the
+    presentation envelope: last-line/last-tool enrichment, lease/job
+    Active marking and the Completed/Incomplete judgment, batched per
+    DB exactly as before (never N+1), each degrading to a weaker
+    classification plus at most one note when a table/column is
+    missing.
+
+    Rows merge across DBs with one deterministic global key: every
+    open conversation before every closed one, canonical last-active
+    order inside each partition, then stable (profile, session id)
+    tie-breakers. The rolling 24h window bounds only conversations
+    that have come to rest — projected tip ended, or archived: an open
+    or pinned conversation stays listed however old it is, so a
+    quiet-but-live chat can never fall out of the inbox, and a pin the
+    window would drop stays reachable without landing below a closed
+    row.
     """
     lo = now - WINDOW_SECONDS
     rows, notes = [], []
     for path, profile in discover_dbs():
         try:
-            con = sqlite3.connect("file:" + quote(path) + "?mode=ro",
-                                  uri=True, timeout=2.0)
+            # tuning_pragmas=False — plain-SQLite defaults, no config
+            # load, no ambient-home side effect (see _chain_ids).
+            sdb = SessionDB(path, read_only=True, tuning_pragmas=False)
             try:
-                db_rows = []
-                for sid, source, title, display_name, last, ended, \
-                        archived in con.execute(SESSION_SQL, (lo, now)):
-                    db_rows.append({
-                        "id": sid,
-                        "source": source or "",
-                        "title": title or display_name or sid,
-                        "last": last,
-                        "ended": ended,
-                        "archived": bool(archived),
-                        "profile": profile,
-                        "state": "incomplete",
-                    })
-                try:
-                    lines = load_last_lines(con, [r["id"] for r in db_rows])
-                except sqlite3.Error as exc:
-                    # Sessions still list; the column just falls back to —.
-                    lines = {}
-                    notes.append("last-message data for %s (%s)"
-                                 % (profile, exc))
-                try:
-                    tools = load_last_tools(con, [r["id"] for r in db_rows])
-                except sqlite3.Error as exc:
-                    tools = {}
-                    notes.append("last-tool data for %s (%s)"
-                                 % (profile, exc))
-                lease_ids = set()
-                try:
-                    lease_ids = load_lease_ids(con, now)
-                except sqlite3.Error as exc:
-                    # No lease table (or unreadable): classification
-                    # degrades to Completed/Incomplete. One note, same
-                    # style as the preview fallbacks above.
-                    notes.append("turn leases for %s (%s)" % (profile, exc))
-                newest = {}
-                try:
-                    newest = load_newest_events(con,
-                                                [r["id"] for r in db_rows])
-                except sqlite3.Error as exc:
-                    newest = {}
-                    notes.append("completion state for %s (%s)"
-                                 % (profile, exc))
-                for r in db_rows:
-                    r["last_line_role"], r["last_line"] = \
-                        lines.get(r["id"], ("", ""))
-                    r["last_tool"] = tools.get(r["id"], "")
-                    # State precedence: archived -> closed first, then a
-                    # live lease/job -> active, else completed/incomplete.
-                    if r["archived"]:
-                        r["state"] = "closed"
-                    elif r["id"] in lease_ids:
-                        r["state"] = "active"
-                    else:
-                        r["state"] = classify_session(r, newest)
-                rows.extend(db_rows)
+                rich = sdb.list_sessions_rich(
+                    limit=LIST_ALL_LIMIT, order_by_last_active=True,
+                    open_first=True, include_archived=True,
+                    exclude_sources=("subagent",),
+                )
             finally:
-                con.close()
+                sdb.close()
+        except Exception as exc:
+            # Core listing failed for this DB: one note, its rows absent.
+            notes.append("%s: %s" % (profile, exc))
+            continue
+        db_rows = []
+        for s in rich:
+            last = s.get("last_active") or s.get("started_at") or 0.0
+            rested = s.get("ended_at") is not None or bool(s.get("archived"))
+            if rested and not bool(s.get("pinned")) \
+                    and not (lo <= last <= now):
+                continue
+            db_rows.append({
+                "id": s["id"],
+                "source": s.get("source") or "",
+                "title": s.get("title") or s.get("display_name")
+                or s["id"],
+                "last": last,
+                "ended": s.get("ended_at"),
+                "archived": bool(s.get("archived")),
+                "profile": profile,
+                "state": "incomplete",
+                # Chain keys for search: the projected row is the tip, so
+                # the root's id/title and every intermediate member id
+                # ride along as extra search spellings.
+                "root": s.get("_lineage_root_id") or "",
+                "lineage": list(s.get("_lineage_ids") or []),
+            })
+        try:
+            con = _connect_db(path)
         except sqlite3.Error as exc:
             notes.append("%s: %s" % (profile, exc))
+            continue
+        try:
+            try:
+                lines = load_last_lines(con, [r["id"] for r in db_rows])
+            except sqlite3.Error as exc:
+                # Sessions still list; the column just falls back to —.
+                lines = {}
+                notes.append("last-message data for %s (%s)"
+                             % (profile, exc))
+            try:
+                tools = load_last_tools(con, [r["id"] for r in db_rows])
+            except sqlite3.Error as exc:
+                tools = {}
+                notes.append("last-tool data for %s (%s)" % (profile, exc))
+            lease_ids = set()
+            try:
+                lease_ids = load_lease_ids(con, now)
+            except sqlite3.Error as exc:
+                # No lease table (or unreadable): classification
+                # degrades to Completed/Incomplete. One note, same
+                # style as the preview fallbacks above.
+                notes.append("turn leases for %s (%s)" % (profile, exc))
+            newest = {}
+            try:
+                newest = load_newest_events(con,
+                                            [r["id"] for r in db_rows])
+            except sqlite3.Error as exc:
+                newest = {}
+                notes.append("completion state for %s (%s)" % (profile, exc))
+            root_titles = {}
+            roots = [r["root"] for r in db_rows if r["root"]]
+            for start in range(0, len(roots), LAST_LINE_CHUNK):
+                chunk = roots[start:start + LAST_LINE_CHUNK]
+                root_titles.update(con.execute(
+                    ROOT_TITLE_SQL.format(
+                        placeholders=",".join("?" * len(chunk))), chunk))
+            for r in db_rows:
+                r["last_line_role"], r["last_line"] = \
+                    lines.get(r["id"], ("", ""))
+                r["last_tool"] = tools.get(r["id"], "")
+                extra = [r["root"], root_titles.get(r["root"], "")]
+                extra.extend(x for x in r["lineage"] if x != r["id"])
+                r["search_extra"] = " ".join(x for x in extra if x)
+                del r["root"], r["lineage"]
+                # State precedence: archived -> closed first, then a
+                # live lease/job -> active, else completed/incomplete.
+                if r["archived"]:
+                    r["state"] = "closed"
+                elif r["id"] in lease_ids:
+                    r["state"] = "active"
+                else:
+                    r["state"] = classify_session(r, newest)
+            rows.extend(db_rows)
+        finally:
+            con.close()
     # Confidently linked cross-profile children leave every inbox
     # section: they render as Sub-agents under their parent instead.
     # Nothing else is ever hidden — not by profile, source or title —
@@ -1322,7 +1559,12 @@ def load_sessions(now):
     if linked:
         rows = [r for r in rows
                 if (r["profile"], r["id"]) not in linked]
-    rows.sort(key=lambda r: r["last"], reverse=True)
+    # Global merge, applied before any rendering: open rows strictly
+    # before closed ones, canonical last-active order inside each
+    # partition, stable (profile, session id) tie-breakers so identical
+    # timestamps never shuffle between renders.
+    rows.sort(key=lambda r: (r["state"] == "closed", -(r["last"] or 0.0),
+                             r["profile"], str(r["id"])))
     return rows, notes
 
 
@@ -1345,10 +1587,14 @@ def mark_job_states(rows):
 
 
 def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
-    """Load one session's header and transcript page from its own DB.
+    """Load one conversation's header and transcript page from its DB.
 
-    dbs maps profile name -> DB path (discover_dbs()). Returns None when
-    the session id isn't in that profile's DB — a session id is never
+    dbs maps profile name -> DB path (discover_dbs()). The transcript,
+    the sub-agent section and the feed cursor span the conversation's
+    whole canonical chain (_chain_ids), so a root bookmark, a persisted
+    middle segment and the live tip all render the same page — row id
+    interleaves the members in write order. Returns None when the
+    session id isn't in that profile's DB — a session id is never
     looked up in any other DB. sqlite3.Error propagates so the caller
     can render a themed 500 (a locked DB is not "unknown session").
     The live-activity snapshot is computed here too, so the initial
@@ -1356,19 +1602,33 @@ def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
     server is currently running a composer reply for the session, and
     busy_since that turn's acceptance time — the floor scoping its
     first-output detection).
+
+    last_id is a durable high-water cursor: the newest row id captured
+    BEFORE the transcript rows are read, then raised to the newest id
+    the page actually contains. A row that lands between the cursor
+    capture and the row query is inside the page (and its id lifts the
+    cursor past it), and anything later is replayed by the first
+    after=last_id poll — every event appears exactly once, none is
+    lost to the snapshot/delta seam.
     """
-    con = sqlite3.connect("file:" + quote(dbs[profile]) + "?mode=ro",
-                          uri=True, timeout=2.0)
+    con = _connect_db(dbs[profile])
     try:
         sess = con.execute(CHAT_SESSION_SQL, (session_id,)).fetchone()
         if sess is None:
             return None
         title, display_name, started, last, source, thread_id, \
             archived = sess
-        rows = con.execute(CHAT_PAGE_SQL, (session_id,)).fetchall()
+        chain = _chain_ids(dbs[profile], session_id)
+        ph = ",".join("?" * len(chain))
         last_id = con.execute(
-            FEED_LAST_ID_SQL, (session_id,)).fetchone()[0] or 0
-        subagents = subagents_for(con, profile, session_id)
+            FEED_LAST_ID_CHAIN_SQL.format(placeholders=ph),
+            chain).fetchone()[0] or 0
+        rows = con.execute(
+            CHAT_PAGE_CHAIN_SQL.format(placeholders=ph), chain).fetchall()
+        for row in rows:
+            if row[3] > last_id:
+                last_id = row[3]
+        subagents = subagents_for(con, profile, chain)
         activity = compute_activity(con, session_id, time.time(),
                                     busy_job, busy_since)
     finally:
@@ -1390,23 +1650,32 @@ def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
     }
 
 
-def load_subagents(con, profile, parent_id):
-    """Direct sub-agent children of one session, oldest first.
+def load_subagents(con, profile, chain):
+    """Direct sub-agent children of one conversation, oldest first.
 
-    Called on the parent's own open connection, so the section always
-    reads the same profile DB as the conversation around it: one
-    bounded SUBAGENTS_SQL run, plus one batched SUBAGENT_LABEL_SQL run
-    only when some child has no title/display_name to show (the usual
-    case). Label falls back title -> display_name -> the cleaned first
-    user message, so a row reads as the goal the child was dispatched
-    for. Every child carries its profile (here always the parent's)
-    and started_at so it can merge with cross-profile children.
-    Every field is escaped later at render time.
+    *chain* is the canonical chain id list; a bare session id is still
+    accepted (it names that one segment), so every caller that held a
+    single id keeps working. Children hang off any member of the
+    canonical chain (a dispatch mid-conversation records that member's
+    id as its parent), so the
+    IN-list covers the whole conversation. Called on the conversation's
+    own open connection, so the section always reads the same profile
+    DB as the transcript around it: one bounded SUBAGENTS_CHAIN_SQL
+    run, plus one batched SUBAGENT_LABEL_SQL run only when some child
+    has no title/display_name to show (the usual case). Label falls
+    back title -> display_name -> the cleaned first user message, so a
+    row reads as the goal the child was dispatched for. Every child
+    carries its profile (here always the parent's) and started_at so it
+    can merge with cross-profile children. Every field is escaped later
+    at render time.
     """
+    if isinstance(chain, str):
+        chain = [chain]
     children = []
+    ph = ",".join("?" * len(chain))
     for sid, title, display_name, started, last, ended, end_reason \
-            in con.execute(SUBAGENTS_SQL,
-                           (parent_id, SUBAGENT_MAX_CHILDREN)):
+            in con.execute(SUBAGENTS_CHAIN_SQL.format(placeholders=ph),
+                           chain + [SUBAGENT_MAX_CHILDREN]):
         children.append({
             "id": sid,
             "profile": profile,
@@ -1726,8 +1995,7 @@ def _lineage_lookup(con_path, ids):
     rows = {}
     ids = list(ids)
     try:
-        con = sqlite3.connect("file:" + quote(con_path) + "?mode=ro",
-                              uri=True, timeout=2.0)
+        con = _connect_db(con_path)
         try:
             for start in range(0, len(ids), LAST_LINE_CHUNK):
                 chunk = ids[start:start + LAST_LINE_CHUNK]
@@ -1769,8 +2037,7 @@ def _lineage_job_children(specs, dbs_by_profile):
         if path is None:
             continue
         try:
-            con = sqlite3.connect("file:" + quote(path) + "?mode=ro",
-                                  uri=True, timeout=2.0)
+            con = _connect_db(path)
             try:
                 cands = con.execute(LINEAGE_WORKER_CANDIDATES_SQL, (
                     min(s["lo"] for s in wspecs),
@@ -1822,8 +2089,7 @@ def _lineage_terminal_claims(dbs, lo, hi):
     claims = {}
     for path, profile in dbs:
         try:
-            con = sqlite3.connect("file:" + quote(path) + "?mode=ro",
-                                  uri=True, timeout=2.0)
+            con = _connect_db(path)
             try:
                 sids = [r[0] for r in con.execute(
                     LINEAGE_WINDOW_SESSIONS_SQL, (lo, hi))]
@@ -1981,22 +2247,26 @@ def lineage_index(now):
         return index
 
 
-def subagents_for(con, profile, session_id):
+def subagents_for(con, profile, chain):
     """The children a conversation page and its feed polls show: the
-    same-profile source='subagent' children plus the confidently
-    linked cross-profile children of the lineage index, merged into
-    one oldest-first list whose rows each carry their own profile.
+    same-profile source='subagent' children of any chain member plus
+    the confidently linked cross-profile children of the lineage
+    index, merged into one oldest-first list whose rows each carry
+    their own profile.
 
     The 50-child bound (SUBAGENT_MAX_CHILDREN) is applied AFTER the
     merge, over the combined same- and cross-profile list, with the
     same explicit tie-breaker build_lineage sorts by — so a parent
     with runaway dispatches renders a bounded section no matter which
     DBs its children landed in."""
-    children = load_subagents(con, profile, session_id)
-    linked = lineage_index(time.time())["children"].get(
-        (profile, session_id))
-    if linked:
-        children = children + linked
+    if isinstance(chain, str):
+        chain = [chain]
+    children = load_subagents(con, profile, chain)
+    linked_index = lineage_index(time.time())["children"]
+    linked = []
+    for sid in chain:
+        linked.extend(linked_index.get((profile, sid)) or [])
+    children = children + linked
     children.sort(key=lambda c: (c.get("started") or 0, str(c["id"]),
                                  c.get("profile", "")))
     return children[:SUBAGENT_MAX_CHILDREN]
@@ -2512,31 +2782,49 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
     acceptance time) is that snapshot's turn floor, read under the
     same lock as busy so a job settling mid-poll can never be judged
     with half its state.
+
+    The cursor is a durable high-water mark: the newest row id over
+    the conversation's whole canonical chain, captured BEFORE the
+    snapshot/delta rows are read (a timestamp or mutable activity
+    field is never a cursor), then raised to the newest id the rows
+    actually contain when the poll was not capped. A row that lands
+    between the cursor capture and the row query is therefore inside
+    the snapshot (its id lifts the cursor past it), and anything later
+    is replayed by the next after=last_id poll — every event appears
+    exactly once, none is lost to the snapshot/delta seam. A capped
+    catch-up still stops at the newest row it actually sent.
     """
-    con = sqlite3.connect("file:" + quote(dbs[profile]) + "?mode=ro",
-                          uri=True, timeout=2.0)
+    con = _connect_db(dbs[profile])
     try:
         sess = con.execute(CHAT_SESSION_SQL, (session_id,)).fetchone()
         if sess is None:
             return None
         _title, _display_name, _started, _last, source, thread_id, \
             archived = sess
-        tip = con.execute(FEED_LAST_ID_SQL, (session_id,)).fetchone()[0] or 0
+        chain = _chain_ids(dbs[profile], session_id)
+        ph = ",".join("?" * len(chain))
+        # Cursor first: the high-water mark predates the snapshot.
+        tip = con.execute(
+            FEED_LAST_ID_CHAIN_SQL.format(placeholders=ph), chain
+        ).fetchone()[0] or 0
         if after > 0:
             rows = con.execute(
-                FEED_AFTER_SQL, (session_id, after, FEED_CATCHUP_MAX)
+                FEED_AFTER_CHAIN_SQL.format(placeholders=ph),
+                chain + [after, FEED_CATCHUP_MAX]
             ).fetchall()
             # Cursor math uses the delta alone — backfilled rows are
             # older than the cursor by construction and never affect
-            # it. Not capped -> the cursor can safely jump to the
-            # session tip (skipped rows included); capped -> stop at
-            # what was sent.
-            last_id = tip if len(rows) < FEED_CATCHUP_MAX else \
-                max([r[3] for r in rows] + [after])
+            # it. Not capped -> the cursor rises to the newest id the
+            # poll actually saw (tip included, skipped rows too);
+            # capped -> stop at what was sent.
+            if len(rows) >= FEED_CATCHUP_MAX:
+                last_id = max([r[3] for r in rows] + [after])
+            else:
+                last_id = max([tip] + [r[3] for r in rows])
             if rows and rows[0][0] == "tool":
                 back = con.execute(
-                    FEED_BACKFILL_SQL,
-                    (session_id, rows[0][3], FEED_BACKFILL_MAX)
+                    FEED_BACKFILL_CHAIN_SQL.format(placeholders=ph),
+                    chain + [rows[0][3], FEED_BACKFILL_MAX]
                 ).fetchall()
                 prefix = []
                 for row in back:  # newest -> oldest
@@ -2547,10 +2835,12 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
                 prefix.reverse()
                 rows = prefix + rows
         else:
-            rows = con.execute(CHAT_PAGE_SQL, (session_id,)).fetchall()
+            rows = con.execute(
+                CHAT_PAGE_CHAIN_SQL.format(placeholders=ph), chain
+            ).fetchall()
             rows.reverse()
-            last_id = tip
-        subagents = subagents_for(con, profile, session_id)
+            last_id = max([tip] + [r[3] for r in rows])
+        subagents = subagents_for(con, profile, chain)
         activity = compute_activity(con, session_id, time.time(),
                                     busy_job, busy_since)
     finally:
@@ -2569,8 +2859,7 @@ def load_session_cwd(profile, session_id, dbs):
     cwd may be None. The reply route resumes the session with this
     directory as the child's working directory when it still exists,
     and refuses new turns while archived is set."""
-    con = sqlite3.connect("file:" + quote(dbs[profile]) + "?mode=ro",
-                          uri=True, timeout=2.0)
+    con = _connect_db(dbs[profile])
     try:
         row = con.execute(SESSION_CWD_SQL, (session_id,)).fetchone()
     finally:
@@ -2584,18 +2873,15 @@ def mission_control_ids():
 
     Bound by the same rule as discovery: a main DB symlinked outside
     the configured home is not read at all."""
-    if not _db_stays_in_home(MAIN_DB, _home_root()):
-        return []
     try:
-        con = sqlite3.connect("file:" + quote(MAIN_DB) + "?mode=ro",
-                              uri=True, timeout=2.0)
-        try:
-            return [r[0] for r in con.execute(
-                MISSION_CONTROL_IDS_SQL, (NEW_SESSION_SOURCE,))]
-        finally:
-            con.close()
+        con = _connect_db(MAIN_DB)
     except sqlite3.Error:
         return []
+    try:
+        return [r[0] for r in con.execute(
+            MISSION_CONTROL_IDS_SQL, (NEW_SESSION_SOURCE,))]
+    finally:
+        con.close()
 
 
 # ---- Discord API plumbing -------------------------------------------
@@ -2947,7 +3233,7 @@ def apply_discord_snapshot(db_path, active_ids, now):
     read back for exact equality before the commit — a mismatch rolls
     everything back. Returns the number of changed rows."""
     lo = now - WINDOW_SECONDS
-    con = sqlite3.connect(db_path, timeout=5.0)
+    con = _connect_db(db_path, write=True, timeout=5.0)
     try:
         tids = [r[0] for r in con.execute(
             DISCORD_RECENT_THREADS_SQL, (lo,))]
@@ -3053,16 +3339,18 @@ def set_session_archived(profile, session_id, dbs, desired):
     failure can no longer claim "nothing was changed": the payload
     carries discord_changed/sync_pending and says the background sync
     will retry, without a local affected count. A non-Discord (or
-    threadless) session flips only its own row — no Discord claim is
-    made. Every local write bumps the profile's archive epoch and runs
+    threadless) session flips every member of its canonical
+    compression chain in one transaction — the listed conversation is
+    its projected tip, so the root's row must follow the tip's — with
+    an exact read-back over the same set; no Discord claim is made.
+    Every local write bumps the profile's archive epoch and runs
     under _archive_epoch_lock, so a background snapshot fetched before
     the user acted can never overwrite this result. The payload always
     carries ok/archived/discord/thread_id/affected (or a bounded safe
     error)."""
     db_path = dbs[profile]
     try:
-        con = sqlite3.connect("file:" + quote(db_path) + "?mode=ro",
-                           uri=True, timeout=2.0)
+        con = _connect_db(db_path)
         try:
             row = con.execute(SESSION_STATE_SQL, (session_id,)).fetchone()
         finally:
@@ -3077,6 +3365,14 @@ def set_session_archived(profile, session_id, dbs, desired):
                   and SNOWFLAKE_RE.fullmatch(thread_id))
     base = {"archived": bool(desired), "discord": bool(is_discord),
             "thread_id": thread_id if is_discord else None}
+    # The canonical chain the close/reopen acts on: for a non-Discord
+    # conversation every compression member flips together (the listed
+    # conversation is its projected tip, so closing the tip must close
+    # the root's row too and vice versa). A Discord thread session
+    # keeps flipping by thread_id — continuation rows already share it.
+    chain = _chain_ids(db_path, session_id) if not is_discord \
+        else [session_id]
+    chain_ph = ",".join("?" * len(chain))
     if is_discord:
         token = load_discord_token(db_path)
         if not token:
@@ -3106,7 +3402,7 @@ def set_session_archived(profile, session_id, dbs, desired):
                 # lock so neither path can interleave.
                 _archive_epochs[db_path] = \
                     _archive_epochs.get(db_path, 0) + 1
-                conw = sqlite3.connect(db_path, timeout=5.0)
+                conw = _connect_db(db_path, write=True, timeout=5.0)
                 try:
                     conw.execute("BEGIN IMMEDIATE")
                     affected = conw.execute(
@@ -3151,14 +3447,18 @@ def set_session_archived(profile, session_id, dbs, desired):
             # so an in-flight snapshot can never land over this one.
             _archive_epochs[db_path] = \
                 _archive_epochs.get(db_path, 0) + 1
-            conw = sqlite3.connect(db_path, timeout=5.0)
+            conw = _connect_db(db_path, write=True, timeout=5.0)
             try:
                 conw.execute("BEGIN IMMEDIATE")
                 affected = conw.execute(
-                    SET_ARCHIVE_BY_ID_SQL, (archived_now, session_id)
+                    SET_ARCHIVE_BY_CHAIN_SQL.format(
+                        placeholders=chain_ph),
+                    [archived_now] + chain
                 ).rowcount
                 mismatch = conw.execute(
-                    COUNT_ID_MISMATCH_SQL, (session_id, archived_now)
+                    COUNT_CHAIN_MISMATCH_SQL.format(
+                        placeholders=chain_ph),
+                    chain + [archived_now]
                 ).fetchone()[0]
                 if mismatch:
                     raise sqlite3.Error("read-back mismatch")
@@ -6217,10 +6517,16 @@ def render_conv_row(now, r, selected=None):
     """
     esc = html.escape
     ident = profile_identity(r["profile"])
+    # The search blob resolves the conversation, not just the surfaced
+    # row: the root's id and title ride alongside the tip's (plus every
+    # intermediate member id), so searching either end of a compressed
+    # chain — or a bookmarked middle segment — finds the one entry the
+    # listing projects it to.
     blob = " ".join([str(r["id"]), str(r["title"]), r["profile"],
                      ident["label"], str(r["source"]),
                      r["last_line"].replace("\n", " "),
-                     r["last_tool"]]).lower()
+                     r["last_tool"],
+                     r.get("search_extra", "")]).lower()
     title = str(r["title"])
     if r["last_line"]:
         preview_text = esc(r["last_line"])
@@ -7095,7 +7401,54 @@ class Handler(BaseHTTPRequestHandler):
             return 413, ""
         return None, text
 
+    def _host_allowed(self):
+        """True when the request's Host header names this server.
+
+        The Host is normalized (_normalize_host) and must be a member
+        of the trusted set derived from the configured bind address
+        (_server_trusted_hosts; see --trusted-host). Forwarded /
+        X-Forwarded-* are never consulted: without an explicitly
+        trusted proxy those headers are client-controlled."""
+        host = _normalize_host(self.headers.get("Host"))
+        return host is not None and \
+            host in _server_trusted_hosts(self.server)
+
+    def _origin_allowed(self, value):
+        """True when an Origin/Referer URL names exactly this server.
+
+        The scheme must be http (this server never serves https, and no
+        proxy is trusted to terminate one for it), the host must be in
+        the trusted set, and the port — when the URL carries one — must
+        be the port this server actually bound; an absent port means
+        the scheme default 80, which this server is not."""
+        try:
+            parts = urlsplit(value)
+            port = parts.port  # None when absent; ValueError on garbage
+        except ValueError:
+            return False
+        if parts.scheme != "http":
+            return False
+        host = _normalize_host(parts.netloc)
+        if host is None or \
+                host not in _server_trusted_hosts(self.server):
+            return False
+        try:
+            bound = self.server.server_address[1]
+        except (AttributeError, IndexError):
+            bound = None
+        return port == bound if bound is not None else port in (80, None)
+
     def do_GET(self):
+        # Host first: every HTML page this server emits carries the
+        # CSRF token, so a Host this server was not configured to serve
+        # is refused (421 Misdirected Request) before any page — or any
+        # JSON — is emitted. A DNS-rebinding origin therefore cannot
+        # even read a token to post back, however well it matches its
+        # own Origin header.
+        if not self._host_allowed():
+            self.close_connection = True
+            self._send_page(421, MISDIRECTED_HTML)
+            return
         # Only the path picks the route; a query string never does
         # (the feed reads its cursor out of parts.query itself).
         parts = urlsplit(self.path)
@@ -7326,14 +7679,19 @@ class Handler(BaseHTTPRequestHandler):
         """Header-only forgery check for every state-changing route.
 
         Returns None when the request may proceed, else the HTTP status
-        to answer with (403/415). Runs before any POST handler parses a
+        to answer with (403/415/421). Runs before any POST handler parses a
         body, touches SQLite or calls Discord, so a browser-simple
         cross-origin request can never mutate anything:
 
-        - Origin (when the client sends one) must name this server —
-          compared against the Host header, never against a configured
-          list, so the rule holds on any bind address. Absent Origin is
-          a non-browser client and still faces the two checks below.
+        - The Host header itself must name this server (the
+          DNS-rebinding case: an origin whose Host AND Origin both name
+          the attacker used to sail through an origin==host
+          comparison). Untrusted Host -> 421.
+        - Origin (when the client sends one) must name exactly this
+          server — trusted host, http scheme, and the port this server
+          actually bound — never merely echo the request's own Host. A
+          Referer, when Origin is absent but Referer rides along, is
+          held to the same rule.
         - The content type must be application/json exactly. An HTML
           form can only send the "simple" types, so this alone stops
           every forged form post.
@@ -7344,14 +7702,18 @@ class Handler(BaseHTTPRequestHandler):
 
         The token value is never included in the response or the log.
         """
+        if not self._host_allowed():
+            return 421
         origin = self.headers.get("Origin")
         if origin:
-            host = self.headers.get("Host")
-            try:
-                origin_host = urlsplit(origin).netloc
-            except ValueError:
-                origin_host = ""
-            if not host or origin_host != host:
+            if not self._origin_allowed(origin):
+                return 403
+        else:
+            # Absent Origin is a non-browser client; a Referer, when
+            # one rides along, still names where the request came from
+            # and is held to the same rule.
+            referer = self.headers.get("Referer")
+            if referer and not self._origin_allowed(referer):
                 return 403
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0]
         if ctype.strip().lower() != "application/json":
@@ -7627,6 +7989,148 @@ def _is_loopback(host):
         return False  # a hostname, wildcard, or non-loopback address
 
 
+# ---- trusted Host and origin binding ---------------------------------
+# DNS-rebinding defense: a request's own Host header proves nothing,
+# because the connection arriving on our socket may be an attacker
+# domain rebound to our address. Every HTML page this server emits
+# carries the CSRF token and every state-changing route accepts it, so
+# both token-bearing pages and POSTs are refused unless the Host names
+# an address this server deliberately serves. The default trusted set
+# is derived from the configured bind address; Forwarded /
+# X-Forwarded-* are never consulted — without an explicitly trusted
+# proxy those headers are client-controlled, and this server has no
+# proxy-trust mechanism at all.
+
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+WILDCARD_BINDS = ("", "*", "::", "0.0.0.0")
+# One hostname label: letters/digits/hyphen/underscore, no leading or
+# trailing hyphen; dots join labels. Anything else a Host header might
+# carry is refused before it can match anything.
+HOSTNAME_RE = re.compile(
+    r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?"
+    r"(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$")
+
+# The themed 421 page: Host refused before anything token-bearing or
+# state-changing is considered.
+MISDIRECTED_HTML = (
+    "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n"
+    "<title>Misdirected request</title>\n</head>\n<body>\n"
+    "<h1>This address is not served here.</h1>\n"
+    "<p>The request named a host this server was not configured to "
+    "serve.</p>\n</body>\n</html>\n").encode("utf-8")
+
+
+def _normalize_host(value):
+    """Host header / bind spelling -> one comparable host string, or
+    None.
+
+    Strips the port (an IPv6 literal only in its bracketed form, per
+    RFC 7230 — a bare unbracketed one is refused), lowercases, drops
+    one trailing dot, and canonicalizes IP literals through
+    ipaddress so ::1, [::1] and 0:0:0:0:0:0:0:1 all compare equal.
+    None means the value is not a host this parser accepts — garbage,
+    whitespace, delimiters — and can never match a trusted entry."""
+    if not isinstance(value, str):
+        return None
+    host = value.strip()
+    if not host:
+        return None
+    if host.startswith("["):
+        end = host.find("]")
+        if end == -1:
+            return None
+        name = host[1:end]
+        rest = host[end + 1:]
+        if rest and not rest.startswith(":"):
+            return None
+    else:
+        host_part, sep, port_part = host.partition(":")
+        if sep:
+            # An explicit port: exactly one, digits only. Anything else
+            # where the port belongs — including a second colon, i.e. a
+            # bare unbracketed IPv6 literal — is refused rather than
+            # silently truncated to its first segment.
+            if ":" in port_part or not port_part.isdigit():
+                return None
+        name = host_part
+    name = name.strip().rstrip(".").lower()
+    if not name or any(ch.isspace() or ch in '/\\?#@,%"' for ch in name):
+        return None
+    try:
+        return str(ipaddress.ip_address(name))
+    except ValueError:
+        return name if HOSTNAME_RE.fullmatch(name) else None
+
+
+def _local_interface_ips():
+    """Best-effort set of this machine's own interface addresses.
+
+    Used only to size the default trusted set for a wildcard bind —
+    which genuinely answers on every one of them. Any failure (no
+    resolver, odd platform) yields an empty set: the trusted set stays
+    smaller and access uses a name that is listed."""
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            raw = info[4][0].split("%", 1)[0]
+            try:
+                ips.add(str(ipaddress.ip_address(raw)))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return ips
+
+
+def _default_trusted_hosts(bind_host):
+    """Trusted Host set for one configured bind address.
+
+    A loopback bind (the default) trusts the loopback spellings —
+    localhost, 127.0.0.1, ::1 — since any of them may be how the user
+    reaches the socket and none can name another machine. A wildcard
+    bind answers on every interface, so it also trusts this machine's
+    own interface addresses. An explicit non-loopback address trusts
+    exactly itself: binding a LAN IP is a deliberate act, and reaching
+    that socket under any other name needs an explicit --trusted-host
+    entry."""
+    name = _normalize_host(bind_host)
+    if name is None or name in WILDCARD_BINDS:
+        return set(LOOPBACK_HOSTS) | _local_interface_ips()
+    if name == "localhost":
+        return set(LOOPBACK_HOSTS)
+    try:
+        if ipaddress.ip_address(name).is_loopback:
+            return set(LOOPBACK_HOSTS) | {name}
+    except ValueError:
+        pass
+    return {name}
+
+
+def _server_trusted_hosts(server):
+    """The trusted Host set in force on one HTTP server instance.
+
+    main() pins the CLI-derived set (bind-derived defaults plus any
+    explicit --trusted-host entries) onto the instance; a
+    directly-constructed server — as the tests build — derives the set
+    from its own bound address, cached on the instance after the first
+    ask so a request never re-runs interface enumeration."""
+    pinned = getattr(server, "trusted_hosts", None)
+    if pinned is not None:
+        return pinned
+    cached = getattr(server, "_trusted_hosts_cache", None)
+    if cached is None:
+        try:
+            bind = server.server_address[0]
+        except (AttributeError, IndexError):
+            bind = "127.0.0.1"
+        cached = _default_trusted_hosts(bind)
+        try:
+            server._trusted_hosts_cache = cached
+        except Exception:
+            pass
+    return cached
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="hermes mission_control serve",
@@ -7639,6 +8143,16 @@ def main(argv=None):
                          "explicit, UNAUTHENTICATED, and only safe on a "
                          "trusted private network")
     ap.add_argument("--port", type=int, default=9136)
+    ap.add_argument("--trusted-host", action="append", default=[],
+                    metavar="HOST",
+                    help="additional Host header value this server "
+                         "answers for (repeatable). By default only the "
+                         "bind address itself is trusted — plus, for a "
+                         "loopback or wildcard bind, the local "
+                         "machine's own addresses — and requests whose "
+                         "Host names anything else are refused with 421. "
+                         "Forwarded/X-Forwarded-* headers are never "
+                         "trusted.")
     ap.add_argument("--no-discord-sync", action="store_true",
                     help="disable the background Discord archive sync "
                          "(for proof servers against synthetic data)")
@@ -7683,6 +8197,21 @@ def main(argv=None):
             sync_thread.start()
 
         httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+        # Pin the Host-trust set for the whole serve lifetime: the
+        # bind-derived defaults plus every explicit --trusted-host
+        # entry (refused spellings are dropped with a warning, since a
+        # typo there would silently keep the request refused).
+        trusted = _default_trusted_hosts(args.host)
+        for extra in args.trusted_host:
+            name = _normalize_host(extra)
+            if name is None or name in WILDCARD_BINDS:
+                print("WARNING: ignoring unparseable --trusted-host %r"
+                      % (extra,), flush=True)
+            elif name not in trusted:
+                trusted.add(name)
+                print("serving Host %s in addition to the bind address"
+                      % (name,), flush=True)
+        httpd.trusted_hosts = trusted
         # Report the port actually bound: --port 0 asks the OS for a
         # free port, which is how a test (or anything else that must not
         # race for a fixed number) gets one — server_address carries the

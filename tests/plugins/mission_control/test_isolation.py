@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -37,37 +38,26 @@ SERVER_PY = os.path.join(REPO, "plugins", "mission_control", "server.py")
 
 _MODULE_SEQ = itertools.count()
 
-SESSION_SCHEMA = """
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  source TEXT NOT NULL,
-  title TEXT,
-  display_name TEXT,
-  started_at REAL NOT NULL,
-  ended_at REAL,
-  end_reason TEXT,
-  last_activity_at REAL,
-  archived INTEGER NOT NULL DEFAULT 0,
-  hidden INTEGER NOT NULL DEFAULT 0,
-  cwd TEXT,
-  thread_id TEXT,
-  parent_session_id TEXT
-);
-CREATE TABLE messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT,
-  tool_name TEXT,
-  tool_call_id TEXT,
-  tool_calls TEXT,
-  codex_message_items TEXT,
-  timestamp REAL NOT NULL,
-  finish_reason TEXT,
-  active INTEGER NOT NULL DEFAULT 1,
-  display_kind TEXT
-);
-"""
+# The production schema, imported from core: the listing is now served
+# by the core projection (list_sessions_rich), so fixture DBs must
+# answer exactly the SQL the live ones do — the synthetic subset below
+# predated that and lacks the columns the projection reads.
+sys.path.insert(0, REPO)
+
+from hermes_state_common import SCHEMA_SQL  # noqa: E402
+
+SESSION_SCHEMA = SCHEMA_SQL
+
+# Importing hermes_state (which server.py imports for the read-only
+# SessionDB) materializes the ambient HERMES_HOME's directory tree at
+# import time. Do that ONCE here — before any test points HERMES_HOME
+# at its decoy — so loading a server module instance never writes the
+# decoy: the import below runs against the suite's sandbox home, and
+# every later exec_module finds hermes_state already in sys.modules.
+# In a real `hermes mission_control serve` process the CLI has already
+# imported hermes_state long before the plugin loads, so this mirrors
+# production exactly.
+import hermes_state  # noqa: E402,F401  (import side effect is the point)
 
 STUB = '''#!/usr/bin/env python3
 import os, sqlite3, sys, time

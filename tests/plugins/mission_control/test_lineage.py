@@ -32,6 +32,7 @@ serialized children, the two public surfaces a browser actually sees.
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -40,104 +41,14 @@ import unittest.mock
 import plugins.mission_control.server as server
 
 
-# The production schema, verbatim, for the three tables these code
-# paths read. Keeping the exact column names/order is the point: the
-# fixture DBs must answer the same SQL the live ones do.
-SCHEMA_SESSIONS = """
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
-    user_id TEXT,
-    session_key TEXT,
-    chat_id TEXT,
-    chat_type TEXT,
-    thread_id TEXT,
-    display_name TEXT,
-    origin_json TEXT,
-    expiry_finalized INTEGER DEFAULT 0,
-    model TEXT,
-    model_config TEXT,
-    system_prompt TEXT,
-    system_prompt_hash TEXT,
-    parent_session_id TEXT,
-    started_at REAL NOT NULL,
-    ended_at REAL,
-    end_reason TEXT,
-    message_count INTEGER DEFAULT 0,
-    tool_call_count INTEGER DEFAULT 0,
-    input_tokens INTEGER DEFAULT 0,
-    output_tokens INTEGER DEFAULT 0,
-    cache_read_tokens INTEGER DEFAULT 0,
-    cache_write_tokens INTEGER DEFAULT 0,
-    reasoning_tokens INTEGER DEFAULT 0,
-    cwd TEXT,
-    git_branch TEXT,
-    git_repo_root TEXT,
-    git_metadata_generation INTEGER NOT NULL DEFAULT 0,
-    billing_provider TEXT,
-    billing_base_url TEXT,
-    billing_mode TEXT,
-    estimated_cost_usd REAL,
-    actual_cost_usd REAL,
-    cost_status TEXT,
-    cost_source TEXT,
-    pricing_version TEXT,
-    title TEXT,
-    title_source TEXT,
-    last_activity_at REAL,
-    last_activity_description TEXT,
-    last_activity_provenance TEXT,
-    api_call_count INTEGER DEFAULT 0,
-    handoff_state TEXT,
-    handoff_platform TEXT,
-    handoff_error TEXT,
-    compression_failure_cooldown_until REAL,
-    compression_failure_error TEXT,
-    compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
-    compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
-    profile_name TEXT,
-    rewind_count INTEGER NOT NULL DEFAULT 0,
-    archived INTEGER NOT NULL DEFAULT 0,
-    pinned INTEGER NOT NULL DEFAULT 0,
-    hidden INTEGER NOT NULL DEFAULT 0,
-    last_read_at REAL
-)"""
+# The production schema, from core: the listing is served by the core
+# projection (list_sessions_rich), which also reads system_prompts and
+# the shared session_turn_leases shape — the verbatim table copies
+# below predated that and made every fixture DB unlistable.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))))
 
-SCHEMA_MESSAGES = """
-CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id),
-    role TEXT NOT NULL,
-    content TEXT,
-    tool_call_id TEXT,
-    tool_calls TEXT,
-    tool_name TEXT,
-    effect_disposition TEXT,
-    timestamp REAL NOT NULL,
-    token_count INTEGER,
-    finish_reason TEXT,
-    reasoning TEXT,
-    reasoning_content TEXT,
-    reasoning_details TEXT,
-    codex_reasoning_items TEXT,
-    codex_message_items TEXT,
-    platform_message_id TEXT,
-    observed INTEGER DEFAULT 0,
-    _compressed_summary INTEGER NOT NULL DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0,
-    api_content TEXT,
-    display_kind TEXT,
-    display_metadata TEXT
-)"""
-
-SCHEMA_LEASES = """
-CREATE TABLE session_turn_leases (
-    conversation_id TEXT PRIMARY KEY,
-    holder TEXT NOT NULL,
-    acquired_at REAL NOT NULL,
-    expires_at REAL NOT NULL
-)"""
+from hermes_state_common import SCHEMA_SQL  # noqa: E402
 
 
 class LineageFixture(unittest.TestCase):
@@ -162,9 +73,7 @@ class LineageFixture(unittest.TestCase):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             con = sqlite3.connect(path)
             try:
-                con.execute(SCHEMA_SESSIONS)
-                con.execute(SCHEMA_MESSAGES)
-                con.execute(SCHEMA_LEASES)
+                con.executescript(SCHEMA_SQL)
                 con.commit()
             finally:
                 con.close()
@@ -259,9 +168,7 @@ class LineageFixture(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         con = sqlite3.connect(path)
         try:
-            con.execute(SCHEMA_SESSIONS)
-            con.execute(SCHEMA_MESSAGES)
-            con.execute(SCHEMA_LEASES)
+            con.executescript(SCHEMA_SQL)
             con.commit()
         finally:
             con.close()

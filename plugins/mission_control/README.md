@@ -92,17 +92,40 @@ off entirely, e.g. for proof servers against synthetic data.
   authentication, and none is built in — if you need remote access,
   front it with an authenticating reverse proxy on a network you
   trust.
+- **The Host header itself is checked first.** The server answers
+  only for the Host names the address it bound implies: a loopback
+  or wildcard bind trusts the loopback names plus this machine's own
+  interface addresses, and an explicit `--host` trusts exactly that
+  address. A request whose `Host` names anything else is refused
+  with `421 Misdirected Request` before any page, token or route
+  runs — the DNS-rebinding shape, where a public name resolves to
+  your loopback and both `Host` and `Origin` name the attacker, never
+  gets far enough to receive or use a CSRF token. Host spellings are
+  normalized (IPv4, bracketed IPv6, optional port, one case-insensitive
+  trailing dot); `Forwarded`/`X-Forwarded-*` are client-controlled and
+  never consulted. To answer for one more name — say, behind a proxy
+  you control — pass the repeatable, CLI-only flag:
+
+  ```
+  hermes mission_control serve --trusted-host mc.lan.example
+  ```
+
+  It is a hostname, not a secret, and stays out of `config.yaml` so
+  the config file remains non-secret settings only.
 - **Cross-site request forgery is refused before anything runs.**
   Every state-changing route (`/s/new`, reply, close, reopen, the
-  clarify answer) gates on three header checks before the body is
-  parsed: a same-origin
-  `Origin` when one is sent, exactly `application/json` (an HTML form
-  cannot produce that), and this server process's cryptographically
-  random CSRF token in the non-simple `X-CSRF-Token` header, compared
-  in constant time. The token is emitted only to pages this process
-  serves (a `<meta>` tag) and never appears in a response body or the
-  log. A browser-simple form or text post cannot launch Hermes,
-  update SQLite, or call Discord.
+  clarify answer) gates on four header checks before the body is
+  parsed: the trusted-`Host` check above, then an `Origin` (or, when
+  no `Origin` rides along, a `Referer`) that names **exactly this
+  server** — `http` scheme, a trusted host, and the port actually
+  bound, never merely an echo of the request's own `Host` — then
+  exactly `application/json` (an HTML form cannot produce that), and
+  finally this server process's cryptographically random CSRF token
+  in the non-simple `X-CSRF-Token` header, compared in constant time.
+  The token is emitted only to pages this process serves (a `<meta>`
+  tag) and never appears in a response body or the log. A
+  browser-simple form or text post cannot launch Hermes, update
+  SQLite, or call Discord.
 - **Secrets never reach activity or transcript HTML.** One bounded
   redaction boundary covers every UI-exposed tool-argument summary and
   tool-result detail: complete `Authorization` values (scheme word and
