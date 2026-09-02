@@ -164,6 +164,36 @@ class ProjectionCase(unittest.TestCase):
             r'<article class="conv[^>]*data-q="([A-Za-z0-9_.-]+)[ "]',
             body)]
 
+    def section_spans(self, body):
+        """(key, title, start, end) per rendered sidebar section, in
+        document order."""
+        spans = []
+        for m in re.finditer(
+                r'<(section|details) class="convsec"[^>]*'
+                r'data-section="([a-z]+)"', body):
+            close = body.find("</%s>" % m.group(1), m.end())
+            title = re.search(r'convsec-title">([^<]*)<',
+                              body[m.end():close])
+            spans.append((m.group(2), title.group(1),
+                          m.start(), close))
+        return spans
+
+    def rendered_sections(self, body):
+        """(key, title) for every rendered section, in document order —
+        the public section names exactly as the browser sees them."""
+        return [(key, title) for key, title, _start, _end
+                in self.section_spans(body)]
+
+    def section_of(self, body, sid):
+        """data-section of the section holding one session's row."""
+        pos = re.search(
+            r'<article class="conv[^>]*data-q="%s[ "]' % sid, body)
+        self.assertIsNotNone(pos, "no sidebar row for %s" % sid)
+        for key, _title, start, end in self.section_spans(body):
+            if start < pos.start() < end:
+                return key
+        self.fail("no rendered section contains %s" % sid)
+
     def inbox_rows(self, path="/"):
         _status, body = self.get(path)
         return self.rows_in(body)
@@ -218,6 +248,55 @@ class TestGlobalOrderAcrossDBs(ProjectionCase):
         # section slot ahead of the unfinished one.
         self.assertEqual(order[:2],
                          ["d-open-answered", "d-open-unfinished"])
+
+    def test_ended_not_archived_is_closed_across_dbs(self):
+        """The browser-observed disagreement, on the two-DB fixture it
+        was seen on: the main and a named profile DB each hold an open
+        row with older activity and a row with sessions.ended_at set
+        and archived=0 with newer activity (plus an archived row). The
+        ended rows used to classify Open · completed and lead the whole
+        open partition by recency — they must render inside the Closed
+        disclosure, after every open row, with the public section
+        names and positions saying so."""
+        base = self.now - 1000
+        self.seed(self.main_db, "open-default-old", started=base + 10)
+        self.message(self.main_db, "open-default-old", "q")
+        self.message(self.main_db, "open-default-old", "a",
+                     role="assistant")
+        self.seed(self.main_db, "closed-default-new", started=base + 90,
+                  ended=base + 95, reason="completed")
+        self.seed(self.work_db, "open-profile-middle",
+                  started=base + 30)
+        self.message(self.work_db, "open-profile-middle", "q")
+        self.message(self.work_db, "open-profile-middle", "a",
+                     role="assistant")
+        self.seed(self.work_db, "closed-profile-newer",
+                  started=base + 80, ended=base + 85,
+                  reason="completed")
+        self.seed(self.work_db, "archived-profile", started=base + 70,
+                  ended=base + 72, reason="done", archived=1)
+        _status, page = self.get("/")
+        # Public section names in document order: the open buckets,
+        # then the Closed disclosure strictly last (no unfinished row
+        # exists, so that section renders not at all).
+        self.assertEqual(self.rendered_sections(page), [
+            ("active", "Active"),
+            ("completed", "Open · completed"),
+            ("closed", "Closed")])
+        # Global order: open rows first (newest open row first), then
+        # the closed partition (newest closed row first) — the closed
+        # rows are all newer than every open row and still demoted.
+        self.assertEqual(self.rows_in(page), [
+            "open-profile-middle", "open-default-old",
+            "closed-default-new", "closed-profile-newer",
+            "archived-profile"])
+        # Section membership: ended-not-archived and archived rows sit
+        # under Closed; no closed-titled row under an open label.
+        for sid in ("closed-default-new", "closed-profile-newer",
+                    "archived-profile"):
+            self.assertEqual(self.section_of(page, sid), "closed")
+        for sid in ("open-default-old", "open-profile-middle"):
+            self.assertEqual(self.section_of(page, sid), "completed")
 
     def test_canonical_last_active_order_within_partitions(self):
         base = self.now - 1000
@@ -289,7 +368,8 @@ class TestWindowAndPins(ProjectionCase):
                   started=base - 300, ended=base - 200, reason="done")
         self.seed(self.main_db, "rested_outside",
                   started=base - 4000, ended=base - 3900, reason="done")
-        # An archived row inside the window: the Closed partition.
+        # An archived row inside the window: one Closed flavor next to
+        # the ended-but-unarchived rested rows.
         self.seed(self.main_db, "closed_arch", started=base + 800,
                   ended=base + 900, reason="done", archived=1)
         # An open conversation far older than the window stays listed.
@@ -316,12 +396,14 @@ class TestWindowAndPins(ProjectionCase):
         # Open and pinned rows older than the window are included.
         self.assertIn("open_ancient", rows)
         self.assertIn("pinned_ancient", rows)
-        # The archived row renders in the Closed partition, after both:
-        # a pin the window would have dropped stays reachable without
-        # landing below a closed row.
-        self.assertEqual(rows[-1], "closed_arch")
-        self.assertLess(rows.index("pinned_ancient"),
-                        rows.index("closed_arch"))
+        # Rested rows are closed now — ended or archived — so the
+        # closed partition holds closed_arch, rested_inside and the
+        # ended pin, newest-first. The open conversation older than
+        # the window still renders before every closed row, and the
+        # pin the window would have dropped stays reachable inside the
+        # Closed disclosure instead of disappearing entirely.
+        self.assertEqual(rows[-3:], ["closed_arch", "rested_inside",
+                                     "pinned_ancient"])
         self.assertLess(rows.index("open_ancient"),
                         rows.index("closed_arch"))
 
@@ -437,9 +519,14 @@ class TestChains(ProjectionCase):
                                      mid_texts)
                 else:
                     self.assertIn("tip message of %d" % edges, mid_texts)
-                # Search by the root's id/title finds the projected row.
+                # Search by the root's id/title finds the projected row
+                # — wherever its section sits: the 101-edge projected
+                # tip is compression-ended, so it renders inside the
+                # Closed disclosure below every open row, and the
+                # search still resolves it.
                 _status, page = self.get("/?q=%s" % root)
-                self.assertIn(self.rows_in(page)[0], members)
+                hits = [r for r in self.rows_in(page) if r in members]
+                self.assertEqual(hits, [surfaced.lower()])
                 # Its search blob carries the root's id: the row knows
                 # the conversation it belongs to.
                 blobs = re.findall(

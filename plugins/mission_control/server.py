@@ -56,19 +56,24 @@ the link, the identity badge and the row metadata name the child's
 profile, never the parent's.
 
 The inbox is split into honest sections, still one dense messenger
-list, and every open session renders above every closed one: the
-open buckets first — Active (a live unexpired session_turn_leases
-row for the conversation — the holder's "turn=<continuation id>"
-parsed conservatively, conversation_id as the fallback — or a
-composer reply this server is currently running for the session),
-then Open · completed (sessions.ended_at set, or the newest active
-non-hidden event is a plain assistant answer) and Open · unfinished
-(everything else — stale user- or tool-ended transcripts are never
-mislabeled completed) — and Closed (archived, mirrored from Discord
-or closed locally) strictly last, however recent a closed session
-is. Every closed row carries an explicit Archived chip and subdued
-styling, and the Closed block is a collapsed disclosure so open
-work stays on top literally and visually.
+list, and every open session renders above every closed one.
+Open/closed is the partition the core listing already draws on the
+projected tip: a conversation whose surfaced row carries ended_at is
+closed — archived or not, an ended conversation never sits inside an
+open-labeled section — and so is an archived one (mirrored from
+Discord or closed locally); only ended_at NULL and unarchived is
+open. The open buckets render first — Active (a live unexpired
+session_turn_leases row for the conversation — the holder's
+"turn=<continuation id>" parsed conservatively, conversation_id as
+the fallback — or a composer reply this server is currently running
+for the session; never for a conversation the tip already ended or
+archived), then Open · completed (the newest active non-hidden event
+is a plain assistant answer) and Open · unfinished (everything else
+— stale user- or tool-ended transcripts are never mislabeled
+completed) — and Closed strictly last, however recent a closed
+session is. Every closed row says why with an explicit Archived or
+Ended chip and subdued styling, and the Closed block is a collapsed
+disclosure so open work stays on top literally and visually.
 Each section carries a stable id, a visible count badge and stays
 newest-first inside itself; the search filter covers every section
 and hides one with no visible children. A DB without the lease
@@ -316,9 +321,11 @@ LIST_ALL_LIMIT = 1000000
 # reads SessionDB.list_sessions_rich; see there for the projection,
 # visibility and window rules). Title falls back to display_name, then
 # the session id; sub-agent sessions never appear as inbox rows — they
-# live inside their parent's conversation instead. ended_at feeds the
-# Completed classification. archived feeds the Closed section: an
-# archived session is Closed no matter what else is true.
+# live inside their parent's conversation instead. The projected tip's
+# ended_at and archived feed the Closed section together — the same
+# open/closed split core's open_first ordering draws: an ended or
+# archived session is Closed no matter what else is true, and only an
+# unended, unarchived one stays open.
 
 # Last message per session: the newest messages row with real text —
 # role 'user' or 'assistant' (session_meta and tool rows are never
@@ -411,14 +418,14 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 # around), and each bucket keeps its own newest-first order. The open
 # resting buckets are retitled "Open · …" so the headers read as one
 # honest question: live, or open (and if open, done or not), with the
-# archived tail collapsed by default. The ids/data-state values are
+# closed tail collapsed by default. The ids/data-state values are
 # unchanged stable hooks for the client filter; only order and titles
 # moved.
 # Active and Completed always render (when the page has any rows at
 # all), Incomplete and Closed only when they have members. Closed is
-# archived state mirrored from Discord (or set locally for non-Discord
-# sessions) — it wins over every other signal, and every closed row
-# says so itself with an Archived chip.
+# the projected tip's ended_at or the archived flag (archived mirrors
+# Discord or a local close) — it wins over every other signal, and
+# every closed row says so itself with an Archived or Ended chip.
 SECTION_ORDER = ("active", "completed", "incomplete", "closed")
 SECTION_TITLES = {"active": "Active", "closed": "Closed",
                   "completed": "Open \N{MIDDLE DOT} completed",
@@ -1387,8 +1394,9 @@ def load_newest_events(con, session_ids):
     """Map session id -> (role, has_content, has_tools, silent) of its
     newest active, non-hidden, non-session_meta event — the Completed
     signal. Batched and chunked exactly like the preview queries;
-    sqlite3.Error propagates so an ancient schema degrades to the
-    ended_at rule alone (with a note)."""
+    sqlite3.Error propagates so an ancient schema degrades to Open ·
+    unfinished for every open row (closed rows never consult this)
+    with a note."""
     newest = {}
     for start in range(0, len(session_ids), LAST_LINE_CHUNK):
         chunk = session_ids[start:start + LAST_LINE_CHUNK]
@@ -1402,18 +1410,16 @@ def load_newest_events(con, session_ids):
 
 
 def classify_session(row, newest):
-    """Inbox section for one session row: active / completed /
-    incomplete.
+    """Inbox section for one open session row: completed / incomplete.
 
-    Active is decided by the caller (leases + this server's running
-    jobs), never here. Completed is honest by construction: either
-    Hermes itself recorded ended_at, or the newest active event is an
-    assistant answer — real text, no tool_calls carrier, not [SILENT].
-    A transcript that merely ends on a user message or a tool result
+    Active and Closed are decided by the caller (leases + this
+    server's running jobs; the projected tip's ended_at or archived),
+    never here — a row this sees is already known to be open. Completed
+    is honest by construction: the newest active event is an assistant
+    answer — real text, no tool_calls carrier, not [SILENT]. A
+    transcript that merely ends on a user message or a tool result
     stays incomplete instead of being mislabeled.
     """
-    if row["ended"] is not None:
-        return "completed"
     role, has_content, has_tools, silent = newest.get(
         row["id"], ("", False, False, False))
     if (role == "assistant" and has_content and not has_tools
@@ -1538,9 +1544,13 @@ def load_sessions(now):
                 extra.extend(x for x in r["lineage"] if x != r["id"])
                 r["search_extra"] = " ".join(x for x in extra if x)
                 del r["root"], r["lineage"]
-                # State precedence: archived -> closed first, then a
-                # live lease/job -> active, else completed/incomplete.
-                if r["archived"]:
+                # State precedence: the projected tip's ended_at or
+                # archived flag -> closed first (the same split core's
+                # open_first ordering draws), then a live lease/job ->
+                # active, else completed/incomplete. An ended
+                # conversation is closed at archived=0 too, so it can
+                # never render under an open-labeled section.
+                if r["archived"] or r["ended"] is not None:
                     r["state"] = "closed"
                 elif r["id"] in lease_ids:
                     r["state"] = "active"
@@ -1574,8 +1584,9 @@ def mark_job_states(rows):
     The _jobs table is the second Active signal (a Mission Control
     composer reply running in this process); it wins over the
     DB-derived classification for the sessions it names — but never
-    over archived, which keeps a closed session Closed even while a
-    reply started earlier is still draining.
+    over a closed row (the projected tip's ended_at, or archived),
+    which keeps a closed session Closed even while a reply started
+    earlier is still draining.
     """
     if not _jobs or not rows:
         return
@@ -4862,7 +4873,7 @@ window.MC = (function () {
   // ---- Closed section disclosure --------------------------------------
   // Collapsed by default in the served HTML; the user's toggle persists
   // in localStorage, survives the inbox refresh swap (rebind + restore),
-  // and a text search with matching archived rows expands it temporarily
+  // and a text search with matching closed rows expands it temporarily
   // without overwriting the saved choice.
   var CLOSED_KEY = "mission-control.closed-open";
   var closedSaved = false;
@@ -6511,7 +6522,8 @@ def render_conv_row(now, r, selected=None):
     green presence badge while the session is Active), the title with a
     small relative time on the right, and one preview line — owning
     profile label, last message, optional last-tool chip. Closed rows
-    carry the Archived chip. The pre-lowered search blob rides on
+    carry the chip saying why — Archived, or Ended when only the tip's
+    ended_at closed them. The pre-lowered search blob rides on
     data-q, the owning profile on data-profile (the rail filter), the
     section on data-state.
     """
@@ -6541,12 +6553,20 @@ def render_conv_row(now, r, selected=None):
         tool_chip = ('<span class="conv-tool" title="last tool: %s">%s'
                      '</span>'
                      % (esc(r["last_tool"]), esc(r["last_tool"])))
-    # Closed rows say so in words: a compact Archived chip beside the
-    # title, closed rows only — never on any other state.
-    archived_chip = ""
+    # Closed rows say so in words, and say which kind of closed: a
+    # compact chip beside the title, closed rows only — never on any
+    # other state. Archived for the archive flag, Ended for a
+    # conversation the tip's ended_at closed while still unarchived.
+    closed_chip = ""
     if r["state"] == "closed":
-        archived_chip = ('<span class="conv-archived"'
-                         ' title="archived conversation">Archived</span>')
+        if r["archived"]:
+            closed_chip = ('<span class="conv-archived"'
+                           ' title="archived conversation">'
+                           'Archived</span>')
+        else:
+            closed_chip = ('<span class="conv-archived"'
+                           ' title="ended conversation (not archived)">'
+                           'Ended</span>')
     pres = ""
     if r["state"] == "active":
         pres = ('<i class="pres" role="img" aria-label="live session"'
@@ -6580,7 +6600,7 @@ def render_conv_row(now, r, selected=None):
            avatar_img(ident["avatar"], ident["label"], 32),
            pres,
            esc("%s \N{BULLET} %s" % (title, ident["label"])), esc(title),
-           archived_chip,
+           closed_chip,
            r["last"], esc(fmt_time(r["last"])),
            esc(fmt_rel(now, r["last"])),
            body_title, no_line, esc(ident["label"]), preview_text,
@@ -6594,8 +6614,9 @@ def render_conv_sections(now, rows, selected=None):
 
     Every open section renders before Closed: the buckets are filled
     from the state each row already carries before the first section
-    is emitted, so a closed session never precedes an open one however
-    newer its last activity is. Active and Completed always render
+    is emitted, so a closed session (the tip's ended_at, or archived)
+    never precedes an open one however newer its last activity is.
+    Active and Completed always render
     (stable hooks + count badges), Incomplete and Closed only when
     they have members. Closed is a
     native <details> disclosure with no "open" attribute in the served

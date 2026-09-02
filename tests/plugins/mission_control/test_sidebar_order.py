@@ -8,12 +8,17 @@ honest sections — Active, Open · completed, Open · unfinished, Closed
 activity. The contract under test is the partition that wins over that
 sort: a closed session NEVER precedes an open one, however much newer
 its last activity is, while each section keeps its own newest-first
-order. The partition happens before anything is emitted — there is no
-pagination or windowing on this surface to hide behind (the 24 h load
-window is a time filter, applied before the sections exist), so the
-regression here exercises the exact disagreeing-timestamps trap: the
-newest session overall is closed, the oldest open session must still
-outrank it.
+order. A conversation is closed when its projected tip carries
+sessions.ended_at or the archived flag — the ended-but-unarchived
+flavor is the browser-observed trap: it used to classify Open ·
+completed and lead the open rows by recency, so it must land inside
+the Closed disclosure with the archived rows, never under an
+open-labeled section. The partition happens before anything is
+emitted — there is no pagination or windowing on this surface to hide
+behind (the 24 h load window is a time filter, applied before the
+sections exist), so the regression here exercises the exact
+disagreeing-timestamps trap: the newest sessions overall are closed
+in both flavors, the oldest open session must still outrank them.
 
 The last test closes the newest open session through the real route
 (with the served CSRF token) and proves the no-reload refresh target —
@@ -57,15 +62,20 @@ from hermes_state_common import SCHEMA_SQL  # noqa: E402
 SESSION_SCHEMA = SCHEMA_SQL
 
 # The disagreeing-timestamps fixture: last_activity descends in id
-# order, and the two closed sessions are interleaved by recency with
-# the open ones — closed_newest is the newest session overall.
+# order, and the closed sessions are interleaved by recency with the
+# open ones — closed_newest is the newest session overall. Closed comes
+# in both flavors: the archived flag alone, and sessions.ended_at set
+# with archived=0 (ended_second even has its assistant answer — under
+# the old classification it led Open · completed).
 FIXTURE = [
-    # (id, minutes_ago, archived, has_answer)
-    ("closed_newest", 2, 1, True),
-    ("open_new_completed", 30, 0, True),
-    ("closed_older", 45, 1, True),
-    ("open_unfinished", 90, 0, False),
-    ("open_old_completed", 120, 0, True),
+    # (id, minutes_ago, archived, has_answer, ended)
+    ("closed_newest", 2, 1, True, False),
+    ("ended_second", 5, 0, True, True),
+    ("open_new_completed", 30, 0, True, False),
+    ("closed_older", 45, 1, True, False),
+    ("ended_older", 60, 0, False, True),
+    ("open_unfinished", 90, 0, False, False),
+    ("open_old_completed", 120, 0, True, False),
 ]
 
 
@@ -90,13 +100,15 @@ class OrderingCase(unittest.TestCase):
         con = sqlite3.connect(self.db)
         con.executescript(SESSION_SCHEMA)
         now = time.time()
-        for sid, mins_ago, archived, has_answer in FIXTURE:
+        for sid, mins_ago, archived, has_answer, ended in FIXTURE:
             last = now - mins_ago * 60
             con.execute(
                 "INSERT INTO sessions (id, source, title, started_at,"
-                " last_activity_at, archived, hidden)"
-                " VALUES (?,?,?,?,?,?,0)",
-                (sid, "cli", sid, last, last, archived))
+                " last_activity_at, ended_at, end_reason, archived,"
+                " hidden) VALUES (?,?,?,?,?,?,?,?,0)",
+                (sid, "cli", sid, last, last,
+                 last - 1 if ended else None,
+                 "cli_close" if ended else None, archived))
             con.execute(
                 "INSERT INTO messages (session_id, role, content,"
                 " timestamp) VALUES (?,?,?,?)",
@@ -168,9 +180,40 @@ class OrderingCase(unittest.TestCase):
         self.assertIsNotNone(m, "no sidebar row for %s" % sid)
         return m.start()
 
+    def section_spans(self, page):
+        """(key, title, start, end) per rendered sidebar section, in
+        document order."""
+        spans = []
+        for m in re.finditer(
+                r'<(section|details) class="convsec"[^>]*'
+                r'data-section="([a-z]+)"', page):
+            close = page.find("</%s>" % m.group(1), m.end())
+            title = re.search(r'convsec-title">([^<]*)<',
+                              page[m.end():close])
+            spans.append((m.group(2), title.group(1),
+                          m.start(), close))
+        return spans
+
+    def rendered_sections(self, page):
+        """(key, title) for every rendered section, in document order —
+        the public section names exactly as the browser sees them."""
+        return [(key, title) for key, title, _start, _end
+                in self.section_spans(page)]
+
+    def section_of(self, page, sid):
+        """data-section of the section holding one session's row — the
+        honest answer to "which labeled bucket does this row render
+        under"."""
+        pos = self.row_position(page, sid)
+        for key, _title, start, end in self.section_spans(page):
+            if start < pos < end:
+                return key
+        self.fail("no rendered section contains %s" % sid)
+
     OPEN_IDS = ("open_new_completed", "open_old_completed",
                 "open_unfinished")
-    CLOSED_IDS = ("closed_newest", "closed_older")
+    CLOSED_IDS = ("closed_newest", "ended_second", "closed_older",
+                  "ended_older")
 
     def assert_open_before_closed(self, page):
         """The contract itself: every open row precedes every closed
@@ -208,6 +251,45 @@ class TestOpenBeforeClosed(OrderingCase):
         newest_closed = self.row_position(page, "closed_newest")
         self.assertLess(oldest_open, newest_closed)
 
+    def test_ended_not_archived_renders_under_closed(self):
+        """The browser-observed disagreement: a session with
+        sessions.ended_at set and archived=0 used to classify
+        Open · completed and lead the open rows by recency —
+        ended_second is the second-newest conversation overall and has
+        its assistant answer. Both closed flavors must render inside
+        the Closed disclosure, and no open-labeled section may hold a
+        closed row."""
+        status, page = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        for sid in ("closed_newest", "ended_second", "closed_older",
+                    "ended_older"):
+            self.assertEqual(self.section_of(page, sid), "closed",
+                             "%s must render under Closed" % sid)
+        for sid in ("open_new_completed", "open_old_completed"):
+            self.assertEqual(self.section_of(page, sid), "completed")
+        self.assertEqual(self.section_of(page, "open_unfinished"),
+                         "incomplete")
+        # every closed row says which flavor it is, in words
+        self.assertIn(">Archived</span>", page)
+        self.assertIn(">Ended</span>", page)
+
+    def test_rendered_section_names_and_positions(self):
+        """The public section names render in the fixed order — Active,
+        Open · completed, Open · unfinished, then the Closed
+        disclosure strictly last — and the Closed badge counts every
+        closed row, ended or archived."""
+        status, page = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.rendered_sections(page), [
+            ("active", "Active"),
+            ("completed", "Open · completed"),
+            ("incomplete", "Open · unfinished"),
+            ("closed", "Closed")])
+        count = re.search(
+            r'data-section="closed".*?data-count="(\d+)"', page, re.S)
+        self.assertIsNotNone(count)
+        self.assertEqual(count.group(1), str(len(self.CLOSED_IDS)))
+
     def test_intra_group_newest_first_order_is_kept(self):
         """Demotion is not flattening: inside each section the rows keep
         their last-activity order."""
@@ -216,9 +298,13 @@ class TestOpenBeforeClosed(OrderingCase):
         # open completed: newer before older
         self.assertLess(self.row_position(page, "open_new_completed"),
                         self.row_position(page, "open_old_completed"))
-        # closed: newer before older too
+        # closed: newer before older too, across both closed flavors
         self.assertLess(self.row_position(page, "closed_newest"),
+                        self.row_position(page, "ended_second"))
+        self.assertLess(self.row_position(page, "ended_second"),
                         self.row_position(page, "closed_older"))
+        self.assertLess(self.row_position(page, "closed_older"),
+                        self.row_position(page, "ended_older"))
 
     def test_chat_page_sidebar_follows_the_same_contract(self):
         """The sidebar is shared by every page: an open session's own

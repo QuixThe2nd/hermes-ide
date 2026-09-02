@@ -21,7 +21,10 @@ mirror.
   no-JS auto-refresh fallback. Open always outranks closed: every open
   row renders before any closed row, however much newer the closed
   session's last activity is, while each section keeps its own
-  newest-first order.
+  newest-first order. A conversation is closed when its projected tip
+  carries `ended_at` or the archived flag — an ended-but-unarchived
+  session never sits in an open section; its row says which it is
+  (Ended or Archived).
 - Full transcripts: user/assistant text (HTML-escaped, never rendered
   as markdown), maximal runs of consecutive tool calls collapsed into
   one expandable group per run, sub-agent children, and cross-profile
