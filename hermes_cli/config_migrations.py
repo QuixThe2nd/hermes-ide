@@ -42,7 +42,11 @@ from typing import Any, Callable, Dict, List, Tuple
 
 # Imported at module level (unlike hermes_cli.config, see the header):
 # fallback_config imports nothing beyond typing, so no cycle can form.
-from hermes_cli.fallback_config import is_retired_ox_alpha_route
+from hermes_cli.fallback_config import (
+    RETIRED_OX_ALPHA_MODEL,
+    RETIRED_OX_ALPHA_PROVIDER,
+    is_retired_ox_alpha_route,
+)
 
 #: Auto-migration support floor. Configs whose on-disk ``_config_version`` is
 #: below this are NOT auto-migrated any more (policy decision, July 2026):
@@ -1006,6 +1010,55 @@ def _primary_routes_retired_model(raw_model: Any) -> bool:
     return is_retired_ox_alpha_route(provider, model_id, base_url)
 
 
+def _canonicalize_outer_auto_sentinel(config: Dict[str, Any]) -> bool:
+    """Canonicalize a legacy outer ``model.provider`` auto sentinel in place.
+
+    True when the sentinel was rewritten. The load-time flattener
+    (``_normalize_root_model_keys``) lets a nested ``model.default``
+    provider win only over an absent outer provider or the EXACT string
+    ``auto`` — every other spelling counts as explicit. So a legacy
+    sentinel like ``" AUTO "`` (trim+case-normalizing to auto, exactly as
+    every route consumer reads it) defeats the flattening: the config
+    loads with the sentinel as the provider, runtime resolution normalizes
+    it to auto and infers OpenRouter for the retired vendor-namespaced id,
+    and the custom provider the user actually configured never routes.
+    v41's classifier already normalizes trim+case (see
+    ``_primary_routes_retired_model``) and correctly protects that manual
+    route — but it then persisted the broken sentinel verbatim. Rewriting
+    it to exact lowercase ``auto`` — the only change; the nested shape is
+    left for the loader to flatten, never replaced here — makes the
+    migrated file load as the route the classifier protected.
+
+    Narrowly scoped: only the retired Ox Alpha model id, only an outer
+    provider that trim+case normalizes to auto without already being the
+    exact canonical spelling (a no-op rewrite must not force a persist),
+    and only an explicit nested provider that is neither auto nor
+    OpenRouter — the inferred/explicit retired shapes keep their existing
+    classification paths untouched.
+    """
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return False
+    if str(model.get("provider") or "").strip().lower() != "auto":
+        return False
+    if model.get("provider") == "auto":
+        return False
+    raw_id: Any = None
+    for key in ("default", "model", "name"):
+        if model.get(key) not in (None, ""):
+            raw_id = model.get(key)
+            break
+    from hermes_cli.config import split_model_config_default
+
+    nested_model, nested_provider = split_model_config_default(raw_id)
+    if nested_model.lower() != RETIRED_OX_ALPHA_MODEL:
+        return False
+    if nested_provider.lower() in ("", "auto", RETIRED_OX_ALPHA_PROVIDER):
+        return False
+    model["provider"] = "auto"
+    return True
+
+
 def _filter_fallback_collection(
     raw: Any, predicate: Callable[[Any], bool]
 ) -> Tuple[Any, int]:
@@ -1034,10 +1087,14 @@ def _promoted_model_config(previous: Any, promotee: Dict[str, Any]) -> Dict[str,
     the retired route — the provider becomes the promotee's, and each
     promotable route field is set from the promotee or dropped when the
     promotee doesn't carry it, so the retired route's endpoint cannot leak
-    onto the promoted one. Every non-route field (``streaming``,
-    ``max_tokens``, ``context_length``, ``default_headers``,
-    ``lmstudio_load_mode``, ``openai_runtime``, …) is preserved as-is. A
-    string-shaped or absent previous primary yields the fresh minimal dict.
+    onto the promoted one. The endpoint itself is set from the promotee's
+    EFFECTIVE one — ``_endpoint_url``'s precedence, so a promotee that names
+    it under the legacy ``api_base`` alias keeps its custom endpoint,
+    persisted under the canonical ``base_url`` without a duplicate alias
+    key. Every non-route field (``streaming``, ``max_tokens``,
+    ``context_length``, ``default_headers``, ``lmstudio_load_mode``,
+    ``openai_runtime``, …) is preserved as-is. A string-shaped or absent
+    previous primary yields the fresh minimal dict.
     """
     new_model: Dict[str, Any] = {}
     if isinstance(previous, dict):
@@ -1049,14 +1106,22 @@ def _promoted_model_config(previous: Any, promotee: Dict[str, Any]) -> Dict[str,
     new_model["default"] = promotee["model"]
     new_model["provider"] = promotee["provider"]
     for field in _PROMOTABLE_ROUTE_FIELDS:
+        if field == "base_url":
+            # Set below through the alias-aware precedence — a plain copy
+            # would drop the endpoint of a promotee that names it api_base.
+            continue
         if field in promotee:
             new_model[field] = promotee[field]
+    effective_endpoint = _endpoint_url(promotee)
+    if effective_endpoint:
+        new_model["base_url"] = effective_endpoint
     return new_model
 
 
 def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 40 → 41: retire the openrouter/stealth/ox-alpha route ──
-    # See the retired-route section above. Three scrub rules:
+    # See the retired-route section above. Three scrub rules, plus one
+    # canonicalization:
     #
     # * retired fallback entries are removed from BOTH fallback_providers
     #   (modern list shape) and fallback_model (legacy dict/list shape),
@@ -1072,7 +1137,12 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     #   not simultaneously primary and fallback #1;
     # * a retired primary with no surviving fallback is unset to the
     #   DEFAULT_CONFIG empty model value with a warning to run
-    #   `hermes model` — a replacement provider/credential is never guessed.
+    #   `hermes model` — a replacement provider/credential is never guessed;
+    # * a legacy padded/case-variant outer ``model.provider`` auto sentinel on
+    #   the retired-model nested shape is canonicalized to exact ``auto``
+    #   BEFORE classification, so what v41 persists is a sentinel the
+    #   load-time flattener recognizes and the nested custom provider the
+    #   classifier protected actually routes.
     #
     # A config without the route is left untouched (no persist here — the
     # driver's normal version stamp is the only write), which also makes the
@@ -1085,6 +1155,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
 
     config = read_raw_config()
 
+    canonicalized_auto_sentinel = _canonicalize_outer_auto_sentinel(config)
     primary_retired = _primary_routes_retired_model(config.get("model"))
 
     # Effective chain (fallback_providers in order, then legacy
@@ -1107,7 +1178,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
         )
 
     removed_retired = 0
-    touched = False
+    touched = canonicalized_auto_sentinel
     for key in ("fallback_providers", "fallback_model"):
         raw_value = config.get(key)
         # Count only retired-route removals for the report; the promotee's
@@ -1139,6 +1210,15 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
         results["config_added"].append(
             "removed retired 'openrouter/stealth/ox-alpha' fallback route(s)"
         )
+    if canonicalized_auto_sentinel:
+        results["config_added"].append(
+            "model.provider 'auto' sentinel canonicalized (nested default provider preserved)"
+        )
+        if not quiet:
+            print(
+                "  ✓ Canonicalized the outer model.provider 'auto' sentinel — "
+                "the nested default's custom provider now applies."
+            )
     if promotee is not None:
         results["config_added"].append(
             f"model.default={promotee['model']} (provider {promotee['provider']}, "

@@ -18,9 +18,10 @@ import os
 import textwrap
 from unittest.mock import patch
 
+import pytest
 import yaml
 
-from hermes_cli.config import DEFAULT_CONFIG
+from hermes_cli.config import DEFAULT_CONFIG, load_config
 
 
 def _write_config(tmp_path, data):
@@ -782,8 +783,12 @@ class TestOxAlphaNestedDefaultProviderPrecedence:
         normalization every route consumer applies — so a padded ``" AUTO "``
         outer provider is the merged default, not an explicit one. Gating
         case-sensitively handed the classifier an ``auto`` it resolved by
-        inference, scrubbing the manual custom route it protects."""
-        original = yaml.safe_dump(
+        inference, scrubbing the manual custom route it protects. The route
+        still survives (no promotion, no unset); the variant sentinel is
+        canonicalized (fix-3) so the persisted config no longer carries the
+        spelling the load-time flattener treats as an explicit provider."""
+        config_path = _write_config(
+            tmp_path,
             {
                 "_config_version": 40,
                 "model": {
@@ -791,16 +796,22 @@ class TestOxAlphaNestedDefaultProviderPrecedence:
                     "provider": " AUTO ",
                 },
                 "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
-            }
+            },
         )
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(original, encoding="utf-8")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             results = _run_v41()
+            loaded = load_config()
 
-        # The nested custom route survives untouched — no promotion, no unset.
-        assert config_path.read_text(encoding="utf-8") == original
-        assert results == {"env_added": [], "config_added": [], "warnings": []}
+        raw = _read_config(config_path)
+        # The nested custom route survives — no promotion, no unset — with
+        # the sentinel canonicalized away (see
+        # TestOxAlphaLegacyAutoSentinelCanonicalization for the mechanism).
+        assert raw["model"]["provider"] == "my-gateway"
+        assert raw["model"]["default"] == "stealth/ox-alpha"
+        assert raw["fallback_providers"] == [{"provider": "zai", "model": "glm-4.7"}]
+        assert results["warnings"] == []
+        assert any("canonicalized" in entry for entry in results["config_added"])
+        assert loaded["model"]["provider"] == "my-gateway"
 
     def test_outer_openrouter_provider_with_nested_custom_wins(self, tmp_path):
         """The precedence flips both ways: an explicit outer ``openrouter``
@@ -940,6 +951,261 @@ class TestOxAlphaApiBaseAliasEndpoint:
 
         assert config_path.read_text(encoding="utf-8") == original
         assert results == {"env_added": [], "config_added": [], "warnings": []}
+
+
+class TestOxAlphaLegacyAutoSentinelCanonicalization:
+    """Legacy outer auto sentinel + nested custom provider (fix-3 review).
+
+    The load-time flattener lets a nested default's provider win only over
+    an absent outer provider or the EXACT string ``auto`` — so a padded or
+    case-variant sentinel like ``" AUTO "`` blocked the nested custom
+    provider, runtime resolution normalized the sentinel to auto, inferred
+    OpenRouter for the retired vendor-namespaced id, and routed into the
+    dead model. v41 canonicalizes the sentinel BEFORE classification; it
+    never replaces the outer provider with the nested one and never touches
+    the loader.
+
+    Persistence note: the migration hands ``provider: auto`` + the nested
+    dict to the standard write chokepoint, whose normalization graduates
+    that shape to the canonical flat form (``default: stealth/ox-alpha`` +
+    ``provider: my-gateway``) — the same form any other save produces and
+    the exact route the loader must resolve.
+    """
+
+    @staticmethod
+    def _shape(outer):
+        return {
+            "_config_version": 40,
+            "model": {
+                "default": {"provider": "my-gateway", "model": "stealth/ox-alpha"},
+                "provider": outer,
+            },
+            "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+        }
+
+    def test_canonicalization_sets_auto_and_keeps_nested_shape(self):
+        """The helper itself (pre-persistence): exact ``auto``, never the
+        nested provider, nested default left for the loader to flatten."""
+        from hermes_cli.config_migrations import _canonicalize_outer_auto_sentinel
+
+        config = self._shape(" AUTO ")
+        assert _canonicalize_outer_auto_sentinel(config) is True
+        assert config["model"]["provider"] == "auto"
+        assert config["model"]["default"] == {
+            "provider": "my-gateway",
+            "model": "stealth/ox-alpha",
+        }
+
+    @pytest.mark.parametrize("outer", [" AUTO ", "Auto", "aUto"])
+    def test_variant_sentinel_fixed_and_nested_custom_route_loads(self, tmp_path, outer):
+        config_path = _write_config(tmp_path, self._shape(outer))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = _run_v41()
+            loaded = load_config()
+
+        raw = _read_config(config_path)
+        # The variant sentinel is gone from the persisted file and the route
+        # is the nested custom one — never the retired inference, and the
+        # fallback was not promoted.
+        assert raw["model"]["provider"] == "my-gateway"
+        assert raw["model"]["default"] == "stealth/ox-alpha"
+        assert raw["fallback_providers"] == [{"provider": "zai", "model": "glm-4.7"}]
+        assert results["warnings"] == []
+        assert any("canonicalized" in entry for entry in results["config_added"])
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        assert loaded["model"]["provider"] == "my-gateway"
+
+    def test_canonical_lowercase_auto_untouched_and_loads_nested(self, tmp_path):
+        """Already the exact spelling: nothing to rewrite (byte-for-byte
+        untouched, nothing reported) and the raw file keeps the nested shape
+        with the ``auto`` outer sentinel — loading as the nested custom
+        route."""
+        original = yaml.safe_dump(self._shape("auto"))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(original, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = _run_v41()
+            loaded = load_config()
+
+        raw = _read_config(config_path)
+        assert config_path.read_text(encoding="utf-8") == original
+        assert raw["model"]["provider"] == "auto"
+        assert raw["model"]["default"] == {
+            "provider": "my-gateway",
+            "model": "stealth/ox-alpha",
+        }
+        assert results == {"env_added": [], "config_added": [], "warnings": []}
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        assert loaded["model"]["provider"] == "my-gateway"
+
+    @pytest.mark.parametrize(
+        "nested",
+        [
+            # Provider omitted: the same inferred OpenRouter route the outer
+            # sentinel alone names.
+            {"model": "stealth/ox-alpha"},
+            # auto is the merged default, not a custom provider.
+            {"provider": "auto", "model": "stealth/ox-alpha"},
+            # OpenRouter is the retired route itself, not a custom provider.
+            {"provider": "openrouter", "model": "stealth/ox-alpha"},
+        ],
+    )
+    def test_without_nested_custom_provider_retired_route_still_scrubs(self, tmp_path, nested):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": nested, "provider": " AUTO "},
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        # The variant sentinel must not shield the inferred/explicit retired
+        # route: the first survivor is promoted as usual.
+        assert raw["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert raw.get("fallback_providers", []) == []
+
+    def test_non_retired_model_scope_guard(self, tmp_path):
+        """The canonicalization exists to protect the retired-model nested
+        shape only — a variant sentinel on any other model id is left
+        byte-for-byte alone."""
+        original = yaml.safe_dump(
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": {"provider": "my-gateway", "model": "glm-5.3"},
+                    "provider": " AUTO ",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            }
+        )
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(original, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = _run_v41()
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert results == {"env_added": [], "config_added": [], "warnings": []}
+
+    def test_canonicalization_is_idempotent(self, tmp_path):
+        config_path = _write_config(tmp_path, self._shape(" AUTO "))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+            after_second = _read_config(config_path)
+
+        assert after_first == after_second
+        assert any("canonicalized" in entry for entry in first["config_added"])
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+
+
+class TestOxAlphaPromotionEndpointAlias:
+    """Promotion must carry the promotee's effective endpoint with the same
+    alias-aware precedence retirement classification uses (fix-3 review): a
+    surviving fallback named its custom endpoint ``api_base``, promotion
+    dropped it, and the promoted primary loaded as provider ``auto`` with no
+    endpoint — the inferred, dead OpenRouter route."""
+
+    def test_api_base_promotee_promotes_with_custom_endpoint(self, tmp_path):
+        from hermes_cli.config_migrations import _primary_routes_retired_model
+
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "stealth/ox-alpha", "provider": "openrouter"},
+                "fallback_providers": [
+                    {
+                        "provider": "auto",
+                        "model": "stealth/ox-alpha",
+                        "api_base": "http://127.0.0.1:8080/v1",
+                    },
+                    {"provider": "zai", "model": "glm-4.7"},
+                ],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+            loaded = load_config()
+            second = _run_v41()
+
+        raw = _read_config(config_path)
+        # Custom endpoint persisted under the canonical base_url — no
+        # duplicate api_base alias key on the promoted primary.
+        assert raw["model"] == {
+            "default": "stealth/ox-alpha",
+            "provider": "auto",
+            "base_url": "http://127.0.0.1:8080/v1",
+        }
+        # The later, normal fallback remains the fallback.
+        assert raw["fallback_providers"] == [{"provider": "zai", "model": "glm-4.7"}]
+        # The promoted custom-endpoint route is not the retired one, and a
+        # rerun is a no-op (idempotent).
+        assert _primary_routes_retired_model(raw["model"]) is False
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert _read_config(config_path)["model"] == raw["model"]
+        assert loaded["model"]["base_url"] == "http://127.0.0.1:8080/v1"
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+
+    def test_non_empty_base_url_wins_over_api_base_alias(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "stealth/ox-alpha", "provider": "openrouter"},
+                "fallback_providers": [
+                    {
+                        "provider": "auto",
+                        "model": "stealth/ox-alpha",
+                        "base_url": "http://127.0.0.1:1111/v1",
+                        "api_base": "http://127.0.0.1:2222/v1",
+                    },
+                ],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["model"] == {
+            "default": "stealth/ox-alpha",
+            "provider": "auto",
+            "base_url": "http://127.0.0.1:1111/v1",
+        }
+        assert raw.get("fallback_providers", []) == []
+
+    def test_empty_base_url_falls_back_to_api_base_alias(self, tmp_path):
+        """``_endpoint_url`` precedence: the alias applies only when the
+        canonical key carries no non-empty value."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "stealth/ox-alpha", "provider": "openrouter"},
+                "fallback_providers": [
+                    {
+                        "provider": "auto",
+                        "model": "stealth/ox-alpha",
+                        "base_url": "",
+                        "api_base": "http://127.0.0.1:3333/v1",
+                    },
+                ],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["model"] == {
+            "default": "stealth/ox-alpha",
+            "provider": "auto",
+            "base_url": "http://127.0.0.1:3333/v1",
+        }
+        assert raw.get("fallback_providers", []) == []
 
 
 class TestOxAlphaAutoResolvedFallbackScrub:
