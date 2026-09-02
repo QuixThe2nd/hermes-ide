@@ -41,6 +41,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message
 from agent.turn_context import (
     PreflightCompressionTimedOut,
@@ -988,6 +989,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     """
     stored_prompt = None
     stored_state = "missing"
+    session_row = None
     if conversation_history and agent._session_db:
         try:
             session_row = agent._session_db.get_session(agent.session_id)
@@ -1090,6 +1092,17 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        # Same contract for tools[]: a fresh AIAgent for an existing session
+        # (gateway agent-cache eviction) re-probed every check_fn, so pin the
+        # array back to the order this session already sent (tools freeze).
+        try:
+            saved_tools = session_row.get("tool_names") if session_row else None
+            if saved_tools:
+                from tools.mcp_tool import restore_agent_tool_prefix
+
+                restore_agent_tool_prefix(agent, json.loads(saved_tools))
+        except Exception:
+            logger.debug("tool prefix restore skipped", exc_info=True)
         # Prompt-section callbacks are new-session-only. Recover their frozen
         # bytes from the persisted full prompt so a later compression rebuild
         # keeps them without evaluating plugin state in this resumed process.
@@ -1172,6 +1185,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     if agent._session_db:
         try:
             agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            from tools.mcp_tool import persist_agent_tool_names
+
+            persist_agent_tool_names(agent)
         except Exception as exc:
             logger.warning(
                 "Session DB update_system_prompt failed for session %s: "
@@ -2042,6 +2058,7 @@ def run_conversation(
     agent._last_compaction_in_place = False
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
+    begin_fast_mode_turn(agent, conversation_history)
 
     # Adopt any ~/.hermes/.env credential/base-url edits made since the last
     # turn — a Settings save updates .env but not this worker's client, which
@@ -6199,6 +6216,11 @@ def run_conversation(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
+                        # #100661: the provider proved the request does not fit.
+                        # Ignore the summary-failure cooldown for this ONE
+                        # attempt (bounded by max_compression_attempts) instead
+                        # of deferring every turn until the ladder lapses.
+                        bypass_cooldown=True,
                     )
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                         # #69870 lock-skip: the provider proved the request
@@ -6375,6 +6397,7 @@ def run_conversation(
                                 messages, system_message,
                                 approx_tokens=request_input_estimate,
                                 task_id=effective_task_id,
+                                bypass_cooldown=True,  # #100661 provider-proven overflow
                             )
                             if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                                 compression_attempts -= 1
@@ -6538,6 +6561,11 @@ def run_conversation(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
+                        # #100661: the provider proved the request does not fit.
+                        # Ignore the summary-failure cooldown for this ONE
+                        # attempt (bounded by max_compression_attempts) instead
+                        # of deferring every turn until the ladder lapses.
+                        bypass_cooldown=True,
                     )
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                         # #69870 lock-skip: the provider proved the request

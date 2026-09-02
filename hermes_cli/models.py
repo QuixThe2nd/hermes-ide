@@ -3969,23 +3969,60 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
-    This gates the *speed=fast request parameter*, which Anthropic supports on
-    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
-    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
-    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
-    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
-    test. Keep this in lock-step with that adapter gate so the UI never shows a
-    Fast toggle that the runtime would silently drop.
+    This gates the *speed=fast request parameter*, which Anthropic supports
+    on Opus 4.8 and Opus 5 (research preview, Claude API only). It is
+    deliberately NOT a general "is this a fast model" check:
+
+    - Opus 4.6 had fast mode at launch and LOST it (2026-06-29) — the param
+      is silently ignored (standard speed, standard billing), so exposing a
+      toggle for it would show users a switch that does nothing.
+    - Opus 4.7 hard-400s on the parameter.
+    - Dedicated ``…-fast`` model ids (e.g. OpenRouter's
+      ``claude-opus-4.8-fast``) select fast inference via the model field
+      and must not also receive the speed parameter.
+
+    Keep this in lock-step with ``agent.anthropic_adapter._supports_fast_mode``
+    so the UI never shows a Fast toggle that the runtime would drop.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports the speed=fast parameter at present.
-    return "opus-4-6" in base or "opus-4.6" in base
+    if "-fast" in base:
+        return False
+    return any(v in base for v in ("opus-4-8", "opus-4.8", "opus-5"))
 
 
-def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
+def _fast_mode_route_supported(
+    model_id: Optional[str], provider: Optional[str], base_url: Optional[str]
+) -> bool:
+    """Only the first-party endpoint that bills for fast mode may receive its params.
+
+    OpenRouter, Nous, Copilot, Azure, Bedrock, and custom base_urls either
+    strip ``service_tier``/``speed`` (charging nothing) or 400 on them.
+    """
+    from urllib.parse import urlparse
+
+    from agent.model_metadata import is_grok_46_family
+
+    if _is_anthropic_fast_model(model_id):
+        allowed = {"anthropic": "api.anthropic.com"}
+    elif is_grok_46_family(str(model_id or "")):
+        allowed = {"xai": "api.x.ai"}
+    else:
+        allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
+    if provider and normalize_provider(provider) not in allowed:
+        return False
+    host = (urlparse(str(base_url or "")).hostname or "").lower()
+    return not host or host in allowed.values()
+
+
+def resolve_fast_mode_overrides(
+    model_id: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
     """Return request_overrides for fast/priority mode, or None if unsupported.
 
     Returns provider-appropriate overrides:
@@ -3993,11 +4030,20 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
     - Grok 4.6: ``{"service_tier": "priority"}`` (xAI Priority Processing)
 
+    When ``provider``/``base_url`` are given the result is also gated on the
+    route (see ``_fast_mode_route_supported``) so proxies never see the
+    params. This is the single fast-mode gate for static ``/fast fast`` and
+    the bounded ``auto``/``cold`` windows in ``agent.fast_mode``.
+
     The overrides are injected into the API request kwargs by
-    ``_build_api_kwargs`` in run_agent.py — each API path handles its own
-    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+    ``build_api_kwargs`` — each API path handles its own keys
+    (service_tier for OpenAI/Codex, speed for Anthropic Messages).
     """
     if not model_supports_fast_mode(model_id):
+        return None
+    if (provider or base_url) and not _fast_mode_route_supported(
+        model_id, provider, base_url
+    ):
         return None
     if _is_anthropic_fast_model(model_id):
         return {"speed": "fast"}

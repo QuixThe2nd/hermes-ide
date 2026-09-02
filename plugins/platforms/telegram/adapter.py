@@ -1213,17 +1213,39 @@ class TelegramAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
+
+        # Preferred path: the auth callback GatewayRunner injects at
+        # connection time (set_authorization_check), which delegates to the
+        # full _is_user_authorized chain -- env allowlists, group allowlists,
+        # pairing store, allow-all flags. Unlike the __self__ introspection
+        # below, this also works for a secondary multiplexed adapter, whose
+        # _message_handler is a profile closure with no __self__ (the same
+        # gap the admin-tier check had -- resolved the same way). The getattr
+        # tolerates partially-constructed adapters (object.__new__ in tests)
+        # that never ran BasePlatformAdapter.__init__.
+        if getattr(self, "_authorization_check", None) is not None:
+            injected = self._is_sender_authorized(
+                normalized_user_id,
+                chat_type=normalized_chat_type,
+                chat_id=str(chat_id or normalized_user_id),
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
+            if injected is not None:
+                return injected
+
+        # Legacy path: resolve the runner off the bound message handler.
+        # Still reachable for adapters wired without set_authorization_check
+        # (bare-adapter tests, direct embedding).
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
                 from gateway.session import SessionSource
-
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
 
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
@@ -1264,6 +1286,9 @@ class TelegramAdapter(BasePlatformAdapter):
         user = getattr(message, "from_user", None)
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
+        # Carry the bot flag so the runner's ``*_ALLOW_BOTS`` policy branch is
+        # reachable from this prefilter, exactly as it is for ``build_source``.
+        is_bot = bool(getattr(user, "is_bot", False)) if user is not None else False
         user_name = (
             str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
             or None
@@ -1309,6 +1334,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_id,
+            is_bot=is_bot,
         )
 
     def _source_from_reaction_for_auth(self, update):
@@ -1390,14 +1416,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if source.chat_type != "dm":
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        # The bound-handler ``__self__`` is None under multiplex (the handler is
+        # a profile closure); ``gateway_runner`` is injected on every adapter
+        # by ``GatewayRunner._create_adapter`` and survives that wrapping.
+        runner = getattr(
+            getattr(self, "_message_handler", None), "__self__", None
+        ) or getattr(self, "gateway_runner", None)
         behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
         if callable(behavior_fn):
             try:
                 return (
                     behavior_fn(
                         Platform.TELEGRAM,
-                        profile=getattr(source, "profile", None),
+                        profile=getattr(source, "profile", None)
+                        or getattr(self, "_owner_profile", None),
                     )
                     == "pair"
                 )
@@ -1490,6 +1522,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         user_id,
                         chat_type=source.chat_type,
                         chat_id=source.chat_id,
+                        is_bot=source.is_bot,
+                        thread_id=source.thread_id,
                     )
                     if has_callback
                     else None
@@ -1686,7 +1720,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return "thread not found" in str(error).lower()
 
     def _prune_stale_dm_topic_binding(
-        self, chat_id: Any, thread_id: Any,
+        self,
+        chat_id: Any,
+        thread_id: Any,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Drop the stale ``telegram_dm_topic_bindings`` row for a
         topic Telegram has confirmed deleted.
@@ -1699,6 +1737,12 @@ class TelegramAdapter(BasePlatformAdapter):
         on to a fresh topic).  Best-effort: we never raise from a
         send-fallback path — a failed cleanup must not turn into a
         failed user-facing send.
+
+        Rows are namespaced by profile (#76423). Under
+        ``gateway.profile_routes`` the transport adapter may not be the
+        profile that wrote the binding, so the send's ``hermes_profile``
+        metadata wins over the adapter's own profile stamp; single-profile
+        bots fall back to ``"default"``.
         """
         if chat_id is None or thread_id is None:
             return
@@ -1709,8 +1753,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if db is None or not hasattr(db, "delete_telegram_topic_binding"):
             return
         try:
+            profile_name = (
+                (metadata or {}).get("hermes_profile")
+                or getattr(self, "_hermes_profile_name", None)
+                or "default"
+            )
             removed = db.delete_telegram_topic_binding(
-                chat_id=str(chat_id), thread_id=str(thread_id),
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                profile_name=profile_name,
             )
         except Exception:
             logger.debug(
@@ -5590,7 +5641,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, effective_thread_id,
                                 )
                                 self._prune_stale_dm_topic_binding(
-                                    chat_id, effective_thread_id,
+                                    chat_id,
+                                    effective_thread_id,
+                                    metadata=metadata,
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
@@ -6380,7 +6433,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Same prune as the streaming send path — the
                 # control-message retry tells us the topic is gone,
                 # so the binding row in state.db must go too
-                # (#31501).
+                # (#31501). Control sends carry no gateway metadata, so
+                # the prune namespaces by this adapter's profile stamp.
                 self._prune_stale_dm_topic_binding(
                     kwargs.get("chat_id"), message_thread_id,
                 )

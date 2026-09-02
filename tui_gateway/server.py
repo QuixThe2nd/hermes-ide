@@ -2458,7 +2458,18 @@ def _profile_home(profile: str | None) -> Path | None:
     # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
         return None
-    return home if (home / "state.db").exists() or home.exists() else None
+    if (home / "state.db").exists() or home.exists():
+        # Remember every sibling home this backend was asked to serve so the
+        # change watcher stats its store too (#99333 class).
+        _served_profile_homes.add(home)
+        return home
+    return None
+
+
+# Profile homes served by this process besides the launch home — the only
+# extra stores the sessions watcher must probe. Empty on single-profile
+# installs, so their watcher stays byte-identical (two stats per tick).
+_served_profile_homes: set[Path] = set()
 
 
 def _profile_scoped(handler):
@@ -3416,6 +3427,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered = False
         home_token = None
         secret_token = None
+        build_terminal_token = None
         session_db = None
         owns_db = False
         profile_home = current.get("profile_home")
@@ -3442,6 +3454,21 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass
+                # Bind the profile's COMPLETE terminal policy for the agent
+                # build (fail-closed: malformed policy → refusal scope) so
+                # _make_agent's terminal probing / cwd hints resolve the
+                # routed profile, never the launch process (#98581 class).
+                try:
+                    from tools.terminal_scope import (
+                        install_profile_terminal_scope,
+                        reset_terminal_scope,
+                    )
+
+                    build_terminal_token = install_profile_terminal_scope(
+                        Path(profile_home)
+                    )
+                except Exception:
+                    build_terminal_token = None
                 # DEDICATED handle — ours until _transfer_db_to_agent hands
                 # it to the built agent in the finally below. Every path
                 # that leaves this build without that transfer (the except
@@ -3591,6 +3618,13 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     from agent.secret_scope import reset_secret_scope
 
                     reset_secret_scope(secret_token)
+                except Exception:
+                    pass
+            if build_terminal_token is not None:
+                try:
+                    from tools.terminal_scope import reset_terminal_scope
+
+                    reset_terminal_scope(build_terminal_token)
                 except Exception:
                     pass
             # _attach_worker already closed the worker if this session was
@@ -5181,15 +5215,17 @@ def _sessions_sig():
     """Newest mtime across state.db and its WAL — the cross-process change
     signal. Messaging-gateway turns and cron runs are written by OTHER
     processes that never touch this gateway's transports; the shared SQLite
-    file is the one thing they all move (#58671)."""
-    home = _watcher_home()
+    file is the one thing they all move (#58671). A backend serving several
+    profiles owns one store per profile, so every served sibling home is
+    probed too — otherwise a routed profile's Bot Chat never refreshes."""
     sig = None
-    for name in ("state.db", "state.db-wal"):
-        try:
-            mtime = (home / name).stat().st_mtime_ns
-        except OSError:
-            continue
-        sig = mtime if sig is None else max(sig, mtime)
+    for root in (_watcher_home(), *_served_profile_homes):
+        for name in ("state.db", "state.db-wal"):
+            try:
+                mtime = (root / name).stat().st_mtime_ns
+            except OSError:
+                continue
+            sig = mtime if sig is None else max(sig, mtime)
     return sig
 
 
@@ -6114,6 +6150,8 @@ def _load_service_tier() -> str | None:
         return None
     if raw in {"fast", "priority", "on"}:
         return "priority"
+    if raw in {"auto", "cold"}:
+        return raw
     return None
 
 
@@ -6456,9 +6494,20 @@ def _session_profile_runtime_scope(session: dict):
         return
     home_token = set_hermes_home_override(profile_home)
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    # Same authoritative terminal policy the gateway binds per turn (#68559):
+    # a docker-configured dashboard profile must never resolve the launch
+    # process's pinned env. Failure → refusal scope (fail closed).
+    from tools.terminal_scope import (
+        install_profile_terminal_scope as _install_term_scope,
+    )
+
+    terminal_token = _install_term_scope(Path(profile_home))
     try:
         yield
     finally:
+        from tools.terminal_scope import reset_terminal_scope
+
+        reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
@@ -10930,14 +10979,33 @@ def _deferred_session_record(
     }
 
 
+_ANY_PROFILE = object()  # default: match a live session regardless of profile
+
+
+def _live_profile_matches(session: dict, profile_home) -> bool:
+    """True when ``session`` belongs to ``profile_home`` (None = launch profile).
+
+    Same string compare as session.resume's ``_find_live_unpersisted``: a
+    record with no ``profile_home`` is the launch profile's. ``_ANY_PROFILE``
+    disables the check for callers that have no profile to scope by.
+    """
+    if profile_home is _ANY_PROFILE:
+        return True
+    want = str(profile_home) if profile_home else None
+    return (session.get("profile_home") or None) == want
+
+
 def _claim_or_reuse_live(
     sid: str, session_key: str, record: dict, lease
 ) -> tuple[str, dict] | None:
     """Register ``record`` as the live session for ``session_key`` under the
     resume lock, or — if a concurrent resume already won — release ``lease`` and
     return the winner for the caller to reuse."""
+    # The record carries the home this resume resolved; a live runtime of the
+    # same stored id under ANOTHER profile is not a winner to reuse (#100029).
+    profile_home = record.get("profile_home")
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key)
+        live = _find_live_session_by_key(session_key, profile_home)
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -10955,7 +11023,7 @@ def _claim_or_reuse_live(
         # those quietly so the reap doesn't later broadcast session.reclaimed
         # for a session the client just re-resumed (auto-re-resume storm).
         _cancel_ws_orphan_reap(sid)
-        stale = _claim_parked_runtimes(session_key, keep_sid=sid)
+        stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
     # Slow finalization work stays OUTSIDE _session_resume_lock (see
     # _pop_session_by_id) — the stale records are already claimed above.
     _finalize_superseded_runtimes(stale)
@@ -10963,7 +11031,7 @@ def _claim_or_reuse_live(
 
 
 def _claim_parked_runtimes(
-    session_key: str, *, keep_sid: str
+    session_key: str, *, keep_sid: str, profile_home=_ANY_PROFILE
 ) -> list[tuple[str, dict]]:
     """Claim sentinel-parked stale runtimes of ``session_key`` for supersession.
 
@@ -10982,6 +11050,7 @@ def _claim_parked_runtimes(
             if old_sid != keep_sid
             and not old.get("_finalized")
             and _session_lookup_key(old, fallback=old_sid) == session_key
+            and _live_profile_matches(old, profile_home)
             and old.get("transport") is _detached_ws_transport
         ]
     for old_sid, _old in candidates:
@@ -11210,11 +11279,19 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     )
 
 
-def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+def _find_live_session_by_key(
+    session_key: str, profile_home=_ANY_PROFILE
+) -> tuple[str, dict] | None:
+    # Stored session ids are timestamp-based and can legitimately exist in more
+    # than one profile's store, so a bare-id match can hand profile B's resume
+    # profile A's live runtime (#100029). Profile-aware callers pass the home
+    # they resolved; the match must then be on (profile_home, session_key).
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if _session_lookup_key(session, fallback=sid) == session_key:
+        if _session_lookup_key(session, fallback=sid) == session_key and _live_profile_matches(
+            session, profile_home
+        ):
             return sid, session
     return None
 
@@ -13225,6 +13302,20 @@ def _run_prompt_submit(
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
+                # Fourth profile seam: bind the session profile's COMPLETE
+                # terminal policy for this turn (dashboard/TUI analogue of the
+                # gateway's per-turn scope). #98581's unified-desktop
+                # reproduction ran a docker-configured profile on the host
+                # because terminal_tool read the launch process's pinned env.
+                # Failure installs a refusal scope → terminal tools raise
+                # (fail closed) instead of inheriting ambient policy.
+                from tools.terminal_scope import (
+                    install_profile_terminal_scope as _install_term_scope,
+                )
+
+                _terminal_scope_token = _install_term_scope(Path(_profile_home_str))
+            else:
+                _terminal_scope_token = None
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -14002,6 +14093,10 @@ def _run_prompt_submit(
                 reset_hermes_home_override(home_token)
             if secret_token is not None:
                 reset_secret_scope(secret_token)
+            if _terminal_scope_token is not None:
+                from tools.terminal_scope import reset_terminal_scope
+
+                reset_terminal_scope(_terminal_scope_token)
             _clear_session_context(session_tokens)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
@@ -14645,19 +14740,20 @@ def _(rid, params: dict) -> dict:
         raw = str(value or "").strip().lower()
         agent = session.get("agent") if session else None
         if agent is not None:
-            current_fast = getattr(agent, "service_tier", None) == "priority"
+            current_tier = getattr(agent, "service_tier", None)
         elif session is not None and session.get("create_service_tier_override") is not None:
             # Pre-build session with a pinned tier (desktop draft pick or an
             # earlier session-scoped toggle) — report/toggle from the pin, not
             # the global default.
-            current_fast = session["create_service_tier_override"] == "priority"
+            current_tier = session["create_service_tier_override"] or None
         else:
-            current_fast = _load_service_tier() == "priority"
+            current_tier = _load_service_tier()
+        current_fast = current_tier == "priority"
 
         if raw in {"status"}:
             return _ok(
                 rid,
-                {"key": key, "value": "fast" if current_fast else "normal"},
+                {"key": key, "value": {"priority": "fast", None: "normal"}.get(current_tier, current_tier)},
             )
 
         if raw in {"", "toggle"}:
@@ -14666,6 +14762,8 @@ def _(rid, params: dict) -> dict:
             nv = "fast"
         elif raw in {"normal", "off"}:
             nv = "normal"
+        elif raw in {"auto", "cold"}:
+            nv = raw
         else:
             return _err(rid, 4002, f"unknown fast mode: {value}")
 
@@ -14691,7 +14789,11 @@ def _(rid, params: dict) -> dict:
                     4002,
                     "fast mode is not available without a selected model",
                 )
-            overrides = resolve_fast_mode_overrides(target_model)
+            overrides = resolve_fast_mode_overrides(
+                target_model,
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            )
             if overrides is None:
                 return _err(
                     rid,
@@ -14708,13 +14810,11 @@ def _(rid, params: dict) -> dict:
             # build ("switch one session, switches everywhere"). Pin the
             # create override so lazily-built sessions and rebuilds (/new,
             # deferred resume) keep the choice; "" pins normal explicitly.
-            session["create_service_tier_override"] = (
-                "priority" if nv == "fast" else ""
-            )
+            session["create_service_tier_override"] = {"fast": "priority", "normal": ""}.get(nv, nv)
         else:
             _write_config_key("agent.service_tier", nv)
         if agent is not None:
-            agent.service_tier = "priority" if nv == "fast" else None
+            agent.service_tier = {"fast": "priority", "normal": None}.get(nv, nv)
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
             current_overrides.pop("service_tier", None)
             current_overrides.pop("speed", None)
@@ -15713,6 +15813,7 @@ def _project_tree_row(r: dict) -> dict:
     return {
         "id": r.get("id"),
         "_lineage_root_id": r.get("_lineage_root_id"),
+        "_lineage_ids": r.get("_lineage_ids"),
         # The sidebar nests branch/fork sessions under their parent
         # (flattenSessionsWithBranches keys on this); without it, lane rows can't
         # draw the └─ connector the flat Recents list shows.
@@ -16898,6 +16999,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
+            elif mode in {"auto", "cold"}:
+                agent.service_tier = mode
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

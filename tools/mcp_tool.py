@@ -2807,7 +2807,7 @@ class MCPServerTask:
                 # is currently owned by another server.
                 if registry.get_toolset_for_tool(tool_name) != toolset_name:
                     continue
-                registry.deregister(tool_name)
+                registry.deregister(tool_name, scope=_server_registry_scope(self.name))
                 _forget_mcp_tool_server(tool_name)
 
             # 3. Re-register with the fresh list. The helper may skip names that
@@ -2825,7 +2825,7 @@ class MCPServerTask:
             for tool_name in old_tool_names - registered_name_set:
                 if registry.get_toolset_for_tool(tool_name) != toolset_name:
                     continue
-                registry.deregister(tool_name)
+                registry.deregister(tool_name, scope=_server_registry_scope(self.name))
                 _forget_mcp_tool_server(tool_name)
             self._registered_tool_names = registered_names
 
@@ -4481,7 +4481,7 @@ class MCPServerTask:
         from tools.registry import registry
 
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            registry.deregister(tool_name)
+            registry.deregister(tool_name, scope=_server_registry_scope(self.name))
             _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
 
@@ -4509,6 +4509,10 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+# Profile registry scope that owns each live connection (None outside
+# multiplex). A multiplexed /reload-mcp tears down only its own profile's
+# servers; process shutdown still takes everything.
+_server_scope_keys: Dict[str, Optional[str]] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 # Lazy MCP startup (#56832): servers whose tools were registered from the
@@ -5400,6 +5404,36 @@ _mcp_thread: Optional[threading.Thread] = None
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
+
+def _mcp_registry_scope() -> Optional[str]:
+    """Registry scope owning MCP registrations made from the current context.
+
+    Under a profile multiplexer each profile's MCP tools live in that
+    profile's registry overlay (the same overlay its plugins use) so two
+    profiles' servers never share one process-global slot. Single-profile
+    processes keep MCP tools process-global (``None``).
+    """
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return None
+    from tools.registry import registry
+
+    return registry.current_scope_key()
+
+
+def _server_registry_scope(name: str) -> Optional[str]:
+    """Scope owning server *name*'s tools: recorded at connect, else current.
+
+    Teardown paths run on the MCP loop (process exit, reconnect exhaustion),
+    which does not carry the discovering profile's context, so the scope
+    captured when the server was adopted into ``_servers`` is authoritative.
+    """
+    if name in _server_scope_keys:
+        return _server_scope_keys[name]
+    return _mcp_registry_scope()
+
+
 # ---------------------------------------------------------------------------
 # Cross-process MCP discovery guard
 # ---------------------------------------------------------------------------
@@ -6131,7 +6165,7 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         from tools.registry import registry
 
         for tool_name in phantom_names:
-            registry.deregister(tool_name)
+            registry.deregister(tool_name, scope=_server_registry_scope(server_name))
             _forget_mcp_tool_server(tool_name)
         logger.info(
             "MCP server '%s': deregistered %d phantom cached tool(s) not "
@@ -7523,6 +7557,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=candidate["check_fn"],
             is_async=False,
             description=candidate["schema"]["description"],
+            scope=_server_registry_scope(name),
         )
 
         # The pre-check above is advisory only. Multiple servers connect in
@@ -7680,6 +7715,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            scope=_mcp_registry_scope(),
         )
         if registry.get_toolset_for_tool(registry_name) != toolset_name:
             continue
@@ -7713,6 +7749,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             check_fn=check_fn,
             is_async=False,
             description=schema.get("description") or "",
+            scope=_mcp_registry_scope(),
         )
         if registry.get_toolset_for_tool(util_name) != toolset_name:
             continue
@@ -7770,6 +7807,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             # self-probe, so adopt it into the registry for shutdown/revival.
             with _lock:
                 _servers[name] = server
+                _server_scope_keys[name] = _mcp_registry_scope()
         elif server is not None:
             await server.shutdown()
         raise
@@ -7780,6 +7818,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
         _servers[name] = server
+        _server_scope_keys[name] = _mcp_registry_scope()
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
@@ -8305,6 +8344,7 @@ def refresh_agent_mcp_tools(
     disabled_override=None,
     quiet_mode: bool = True,
     content_aware: bool = False,
+    preserve_prefix: bool = False,
 ) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry.
 
@@ -8332,6 +8372,22 @@ def refresh_agent_mcp_tools(
     surface.  The new ``(tools, valid_tool_names)`` pair is published together
     under ``_agent_tools_lock`` so a concurrent reader never sees a
     cross-attribute half-swap.
+
+    ``preserve_prefix`` is for the callers that rebuild inside a live
+    conversation (the between-turns prologue).  There the tool array is a
+    cached request prefix: every provider that renders ``tools`` ahead of the
+    messages re-prefills the entire history behind any byte that moves.  A
+    plain rebuild moves two kinds of bytes — it drops a tool whose ``check_fn``
+    merely flapped (a headless browser probe, an expired credential, a docker
+    blip), and it splices a late-landing tool into sorted position, which can
+    be index 0.  With ``preserve_prefix`` the live order is authoritative:
+    existing tools keep their slot (schemas still refresh), a tool that is
+    still *registered* but momentarily unavailable is carried forward, a tool
+    that genuinely left the registry is still dropped, and new tools are
+    appended at the tail so the prefix only ever grows.  Carrying an
+    unavailable tool forward changes nothing about dispatch — ``check_fn``
+    gates exposure at snapshot time, never invocation, and every handler
+    already owns its own unavailability error.
 
     Returns the set of newly-added tool names (empty when nothing changed), so
     callers can decide whether to notify the user / re-emit session info.  The
@@ -8388,6 +8444,18 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Snapshot registry membership OUTSIDE ``_agent_tools_lock`` — it is the
+    # only input ``preserve_prefix`` needs beyond the two tool lists, and
+    # taking ``registry._lock`` under the tools lock would be the first place
+    # in the process to nest those two.
+    registered_names: set = set()
+    if preserve_prefix:
+        try:
+            registered_names = {entry.name for entry in registry.get_all_entries()}
+        except Exception:  # noqa: BLE001
+            # Fail open to the plain rebuild rather than pinning a stale list.
+            preserve_prefix = False
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
@@ -8401,10 +8469,12 @@ def refresh_agent_mcp_tools(
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()
-        current = {
-            t["function"]["name"]
-            for t in (getattr(agent, "tools", None) or [])
-        }
+        current_defs = list(getattr(agent, "tools", None) or [])
+        current = {t["function"]["name"] for t in current_defs}
+        if preserve_prefix:
+            new_defs, new_names = _merge_preserving_prefix(
+                current_defs, new_defs, registered_names,
+            )
         if new_names == current:
             # Same NAME set. For MCP-reload callers that is "no change" —
             # leave the live snapshot untouched (no churn). Content-aware
@@ -8439,7 +8509,117 @@ def refresh_agent_mcp_tools(
             engine_names.clear()
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        return new_names - current
+        added = new_names - current
+    # Every published snapshot re-pins the session's tool order so a later
+    # rebuild-for-existing-session (gateway agent-cache eviction) restores
+    # exactly these names — see ``restore_agent_tool_prefix``.
+    persist_agent_tool_names(agent)
+    return added
+
+
+def reprobe_tool_availability() -> None:
+    """Explicit ``/reload-mcp`` hatch out of the tools[] freeze.
+
+    Availability-gated tools (``check_fn``: Docker, HASS_TOKEN, OAuth…) are
+    frozen for the life of a session; a credential or daemon that appears
+    mid-session is only picked up when the user consciously asks. Drop the
+    ``check_fn`` verdict cache AND the ``get_tool_definitions`` memo (keyed on
+    registry generation, so it would otherwise replay the stale verdicts).
+    """
+    from model_tools import _clear_tool_defs_cache
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+
+def persist_agent_tool_names(agent) -> None:
+    """Best-effort: write ``agent.tools`` names to the session row (freeze pin)."""
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not db or not session_id:
+        return
+    try:
+        db.update_session_tool_names(
+            session_id,
+            [t["function"]["name"] for t in (getattr(agent, "tools", None) or [])],
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("tool_names persist skipped", exc_info=True)
+
+
+def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
+    """Fold a freshly built agent's ``tools`` onto the session's saved order.
+
+    Closes the second door on the tools[] freeze: the gateway rebuilds a NEW
+    ``AIAgent`` for an existing session after agent-cache eviction, and
+    ``agent_init`` re-derives ``agent.tools`` from live ``check_fn`` probes
+    with no predecessor to preserve. The saved name list stands in for that
+    predecessor: a saved tool that is still registered but failed its probe
+    this time is carried forward from the registry's schema, a deregistered
+    one is dropped, and genuinely new tools append at the tail — the same
+    ``_merge_preserving_prefix`` rule the between-turns refresh uses.
+    Returns True when the snapshot was changed.
+    """
+    if not saved_names:
+        return False
+    from tools.registry import registry
+
+    fresh_defs = list(getattr(agent, "tools", None) or [])
+    fresh = {t["function"]["name"]: t for t in fresh_defs}
+    saved_defs = []
+    for name in saved_names:
+        entry_def = fresh.get(name)
+        if entry_def is None:
+            entry = registry.get_entry(name)
+            if entry is None:
+                continue
+            entry_def = {"type": "function", "function": {**entry.schema, "name": entry.name}}
+        saved_defs.append(entry_def)
+    registered_names = {entry.name for entry in registry.get_all_entries()}
+    merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
+    with _agent_tools_lock:
+        if merged == fresh_defs:
+            return False
+        agent.tools = merged
+        agent.valid_tool_names = merged_names
+    if [t["function"]["name"] for t in merged] != list(saved_names):
+        persist_agent_tool_names(agent)
+    return True
+
+
+def _merge_preserving_prefix(
+    current_defs: list, new_defs: list, registered_names: set,
+) -> tuple[list, set]:
+    """Fold a fresh tool snapshot into a live one without moving existing bytes.
+
+    The live tool array is a cached request prefix, so the merge is ordered by
+    ``current_defs``, not by the fresh list:
+
+    * a name in both keeps its slot and takes the fresh schema (dynamic
+      overrides — delegate_task limits, execute_code stubs — still land);
+    * a name only in the live list is carried forward when it is still
+      registered (its ``check_fn`` flapped) and dropped when it is not (the
+      MCP server or plugin genuinely went away);
+    * a name only in the fresh list is appended at the tail, so a late-landing
+      MCP tool extends the prefix instead of splicing into sorted position.
+    """
+    fresh = {}
+    for entry in new_defs:
+        name = (entry.get("function") or {}).get("name", "")
+        if name:
+            fresh[name] = entry
+
+    merged = []
+    for entry in current_defs:
+        name = (entry.get("function") or {}).get("name", "")
+        replacement = fresh.pop(name, None)
+        if replacement is not None:
+            merged.append(replacement)
+        elif name and name in registered_names:
+            merged.append(entry)
+    merged.extend(fresh.values())
+    return merged, {(t.get("function") or {}).get("name", "") for t in merged}
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
@@ -8511,15 +8691,24 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     return staged_engine_names
 
 
-def shutdown_mcp_servers():
-    """Close all MCP server connections and stop the background loop.
+def shutdown_mcp_servers(*, scope: Optional[str] = None):
+    """Close MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
+
+    ``scope`` (a registry scope key) restricts teardown to the servers one
+    multiplexed profile owns — its ``/reload-mcp`` must not kill the other
+    profiles' connections — and leaves the shared loop running when anything
+    else is still connected. Without it every server goes, as before.
     """
     with _lock:
-        servers_snapshot = list(_servers.values())
+        selected = [
+            name for name in _servers
+            if scope is None or _server_scope_keys.get(name) == scope
+        ]
+        servers_snapshot = [_servers[name] for name in selected]
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still
     # be populated here — a server that failed to connect is never recorded
@@ -8531,7 +8720,7 @@ def shutdown_mcp_servers():
         with _lock:
             _server_connect_retry_after.clear()
             _server_connect_failures.clear()
-        _stop_mcp_loop()
+        _stop_mcp_loop(only_if_idle=scope is not None)
         return
 
     async def _shutdown():
@@ -8545,7 +8734,9 @@ def shutdown_mcp_servers():
                     "Error closing MCP server '%s': %s", server.name, result,
                 )
         with _lock:
-            _servers.clear()
+            for name in selected:
+                _servers.pop(name, None)
+                _server_scope_keys.pop(name, None)
             # Drop connect-retry cooldowns too: a full shutdown/restart
             # should re-attempt every server immediately, not honour a
             # stale per-server backoff from before the restart (#50394).
@@ -8575,7 +8766,7 @@ def shutdown_mcp_servers():
         _server_connect_retry_after.clear()
         _server_connect_failures.clear()
 
-    _stop_mcp_loop()
+    _stop_mcp_loop(only_if_idle=scope is not None)
 
 
 def _kill_orphaned_mcp_children(
