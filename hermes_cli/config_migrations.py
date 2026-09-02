@@ -885,6 +885,202 @@ def _migrate_to_40(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)")
 
 
+# ── Retired Ox Alpha preview route ─────────────────────────────────────
+# openrouter/stealth/ox-alpha was a one-week experiment whose server-side
+# preview has ended: the route still resolves but every request fails, and
+# the quota plugins no longer give it synthetic unlimited-wallet treatment.
+# The v41 migration strips it from existing configs so upgraded installs
+# stop routing into a dead model.
+_RETIRED_OX_ALPHA_PROVIDER = "openrouter"
+_RETIRED_OX_ALPHA_MODEL = "stealth/ox-alpha"
+
+#: Fallback-entry fields that keep meaning when the entry graduates to the
+#: primary ``model:`` section (endpoint, credential reference, per-route
+#: replay policy). Everything else on a fallback entry is fallback-specific.
+_PROMOTABLE_ROUTE_FIELDS = ("base_url", "api_mode", "api_key", "key_env", "api_key_env", "reasoning_echo")
+
+
+def _route_part(value: Any) -> str:
+    """Case/whitespace-normalized provider or model id."""
+    return str(value or "").strip().lower()
+
+
+def _is_retired_ox_alpha_entry(entry: Any) -> bool:
+    """True only for the exact retired ``openrouter/stealth/ox-alpha`` route.
+
+    Provider and model are case/whitespace normalized, so ``OpenRouter`` /
+    `` Stealth/OX-Alpha `` also matches — but no other openrouter model
+    (and no other provider) ever does.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return (
+        _route_part(entry.get("provider")) == _RETIRED_OX_ALPHA_PROVIDER
+        and _route_part(entry.get("model")) == _RETIRED_OX_ALPHA_MODEL
+    )
+
+
+def _primary_routes_retired_model(raw_model: Any) -> bool:
+    """True when the primary ``model`` value is the retired Ox Alpha route.
+
+    OpenRouter's ``vendor/model`` id namespacing is what makes the bare id
+    ``stealth/ox-alpha`` resolvable at all, so a bare primary string — or a
+    dict whose id (``default``/``model``/``name``) is the retired model with
+    the provider omitted, or explicitly ``auto`` — infers the same
+    OpenRouter route an explicit ``provider: openrouter`` pins. A named
+    custom provider serving the same model id is a different route and is
+    never matched here.
+    """
+    if isinstance(raw_model, dict):
+        model_id = ""
+        for key in ("default", "model", "name"):
+            model_id = _route_part(raw_model.get(key))
+            if model_id:
+                break
+        provider = _route_part(raw_model.get("provider"))
+    else:
+        model_id = _route_part(raw_model)
+        provider = ""
+    return (
+        model_id == _RETIRED_OX_ALPHA_MODEL
+        and provider in {"", "auto", _RETIRED_OX_ALPHA_PROVIDER}
+    )
+
+
+def _filter_fallback_collection(
+    raw: Any, predicate: Callable[[Any], bool]
+) -> Tuple[Any, int]:
+    """Drop entries matching *predicate* from one fallback collection.
+
+    Order and shape are preserved: a list-shaped collection stays a list of
+    its surviving entries (in order), and a dict-shaped single-entry
+    collection whose entry matched returns ``None`` so the caller removes
+    the key — an empty dict is not a valid legacy fallback shape.
+    """
+    if isinstance(raw, list):
+        kept = [entry for entry in raw if not predicate(entry)]
+        return kept, len(raw) - len(kept)
+    if isinstance(raw, dict) and predicate(raw):
+        return None, 1
+    return raw, 0
+
+
+def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 40 → 41: retire the openrouter/stealth/ox-alpha route ──
+    # See _RETIRED_OX_ALPHA_* above. Three scrub rules:
+    #
+    # * retired fallback entries are removed from BOTH fallback_providers
+    #   (modern list shape) and fallback_model (legacy dict/list shape),
+    #   preserving order, shape, and every unrelated entry;
+    # * a retired primary promotes the first surviving fallback in effective
+    #   chain order — fallback_providers first, then fallback_model, exactly
+    #   as hermes_cli.fallback_config.get_fallback_chain defines it — into
+    #   model.default, carrying its provider and route metadata, and that
+    #   route's occurrences leave the fallback collections so it is not
+    #   simultaneously primary and fallback #1;
+    # * a retired primary with no surviving fallback is unset to the
+    #   DEFAULT_CONFIG empty model value with a warning to run
+    #   `hermes model` — a replacement provider/credential is never guessed.
+    #
+    # A config without the route is left untouched (no persist here — the
+    # driver's normal version stamp is the only write), which also makes the
+    # step idempotent.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    from hermes_cli.fallback_config import _entry_identity, get_fallback_chain
+
+    config = read_raw_config()
+
+    primary_retired = _primary_routes_retired_model(config.get("model"))
+
+    # Effective chain (fallback_providers in order, then legacy
+    # fallback_model, deduped by route identity) minus the retired route.
+    surviving_chain = [
+        entry
+        for entry in get_fallback_chain(config)
+        if not _is_retired_ox_alpha_entry(entry)
+    ]
+    promotee = surviving_chain[0] if primary_retired and surviving_chain else None
+    promotee_identity = _entry_identity(promotee) if promotee else None
+
+    def _drops(entry: Any) -> bool:
+        if _is_retired_ox_alpha_entry(entry):
+            return True
+        return (
+            promotee_identity is not None
+            and isinstance(entry, dict)
+            and _entry_identity(entry) == promotee_identity
+        )
+
+    removed_retired = 0
+    touched = False
+    for key in ("fallback_providers", "fallback_model"):
+        raw_value = config.get(key)
+        # Count only retired-route removals for the report; the promotee's
+        # departure from its collection is reported by the promotion line.
+        _, retired_here = _filter_fallback_collection(
+            raw_value, _is_retired_ox_alpha_entry
+        )
+        removed_retired += retired_here
+        filtered, removed = _filter_fallback_collection(raw_value, _drops)
+        if removed:
+            touched = True
+            if filtered is None:
+                config.pop(key, None)
+            else:
+                config[key] = filtered
+
+    if primary_retired:
+        touched = True
+        if promotee is not None:
+            new_model: Dict[str, Any] = {
+                "default": promotee["model"],
+                "provider": promotee["provider"],
+            }
+            for field in _PROMOTABLE_ROUTE_FIELDS:
+                if field in promotee:
+                    new_model[field] = promotee[field]
+            config["model"] = new_model
+        else:
+            config["model"] = _c.DEFAULT_CONFIG["model"]
+
+    if not touched:
+        return
+
+    _persist_migration(config)
+    if removed_retired:
+        results["config_added"].append(
+            "removed retired 'openrouter/stealth/ox-alpha' fallback route(s)"
+        )
+    if promotee is not None:
+        results["config_added"].append(
+            f"model.default={promotee['model']} (provider {promotee['provider']}, "
+            "promoted from fallback — Ox Alpha retired)"
+        )
+        if not quiet:
+            print(
+                "  ✓ Retired Ox Alpha primary (openrouter/stealth/ox-alpha) — "
+                f"promoted fallback {promotee['provider']}/{promotee['model']} "
+                "to primary."
+            )
+    elif primary_retired:
+        message = (
+            "Primary model openrouter/stealth/ox-alpha was retired (the Ox "
+            "Alpha preview ended) and no fallback model remained. Run "
+            "`hermes model` to choose a new primary model."
+        )
+        results["warnings"].append(message)
+        if not quiet:
+            print(f"  ⚠ {message}")
+    if removed_retired and not quiet:
+        print(
+            "  ✓ Removed the retired Ox Alpha route "
+            "(openrouter/stealth/ox-alpha) from the fallback chain."
+        )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -913,6 +1109,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (38, _migrate_to_38),
     (39, _migrate_to_39),
     (40, _migrate_to_40),
+    (41, _migrate_to_41),
 )
 
 

@@ -28,13 +28,13 @@ Discord History provides read-only search over an owner-authorized PostgreSQL ar
 
 Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats.
 
-The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates one Discord voice channel for each of six AI providers and orders them with the same score used by fallback routing:
+The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates one Discord voice channel for each of five AI providers and orders them with the same score used by fallback routing:
 
 `quota_frac × (168h / hours_to_reset) + one full wallet per pending usage-limit reset (Codex/Grok/z.ai), all × uptime_24h × uptime_1h`
 
-OpenRouter appears as a virtual unlimited Ox Alpha row, and Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
+Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
 
-`fallback_quota_reorder` uses the same score to rotate the primary and fallback list, moving the top scorer into the primary slot. Wallets that reset sooner rank higher. Unlimited Ox Alpha is treated as a synthetic 100% wallet over 168 hours, then reduced by its recent uptime like the others. `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
+`fallback_quota_reorder` uses the same score to rotate the primary and fallback list, moving the top scorer into the primary slot. Wallets that reset sooner rank higher. `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
 
 The Speeds category is the same trick pointed at downloads. `speed_channels` turns Discord voice channels into a download wall for qBittorrent, SABnzbd, and slskd. The names show live throughput and queue depth, and the category label shows current 1.1.1.1 ICMP latency plus the countdown to the next poll.
 

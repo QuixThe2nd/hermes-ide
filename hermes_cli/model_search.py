@@ -11,11 +11,11 @@ Keep in sync with ``ui-tui/src/lib/model-search-text.ts`` and
 from __future__ import annotations
 
 # Lowercased wire id → extra tokens appended to the search haystack only.
+# Brand the retired Ox Alpha preview nowhere: opaque provider ids (e.g.
+# OpenCode Zen's ``x-preview-f-free``) stay searchable by their own id and
+# fully usable when the provider returns them or the user types them.
 _MODEL_SEARCH_ALIASES: dict[str, tuple[str, ...]] = {
     "k3": ("kimi-k3", "kimi"),
-    # OpenCode Zen serves the "Ox Alpha" stealth model under an opaque
-    # preview slug; let users find it by its public codename.
-    "x-preview-f-free": ("ox-alpha", "ox"),
 }
 
 # Lowercased wire id → canonical public slug it aliases. Used by picker

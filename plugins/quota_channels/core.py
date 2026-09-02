@@ -42,7 +42,6 @@ PROVIDER_SPECS: Tuple[Tuple[str, str], ...] = (
     ("zai", "z.ai"),
     ("cursor", "Cursor"),
     ("grok", "Grok"),
-    ("openrouter", "OpenRouter"),
 )
 
 DEFAULT_QUOTA_INTERVAL_SECONDS = 1800
@@ -92,21 +91,10 @@ STATE_FILENAME = "quota_channels_state.json"
 CATEGORY_PREFIX = "Models"
 
 # Quota key -> routing provider slug, used to load per-provider reliability
-# from the fallback ledger. Mirrors fallback_quota_reorder's channel map plus
-# the virtual OpenRouter row.
+# from the fallback ledger. Mirrors fallback_quota_reorder's channel map.
 QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
     **_FALLBACK_CHANNEL_KEY_TO_PROVIDER,
-    "openrouter": "openrouter",
 }
-
-# The OpenRouter voice channel is a virtual row for the unlimited Ox Alpha
-# model (openrouter/stealth/ox-alpha): there is no quota API to call, so the
-# channel carries a managed label with a synthetic full wallet — 100% against
-# exactly 168h, the score's reference horizon (same numbers as
-# fallback_quota_reorder.unlimited_reading()).
-OPENROUTER_PCT = 100
-OPENROUTER_RESET_SECONDS = 7 * 86400  # 604800s = 168h
-OPENROUTER_LABEL = "OpenRouter"
 
 # Display ranks are `bucket * stride - score`; the stride must exceed any
 # possible score so the low-quota bucket always sorts after every healthy
@@ -916,16 +904,6 @@ def format_grok_name(
     return name
 
 
-def format_openrouter_name() -> str:
-    """Managed label for the virtual unlimited Ox Alpha row.
-
-    Static by design: the wallet is synthetic (100% / Unlimited), so the name
-    never changes between ticks and Discord renames are naturally idempotent.
-    """
-
-    return f"{OPENROUTER_LABEL}: {OPENROUTER_PCT}% \u2022 Unlimited"
-
-
 def _fmt_clock(dt: datetime) -> str:
     hour = dt.hour % 12 or 12
     suffix = "am" if dt.hour < 12 else "pm"
@@ -993,12 +971,10 @@ def validate_quota_config(section: Mapping[str, Any]) -> dict:
 
     raw_enabled = section.get("enabled_providers")
     if raw_enabled is None:
-        # An absent enabled_providers means "the wired rows": the original
-        # five providers always, and the newer OpenRouter row only once its
-        # channel ID exists — so a legacy five-ID config keeps validating
-        # unchanged and picks the virtual row up as soon as it is wired.
+        # An absent enabled_providers means "every wired row". A legacy
+        # channel_ids entry for the retired OpenRouter row is inert: its
+        # key is no longer a spec, so it activates nothing.
         enabled = {key: True for key, _ in PROVIDER_SPECS}
-        enabled["openrouter"] = bool(channel_ids.get("openrouter"))
     else:
         enabled = normalize_enabled_providers(raw_enabled)
     active: List[Tuple[str, str, str]] = []
@@ -2005,14 +1981,6 @@ def run_provider_quota(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str, str, Dict[str, Any]]:
-    if key == "openrouter":
-        # Virtual Ox Alpha row: no quota API is called — the wallet is
-        # synthetic (100% against 168h). Only the managed Discord label and
-        # the state reading are written.
-        name = format_openrouter_name()
-        rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
-        return OPENROUTER_LABEL, float(OPENROUTER_RESET_SECONDS), name, rename, {}
-
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
     resets: Optional[ResetCredits] = None
     reset_error: Optional[str] = None

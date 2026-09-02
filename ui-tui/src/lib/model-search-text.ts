@@ -9,10 +9,10 @@
  * hermes_cli/model_search.py.
  */
 const MODEL_SEARCH_ALIASES: Record<string, readonly string[]> = {
-  k3: ['kimi-k3', 'kimi'],
-  // OpenCode Zen serves the "Ox Alpha" stealth model under an opaque
-  // preview slug; let users find it by its public codename.
-  'x-preview-f-free': ['ox-alpha', 'ox']
+  k3: ['kimi-k3', 'kimi']
+  // Brand the retired Ox Alpha preview nowhere: opaque provider ids (e.g.
+  // OpenCode Zen's `x-preview-f-free`) stay searchable by their own id and
+  // fully usable when the provider returns them or the user types them.
 }
 
 /** Haystack for fuzzy/substring model search; never changes the wire id. */

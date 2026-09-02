@@ -16,17 +16,22 @@ def test_filter_indices_surfaces_k3_for_kimi_query():
     assert "k3" in ranked
 
 
-def test_model_search_text_adds_ox_alpha_aliases():
-    assert model_search_text("x-preview-f-free") == "x-preview-f-free ox-alpha ox"
-    assert model_search_text("X-Preview-F-Free") == "X-Preview-F-Free ox-alpha ox"
+def test_model_search_text_does_not_brand_the_retired_ox_alpha_preview():
+    # the retired preview's codename is no longer a search alias: the opaque
+    # wire id stays searchable by its own id only
+    assert model_search_text("x-preview-f-free") == "x-preview-f-free"
+    assert model_search_text("X-Preview-F-Free") == "X-Preview-F-Free"
 
 
-def test_filter_indices_surfaces_ox_alpha_preview_slug():
+def test_filter_indices_does_not_surface_retired_codename_queries():
     models = ["x-preview-f-free", "gpt-5.6-sol", "kimi-k3"]
     haystacks = [model_search_text(m) for m in models]
     for query in ("ox", "ox-alpha"):
         ranked = [models[i] for i in _filter_indices(haystacks, query)]
-        assert "x-preview-f-free" in ranked, query
+        assert "x-preview-f-free" not in ranked, query
+    # the id itself still finds the model — manually entered ids stay usable
+    ranked = [models[i] for i in _filter_indices(haystacks, "x-preview")]
+    assert "x-preview-f-free" in ranked
 
 
 
