@@ -579,6 +579,24 @@ try:
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
             continue
+        if _pp.auth_type == "external_process":
+            # An external-process provider (an ACP CLI driven over stdio) has no
+            # API-key env vars to resolve — its credentials come from
+            # resolve_external_process_provider_credentials(), keyed on this
+            # auth_type. Registering it here is what lets a provider shipped
+            # outside this tree pass resolve_provider()'s known-provider gate;
+            # without it, `hermes -m <that provider>` dies with
+            # "Unknown provider" before any client is ever built.
+            PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                auth_type="external_process",
+                inference_base_url=_pp.base_url,
+            )
+            for _alias in _pp.aliases:
+                if _alias not in PROVIDER_REGISTRY:
+                    PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
+            continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
             continue
         # Skip providers that need custom token resolution or are special-cased
@@ -7018,6 +7036,7 @@ def resolve_nous_runtime_credentials(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     force_refresh: bool = False,
+    stale_access_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Resolve Nous inference credentials for runtime use.
@@ -7025,8 +7044,14 @@ def resolve_nous_runtime_credentials(
     Ensures access_token is a valid inference-scoped JWT, refreshing it when
     needed. Concurrent processes coordinate through the auth store file lock.
 
-    Returns dict with: provider, base_url, api_key, key_id, expires_at,
-    expires_in, source ("invoke_jwt"), and auth_path.
+    ``stale_access_token`` is the bearer that just failed upstream (401). When
+    set together with ``force_refresh``, the refresh POST is skipped if the
+    store — re-read under the lock — already holds a *different*, usable
+    token: another process won the rotation, so this caller adopts it
+    instead of rotating the shared grant again. Without this, N concurrent
+    processes hitting the same hourly expiry issue N refreshes, and each
+    rotation invalidates the token a sibling just adopted (Sep 2026: 120
+    subagents, 81 refreshes, ~540 401s in eight minutes).
     """
     sequence_id = uuid.uuid4().hex[:12]
 
@@ -7039,6 +7064,20 @@ def resolve_nous_runtime_credentials(
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
                             provider="nous", relogin_required=True)
+
+        def _already_rotated_by_peer(token: Any) -> bool:
+            return bool(
+                force_refresh
+                and stale_access_token
+                and isinstance(token, str)
+                and token
+                and token != stale_access_token
+                and _nous_invoke_jwt_status(
+                    token,
+                    scope=state.get("scope"),
+                    expires_at=state.get("expires_at"),
+                ) is None
+            )
 
         persisted_state = dict(state)
         state_persisted = False
@@ -7185,6 +7224,16 @@ def resolve_nous_runtime_credentials(
                 scope=state.get("scope"),
                 expires_at=state.get("expires_at"),
             )
+            # Under the store lock: if the bearer that failed upstream is no
+            # longer the one on disk and the on-disk one is usable, a peer
+            # already rotated — adopt, never re-POST the shared grant.
+            if _already_rotated_by_peer(access_token):
+                _oauth_trace(
+                    "refresh_skipped_peer_rotated",
+                    sequence_id=sequence_id,
+                    access_token_fp=_token_fingerprint(access_token),
+                )
+                force_refresh = False
             if force_refresh or invoke_jwt_status is not None:
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
                     if _merge_shared_nous_oauth_state(state):
@@ -7202,6 +7251,13 @@ def resolve_nous_runtime_credentials(
                             expires_at=state.get("expires_at"),
                         )
                         _persist_state("post_shared_merge_access_unusable")
+                        if _already_rotated_by_peer(access_token):
+                            _oauth_trace(
+                                "refresh_skipped_peer_rotated",
+                                sequence_id=sequence_id,
+                                access_token_fp=_token_fingerprint(access_token),
+                            )
+                            force_refresh = False
 
                     if force_refresh or invoke_jwt_status is not None:
                         if not isinstance(refresh_token, str) or not refresh_token:
@@ -8150,25 +8206,52 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    # How to launch the CLI comes from the provider's own profile, so a provider
+    # shipped outside this tree describes its binary/args instead of inheriting
+    # another vendor's. copilot-acp's values live in its profile, which is why
+    # HERMES_COPILOT_ACP_COMMAND / COPILOT_CLI_PATH / HERMES_COPILOT_ACP_ARGS
+    # keep working unchanged.
+    profile = None
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+
+        profile = _get_provider_profile(provider_id)
+    except Exception:
+        profile = None
+
+    command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
+    default_command = str(getattr(profile, "process_command", "") or "")
+    default_args = list(getattr(profile, "process_args", ()) or [])
+    args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
+
+    command = ""
+    for _var in command_env_vars:
+        command = os.getenv(_var, "").strip()
+        if command:
+            break
+    if not command:
+        command = default_command
+
+    raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
+    args = shlex.split(raw_args) if raw_args else list(default_args)
+
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        _hint = (
+            " or set " + "/".join(command_env_vars) if command_env_vars else ""
+        )
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the '{provider_id}' CLI command "
+            f"'{command or '(none configured)'}'. Install it{_hint}.",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_external_process_cli",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        # Placeholder credential: the subprocess owns real auth. Keyed on the
+        # provider id so each external-process provider gets a distinct value.
+        "api_key": pconfig.id or provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

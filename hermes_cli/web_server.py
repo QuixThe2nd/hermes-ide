@@ -1547,6 +1547,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab (next to the other delegation
     # controls) rather than spawning a one-field orphan category.
     "missions": "agent",
+    # `nous.keepalive_interval_seconds` is the only schema-surfaced nous field
+    # (Portal tokens live in auth.json) — fold it into the agent tab.
+    "nous": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
