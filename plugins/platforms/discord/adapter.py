@@ -4044,7 +4044,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         return True
 
-    def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
+    def _cap_split_chunks(self, chunks: List[str], reserve: int = 0) -> List[str]:
         """Cap the number of chunks sent for one logical response (#86581).
 
         A degenerate turn can produce tens of thousands of characters; the
@@ -4053,11 +4053,19 @@ class DiscordAdapter(BasePlatformAdapter):
         first ``N-1`` chunks and replace the rest with a short notice so the
         user sees a clear signal instead of a flood.  The full response
         remains available in the gateway session history / logs.
+
+        ``reserve`` books slots the caller fills OUTSIDE this chunk sequence
+        — the standalone mention-first message a root-turn final ships when
+        the mention cannot ride chunk 0.  The body is then capped one slot
+        tighter so the complete outbound sequence (mention + body + notice)
+        respects ``MAX_SPLIT_MESSAGES`` instead of blowing past it, while
+        the dropped-body notice still reports exactly what was omitted.
         """
-        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+        limit = self.MAX_SPLIT_MESSAGES - reserve
+        if len(chunks) <= limit:
             return chunks
-        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
-        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        kept = chunks[: limit - 1]
+        dropped_chars = sum(len(c) for c in chunks[limit - 1 :])
         notice = (
             f"\n\n⚠️ **Response truncated** — this reply exceeded the "
             f"delivery limit ({self.MAX_SPLIT_MESSAGES} messages). "
@@ -4224,17 +4232,29 @@ class DiscordAdapter(BasePlatformAdapter):
             # chars).  The prefix now rides body chunk 0 only while the
             # joined chunk still fits the cap; otherwise it ships as its
             # own short first message and every body chunk stays
-            # byte-for-byte what the splitter produced.
+            # byte-for-byte what the splitter produced.  That standalone
+            # mention is itself an outbound message, so it consumes one of
+            # the anti-flood cap's slots — capping the body first and
+            # inserting the mention after produced nine messages from an
+            # eight-message ceiling.  The cap is therefore taken with the
+            # mention's slot reserved: one fewer body chunk ships and the
+            # truncation notice still reports the body characters that
+            # were dropped, never silently.
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            body_chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            mention_standalone = bool(
+                mention_prefix
+                and body_chunks
+                and len(mention_prefix) + len(body_chunks[0])
+                > self.MAX_MESSAGE_LENGTH
             )
-            if mention_prefix and chunks:
-                first_len = len(mention_prefix) + len(chunks[0])
-                if first_len <= self.MAX_MESSAGE_LENGTH:
-                    chunks[0] = mention_prefix + chunks[0]
-                else:
-                    chunks.insert(0, mention_prefix)
+            chunks = self._cap_split_chunks(
+                body_chunks, reserve=1 if mention_standalone else 0
+            )
+            if mention_standalone:
+                chunks.insert(0, mention_prefix)
+            elif mention_prefix and chunks:
+                chunks[0] = mention_prefix + chunks[0]
 
             message_ids = []
 
