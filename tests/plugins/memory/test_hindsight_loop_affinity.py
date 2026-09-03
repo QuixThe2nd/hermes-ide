@@ -29,6 +29,7 @@ import gc
 import json
 import logging
 import threading
+import time
 import warnings
 from types import SimpleNamespace
 
@@ -221,7 +222,7 @@ def _call_in_thread(fn, *args, **kwargs):
     return outcome["value"]
 
 
-def _make_provider(tmp_path, monkeypatch):
+def _make_provider(tmp_path, monkeypatch, client_cls=_LoopBoundHindsightClient):
     """Provider in local_external mode whose SDK client is the loop-bound fake."""
     _LoopBoundHindsightClient.instances = []
     config = {
@@ -246,7 +247,7 @@ def _make_provider(tmp_path, monkeypatch):
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name == "hindsight_client":
-            return SimpleNamespace(Hindsight=_LoopBoundHindsightClient)
+            return SimpleNamespace(Hindsight=client_cls)
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
@@ -555,3 +556,283 @@ def test_install_client_closes_the_losing_duplicate_on_owning_loop(
     assert winner_close_threads == []
     assert provider._install_client(winner) is winner
     assert winner_close_threads == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: first-client setup is a lifecycle step, not an HTTP request.
+#
+# _build_client() can legitimately run far longer than one request (lazy
+# dependency install, embedded daemon start), so the caller's wait for it
+# must not be bounded by the configured REQUEST timeout — and when that wait
+# is abandoned, the client the build eventually completes with must be
+# released on the owning loop, not stranded where shutdown() can never see
+# it. The fakes below gate construction on Events the test controls, so the
+# "slow install" is deterministic and no test sleeps anywhere near the
+# production timeouts (120s request / 300s setup).
+# ---------------------------------------------------------------------------
+
+
+# How long a gated fake build may block before the test declares it wedged.
+# Ten seconds is generous for an Event handoff and keeps a broken provider
+# from hanging the suite.
+_GATE_WAIT_S = 10.0
+
+
+class _GatedHindsightClient(_LoopBoundHindsightClient):
+    """Loop-bound SDK stand-in whose construction the test gates.
+
+    Construction signals ``started``, then blocks until ``gate`` opens (or
+    raises immediately while ``fail_constructions`` counts down), modeling a
+    first-client build that is slower than any request timeout. Every close
+    is recorded with the thread it ran on, and ``events`` preserves the
+    total order of constructions vs closes for the next-builder boundary
+    assertions.
+    """
+
+    started: threading.Event | None = None
+    gate: threading.Event | None = None
+    closed: threading.Event | None = None
+    fail_constructions = 0
+    constructed: list["_GatedHindsightClient"] = []
+    events: list[tuple[str, "_GatedHindsightClient"]] = []
+    _order_lock = threading.Lock()
+
+    def __init__(self, **kwargs):
+        self.close_threads: list[str] = []
+        if type(self).fail_constructions:
+            type(self).fail_constructions -= 1
+            raise RuntimeError("simulated lazy-install failure")
+        if type(self).started is not None:
+            type(self).started.set()
+        if type(self).gate is not None:
+            assert type(self).gate.wait(timeout=_GATE_WAIT_S), (
+                "gated construction never released"
+            )
+        super().__init__(**kwargs)
+        with type(self)._order_lock:
+            type(self).constructed.append(self)
+            type(self).events.append(("constructed", self))
+
+    async def aclose(self):
+        self.close_threads.append(threading.current_thread().name)
+        try:
+            await super().aclose()
+        finally:
+            with type(self)._order_lock:
+                type(self).events.append(("closed", self))
+            if type(self).closed is not None:
+                type(self).closed.set()
+
+
+def _reset_gated_client(*, blocked: bool) -> tuple[threading.Event, ...]:
+    """Arm per-test class state; returns (started, gate, closed).
+
+    ``blocked=False`` leaves the gate open so construction runs immediately.
+    """
+    started, gate, closed = threading.Event(), threading.Event(), threading.Event()
+    _GatedHindsightClient.started = started
+    _GatedHindsightClient.gate = gate
+    _GatedHindsightClient.closed = closed
+    _GatedHindsightClient.fail_constructions = 0
+    _GatedHindsightClient.constructed = []
+    _GatedHindsightClient.events = []
+    if not blocked:
+        gate.set()
+    return started, gate, closed
+
+
+class _ClientCallThread:
+    """Runs provider._get_client() on a worker thread WITHOUT blocking the
+    test — the scenario has to steer events (open the construction gate,
+    let budgets expire) while the caller is mid-wait. ``join()`` returns the
+    outcome dict and fails the test if the caller hung."""
+
+    def __init__(self, provider):
+        self.outcome = {}
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self._provider = provider
+
+    def _run(self):
+        try:
+            self.outcome["value"] = self._provider._get_client()
+        except BaseException as exc:
+            self.outcome["error"] = exc
+
+    def start(self) -> "_ClientCallThread":
+        self.thread.start()
+        return self
+
+    def join(self) -> dict:
+        self.thread.join(timeout=30)
+        assert not self.thread.is_alive(), "first-use caller hung"
+        return self.outcome
+
+
+def test_slow_client_setup_outlives_request_timeout(tmp_path, monkeypatch):
+    """A short REQUEST timeout must not fail a slower-but-valid client setup.
+
+    Production symptom: _get_client() waited for the first build under the
+    request timeout (default 120s) while tools.lazy_deps allows 300s for the
+    lazy install. The wait expired, the operation failed, and the client the
+    build eventually completed with was installed by nobody and closed by
+    nobody — while the next caller built a second one.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    # A short request timeout: valid for retain/recall, far too short for a
+    # cold install. The setup wait must outlive it.
+    provider._timeout = 0.25
+    started, _gate, _closed = _reset_gated_client(blocked=True)
+
+    caller = _ClientCallThread(provider).start()
+
+    # Let the request-timeout window expire while the build is still gated —
+    # on the unfixed provider the caller has already given up by here.
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    time.sleep(0.8)
+    _GatedHindsightClient.gate.set()
+
+    outcome = caller.join()
+
+    assert "error" not in outcome, (
+        f"slow-but-valid setup failed under a {provider._timeout}s request "
+        f"timeout: {outcome.get('error')!r}"
+    )
+    slow_client = outcome["value"]
+    # Exactly one client was built; it was installed and served, not orphaned.
+    assert _GatedHindsightClient.constructed == [slow_client]
+    assert provider._client is slow_client
+    assert slow_client.construction_thread == "hindsight-loop"
+    assert slow_client.close_threads == []
+
+    # The slowly-built client actually serves traffic.
+    result = json.loads(provider.handle_tool_call(
+        "hindsight_recall", {"query": "what does the user like?"}
+    ))
+    assert result == {"result": "1. memory one\n2. memory two"}
+
+    provider.shutdown()
+    assert slow_client.close_threads == ["hindsight-loop"]
+
+
+def test_abandoned_setup_closes_late_client_on_owning_loop(tmp_path, monkeypatch):
+    """A setup whose caller gave up must close its late client on the loop.
+
+    When the caller abandons the build wait, the coroutine is the only side
+    left that knows the finished client — it must release it ON the owning
+    loop, and the next builder must wait for that release before treating a
+    replacement as installed (never two live clients with nobody to close
+    the displaced one).
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    # Shrink the setup budget symmetrically on both sides of the comparison:
+    # the module constant exists only on the fixed provider, where it caps
+    # the setup wait; on the unfixed provider the request timeout below was
+    # the only cap. Either way the caller abandons a still-blocked build.
+    monkeypatch.setattr(
+        hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 0.5, raising=False
+    )
+    started, _gate, closed = _reset_gated_client(blocked=True)
+
+    caller = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    # Past both budgets (0.25s request / 0.5s setup) with the build gated:
+    # the caller must have failed by now, not hung.
+    time.sleep(1.0)
+    outcome = caller.join()
+    assert "value" not in outcome, "caller outlived its setup budget"
+    assert type(outcome["error"]).__name__ == "TimeoutError", outcome["error"]
+
+    # The build completes LATE — after every waiter is gone.
+    _GatedHindsightClient.gate.set()
+    assert closed.wait(timeout=_GATE_WAIT_S), (
+        "client completed after its setup was abandoned was never closed"
+    )
+    late_client = _GatedHindsightClient.constructed[0]
+    assert late_client.close_threads == ["hindsight-loop"]
+
+    # The next caller gets a fresh client — built only after the late one
+    # was released, so at no point were two live clients installed/ignored.
+    replacement = _ClientCallThread(provider).start().join()
+    assert "error" not in replacement, replacement.get("error")
+    assert _GatedHindsightClient.constructed == [late_client, replacement["value"]]
+    assert provider._client is replacement["value"]
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", late_client)) < events.index(
+        ("constructed", replacement["value"])
+    )
+
+    provider.shutdown()
+    assert replacement["value"].close_threads == ["hindsight-loop"]
+
+
+def test_client_setup_handshake_contract():
+    """The _ClientSetup state machine grants the finished client to exactly
+    one side: the caller claims it, or the coroutine disposes of it."""
+
+    _ClientSetup = hindsight_mod._ClientSetup
+
+    # Caller gave up before the build landed: the offerer must dispose.
+    abandoned = _ClientSetup()
+    assert not abandoned.settled.is_set()
+    assert abandoned.abandon() is True
+    assert abandoned.offer(object()) is False
+
+    # Build landed while the caller was still waiting: claim it, once.
+    claimed = _ClientSetup()
+    client = object()
+    assert claimed.offer(client) is True
+    assert claimed.abandon() is False  # arrived in time — do not abandon
+    assert claimed.claim() is client
+    assert claimed.claim() is None
+
+    # A failed build settles immediately: nothing to hand over or close.
+    failed = _ClientSetup()
+    failed.fail()
+    assert failed.settled.is_set()
+
+
+def test_normal_operations_still_obey_request_timeout(tmp_path, monkeypatch):
+    """retain/recall/reflect keep the configured REQUEST timeout even though
+    the first-client setup wait is deliberately longer."""
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    client = provider._get_client()  # built under the default budget
+    assert client is _GatedHindsightClient.constructed[0]
+
+    provider._timeout = 0.25
+
+    async def _never_completes(**kwargs):
+        await asyncio.Future()  # models a wedged server response
+
+    client.arecall = _never_completes
+
+    began = time.monotonic()
+    result = provider.handle_tool_call(
+        "hindsight_recall", {"query": "what does the user like?"}
+    )
+    elapsed = time.monotonic() - began
+    assert "Failed to search memory" in result
+    assert elapsed < 5.0, f"recall outlived the request timeout: {elapsed:.2f}s"
+
+
+def test_failed_first_build_surfaces_error_and_next_call_rebuilds(
+    tmp_path, monkeypatch
+):
+    """A raising build settles its setup (nothing to join later) and the
+    error reaches the caller; the next first-use attempt rebuilds."""
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    _GatedHindsightClient.fail_constructions = 1
+
+    first = _ClientCallThread(provider).start().join()
+    assert isinstance(first.get("error"), RuntimeError)
+    assert "simulated lazy-install failure" in str(first["error"])
+    # The failure left no abandoned setup behind for the next builder to join.
+    assert getattr(provider, "_abandoned_setup", None) is None
+
+    second = _ClientCallThread(provider).start().join()
+    assert "error" not in second, second.get("error")
+    assert _GatedHindsightClient.constructed == [second["value"]]
+    assert provider._client is second["value"]

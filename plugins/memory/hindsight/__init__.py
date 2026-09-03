@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import contextvars
 import importlib
 import inspect
@@ -77,6 +78,14 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+# How long a first-client build may take before the waiting caller gives up.
+# _build_client() may lazy-install the SDK, and tools.lazy_deps's
+# _venv_pip_install allows 300s for that — far beyond any single HTTP
+# request. Bounding the build wait by the *request* timeout abandoned
+# still-valid setups mid-install and orphaned the clients they eventually
+# created, so the setup wait is kept at least at the install allowance
+# (see _client_setup_timeout) and never below the request timeout.
+_CLIENT_SETUP_TIMEOUT = 300  # seconds — keep >= lazy_deps._venv_pip_install
 # ``metadata.source`` stamped on retained memories — OPT-IN, empty by default.
 # AGENTS.md forbids shipping third-party attribution tags on-by-default until a
 # generic user-facing opt-in exists, so this stays unset unless the user sets it
@@ -390,6 +399,69 @@ def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     if future is None:
         raise RuntimeError("Hindsight loop unavailable")
     return future.result(timeout=timeout)
+
+
+class _ClientSetup:
+    """Completion handshake for a first-client build on the owning loop.
+
+    _build_client() can legitimately take far longer than one HTTP request
+    (lazy dependency install, embedded daemon start), so the caller waiting
+    for it and the coroutine producing it need an explicit agreement on who
+    owns the finished client. Exactly one side does:
+
+    * the waiting caller, when its wait finishes in time — ``claim()``;
+    * the coroutine, when every caller has given up — ``offer()`` then
+      reports False and the coroutine closes the client itself, on the
+      owning loop, so a timed-out setup can never strand a completed
+      client nobody installed or released (embedded finalization is
+      disabled — the daemon/session it holds would otherwise never be
+      freed).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._client: Any = None
+        self._abandoned = False
+        # Set once disposition is final: the client was handed to a caller,
+        # closed by the coroutine, or the build failed. The next builder
+        # waits on this before treating a replacement as installed.
+        self.settled = threading.Event()
+
+    def offer(self, client) -> bool:
+        """Loop side: present the finished client.
+
+        True when a caller may still claim it; False when every caller
+        abandoned the wait — the offerer must then close *client* itself.
+        """
+        with self._lock:
+            self._client = client
+            return not self._abandoned
+
+    def claim(self):
+        """Caller side: take the offered client (None if there is none)."""
+        with self._lock:
+            client = self._client
+            self._client = None
+            return client
+
+    def abandon(self) -> bool:
+        """Caller side: stop waiting for the build.
+
+        False when the client actually arrived in time (the caller should
+        ``claim()`` it instead — a client still sitting in the slot is
+        unclaimed by construction, because claiming is what empties it);
+        True when the coroutine is the only side left to dispose of the
+        outcome.
+        """
+        with self._lock:
+            if self._client is not None:
+                return False
+            self._abandoned = True
+            return True
+
+    def fail(self) -> None:
+        """Loop side: the build raised — nothing to hand over or close."""
+        self.settled.set()
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +912,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # (foreground tool thread, prefetch thread, writer thread) can't each
         # build a client and leak all but the last one.
         self._client_lock = threading.Lock()
+        # A first-client setup whose waiting caller timed out but whose
+        # coroutine is still building on the owning loop. Its eventual client
+        # gets closed by that coroutine; the next builder joins it first (see
+        # _join_abandoned_client_setup) so no replacement is installed while
+        # the displaced client is still live.
+        self._abandoned_setup: _ClientSetup | None = None
         # Bank defaults (retain mission + seeded directives) apply once, on
         # first client creation — see _apply_bank_defaults().
         self._bank_defaults_applied = False
@@ -1316,13 +1394,108 @@ class HindsightMemoryProvider(MemoryProvider):
                         # contextvars context (profile secret scope under
                         # multiplex_profiles), so get_secret() inside
                         # _build_client still resolves profile-scoped keys.
-                        self._client = self._run_sync(self._create_client())
+                        self._client = self._await_client_setup()
         # First client creation is also where bank defaults go out —
         # initialize() stays lazy (it never builds a client), so this is the
         # earliest point the Banks API is actually reachable. No-op on every
         # later call via the _bank_defaults_applied flag.
         self._apply_bank_defaults()
         return self._client
+
+    def _client_setup_timeout(self) -> float:
+        """Wait budget for first-client construction — NOT the request timeout.
+
+        _build_client() may lazy-install the SDK (tools.lazy_deps's
+        _venv_pip_install allows 300s) or start an embedded daemon, both far
+        slower than any Hindsight HTTP request. Bounding that wait by the
+        request timeout let a slow-but-valid setup outlive its caller: the
+        caller failed, the client the coroutine eventually created was
+        installed by nobody and closed by nobody, and the next caller built a
+        second one. Setup therefore waits at least the lazy-install allowance
+        (and never less than the configured request timeout, which stays the
+        bound for normal retain/recall/reflect operations).
+        """
+        request_timeout = float(self._timeout or _DEFAULT_TIMEOUT)
+        return max(request_timeout, float(_CLIENT_SETUP_TIMEOUT))
+
+    def _await_client_setup(self):
+        """Build the first client on the owning loop, setup-safely.
+
+        _build_client() runs in a coroutine on the shared Hindsight loop
+        (loop affinity — see _get_client) under a _ClientSetup handshake
+        instead of a plain _run_sync: the wait uses _client_setup_timeout(),
+        and if it still expires, the setup is marked abandoned so the
+        coroutine itself closes the client it completes with, ON the owning
+        loop — a completed client can never remain orphaned (installed by
+        nobody, closed by nobody, invisible to shutdown()).
+
+        Runs on a caller thread holding _client_lock; nothing in the
+        coroutine takes that lock, so the bounded waits below cannot
+        deadlock against loop-side work.
+        """
+        self._join_abandoned_client_setup()
+        setup = _ClientSetup()
+
+        async def _setup():
+            try:
+                client = self._build_client()
+            except BaseException:
+                setup.fail()
+                raise
+            try:
+                if not setup.offer(client):
+                    # Every caller gave up while the build kept running —
+                    # nobody will install this client, and shutdown() can no
+                    # longer see it. Release it right here, on the owning
+                    # loop, before any replacement can be built.
+                    await self._aclose_client(client)
+            finally:
+                setup.settled.set()
+            return client
+
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(_setup(), _get_loop())
+        if future is None:
+            raise RuntimeError("Hindsight loop unavailable")
+        wait = self._client_setup_timeout()
+        try:
+            return future.result(timeout=wait)
+        except concurrent.futures.TimeoutError:
+            if not setup.abandon():
+                # Completed in the instant between the wait expiring and the
+                # abandon check — take what arrived instead of failing.
+                client = setup.claim()
+                if client is not None:
+                    return client
+            self._abandoned_setup = setup
+            raise TimeoutError(
+                f"Hindsight client setup did not complete within {wait:.0f}s; "
+                "the client it completes with will be closed on the Hindsight "
+                "loop"
+            ) from None
+
+    def _join_abandoned_client_setup(self) -> None:
+        """Let a previously abandoned setup finish before another client is
+        treated as installed.
+
+        The abandoned setup's coroutine closes the client it completes with
+        (see _await_client_setup); building a replacement before that would
+        briefly leave two live clients, with nobody left to release the
+        displaced one — shutdown() would close only the replacement.
+
+        The wait is unbounded by design: every step of _build_client() is
+        itself time-bounded (the lazy install subprocess carries its own
+        timeout), and a build that hung forever would be stuck ON the shared
+        loop thread, stalling all Hindsight operations with or without this
+        join. Waiting on the settled event therefore buys strict ordering at
+        no additional hang risk, and cannot deadlock — the coroutine never
+        takes _client_lock, which the joining caller holds.
+        """
+        setup = self._abandoned_setup
+        if setup is None:
+            return
+        self._abandoned_setup = None
+        setup.settled.wait()
 
     def _build_client(self):
         """Construct the SDK client object. Must run ON the owning loop."""
@@ -1374,22 +1547,18 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._api_url, bool(self._api_key), kwargs["timeout"])
         return Hindsight(**kwargs)
 
-    async def _create_client(self):
-        """Async wrapper so _build_client() executes on the owning loop."""
-        return self._build_client()
-
-    def _close_client(self, client) -> None:
-        """Close a client this provider is done with, on the owning loop.
+    async def _aclose_client(self, client) -> None:
+        """Coroutine twin of _close_client() — close a client on the owning loop.
 
         The client's aiohttp session is bound to the loop it was constructed on
         (see _get_client), so it must be released there too — closing it from
         any other thread raises "attached to a different loop" before aiohttp
         frees the session, which later surfaces as "Unclosed client session".
 
-        Never raises. Callers MUST NOT hold _client_lock here: the close does
-        I/O on the shared loop, whose thread may itself need _client_lock to
-        build a client (see _get_client), so blocking on it while holding the
-        lock could deadlock.
+        Runs as a coroutine ON the shared loop: scheduled by _close_client
+        from a caller thread, or awaited directly by loop-side cleanup that
+        must not block on its own loop (the abandoned-setup path in
+        _await_client_setup). Never raises.
         """
         if client is None:
             return
@@ -1400,7 +1569,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 # first, then let the wrapper clean up daemon/UI bookkeeping.
                 inner_client = getattr(client, "_client", None)
                 if inner_client is not None and hasattr(inner_client, "aclose"):
-                    self._run_sync(inner_client.aclose())
+                    await inner_client.aclose()
                     try:
                         client._client = None
                     except Exception:
@@ -1412,7 +1581,24 @@ class HindsightMemoryProvider(MemoryProvider):
             else:
                 aclose = getattr(client, "aclose", None)
                 if callable(aclose):
-                    self._run_sync(aclose())
+                    result = aclose()
+                    if inspect.isawaitable(result):
+                        await result
+        except Exception:
+            logger.debug("Hindsight: closing a displaced client failed", exc_info=True)
+
+    def _close_client(self, client) -> None:
+        """Close a client this provider is done with, on the owning loop.
+
+        Never raises. Callers MUST NOT hold _client_lock here: the close does
+        I/O on the shared loop, whose thread may itself need _client_lock to
+        build a client (see _get_client), so blocking on it while holding the
+        lock could deadlock.
+        """
+        if client is None:
+            return
+        try:
+            self._run_sync(self._aclose_client(client))
         except Exception:
             logger.debug("Hindsight: closing a displaced client failed", exc_info=True)
 
