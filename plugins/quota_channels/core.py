@@ -241,6 +241,34 @@ def save_state(
     return state["last_quota_success"]
 
 
+def save_wallet_state(
+    wallet_channels: Mapping[str, str],
+    wallet_ordinals: Mapping[str, int],
+    wallet_high_water: int,
+) -> None:
+    """Persist wallet Discord mappings without advancing quota success or readings."""
+    prior = load_state()
+    state: Dict[str, Any] = {}
+    if "last_quota_success" in prior:
+        state["last_quota_success"] = prior["last_quota_success"]
+    if isinstance(prior.get("readings"), Mapping):
+        state["readings"] = prior["readings"]
+    state["zai_wallet_channels"] = dict(wallet_channels)
+    state["zai_wallet_ordinals"] = dict(wallet_ordinals)
+    state["zai_wallet_ordinal_high_water"] = int(wallet_high_water)
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".quota-state.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise QuotaChannelsError(f"cannot write {path}: {exc}") from exc
+
+
 def default_http(req: urllib.request.Request, timeout: float = 25.0) -> Tuple[int, bytes]:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -2173,6 +2201,7 @@ def run_tick(
         zai_enabled = any(key == "zai" for key, _, _ in config["providers"])
         wallets: List[zai_wallets.ZaiWallet] = []
         pool_unreadable = False
+        zai_authoritative_empty = False
         wallet_channels: Dict[str, str] = dict(state.get("zai_wallet_channels") or {})
         wallet_ordinals: Dict[str, int] = dict(state.get("zai_wallet_ordinals") or {})
         wallet_high_water = int(state.get("zai_wallet_ordinal_high_water") or 0)
@@ -2184,20 +2213,38 @@ def run_tick(
                 wallets = zai_wallets.wallets_from_state_when_unreadable(
                     state, hermes_home
                 )
-            if not pool_unreadable:
-                (
-                    wallet_channels,
-                    wallet_ordinals,
-                    wallet_high_water,
-                    _deleted,
-                ) = zai_wallets.reconcile_zai_wallet_channels(
-                    config,
-                    wallets,
-                    state,
-                    pool_unreadable=pool_unreadable,
-                    headers=headers,
-                    http_fn=http_fn,
-                )
+            zai_authoritative_empty = not pool_unreadable and not wallets
+            should_reconcile = (
+                not pool_unreadable
+                or any(wallet.runtime_api_key for wallet in wallets)
+            )
+            if should_reconcile:
+                def _persist_wallet_maps(channels, ordinals, high_water) -> None:
+                    nonlocal wallet_channels, wallet_ordinals, wallet_high_water
+                    wallet_channels = dict(channels)
+                    wallet_ordinals = dict(ordinals)
+                    wallet_high_water = int(high_water)
+                    save_wallet_state(
+                        wallet_channels, wallet_ordinals, wallet_high_water
+                    )
+
+                try:
+                    (
+                        wallet_channels,
+                        wallet_ordinals,
+                        wallet_high_water,
+                        _deleted,
+                    ) = zai_wallets.reconcile_zai_wallet_channels(
+                        config,
+                        wallets,
+                        state,
+                        pool_unreadable=pool_unreadable,
+                        headers=headers,
+                        http_fn=http_fn,
+                        persist=_persist_wallet_maps,
+                    )
+                except zai_wallets.ZaiWalletError as exc:
+                    provider_results["z.ai"] = {"error": str(exc)}
                 wallet_state = {
                     "zai_wallet_channels": wallet_channels,
                     "zai_wallet_ordinals": wallet_ordinals,
@@ -2213,7 +2260,7 @@ def run_tick(
             reliability.setdefault("zai", rates_for_providers(("zai",), now_fn=now_fn).get("zai"))
 
         for key, label, channel_id in config["providers"]:
-            if key == "zai" and wallets:
+            if key == "zai" and (wallets or zai_authoritative_empty):
                 continue
             try:
                 prov_label, reset_secs, channel_name, rename, provider_info = (
@@ -2318,6 +2365,16 @@ def run_tick(
             )
             if alias is not None:
                 readings["zai"] = {**alias, "label": "z.ai"}
+
+        zai_keys_unavailable = pool_unreadable or (
+            bool(wallets) and any(not wallet.runtime_api_key for wallet in wallets)
+        )
+        if zai_keys_unavailable:
+            for key, entry in prior_readings.items():
+                key_str = str(key)
+                if (key_str.startswith("zai:") or key_str == "zai") and key not in readings:
+                    if isinstance(entry, Mapping):
+                        readings[key] = dict(entry)
 
         if successes:
             ranks = quota_display_ranks(readings, reliability)

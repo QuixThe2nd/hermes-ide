@@ -75,11 +75,11 @@ def read_zai_pool_raw(hermes_home) -> Tuple[Optional[List[Mapping[str, Any]]], b
     """Return (pool_entries, pool_unreadable).
 
     ``pool_entries`` is None when unreadable. An empty list means a readable
-  pool with no zai credentials.
+    pool with an explicit empty ``credential_pool.zai`` list.
     """
     auth_path = hermes_home / "auth.json"
     if not auth_path.exists():
-        return [], False
+        return None, True
     try:
         raw = json.loads(auth_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -88,18 +88,22 @@ def read_zai_pool_raw(hermes_home) -> Tuple[Optional[List[Mapping[str, Any]]], b
         return None, True
     pool = raw.get("credential_pool")
     if pool is None:
-        return [], False
+        return None, True
     if not isinstance(pool, dict):
         return None, True
     entries = pool.get("zai")
     if entries is None:
-        return [], False
+        return None, True
     if not isinstance(entries, list):
         return None, True
+    if not entries:
+        return [], False
     cleaned: List[Mapping[str, Any]] = []
     for entry in entries:
         if isinstance(entry, Mapping):
             cleaned.append(entry)
+    if not cleaned:
+        return None, True
     return cleaned, False
 
 
@@ -111,29 +115,28 @@ def enumerate_zai_wallets(hermes_home) -> Tuple[List[ZaiWallet], bool]:
     becomes a synthetic ``legacy-env`` wallet.
     """
     pool_entries, pool_unreadable = read_zai_pool_raw(hermes_home)
-    if pool_unreadable:
-        return [], True
 
     wallets: List[ZaiWallet] = []
     seen_keys: Set[str] = set()
-    for entry in pool_entries or []:
-        entry_id = str(entry.get("id") or "").strip()
-        if not entry_id:
-            continue
-        runtime_key = _runtime_key_from_pool_entry(entry)
-        if not runtime_key:
-            continue
-        if runtime_key in seen_keys:
-            continue
-        seen_keys.add(runtime_key)
-        label = str(entry.get("label") or "").strip()
-        wallets.append(
-            ZaiWallet(
-                entry_id=entry_id,
-                runtime_api_key=runtime_key,
-                pool_label=label,
+    if not pool_unreadable and pool_entries is not None:
+        for entry in pool_entries:
+            entry_id = str(entry.get("id") or "").strip()
+            if not entry_id:
+                continue
+            runtime_key = _runtime_key_from_pool_entry(entry)
+            if not runtime_key:
+                continue
+            if runtime_key in seen_keys:
+                continue
+            seen_keys.add(runtime_key)
+            label = str(entry.get("label") or "").strip()
+            wallets.append(
+                ZaiWallet(
+                    entry_id=entry_id,
+                    runtime_api_key=runtime_key,
+                    pool_label=label,
+                )
             )
-        )
 
     if not wallets:
         env_path = hermes_home / "secrets" / "zai.env"
@@ -146,7 +149,7 @@ def enumerate_zai_wallets(hermes_home) -> Tuple[List[ZaiWallet], bool]:
                     pool_label="legacy-env",
                 )
             )
-    return wallets, False
+    return wallets, pool_unreadable
 
 
 def assign_wallet_ordinals(
@@ -184,8 +187,14 @@ def _channel_exists(
         f"https://discord.com/api/v10/channels/{channel_id}",
         headers=headers,
     )
-    status, _ = _http_text(req, http_fn=http_fn)
-    return status == 200
+    status, text = _http_text(req, http_fn=http_fn)
+    if status == 200:
+        return True
+    if status == 404:
+        return False
+    raise ZaiWalletError(
+        f"discord channel probe returned {status}: {text[:200]}"
+    )
 
 
 def create_voice_channel(
@@ -239,6 +248,18 @@ def delete_voice_channel(
         )
 
 
+WalletPersistFn = Callable[[Dict[str, str], Dict[str, int], int], None]
+
+
+def _legacy_channel_unowned(
+    legacy_channel: str,
+    channels: Mapping[str, str],
+) -> bool:
+    if not legacy_channel:
+        return False
+    return legacy_channel not in set(channels.values())
+
+
 def reconcile_zai_wallet_channels(
     config: Mapping[str, Any],
     wallets: Sequence[ZaiWallet],
@@ -247,37 +268,45 @@ def reconcile_zai_wallet_channels(
     pool_unreadable: bool,
     headers: dict,
     http_fn: HttpFn,
+    persist: Optional[WalletPersistFn] = None,
 ) -> Tuple[Dict[str, str], Dict[str, int], int, List[str]]:
     """Ensure each wallet has a live Discord voice channel.
 
     Returns (entry_id -> channel_id, ordinals, high_water, deleted_channel_ids).
     """
-    if pool_unreadable:
-        channels = dict(state.get("zai_wallet_channels") or {})
-        ordinals = dict(state.get("zai_wallet_ordinals") or {})
-        high_water = int(state.get("zai_wallet_ordinal_high_water") or 0)
-        if not high_water and ordinals:
-            high_water = max(ordinals.values(), default=0)
+    channels = dict(state.get("zai_wallet_channels") or {})
+    ordinals = dict(state.get("zai_wallet_ordinals") or {})
+    high_water = int(state.get("zai_wallet_ordinal_high_water") or 0)
+    if not high_water and ordinals:
+        high_water = max(ordinals.values(), default=0)
+
+    if pool_unreadable and not any(wallet.runtime_api_key for wallet in wallets):
         return channels, ordinals, high_water, []
 
+    allow_deletes = not pool_unreadable
     ordinals, high_water = assign_wallet_ordinals(wallets, state)
-    channels: Dict[str, str] = dict(state.get("zai_wallet_channels") or {})
     legacy_channel = str(config.get("channel_ids", {}).get("zai") or "")
     guild_id = str(config["guild_id"])
     category_id = str(config["category_id"])
     current_ids = {wallet.entry_id for wallet in wallets}
     deleted: List[str] = []
 
-    if wallets and legacy_channel:
+    def _persist() -> None:
+        if persist is not None:
+            persist(channels, ordinals, high_water)
+
+    if wallets and legacy_channel and _legacy_channel_unowned(legacy_channel, channels):
         first_id = wallets[0].entry_id
         if first_id not in channels:
             channels[first_id] = legacy_channel
+            _persist()
 
     for wallet in wallets:
         entry_id = wallet.entry_id
         channel_id = channels.get(entry_id)
-        if channel_id and not _channel_exists(channel_id, headers, http_fn):
-            channel_id = None
+        if channel_id:
+            if not _channel_exists(channel_id, headers, http_fn):
+                channel_id = None
         if not channel_id:
             channels[entry_id] = create_voice_channel(
                 guild_id,
@@ -285,17 +314,19 @@ def reconcile_zai_wallet_channels(
                 headers,
                 http_fn,
             )
+            _persist()
         else:
             channels[entry_id] = channel_id
 
-    if not pool_unreadable:
+    if allow_deletes:
         for entry_id, channel_id in list(channels.items()):
             if entry_id not in current_ids:
                 delete_voice_channel(channel_id, headers, http_fn)
                 deleted.append(channel_id)
                 del channels[entry_id]
-                # ordinal map keeps the retired number — never reclaim
+                _persist()
 
+    _persist()
     return channels, ordinals, high_water, deleted
 
 

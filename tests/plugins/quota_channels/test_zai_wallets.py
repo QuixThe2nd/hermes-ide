@@ -12,9 +12,11 @@ from plugins.quota_channels import core as core
 from plugins.quota_channels.core import run_tick, state_path, validate_quota_config
 from plugins.quota_channels.zai_wallets import (
     LEGACY_ENV_WALLET_ID,
+    ZaiWalletError,
     assign_wallet_ordinals,
     enumerate_zai_wallets,
     pick_best_zai_reading,
+    reconcile_zai_wallet_channels,
     wallet_reading_key,
 )
 
@@ -43,10 +45,11 @@ def _write_pool(tmp_path, entries):
 
 
 class _WalletDiscord:
-    def __init__(self, guild_channels, existing=None, missing=None):
+    def __init__(self, guild_channels, existing=None, missing=None, get_status=None):
         self.guild_channels = list(guild_channels)
         self.existing = set(existing or ())
         self.missing = set(missing or ())
+        self.get_status = dict(get_status or ())
         self.renames = []
         self.creates = []
         self.deletes = []
@@ -61,6 +64,9 @@ class _WalletDiscord:
             return 200, json.dumps(self.guild_channels).encode()
         if method == "GET":
             cid = path.rsplit("/", 1)[-1]
+            if cid in self.get_status:
+                status = self.get_status[cid]
+                return status, json.dumps({"message": "error"}).encode()
             if cid in self.missing:
                 return 404, b'{"message": "Unknown Channel"}'
             return 200, json.dumps({"name": "old-name"}).encode()
@@ -459,6 +465,367 @@ class TestLegacySingleWallet:
         secrets.mkdir()
         (secrets / "zai.env").write_text('ZAI_API_KEY="solo-key"\n', encoding="utf-8")
         wallets, unreadable = enumerate_zai_wallets(wallet_env)
-        assert not unreadable
+        assert unreadable
         assert len(wallets) == 1
         assert wallets[0].entry_id == LEGACY_ENV_WALLET_ID
+
+
+class TestWalletReconcileRegressions:
+    def test_pool_reorder_keeps_distinct_channels(self, wallet_env):
+        _write_pool(
+            wallet_env,
+            [
+                {"id": "w1", "access_token": "k1"},
+                {"id": "w2", "access_token": "k2"},
+            ],
+        )
+        discord = _WalletDiscord(
+            [{"id": "c3", "position": 12}],
+            existing={"c3"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        w1_cid = state["zai_wallet_channels"]["w1"]
+        w2_cid = state["zai_wallet_channels"]["w2"]
+        assert w1_cid == "c3"
+        assert w2_cid != "c3"
+        assert len(discord.creates) == 1
+
+        _write_pool(
+            wallet_env,
+            [
+                {"id": "w2", "access_token": "k2"},
+                {"id": "w1", "access_token": "k1"},
+            ],
+        )
+        discord2 = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": w2_cid, "position": 13},
+            ],
+            existing={"c3", w2_cid},
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_100.0,
+            http_fn=discord2,
+            sleep_fn=lambda _: None,
+        )
+        assert len(discord2.creates) == 0
+        state2 = json.loads(state_path().read_text(encoding="utf-8"))
+        assert state2["zai_wallet_channels"]["w1"] == w1_cid
+        assert state2["zai_wallet_channels"]["w2"] == w2_cid
+
+    def test_channel_get_429_does_not_create(self, wallet_env):
+        _write_pool(wallet_env, [{"id": "w1", "access_token": "k1"}])
+        discord = _WalletDiscord(
+            [{"id": "c3", "position": 12}],
+            existing={"c3"},
+            get_status={"c3": 429},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert len(discord.creates) == 0
+        assert result["providers"]["z.ai"]["error"]
+        assert "429" in result["providers"]["z.ai"]["error"]
+
+    def test_channel_get_500_does_not_create(self, wallet_env):
+        _write_pool(wallet_env, [{"id": "w1", "access_token": "k1"}])
+        discord = _WalletDiscord(
+            [{"id": "c3", "position": 12}],
+            existing={"c3"},
+            get_status={"c3": 500},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert len(discord.creates) == 0
+        assert result["providers"]["z.ai"]["error"]
+        assert "500" in result["providers"]["z.ai"]["error"]
+
+    def test_wallet_maps_persist_when_all_quota_fetches_fail(self, wallet_env, monkeypatch):
+        _write_pool(
+            wallet_env,
+            [
+                {"id": "w1", "access_token": "k1"},
+                {"id": "w2", "access_token": "k2"},
+            ],
+        )
+        prior_lqs = 999_000
+        prior_readings = {
+            wallet_reading_key("w1"): {"pct": 10, "reset_seconds": DAY, "label": "z.ai 1"},
+            "zai": {"pct": 10, "reset_seconds": DAY, "label": "z.ai"},
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(
+            json.dumps(
+                {
+                    "last_quota_success": prior_lqs,
+                    "readings": prior_readings,
+                    "zai_wallet_channels": {"w1": "c3"},
+                    "zai_wallet_ordinals": {"w1": 1},
+                    "zai_wallet_ordinal_high_water": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord([{"id": "c3", "position": 12}], existing={"c3"})
+
+        def fail_all(http_fn=None, now_fn=None, api_key=None):
+            raise core.QuotaChannelsError("z.ai usage endpoint returned 500")
+
+        monkeypatch.setattr(core, "_zai_quota_metrics", fail_all)
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert len(discord.creates) == 1
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        w2_cid = state["zai_wallet_channels"]["w2"]
+        assert state["last_quota_success"] == prior_lqs
+        assert state["readings"] == prior_readings
+
+        discord2 = _WalletDiscord(
+            [{"id": "c3", "position": 12}, {"id": w2_cid, "position": 13}],
+            existing={"c3", w2_cid},
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_100.0,
+            http_fn=discord2,
+            sleep_fn=lambda _: None,
+        )
+        assert len(discord2.creates) == 0
+
+    def test_delete_persisted_when_quota_fetches_fail(self, wallet_env, monkeypatch):
+        _write_pool(wallet_env, [{"id": "w1", "access_token": "k1"}])
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(
+            json.dumps(
+                {
+                    "last_quota_success": 888,
+                    "readings": {wallet_reading_key("w1"): {"pct": 50, "reset_seconds": DAY, "label": "z.ai 1"}},
+                    "zai_wallet_channels": {"w1": "c3", "gone": "orphan"},
+                    "zai_wallet_ordinals": {"w1": 1, "gone": 9},
+                    "zai_wallet_ordinal_high_water": 9,
+                }
+            ),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord([{"id": "c3", "position": 12}], existing={"c3", "orphan"})
+
+        def fail_all(http_fn=None, now_fn=None, api_key=None):
+            raise core.QuotaChannelsError("z.ai usage endpoint returned 500")
+
+        monkeypatch.setattr(core, "_zai_quota_metrics", fail_all)
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert "orphan" in discord.deletes
+        state = json.loads(state_path().read_text(encoding="utf-8"))
+        assert "gone" not in state["zai_wallet_channels"]
+        assert state["last_quota_success"] == 888
+
+        discord2 = _WalletDiscord([{"id": "c3", "position": 12}], existing={"c3"})
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_100.0,
+            http_fn=discord2,
+            sleep_fn=lambda _: None,
+        )
+        assert "orphan" not in discord2.deletes
+
+    def test_missing_auth_preserves_channels_and_readings(self, wallet_env, monkeypatch):
+        prior = {
+            "last_quota_success": 777,
+            "readings": {
+                wallet_reading_key("w1"): {"pct": 40, "reset_seconds": DAY, "label": "z.ai 1"},
+                wallet_reading_key("w2"): {"pct": 60, "reset_seconds": DAY, "label": "z.ai 2"},
+                "zai": {"pct": 60, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+                {"id": "c5", "position": 14},
+            ],
+            existing={"c3", "extra", "c5"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3", "grok": "c5"},
+                "enabled_providers": ["zai", "grok"],
+            }
+        )
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {"grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY)},
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        assert saved["readings"][wallet_reading_key("w1")] == prior["readings"][wallet_reading_key("w1")]
+        assert saved["readings"][wallet_reading_key("w2")] == prior["readings"][wallet_reading_key("w2")]
+        assert saved["readings"]["zai"] == prior["readings"]["zai"]
+
+    def test_explicit_empty_pool_deletes_owned_rows(self, wallet_env):
+        _write_pool(wallet_env, [])
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(
+            json.dumps(
+                {
+                    "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+                    "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+                    "zai_wallet_ordinal_high_water": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord(
+            [{"id": "c3", "position": 12}, {"id": "extra", "position": 13}],
+            existing={"c3", "extra"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert set(discord.deletes) == {"c3", "extra"}
+
+    def test_legacy_env_with_missing_auth(self, wallet_env):
+        secrets = wallet_env / "secrets"
+        secrets.mkdir()
+        (secrets / "zai.env").write_text('ZAI_API_KEY="solo-key"\n', encoding="utf-8")
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert unreadable
+        assert len(wallets) == 1
+        assert wallets[0].entry_id == LEGACY_ENV_WALLET_ID
+        assert wallets[0].runtime_api_key == "solo-key"
+
+    def test_malformed_pool_rows_non_destructive(self, wallet_env, monkeypatch):
+        (wallet_env / "auth.json").write_text(
+            json.dumps({"credential_pool": {"zai": ["garbage", 42, None]}}),
+            encoding="utf-8",
+        )
+        prior = {
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+            "readings": {wallet_reading_key("w1"): {"pct": 30, "reset_seconds": DAY, "label": "z.ai 1"}},
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        discord = _WalletDiscord(
+            [{"id": "c3", "position": 12}, {"id": "extra", "position": 13}],
+            existing={"c3", "extra"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        assert saved["readings"] == prior["readings"]
