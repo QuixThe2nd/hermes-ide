@@ -35,7 +35,7 @@ const CARD_TOOL_NAMES = new Set([
   // Legacy spelling from transcripts recorded before the rename.
   'delegate_task',
   'image_generate',
-  'setup_mcp',
+  'setup_mcp'
 ])
 
 export function isCardTool(toolName: string): boolean {
