@@ -1,0 +1,6 @@
+name: mission_control
+default_enabled: true
+version: 1.0.0
+description: "Mission Control: local web UI for recent Hermes sessions (read from HERMES_HOME state/profile DBs), with live updates, a new/reply composer, and the mission_control serve CLI."
+author: Hermes Agent
+kind: backend
