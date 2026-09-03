@@ -72,6 +72,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL,
     is_automatic_end_reason,
+    _RESET_CHILD_SQL,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
@@ -279,6 +280,119 @@ def workspace_key(row: Dict[str, Any]) -> Optional[str]:
 
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+
+
+def _compression_child_marker_sql(alias: str) -> str:
+    """Edge markers a compression continuation child must satisfy.
+
+    The same three conditions :meth:`SessionDB.get_compression_tip` applies
+    when picking a parent's continuation child — not a branch, not a delegate
+    run, not a tool-spawned session — factored out so the SQL tip walk below
+    and the Python walk stay in lockstep.
+    """
+    return (
+        f"json_extract(COALESCE({alias}.model_config, '{{}}'),"
+        f" '$._branched_from') IS NULL"
+        f" AND {_delegate_from_json(f'{alias}.model_config')} IS NULL"
+        f" AND COALESCE({alias}.source, '') != 'tool'"
+    )
+
+
+# Bound on the preferred-child compression-tip walk, shared by
+# SessionDB.get_compression_tip() and _open_first_tip_sql() so the Python
+# projection and the SQL open/closed classification can never resolve a
+# different tip. Chains longer than this are pathological, but the two walks
+# must stop at the same node even there: list_sessions_rich() orders pages by
+# the SQL walk's answer while surfacing the Python walk's row.
+_COMPRESSION_TIP_MAX_STEPS = 100
+
+
+def _open_first_tip_sql() -> Tuple[str, str]:
+    """CTE + JOIN fragments classifying surfaced rows as open or closed.
+
+    Returned as ``(ctes, joins)`` for :meth:`SessionDB.list_sessions_rich`'s
+    opt-in open-before-closed ordering. A compression root's own row is always
+    ended (``end_reason='compression'``), but the row a listing surfaces is the
+    chain's live tip, so classification must resolve the tip — the same
+    preferred-child walk :meth:`SessionDB.get_compression_tip` performs,
+    replicated as a recursive CTE so it can feed ``ORDER BY`` *before*
+    LIMIT/OFFSET (a client-side sort can't fix which rows a page selects).
+
+    ``tip_walk`` follows exactly one preferred child per step and stops after
+    ``_COMPRESSION_TIP_MAX_STEPS`` edges — the same cap the Python walk
+    applies — so on chains longer than the cap the SQL classifies by the very
+    node ``get_compression_tip()`` returns (and the projection surfaces);
+    without the cap the SQL would run on to the terminal descendant and the
+    two could disagree on open/closed, letting a page order a surfaced closed
+    conversation above a surfaced open one.
+
+    The walk is seeded from chain *heads* only: compression-ended sessions
+    that are not themselves a plain continuation member of another
+    compression-ended parent. Every member of a deep chain is
+    compression-ended, so seeding all of them would rewalk every suffix —
+    quadratic all-node seeding; heads make total walk rows linear in chain
+    edges. User-visible branch/reset children keep qualifying as heads (their
+    markers disqualify them from the interior-member test), and interior
+    members never surface in the outer query, so every surfaced
+    compression-ended row still finds its tip. ``UNION`` dedups on
+    (root, tip, depth) and the strictly increasing depth bounds the walk on
+    corrupt cyclic data. ``tip_final`` keeps the one member per root the walk
+    stops at — either the preferred child it cannot follow or the cap,
+    whichever comes first — mirroring the Python walk's stop condition.
+    """
+    best_child_sql = (
+        f"SELECT best.id FROM sessions best"
+        f" WHERE best.parent_session_id = p.id"
+        f" AND {_compression_child_marker_sql('best')}"
+        f" ORDER BY"
+        f" CASE WHEN best.end_reason = 'compression' THEN 0"
+        f" WHEN best.ended_at IS NULL THEN 1 ELSE 2 END,"
+        f" {_sql_session_last_active('best')} DESC,"
+        f" best.started_at DESC, best.id DESC"
+        f" LIMIT 1"
+    )
+    ctes = (
+        "tip_walk(root_id, tip_id, depth) AS ("
+        # Chain heads: not a reset/branch-marked user-visible child, not a
+        # plain continuation member of a compression-ended parent. Reset
+        # children are always heads — they can pass the marker test yet still
+        # surface as their own conversation.
+        " SELECT s.id, s.id, 0 FROM sessions s"
+        " WHERE s.end_reason = 'compression'"
+        " AND NOT EXISTS ("
+        " SELECT 1 FROM sessions pp"
+        " WHERE pp.id = s.parent_session_id"
+        " AND pp.end_reason = 'compression'"
+        " AND json_extract(COALESCE(s.model_config, '{}'),"
+        " '$._reset_from') IS NULL"
+        f" AND {_compression_child_marker_sql('s')})"
+        " UNION"
+        " SELECT t.root_id, pc.id, t.depth + 1"
+        " FROM tip_walk t"
+        " JOIN sessions p ON p.id = t.tip_id"
+        " JOIN sessions pc ON pc.parent_session_id = p.id"
+        f" WHERE t.depth < {_COMPRESSION_TIP_MAX_STEPS}"
+        " AND p.end_reason = 'compression'"
+        f" AND {_compression_child_marker_sql('pc')}"
+        f" AND pc.id = ({best_child_sql})"
+        "), "
+        "tip_final(root_id, tip_id) AS ("
+        " SELECT t.root_id, t.tip_id FROM tip_walk t"
+        f" WHERE t.depth >= {_COMPRESSION_TIP_MAX_STEPS}"
+        " OR NOT EXISTS ("
+        " SELECT 1 FROM sessions p"
+        " WHERE p.id = t.tip_id AND p.end_reason = 'compression'"
+        " AND EXISTS ("
+        " SELECT 1 FROM sessions c"
+        " WHERE c.parent_session_id = p.id"
+        f" AND {_compression_child_marker_sql('c')}))"
+        ")"
+    )
+    joins = (
+        " LEFT JOIN tip_final tf ON tf.root_id = s.id"
+        " LEFT JOIN sessions tiprow ON tiprow.id = tf.tip_id"
+    )
+    return ctes, joins
 
 
 # Sentinel returned by SessionDB._merge_model_config_json when the session row
@@ -1999,6 +2113,7 @@ def apply_database_pragmas(
     conn: sqlite3.Connection,
     *,
     db_label: str = "state.db",
+    tuning_config: bool = True,
 ) -> None:
     """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml``.
 
@@ -2008,6 +2123,14 @@ def apply_database_pragmas(
     :func:`apply_wal_with_fallback`, which layers the operator setting under
     all the safety guards (never live-downgrading an on-disk WAL DB,
     filesystem fallback, WAL-reset-bug gating).
+
+    ``tuning_config=False`` skips the config read entirely, so a caller
+    that serves explicit database paths it does not own (Mission
+    Control's read-only listing of the main and profile DBs) gets the
+    plain-SQLite defaults without the config load's side effects on
+    the ambient ``HERMES_HOME`` — matching what a bare
+    ``sqlite3.connect`` did before. Default ``True`` keeps every
+    existing caller's behavior.
 
     Supported keys under ``database:`` in config.yaml:
 
@@ -2026,6 +2149,8 @@ def apply_database_pragmas(
     Best-effort: config load or pragma failures are ignored so DB init
     never breaks on a malformed ``database:`` section.
     """
+    if not tuning_config:
+        return
     try:
         # Local import avoids a circular import with hermes_cli.config.
         from hermes_cli.config import cfg_get, load_config_readonly
@@ -5268,13 +5393,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception:
             logger.debug("Could not close a SessionDB connection", exc_info=True)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self,
+        db_path: Path = None,
+        read_only: bool = False,
+        tuning_pragmas: bool = True,
+    ):
+        """Open one session database.
+
+        ``tuning_pragmas=False`` opens the connections without the
+        config.yaml performance-pragma pass (see
+        apply_database_pragmas) — for embedders that serve explicit
+        paths in someone else's home and must not touch the ambient
+        ``HERMES_HOME``. Default keeps today's behavior.
+        """
         self.db_path = db_path or _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
+        self._tuning_pragmas = tuning_pragmas
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -5419,7 +5558,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         # process — the writable heal that follows would then
                         # repair WITHOUT its forensic backup.
                         try:
-                            apply_database_pragmas(self._conn, db_label="state.db")
+                            apply_database_pragmas(
+                                self._conn, db_label="state.db",
+                                tuning_config=self._tuning_pragmas,
+                            )
                             cursor = self._conn.cursor()
                             self._fts_enabled = (
                                 self._fts_table_probe(cursor, "messages_fts")
@@ -5527,7 +5669,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._wal_active = (
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
-                apply_database_pragmas(self._conn, db_label="state.db")
+                apply_database_pragmas(
+                    self._conn, db_label="state.db",
+                    tuning_config=self._tuning_pragmas,
+                )
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
@@ -5703,7 +5848,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 isolation_level=None,
             )
             conn.row_factory = sqlite3.Row
-            apply_database_pragmas(conn, db_label="state.db")
+            apply_database_pragmas(
+                conn, db_label="state.db",
+                tuning_config=self._tuning_pragmas,
+            )
             # Load the CJK tokenizer extension on this connection so
             # messages_fts_cjk queries work on the read path. The .so
             # registers the tokenizer in the connection's in-memory
@@ -5937,7 +6085,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._wal_active = (
                 apply_wal_with_fallback(conn, db_label="state.db") == "wal"
             )
-            apply_database_pragmas(conn, db_label="state.db")
+            apply_database_pragmas(
+                conn, db_label="state.db",
+                tuning_config=self._tuning_pragmas,
+            )
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
         except Exception as exc:
@@ -11662,8 +11813,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         chain = [current] if current else []
         seen = {current} if current else set()
         # Bound the walk defensively — compression chains this deep are
-        # pathological and shouldn't happen in practice. 100 = plenty.
-        for _ in range(100):
+        # pathological and shouldn't happen in practice. The bound is shared
+        # with _open_first_tip_sql()'s SQL walk, which classifies list rows
+        # by this method's answer: the two must stop at the same node or a
+        # page could group a conversation by a tip the projection never
+        # surfaces.
+        for _ in range(_COMPRESSION_TIP_MAX_STEPS):
             with self._read_ctx() as conn:
                 cursor = conn.execute(
                     f"""
@@ -11973,6 +12128,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         session_key: str = None,
         include_hidden: bool = False,
+        open_first: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -12027,6 +12183,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Pass ``session_key`` to restrict results to one stable gateway
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
+
+        Pass ``open_first=True`` to group every open session (surfaced
+        ``ended_at IS NULL``) before every closed one, preserving the
+        requested order inside each group. The grouping is applied in SQL
+        ahead of LIMIT/OFFSET so it holds across pages, and classification
+        follows the surfaced row — a compression root whose live tip is
+        still open groups with the open sessions. Opt-in: callers that
+        don't pass it keep the existing ordering.
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -12090,6 +12254,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "" if compact_rows
             else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
         )
+
+        # Opt-in open-before-closed grouping. Classification follows the row
+        # the caller will actually see: with compression-tip projection on, a
+        # root's open/closed state is its tip's (the root row itself is
+        # always ended), resolved in SQL via the same preferred-child walk
+        # get_compression_tip() performs — cap included, so chains longer
+        # than _COMPRESSION_TIP_MAX_STEPS classify by the same node the
+        # projection surfaces. Without projection the raw row is the surfaced
+        # row and classifies itself.
+        tip_ctes = ""
+        tip_joins = ""
+        open_order_prefix = ""
+        if open_first:
+            if project_compression_tips and not include_children:
+                tip_ctes, tip_joins = _open_first_tip_sql()
+                open_order_prefix = (
+                    "(CASE WHEN s.end_reason = 'compression'"
+                    " AND tf.root_id IS NOT NULL"
+                    " THEN tiprow.ended_at IS NULL"
+                    " ELSE s.ended_at IS NULL END) DESC, "
+                )
+            else:
+                open_order_prefix = "(s.ended_at IS NULL) DESC, "
 
         # Optional session-id filter, pushed into SQL so callers (Desktop
         # session-id search) don't have to fetch every row and filter in
@@ -12163,6 +12350,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
             _sel = self._compact_session_cols() if compact_rows else "s.*"
+            tip_cte_prefix = f", {tip_ctes}" if tip_ctes else ""
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -12175,7 +12363,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
-                ),
+                ){tip_cte_prefix},
                 chain_max AS (
                     SELECT
                         root_id,
@@ -12196,9 +12384,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
+                {tip_joins}
                 {prompt_join}
                 {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                ORDER BY {open_order_prefix}_effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
             # WHERE params apply twice (CTE seed + outer select); the id filter
@@ -12206,8 +12395,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             params = params + params + id_params + [limit, offset]
         else:
             _sel = self._compact_session_cols() if compact_rows else "s.*"
+            with_prefix = f"WITH RECURSIVE {tip_ctes}\n" if tip_ctes else ""
             query = f"""
-                SELECT {_sel}{prompt_select},
+                {with_prefix}SELECT {_sel}{prompt_select},
                     COALESCE(
                         (SELECT {_PREVIEW_RAW_SELECT}
                          FROM messages m
@@ -12218,9 +12408,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     ) AS _preview_raw,
                     {_sql_session_last_active("s")} AS last_active
                 FROM sessions s
+                {tip_joins}
                 {prompt_join}
                 {where_sql}
-                ORDER BY s.started_at DESC
+                ORDER BY {open_order_prefix}s.started_at DESC
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])
@@ -12335,6 +12526,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 projected.append(merged)
             sessions = projected
 
+        if open_first:
+            # Pinned back-fill rows append after the page, so a closed page
+            # row could otherwise precede a back-filled open pin. Re-group on
+            # the surfaced state (this runs after tip projection, so a
+            # back-filled root whose tip is open lands with the open rows).
+            # Timsort is stable: within each group the SQL order — and the
+            # page-before-pins append — is preserved.
+            sessions.sort(key=lambda s: s.get("ended_at") is not None)
+
         # Derive read state per surfaced conversation. ``last_read_at`` is
         # lineage-stamped by set_session_read, so a projected row's root
         # watermark and its tip's are the same value — comparing it against
@@ -12343,6 +12543,56 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             s["unread"] = self.session_unread(s)
 
         return sessions
+
+    def get_session_lineage_ids(self, session_id: str) -> List[str]:
+        """Session ids of the conversation *session_id* belongs to, root
+        first, tip last — the display definition of "one logical
+        conversation" for listing surfaces (Mission Control's transcript,
+        feed, cursor, archive and count paths).
+
+        The root is the nearest ancestor that itself surfaces as its own
+        conversation — a root row, or a branch/reset/delegate/tool child,
+        the same boundaries ``_LISTABLE_CHILD_SQL`` plus the delegate
+        filter draw — and the tip is that root's preferred compression
+        continuation (``get_compression_chain``, cap included). Any member
+        id of a chain — root, middle segment or live tip — resolves to the
+        same list; branch, reset and delegate children resolve to their
+        own conversations, never the parent lineage they hang off. An
+        unknown id yields itself alone, so callers degrade to the one
+        segment they named instead of a wrong chain.
+        """
+        if not session_id:
+            return []
+        root = session_id
+        seen = {session_id}
+        for _ in range(_COMPRESSION_TIP_MAX_STEPS):
+            # Step up only while the current row is a plain compression
+            # continuation (no branch/reset/delegate/tool boundary of its
+            # own): everything else IS a conversation start.
+            with self._read_ctx() as conn:
+                row = conn.execute(
+                    f"""
+                    SELECT s.parent_session_id
+                    FROM sessions s
+                    WHERE s.id = ?
+                      AND s.parent_session_id IS NOT NULL
+                      AND NOT ({_BRANCH_CHILD_SQL.format(a='s')})
+                      AND NOT ({_RESET_CHILD_SQL.format(a='s')})
+                      AND {_delegate_from_json('s.model_config')} IS NULL
+                      AND COALESCE(s.source, '') NOT IN ('subagent', 'tool')
+                    """,
+                    (root,),
+                ).fetchone()
+            if row is None:
+                break
+            parent = row["parent_session_id"] if hasattr(row, "keys") \
+                else row[0]
+            if not parent or parent in seen:
+                break
+            seen.add(parent)
+            root = parent
+        chain = self.get_compression_chain(root)
+        return chain or [root]
 
     def session_lifecycle_statuses(
         self, session_ids: List[str]

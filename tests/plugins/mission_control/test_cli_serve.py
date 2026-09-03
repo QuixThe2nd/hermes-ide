@@ -26,40 +26,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-SESSIONS_SCHEMA = """
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  source TEXT NOT NULL,
-  title TEXT,
-  display_name TEXT,
-  started_at REAL NOT NULL,
-  ended_at REAL,
-  end_reason TEXT,
-  last_activity_at REAL,
-  archived INTEGER NOT NULL DEFAULT 0,
-  hidden INTEGER NOT NULL DEFAULT 0,
-  cwd TEXT,
-  thread_id TEXT,
-  parent_session_id TEXT
-);
-"""
+# The production schema from core — the listing is served by the core
+# projection (list_sessions_rich), which also reads system_prompts;
+# the synthetic subset above predated that and made the fixture DB
+# unlistable.
+sys.path.insert(0, str(REPO_ROOT))
 
-MESSAGES_SCHEMA = """
-CREATE TABLE messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT,
-  tool_name TEXT,
-  tool_call_id TEXT,
-  tool_calls TEXT,
-  codex_message_items TEXT,
-  timestamp REAL NOT NULL,
-  finish_reason TEXT,
-  active INTEGER NOT NULL DEFAULT 1,
-  display_kind TEXT
-);
-"""
+from hermes_state_common import SCHEMA_SQL  # noqa: E402
+
+SESSIONS_SCHEMA = SCHEMA_SQL
+MESSAGES_SCHEMA = ""
 
 
 def _make_home(root: Path) -> Path:
@@ -74,7 +50,7 @@ def _make_home(root: Path) -> Path:
     db.parent.mkdir(parents=True)
     now = time.time()
     con = sqlite3.connect(str(db))
-    con.executescript(SESSIONS_SCHEMA + MESSAGES_SCHEMA)
+    con.executescript(SESSIONS_SCHEMA)
     con.execute(
         "INSERT INTO sessions (id, source, title, started_at,"
         " last_activity_at) VALUES ('sess-live', 'discord',"
@@ -265,6 +241,33 @@ def test_cmd_serve_builds_argv_from_config_and_flags(
         "mission_control:\n  discord_sync: false\n", encoding="utf-8")
     run_cli()
     assert captured[-1][-1] == "--no-discord-sync"
+
+
+def test_sigterm_during_startup_stops_cleanly(tmp_path, monkeypatch):
+    """A SIGTERM landing mid-startup stops as cleanly as one in the loop.
+
+    The stop signal is raised from inside the server constructor — the
+    same install-to-serve-loop window a caller hits when it SIGTERMs
+    the process the instant the flushed startup line lands (a caller
+    that reads the port from stdout does exactly that). main() must
+    swallow it and still run its cleanup, never traceback out."""
+    from plugins.mission_control import server
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def explode(_host_port, _handler):
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(0)  # the handler fires at the next bytecode boundary
+        raise AssertionError("constructor ran past the signal")
+
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        monkeypatch.setattr(server, "ThreadingHTTPServer", explode)
+        assert server.main(["--port", "0", "--no-discord-sync"]) is None
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def test_real_serve_path_root_session_feeds_and_clean_shutdown(

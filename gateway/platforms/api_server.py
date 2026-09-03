@@ -3537,6 +3537,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
                 "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
+                "session_clarify": {"method": "GET", "path": "/api/sessions/{session_id}/clarify"},
+                "session_clarify_answer": {"method": "POST", "path": "/api/sessions/{session_id}/clarify"},
                 "browser_control_register": {"method": "POST", "path": "/v1/browser-control/register"},
                 "browser_control_ws": {"method": "GET", "path": "/v1/browser-control/ws"},
                 "artifact_upload": {"method": "POST", "path": "/v1/artifacts/upload"},
@@ -7670,6 +7672,21 @@ class APIServerAdapter(BasePlatformAdapter):
             _api_server=sys.modules[__name__],
         )
 
+    def _make_run_clarify_callback(
+        self, run_id: str, session_id: str, profile: str, put_event
+    ):
+        return _api_runs._make_run_clarify_callback(
+            self, run_id, session_id, profile, put_event
+        )
+
+    def _cancel_run_clarifies(self, run_id: str) -> None:
+        return _api_runs._cancel_run_clarifies(self, run_id)
+
+    def _pending_session_clarify(
+        self, session_id: str, profile: str
+    ) -> Optional[Dict[str, Any]]:
+        return _api_runs._pending_session_clarify(self, session_id, profile)
+
     def _run_idempotency_scope(self, request: "web.Request") -> str:
         return _api_runs._run_idempotency_scope(
             self,
@@ -7819,6 +7836,26 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
         return await _api_runs._handle_stop_run(
+            self,
+            request,
+            _api_server=sys.modules[__name__],
+        )
+
+    async def _handle_session_clarify_get(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """GET /api/sessions/{session_id}/clarify — oldest pending question."""
+        return await _api_runs._handle_session_clarify_get(
+            self,
+            request,
+            _api_server=sys.modules[__name__],
+        )
+
+    async def _handle_session_clarify_post(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """POST /api/sessions/{session_id}/clarify — answer the pending question."""
+        return await _api_runs._handle_session_clarify_post(
             self,
             request,
             _api_server=sys.modules[__name__],

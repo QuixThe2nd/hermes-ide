@@ -53,6 +53,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     host = args.host if args.host else defaults["host"]
     port = args.port if args.port is not None else defaults["port"]
     argv = ["--host", host, "--port", str(port)]
+    for extra in args.trusted_host or ():
+        argv.extend(["--trusted-host", extra])
     if args.no_discord_sync or not defaults["discord_sync"]:
         argv.append("--no-discord-sync")
     server.main(argv)
@@ -83,6 +85,18 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         "--no-discord-sync",
         action="store_true",
         help="disable the background Discord archive sync",
+    )
+    serve.add_argument(
+        "--trusted-host",
+        action="append",
+        default=None,
+        metavar="HOST",
+        help="additional Host header value this server answers for "
+        "(repeatable). By default only the bind address itself is "
+        "trusted — plus, for a loopback or wildcard bind, the local "
+        "machine's own addresses — and requests whose Host names "
+        "anything else are refused with 421. Forwarded/X-Forwarded-* "
+        "headers are never trusted",
     )
 
 

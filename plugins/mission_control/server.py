@@ -56,31 +56,53 @@ the link, the identity badge and the row metadata name the child's
 profile, never the parent's.
 
 The inbox is split into honest sections, still one dense messenger
-list: Active (a live unexpired session_turn_leases row for the
-conversation — the holder's "turn=<continuation id>" parsed
-conservatively, conversation_id as the fallback — or a composer
-reply this server is currently running for the session), Closed
-(archived, mirrored from Discord or closed locally — every closed
-row carries an explicit Archived chip and subdued styling), then the
-two open buckets: Open · completed (sessions.ended_at set, or the
-newest active non-hidden event is a plain assistant answer) and
-Open · unfinished (everything else — stale user- or tool-ended
-transcripts are never mislabeled completed).
+list, and every open session renders above every closed one.
+Open/closed is the partition the core listing already draws on the
+projected tip: a conversation whose surfaced row carries ended_at is
+closed — archived or not, an ended conversation never sits inside an
+open-labeled section — and so is an archived one (mirrored from
+Discord or closed locally); only ended_at NULL and unarchived is
+open. The open buckets render first — Active (a live unexpired
+session_turn_leases row for the conversation — the holder's
+"turn=<continuation id>" parsed conservatively, conversation_id as
+the fallback — or a composer reply this server is currently running
+for the session; never for a conversation the tip already ended or
+archived), then Open · completed (the newest active non-hidden event
+is a plain assistant answer) and Open · unfinished (everything else
+— stale user- or tool-ended transcripts are never mislabeled
+completed) — and Closed strictly last, however recent a closed
+session is. Every closed row says why with an explicit Archived or
+Ended chip and subdued styling, and the Closed block is a collapsed
+disclosure so open work stays on top literally and visually.
 Each section carries a stable id, a visible count badge and stays
-newest-first; the search filter covers every section and hides one
-with no visible children. A DB without the lease table degrades to
-Completed/Incomplete classification with at most one note.
+newest-first inside itself; the search filter covers every section
+and hides one with no visible children. A DB without the lease
+table degrades to Completed/Incomplete classification with at most
+one note.
 
 The page is a dark messenger-style inbox rendered entirely server-side
-(no external assets; participants are generic letter badges derived
-from the owning profile's name): one dense
+(no external assets): one dense
 full-width row per conversation, separated by hairlines — a circular
-initials badge of the owning Hermes profile,
+badge of the owning Hermes profile (its initial by default, or the
+optional local avatar image described below),
 the conversation name with a compact profile badge and the relative
 time on the right,
 a one-line last-message preview, and an optional tiny muted chip for
 the session's last tool. A small inline script adds client-side row
 filtering and swaps in a fresh copy of "/" every 10 s without a reload.
+
+Participant avatars are optional and strictly local: an install that
+wants pictures drops one PNG per identity beside that profile's state
+DB — <profile home>/mission-control/avatar.png, and the main home's
+mission-control/user.png for the person at the keyboard — and every
+badge layers that image over its letter fallback (GET /avatar/
+<profile> and GET /avatar-user serve exactly those fixed names,
+re-resolved against the discovered mapping and the configured home
+root on every request, never from URL input). With no files there is
+nothing to fetch and nothing to break: a clean install renders pure
+letter badges, a missing/unreadable/oversized/escaped file falls
+back to the letter, and a broken image in the browser steps aside
+client-side so the letter shows through.
 
 Each row is one big link to GET /s/<profile>/<session_id>, a chat-style
 transcript served from that profile's DB only (the profile
@@ -90,12 +112,13 @@ must be "default" — the main state.db — or a directory under
 timestamp then id, every displayable row — no cap) on a
 ~900px centered canvas under one sticky header (back link, title,
 profile pill, time range). User text is right-aligned in a blue-tinted
-bubble (~72% wide) with a circular "You" letter badge on the right;
+bubble (~72% wide) with a circular "You" badge on the right;
 agent text is left-aligned on a neutral surface (~78%) with the owning
-profile's initials badge on the left; each bubble carries
-a subtle timestamp. The badges are plain letters on a colored disc —
-no image assets exist or are fetched, so a clean install renders
-identically with nothing to download. Runs of consecutive tool rows collapse into ONE
+profile's badge on the left; each bubble carries
+a subtle timestamp. The badges are letters on a colored disc, with
+the optional local avatar image (see above) layered on top when that
+profile has one — the letter always shows through as the fallback.
+Runs of consecutive tool rows collapse into ONE
 compact expandable group — "N tool calls" plus tool-name chips, opening
 to a chronological list where each tool keeps its optional collapsed
 details block holding substr(content,1,400). Grouping compresses the
@@ -163,37 +186,70 @@ Interactive layer (all same-origin, relative URLs, stdlib only):
   feed reports busy === true, never on /new, never merely because a
   send is waiting, and never beside the waiting row or the strip.
 - POST /s/<profile>/<id>/reply — body application/json {"text": ...};
-  validates the session exists in that profile DB (404)
-  and rejects empty text (400). Replies 202 immediately and runs
-  `hermes --resume <id> chat --oneshot -q <text>` (cwd from the session
-  row when present) in a background thread — one in-flight reply per
-  session, 409 while busy. Hermes stdout/stderr is inspected for the
-  exit status only and is never echoed anywhere.
+  validates the session exists in that profile DB (404), rejects
+  empty text (400) and oversize bodies (413), and refuses a closed
+  session (409). The turn itself is admitted synchronously as one run
+  on the profile-scoped core API surface (POST /v1/runs, authorized
+  with that profile's own API key): 202 only once the core has
+  admitted the run — one in-flight turn per session, 409 while one is
+  already running — and 503 when the core could not admit, which is
+  an explicit failed send with the text restored, never a silent
+  fallback, and nothing was created. The prompt travels only inside
+  that one admission request's JSON body; a background poller then
+  holds the session's busy lease until the run settles (a wedged run
+  is stopped best-effort at a hard deadline, so it can never hold a
+  session busy forever) and leaves the feed a one-shot canned note
+  when the turn did not complete. The run's agent carries the gateway
+  clarify callback, so a mid-turn question pauses as the clarify card
+  below instead of being auto-answered. Core output never reaches any
+  response — only these statuses do.
 - POST /s/new — body {"text": ...}; validates the same way, then
-  starts exactly one background
-  `hermes chat --oneshot --source mission-control -q <text>` launch
-  and answers 202 promptly with an opaque job id and its status URL —
-  the oneshot never blocks the response. A second POST while a launch
-  is live gets 409: one at a time keeps the fresh-row correlation
-  unambiguous, so duplicates can never spawn two runs. GET
-  /s/new/<job> serves {status: starting|running|done|failed,
-  session_id?, url?, error} from a bounded, thread-safe in-memory
-  registry that holds only opaque state — never the prompt, never
-  hermes output — and prunes old terminal jobs (cap + age). The CLI
-  takes no caller-supplied session id, so the worker correlates its
-  launch with the first mission-control row that appears while the
-  child runs and publishes that id on the status route mid-run; the
-  client navigates to /s/default/<id> the moment it appears, without
-  waiting for the oneshot to finish (the discovered session is also
-  registered busy, so the fresh page truthfully shows the live turn).
-  A failed launch is terminal — never auto-retried — and reports only
-  a canned exit-code reason; a failure after the session row appeared
-  additionally leaves the session's feed a one-shot note. On /new the
-  composer stays locked after 202 (the waiting row showing) while the
-  client polls the job with a hard bound; a terminal failure fails the
+  registers exactly one bounded background launch job and answers 202
+  promptly with an opaque job id and its status URL — admission never
+  blocks the response. A second POST while a launch is live gets 409:
+  one at a time fails a double-submitted composer closed instead of
+  admitting a duplicate run. GET /s/new/<job> serves {ok, job,
+  status: starting|running|done|failed, session_id?, url?, error}
+  from a bounded, thread-safe in-memory registry that holds only
+  opaque state — never the prompt, never core output (parsed for the
+  status word only, then dropped) — and prunes old terminal jobs
+  (cap + age). The worker admits a fresh core run with no session id
+  of its own: the core assigns the deterministic one, the admission
+  202 echoes it, and the id is published on the status route the
+  moment the session's row exists in the main DB; the client
+  navigates to /s/default/<id> the moment it appears, without
+  waiting for the run to finish (the fresh session is also registered
+  busy, so the fresh page truthfully shows the live turn). A failed
+  launch is terminal — never auto-retried — and reports only a canned
+  reason word; a failure after the session row appeared additionally
+  leaves the session's feed a one-shot note. On /new the composer
+  stays locked after 202 (the waiting row showing) while the client
+  polls the job with a hard bound; a terminal failure fails the
   optimistic message and restores the composer. GET /new serves the
   same dark chat chrome as a blank composer whose first send goes
   through /s/new.
+- Clarify bridge: while the core API holds a pending clarify for a
+  session (a gateway or /v1/runs agent paused on a question), the
+  transcript page and every /feed poll also read the authenticated core
+  GET /api/sessions/{id}/clarify (base CLARIFY_API_BASE, the repo
+  default API server on loopback; the default profile's API key from
+  the .env beside the main DB, a named profile's ONLY from its own
+  .env; always through the /p/<profile> prefix; the key is never
+  logged or echoed) and render it as an escaped Discord-style
+  #clarify-card directly above the composer. Single choices submit on
+  click, multi-select toggles then Submit (an optional UI-only Other
+  contributes its typed text — never the label "Other"), and
+  free-text questions get an input; while a card is active the normal
+  composer is disabled with the placeholder "Answer the question
+  above". Answers POST /s/<profile>/<id>/clarify through the same
+  CSRF gate as every other mutation, which validates the session and
+  payload locally, proxies the core clarify POST with the exact
+  clarify_id the client holds, and answers only safe
+  200/400/404/409/503 JSON — it never invokes /reply and never writes
+  a user message. A new clarify_id replaces the card (selection
+  resets), the same id preserves it, a failed answer flashes safely
+  and re-polls, and any core API error leaves the page untouched (the
+  feed simply omits the clarify field).
 - The list page carries a "New chat" control linking to /new.
 
 Live tool activity: a tool call appears the moment its assistant
@@ -222,8 +278,6 @@ snapshot as a structured "activity" object {active, state,
 pending_count, names, html} whose html is the exact server-rendered
 strip, which the client swaps in (or removes) on every poll while
 the feed cursor keeps its existing behavior.
-
-In-flight hermes processes are tracked and terminated on shutdown.
 """
 
 import argparse
@@ -235,10 +289,9 @@ import json
 import os
 import re
 import secrets
-import shutil
 import signal
+import socket
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
@@ -250,6 +303,7 @@ from string import Template
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from hermes_constants import display_hermes_home, get_hermes_home
+from hermes_state import SessionDB
 
 WINDOW_SECONDS = 24 * 3600
 # State/profile discovery always flows through get_hermes_home() so a
@@ -262,23 +316,23 @@ PROFILE_GLOB = str(_HERMES_HOME / "profiles" / "*" / "state.db")
 # transitions feel live (the feed already polls every 2 s in chats).
 REFRESH_SECONDS = 10
 
-# Title falls back to display_name, then the session id. Sub-agent
-# sessions (source='subagent') never appear here: they live inside
-# their parent's conversation instead. The source test is the only
-# filter — Discord continuation sessions also carry a non-null
-# parent_session_id and must keep their inbox rows. ended_at feeds
-# the Completed classification. archived feeds the Closed section:
-# an archived session is Closed no matter what else is true.
-SESSION_SQL = """
-SELECT id, source, title, display_name, last_activity_at, ended_at,
-       archived
-FROM sessions
-WHERE hidden = 0
-  AND last_activity_at IS NOT NULL
-  AND last_activity_at >= ?
-  AND last_activity_at <= ?
-  AND IFNULL(source, '') != 'subagent'
-"""
+# This surface has no server pager, so the core listing is asked for
+# every row and the rolling closed-row window is applied after the
+# global open/closed partition (load_sessions) — never inside the
+# query, where it could strand an open conversation behind rows the
+# window kept.
+LIST_ALL_LIMIT = 1000000
+
+# ---- inbox listing ----------------------------------------------------
+# The inbox's session set and ordering are core-owned (load_sessions
+# reads SessionDB.list_sessions_rich; see there for the projection,
+# visibility and window rules). Title falls back to display_name, then
+# the session id; sub-agent sessions never appear as inbox rows — they
+# live inside their parent's conversation instead. The projected tip's
+# ended_at and archived feed the Closed section together — the same
+# open/closed split core's open_first ordering draws: an ended or
+# archived session is Closed no matter what else is true, and only an
+# unended, unarchived one stays open.
 
 # Last message per session: the newest messages row with real text —
 # role 'user' or 'assistant' (session_meta and tool rows are never
@@ -362,18 +416,24 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 ) WHERE rn = 1
 """
 
-# Inbox section keys in display order. Closed sits directly under
-# Active — an archived conversation is the second thing to see, not the
-# last — and the two open buckets follow, retitled "Open · …" so the
-# four headers read as one honest question: live, archived, or open
-# (and if open, done or not). The ids/data-state values are unchanged
-# stable hooks for the client filter; only order and titles moved.
+# Inbox section keys in display order. The ordering contract: every
+# open session renders above every closed one — Active first, then the
+# two open resting buckets, and Closed strictly last — so a closed
+# conversation can never jump ahead of an older open one however
+# fresh its last activity is. Rows are bucketed by state before any
+# rendering (this surface has no row cap or window to partition
+# around), and each bucket keeps its own newest-first order. The open
+# resting buckets are retitled "Open · …" so the headers read as one
+# honest question: live, or open (and if open, done or not), with the
+# closed tail collapsed by default. The ids/data-state values are
+# unchanged stable hooks for the client filter; only order and titles
+# moved.
 # Active and Completed always render (when the page has any rows at
 # all), Incomplete and Closed only when they have members. Closed is
-# archived state mirrored from Discord (or set locally for non-Discord
-# sessions) — it wins over every other signal, and every closed row
-# says so itself with an Archived chip.
-SECTION_ORDER = ("active", "closed", "completed", "incomplete")
+# the projected tip's ended_at or the archived flag (archived mirrors
+# Discord or a local close) — it wins over every other signal, and
+# every closed row says so itself with an Archived or Ended chip.
+SECTION_ORDER = ("active", "completed", "incomplete", "closed")
 SECTION_TITLES = {"active": "Active", "closed": "Closed",
                   "completed": "Open \N{MIDDLE DOT} completed",
                   "incomplete": "Open \N{MIDDLE DOT} unfinished"}
@@ -402,6 +462,37 @@ NEW_JOB_PATH_RE = re.compile(r"^/s/new/([A-Za-z0-9_-]+)$")
 # session — for a Discord thread session this patches the Discord
 # thread first and only mirrors locally when Discord confirms.
 ARCHIVE_PATH_RE = re.compile(r"^/s/([^/]+)/([^/]+)/(close|reopen)$")
+
+# POST /s/<profile>/<id>/clarify: answer this session's pending
+# clarify question through the core API (see the clarify bridge
+# constants below).
+CLARIFY_PATH_RE = re.compile(r"^/s/([^/]+)/([^/]+)/clarify$")
+
+# ---- optional local avatar images ------------------------------------
+# Every participant renders as a letter badge by default — no image
+# assets ship, none are fetched, a clean install works untouched. An
+# install that wants photos provides ONE optional PNG per identity,
+# always through this fixed, profile-aware layout the user owns:
+#
+#   <profile home>/mission-control/avatar.png   that profile's agent
+#   <main home>/mission-control/user.png        the person at the keys
+#
+# GET /avatar/<profile> and GET /avatar-user serve exactly those fixed
+# filenames, re-resolved from the discovered DB mapping on every
+# request — the URL contributes only a profile name that must already
+# be a discovered profile, never a path. A file that is missing,
+# unreadable, larger than AVATAR_MAX_BYTES, or resolves (through
+# symlinks) outside the configured home root is simply not served and
+# the letter badge stands alone — the same discovery boundary the
+# databases obey.
+AVATAR_DIR_NAME = "mission-control"
+PROFILE_AVATAR_FILE = "avatar.png"
+USER_AVATAR_FILE = "user.png"
+AVATAR_PATH_RE = re.compile(r"^/avatar/([A-Za-z0-9_.-]+)$")
+USER_AVATAR_PATH = "/avatar-user"
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_CACHE_CONTROL = "public, max-age=3600"
+AVATAR_CONTENT_TYPE = "image/png"
 
 # ---- Discord archive sync ------------------------------------------
 # Everything the background mirror and the close/reopen actions need.
@@ -445,43 +536,56 @@ def _archive_epoch(db_path):
     with _archive_epoch_lock:
         return _archive_epochs.get(db_path, 0)
 
-# ---- composer / hermes plumbing --------------------------------------
-# The binary is invoked by absolute path with a list argv (never a
-# shell), so message text can never be shell-interpreted. Hermes output
-# is captured for parsing only — exit codes and the session-id line —
-# and is never written to logs or responses (nothing that could carry a
-# secret ever leaves the process). HERMES_BIN is a test seam: set it to
-# a stub executable path; None (the default) resolves the real CLI via
-# resolve_hermes_bin() below.
-HERMES_BIN = None
-NEW_SESSION_SOURCE = "mission-control"
+# ---- core API bridge (clarify card + run transport) ------------------
+# Two things live in the core API server: the pending-clarify card (a
+# /v1/runs agent paused on a question) and the runs themselves. This
+# server proxies clarify answers back and — for composer turns — admits
+# runs through POST /v1/runs instead of spawning the oneshot CLI: the
+# run's agent gets the gateway clarify callback, so a question the
+# composer's turn asks actually pauses for the card instead of being
+# auto-answered by the headless -q default. The only configuration is
+# the base URL (the repo's own API server on loopback by default,
+# overridable through the deployment's HERMES_API_SERVER_URL); the
+# per-profile API key is read fresh from the .env beside the profile's
+# DB (the default profile's from the .env beside the main DB, a named
+# profile's ONLY from its own .env) and leaves this process solely as
+# the value of one Authorization header — never logged, never echoed,
+# never inside any error string. Upstream bodies are parsed but never
+# emitted: errors report the HTTP status alone.
+CLARIFY_API_BASE = (os.environ.get("HERMES_API_SERVER_URL")
+                    or "http://127.0.0.1:8642")
+# Short on purpose: the card rides the feed poll, so a wedged core must
+# never pin a client's poll for long, and the card body is tiny.
+CLARIFY_TIMEOUT_SECONDS = 4.0
+# Run admission has to stay well under a browser-friendly request
+# budget while still allowing the core its (prompt) 202 path; status
+# and stop calls answer fast and keep the same bound.
+RUNS_TIMEOUT_SECONDS = 10.0
+# How often a live job polls its run's status while holding the busy
+# lease. Sub-second so a finished turn releases the session promptly.
+RUN_POLL_SECONDS = 0.5
+# Pollable /v1/runs statuses that end a job's watch. "waiting_for_*"
+# are deliberately absent: a paused question or approval must keep the
+# lease held (the session is busy mid-turn, the card is answerable).
+RUN_TERMINAL_STATES = ("completed", "failed", "cancelled", "interrupted")
+RUN_FAILED_STATES = ("failed", "cancelled", "interrupted")
+CLARIFY_MAX_BODY_BYTES = 64 * 1024
+# Presentation bounds mirrored from the core card contract (the core
+# already enforces them; these re-bound whatever actually arrives so a
+# malformed or hostile upstream can never crash or flood the page).
+CLARIFY_MAX_CHOICES = 8
+CLARIFY_MAX_QUESTION_CHARS = 2000
+CLARIFY_MAX_CHOICE_CHARS = 500
+CLARIFY_ID_MAX_CHARS = 128
+# A response list can never legitimately exceed the card's choice bound
+# plus its Other; anything larger is refused before ever proxying.
+CLARIFY_MAX_RESPONSE_ITEMS = 16
 
-
-def resolve_hermes_bin():
-    """Return the hermes CLI executable to spawn, or None.
-
-    Resolution order: an explicit HERMES_BIN override (tests), a
-    PATH-installed ``hermes`` shim, then the console-script that lives
-    beside the running interpreter (venv/pipx layouts). The final
-    bare-name fallback lets the OS resolve ``hermes`` at spawn time.
-    Never an env var — callers pin behavior through the module or CLI.
-    """
-    if HERMES_BIN:
-        return HERMES_BIN
-    which = shutil.which("hermes")
-    if which:
-        return which
-    exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-    if exe_dir:
-        shim = "hermes.exe" if sys.platform == "win32" else "hermes"
-        candidate = os.path.join(exe_dir, shim)
-        if os.path.isfile(candidate):
-            return candidate
-    return "hermes"
-
-# A oneshot turn can legitimately run minutes with tools in the loop;
-# the cap only exists so a wedged child can't hold a session "busy"
-# forever. On timeout the child is killed and the job reports failure.
+# ---- composer / run plumbing ------------------------------------------
+# A composer turn can legitimately run minutes with tools in the loop;
+# the cap only exists so a wedged run can't hold a session "busy"
+# forever. On the deadline the job stops the run best-effort and
+# reports failure.
 HERMES_TIMEOUT_SECONDS = 900
 
 # Composer payloads: anything bigger than this is refused before it is
@@ -530,48 +634,104 @@ def csrf_meta_tag():
 # reply is in flight so the answer lands promptly.
 FEED_POLL_MS = 2000
 
-# One in-flight reply per session: (profile, session_id) -> {"started":
-# ts} — started being the turn's acceptance time, the floor that
-# scopes the live strip's first-output detection to the accepted turn
-# (a historical answer predating it can never satisfy the new turn).
-# _job_notes holds a short failure note per session for the feed
-# to deliver once (it never contains hermes output, just exit codes).
+# One in-flight composer turn per session: (profile, session_id) ->
+# {"started": ts} — started being the turn's acceptance time, the floor
+# that scopes the live strip's first-output detection to the accepted
+# turn (a historical answer predating it can never satisfy the new
+# turn). _job_notes holds a short failure note per session for the feed
+# to deliver once (it never contains core output, just a canned line).
 _jobs = {}
 _job_notes = {}
 _jobs_lock = threading.Lock()
 
-# New-session launches serialize (one live run at a time): the CLI
-# takes no caller-supplied session id, so a launch is correlated by
-# diffing the mission-control rows around its own run — only
-# serialization keeps that diff unambiguous when calls overlap. The
-# HTTP handler never waits on this lock; the background worker holds it
-# for its whole run and a concurrent POST is answered 409 instead.
+# New-session launches serialize (one live run at a time): the HTTP
+# handler never waits on this lock; the background worker holds it for
+# its whole run and a concurrent POST is answered 409 instead. That
+# one-at-a-time rule is what makes a double-submitted /s/new fail
+# closed instead of admitting a second (duplicate) run.
 _new_session_lock = threading.Lock()
 
-# How often the launch watcher polls the main DB for the correlated
-# fresh mission-control row while the oneshot child runs.
-NEW_JOB_WATCH_SECONDS = 0.5
-
-# Every live hermes child, so shutdown can terminate strays.
-_children = set()
-_children_lock = threading.Lock()
-
 # Transcript participants: the user side is the person at the keyboard;
-# the assistant side renders as the owning profile's identity. No image
-# assets exist or are fetched — every participant is a plain letter
-# badge derived from the label, so a clean install renders identically.
+# the assistant side renders as the owning profile's identity. Every
+# participant is a letter badge derived from the label, with the
+# optional local avatar image (see the avatar constants above) layered
+# on top when the profile provides one — the letter is always the
+# fallback, so a clean install renders identically.
 USER_LABEL = "You"
 
 # Identity for the main "default" profile (the main state.db).
 DEFAULT_PROFILE_LABEL = "Hermes"
 
 
+def _avatar_file(home, filename):
+    """One trusted home directory + the fixed avatar filename -> the
+    only path an avatar may ever be served from. Nothing here derives
+    from request input."""
+    return os.path.join(home, AVATAR_DIR_NAME, filename)
+
+
+def _avatar_served_file(home, filename):
+    """The avatar path for one trusted home when it may be served, else
+    None — a plain regular file, within the size bound, resolving
+    inside the configured home root (the same boundary discovery
+    enforces for the databases)."""
+    path = _avatar_file(home, filename)
+    try:
+        if not os.path.isfile(path):
+            return None
+        if os.path.getsize(path) > AVATAR_MAX_BYTES:
+            return None
+        if not _db_stays_in_home(path, _home_root()):
+            return None
+    except OSError:
+        return None
+    return path
+
+
+def profile_avatar_url(profile):
+    """The served avatar URL for one profile name, or "" (letter badge
+    only). The profile must be one discover_dbs() serves; the file is
+    its own optional mission-control/avatar.png."""
+    home = profile_home(profile)
+    if home is None:
+        return ""
+    if _avatar_served_file(home, PROFILE_AVATAR_FILE) is None:
+        return ""
+    return "/avatar/" + quote(profile, safe="")
+
+
+def user_avatar_url():
+    """The served avatar URL for the person at the keyboard, or "".
+
+    One optional user.png under the main home's mission-control
+    directory — the main home is exactly the root every served DB
+    must live in, so the user avatar follows the same boundary."""
+    home = os.path.dirname(os.path.abspath(MAIN_DB))
+    if _avatar_served_file(home, USER_AVATAR_FILE) is None:
+        return ""
+    return USER_AVATAR_PATH
+
+
+def avatar_img(url, label, size):
+    """The escaped <img> that layers one avatar over its letter badge
+    ("" when there is no avatar for this identity)."""
+    if not url:
+        return ""
+    return ('<img class="av-img" src="%s" alt="%s" width="%d"'
+            ' height="%d">' % (html.escape(url, quote=True),
+                               html.escape(label, quote=True),
+                               size, size))
+
+
 def profile_identity(profile):
-    """DB profile name -> its display identity dict {label, letter}.
+    """DB profile name -> its display identity dict {label, letter,
+    avatar}.
 
     The label is a safe humanization of the profile name ("my_bot" ->
     "My Bot"); the main "default" profile renders as "Hermes". The
-    letter is the badge initial taken from that label.
+    letter is the badge initial taken from that label. avatar is the
+    served URL of the profile's optional local image, "" when it has
+    none — the letter badge renders either way.
     """
     name = str(profile or "").strip()
     if not name or name == "default":
@@ -579,7 +739,8 @@ def profile_identity(profile):
     else:
         label = " ".join(name.replace("_", " ").replace("-", " ")
                          .split()).title() or DEFAULT_PROFILE_LABEL
-    return {"label": label, "letter": (label[:1] or "H").upper()}
+    return {"label": label, "letter": (label[:1] or "H").upper(),
+            "avatar": profile_avatar_url(name or "default")}
 
 # Display caps: the SQL-level substr keeps any single row at 4000 chars
 # (an 80 KB tool result never leaves the DB whole) and a tool bubble
@@ -832,12 +993,44 @@ SELECT session_id, preview FROM (
 # row's markup small no matter where the label came from.
 SUBAGENT_LABEL_CHARS = 200
 
-# mission-control sessions, newest first — /s/new resolves the session
-# it just created by diffing this list around its own oneshot run.
-MISSION_CONTROL_IDS_SQL = """
-SELECT id FROM sessions
-WHERE source = ?
-ORDER BY started_at DESC, id DESC
+# ---- canonical-chain variants ----------------------------------------
+# A conversation is the whole compression lineage Hermes core resolves
+# (root first, tip last — see _chain_ids), not the one row a URL names.
+# These are the transcript-page, feed, cursor, sub-agent and archive
+# statements above with only the session filter widened from "= ?" to
+# "IN (...)" over the chain members, so a root bookmark and the live
+# tip render the same transcript, the same sub-agent section, advance
+# the same cursor, and close/reopen flips the same set of rows. Row id
+# stays the one chronology: chain members' messages interleave by the
+# global AUTOINCREMENT id, which is exactly the order they were written.
+CHAT_PAGE_CHAIN_SQL = CHAT_PAGE_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+FEED_LAST_ID_CHAIN_SQL = FEED_LAST_ID_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+FEED_AFTER_CHAIN_SQL = FEED_AFTER_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+FEED_BACKFILL_CHAIN_SQL = FEED_BACKFILL_SQL.replace(
+    "WHERE session_id = ?", "WHERE session_id IN ({placeholders})")
+SUBAGENTS_CHAIN_SQL = SUBAGENTS_SQL.replace(
+    "WHERE parent_session_id = ?", "WHERE parent_session_id IN ({placeholders})")
+
+# Close/reopen for a non-Discord conversation flips every chain member
+# in one transaction (a Discord thread session keeps flipping by
+# thread_id, which continuation rows already share); the mismatch
+# read-back covers the same set.
+SET_ARCHIVE_BY_CHAIN_SQL = SET_ARCHIVE_BY_ID_SQL.replace(
+    "WHERE id = ?", "WHERE id IN ({placeholders})")
+COUNT_CHAIN_MISMATCH_SQL = """
+SELECT COUNT(*) FROM sessions
+WHERE id IN ({placeholders}) AND archived != ?
+"""
+
+# Root id -> display title for projected (tip) rows: search resolves a
+# root's title and id to the conversation its tip surfaces, so both
+# spellings ride the client search blob (render_conv_row's data-q).
+ROOT_TITLE_SQL = """
+SELECT id, COALESCE(NULLIF(title, ''), NULLIF(display_name, ''), id)
+FROM sessions WHERE id IN ({placeholders})
 """
 
 # Discord envelopes wrap the real text in bookkeeping: a leading
@@ -904,39 +1097,159 @@ def _home_root():
     return os.path.realpath(os.path.dirname(os.path.abspath(MAIN_DB)))
 
 
-def _db_stays_in_home(path, root):
-    """True when a candidate state.db fully resolves inside root.
+def _contained(path, root):
+    """True when a resolved path is root itself or lives under it."""
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return path == root or path.startswith(prefix)
+
+
+def _canonical_db(path, root):
+    """The canonical, contained database path for a candidate, or None.
 
     Every path component counts: a profile directory that is a symlink
     out of the home, or a state.db that is one, resolves outside root
     and is rejected here — before any connection is opened — so no
     read, write, spawn or token lookup can reach a database the home
-    did not configure. A candidate that cannot be resolved (missing,
-    broken, permission-denied, or racing away mid-check) answers False
-    instead of raising: discovery may only ever shrink."""
+    did not configure. The answer is the fully resolved real path (all
+    symlinks resolved NOW), which is the only spelling every later
+    connect, archive, transcript, spawn and mutation path may open. A
+    candidate that cannot be resolved (missing, broken,
+    permission-denied, or racing away mid-check) answers None instead
+    of raising: discovery may only ever shrink."""
     try:
         real = os.path.realpath(path)
+        if not os.path.isfile(real):
+            return None
     except OSError:
-        return False
-    prefix = root if root.endswith(os.sep) else root + os.sep
-    return real == root or real.startswith(prefix)
+        return None
+    return real if _contained(real, root) else None
+
+
+def _db_stays_in_home(path, root):
+    """True when a candidate state.db fully resolves inside root.
+
+    Containment question only, kept for the avatar boundary; the value
+    every database surface uses is the canonical path _canonical_db()
+    returns (see discover_dbs / _connect_db)."""
+    return _canonical_db(path, root) is not None
+
+
+def _db_file_identity(path):
+    """(st_dev, st_ino) of the file at path, or None when it cannot be
+    stated — the value compared at the connection boundary, so a path
+    that still resolves inside the home but was swapped to a different
+    file is told apart from the database discovery accepted."""
+    try:
+        st = os.stat(path)
+        return (st.st_dev, st.st_ino)
+    except OSError:
+        return None
+
+
+# Identity of every DB the most recent discovery pass accepted: canonical
+# path -> (st_dev, st_ino). Replaced whole by each discover_dbs() pass and
+# compared by _connect_db, so a check/open swap between discovery and the
+# connection answers as an unavailable database instead of opening a
+# different file.
+_db_identities = {}
+
+
+def _connect_db(path, write=False, timeout=2.0):
+    """Open one discovered database after boundary revalidation.
+
+    The canonical path is re-derived HERE, at the connection boundary —
+    not reused from a check that ran earlier — and the file identity is
+    compared with the last discovery pass both before the open and
+    after it. A component or file swapped in between therefore cannot
+    redirect SQLite outside the trusted Hermes home: an escaping swap
+    fails containment, a same-path different-file swap fails identity,
+    and the read-write flavor opens through mode=rw so a swapped-away
+    target can never be *created* either. Raises sqlite3.OperationalError
+    (the callers' existing degraded-answer path) when the candidate no
+    longer checks out."""
+    canonical = _canonical_db(path, _home_root())
+    if canonical is None:
+        raise sqlite3.OperationalError("database not available")
+    # The identity the open must land on: the one discovery recorded, or
+    # — for a caller connecting ahead of any discovery pass — the one
+    # stated just before the open. Either way the post-open restatement
+    # must still name the same file.
+    expected = _db_identities.get(canonical)
+    if expected is None:
+        expected = _db_file_identity(canonical)
+        if expected is None:
+            raise sqlite3.OperationalError("database not available")
+    elif _db_file_identity(canonical) != expected:
+        raise sqlite3.OperationalError("database changed under us")
+    if write:
+        # mode=rw, never rwc: a write open may flip an existing database,
+        # never conjure one somewhere a swap pointed at.
+        con = sqlite3.connect("file:" + quote(canonical) + "?mode=rw",
+                              uri=True, timeout=timeout)
+    else:
+        con = sqlite3.connect("file:" + quote(canonical) + "?mode=ro",
+                              uri=True, timeout=timeout)
+    try:
+        if _db_file_identity(canonical) != expected:
+            raise sqlite3.OperationalError("database changed under us")
+    except Exception:
+        con.close()
+        raise
+    return con
 
 
 def discover_dbs():
-    """Yield (path, profile name) for the main DB then each profile DB.
+    """Yield (canonical path, profile name) for the main DB then each
+    profile DB.
 
-    Every candidate must stay inside _home_root(): a profile directory
-    or state.db symlinked outside the configured home — and anything
-    missing or unreadable — is dropped before it is ever returned, so
-    every surface built on this mapping (inbox, chat, feed, lineage,
-    archive sync, spawns) can only ever touch in-root databases."""
+    Every candidate is resolved to its canonical real path HERE and only
+    that value is ever returned, so every later connect, archive,
+    transcript, spawn and mutation path opens the validated file, not
+    the original (possibly symlinked) spelling. A candidate that is
+    missing or unreadable, or whose profile directory or state.db
+    resolves outside _home_root(), is dropped before it is ever
+    returned, and so is a path alias: a second spelling that resolves
+    to a database already served (the main DB reached through a profile
+    symlink, or two profile names for one file) is refused rather than
+    double-served. Profile names come from the canonical directory, so
+    an alias can never rename or shadow a served profile.
+
+    The one exception is the main DB missing entirely: a path that
+    still resolves inside the home stays discovered (exactly as before
+    the canonicalization) so the listing reports it as a load-time
+    note instead of silently vanishing — _connect_db() still refuses
+    to open anything there, so a missing database can be named but
+    never read or written."""
     root = _home_root()
     found = []
-    if _db_stays_in_home(MAIN_DB, root):
-        found.append((MAIN_DB, "default"))
+    identities = {}
+    seen = set()
+    canon = _canonical_db(MAIN_DB, root)
+    if canon is None:
+        try:
+            real = os.path.realpath(MAIN_DB)
+        except OSError:
+            real = ""
+        if real and _contained(real, root):
+            canon = real
+    if canon is not None:
+        ident = _db_file_identity(canon)
+        found.append((canon, "default"))
+        seen.add(ident or canon)
+        identities[canon] = ident
     for path in sorted(glob.glob(PROFILE_GLOB)):
-        if os.path.isfile(path) and _db_stays_in_home(path, root):
-            found.append((path, os.path.basename(os.path.dirname(path))))
+        canon = _canonical_db(path, root)
+        if canon is None:
+            continue
+        ident = _db_file_identity(canon)
+        key = ident or canon
+        if key in seen:
+            continue  # an alias of a database already served
+        seen.add(key)
+        identities[canon] = ident
+        found.append((canon, os.path.basename(os.path.dirname(canon))))
+    _db_identities.clear()
+    _db_identities.update(identities)
     return found
 
 
@@ -953,6 +1266,33 @@ def profile_home(profile):
         if name == profile:
             return os.path.dirname(os.path.abspath(db_path))
     return None
+
+
+def _chain_ids(db_path, session_id):
+    """Ids of the conversation *session_id* belongs to, root first.
+
+    The definition of "one conversation" is core-owned
+    (SessionDB.get_session_lineage_ids — the same chain the resume
+    readers count), so a compression root, any middle segment and the
+    live tip all resolve to the same list and every transcript, feed,
+    cursor and archive path below acts on the whole conversation. The
+    caller supplies the discovered canonical DB path; an unreadable DB
+    or an unknown id degrades to [session_id] — the page then renders
+    exactly the one segment it always could, never a wrong chain."""
+    try:
+        # tuning_pragmas=False: this server serves explicit discovered
+        # paths, so its connections take plain-SQLite defaults and never
+        # load config.yaml — the config read would materialize the
+        # ambient HERMES_HOME, which is not this server's to touch.
+        sdb = SessionDB(db_path, read_only=True, tuning_pragmas=False)
+    except Exception:
+        return [session_id]
+    try:
+        return sdb.get_session_lineage_ids(session_id) or [session_id]
+    except Exception:
+        return [session_id]
+    finally:
+        sdb.close()
 
 
 def load_last_lines(con, session_ids):
@@ -1027,8 +1367,9 @@ def load_newest_events(con, session_ids):
     """Map session id -> (role, has_content, has_tools, silent) of its
     newest active, non-hidden, non-session_meta event — the Completed
     signal. Batched and chunked exactly like the preview queries;
-    sqlite3.Error propagates so an ancient schema degrades to the
-    ended_at rule alone (with a note)."""
+    sqlite3.Error propagates so an ancient schema degrades to Open ·
+    unfinished for every open row (closed rows never consult this)
+    with a note."""
     newest = {}
     for start in range(0, len(session_ids), LAST_LINE_CHUNK):
         chunk = session_ids[start:start + LAST_LINE_CHUNK]
@@ -1042,18 +1383,16 @@ def load_newest_events(con, session_ids):
 
 
 def classify_session(row, newest):
-    """Inbox section for one session row: active / completed /
-    incomplete.
+    """Inbox section for one open session row: completed / incomplete.
 
-    Active is decided by the caller (leases + this server's running
-    jobs), never here. Completed is honest by construction: either
-    Hermes itself recorded ended_at, or the newest active event is an
-    assistant answer — real text, no tool_calls carrier, not [SILENT].
-    A transcript that merely ends on a user message or a tool result
+    Active and Closed are decided by the caller (leases + this
+    server's running jobs; the projected tip's ended_at or archived),
+    never here — a row this sees is already known to be open. Completed
+    is honest by construction: the newest active event is an assistant
+    answer — real text, no tool_calls carrier, not [SILENT]. A
+    transcript that merely ends on a user message or a tool result
     stays incomplete instead of being mislabeled.
     """
-    if row["ended"] is not None:
-        return "completed"
     role, has_content, has_tools, silent = newest.get(
         row["id"], ("", False, False, False))
     if (role == "assistant" and has_content and not has_tools
@@ -1065,80 +1404,138 @@ def classify_session(row, newest):
 def load_sessions(now):
     """Return (rows, notes) across all DBs; each DB failure becomes a note.
 
-    Every row carries its inbox section in r["state"] (active /
-    completed / incomplete): active means a live unexpired turn lease
-    names the session; completed means ended_at or a final assistant
-    answer; incomplete is the honest remainder. Lease and
-    newest-event lookups are one batched query each per DB — never
-    N+1 — and each degrades to a weaker classification plus at most
-    one note when the table/column is missing.
+    The listing itself is core-owned: every discovered DB is read
+    through SessionDB.list_sessions_rich(open_first=True,
+    order_by_last_active=True, include_archived=True,
+    compact_rows=True), so compression-tip projection, pinned
+    back-fill, branch/reset visibility and hidden and delegate
+    filtering all follow the one definition Hermes core owns — the
+    surfaced row for a compressed conversation is its live tip, never
+    the always-ended root. The refresh is metadata-only, so the compact
+    projection is requested: the large system_prompt and
+    git_metadata_generation blobs this page never renders stay in the
+    DB instead of crossing a million-row refresh. This function
+    attaches only the presentation envelope: last-line/last-tool
+    enrichment, lease/job Active marking and the Completed/Incomplete
+    judgment, batched per DB exactly as before (never N+1), each
+    degrading to a weaker classification plus at most one note when a
+    table/column is missing.
+
+    Rows merge across DBs with one deterministic global key: every
+    open conversation before every closed one, canonical last-active
+    order inside each partition, then stable (profile, session id)
+    tie-breakers. The rolling 24h window bounds only conversations
+    that have come to rest — projected tip ended, or archived: an open
+    or pinned conversation stays listed however old it is, so a
+    quiet-but-live chat can never fall out of the inbox, and a pin the
+    window would drop stays reachable without landing below a closed
+    row.
     """
     lo = now - WINDOW_SECONDS
     rows, notes = [], []
     for path, profile in discover_dbs():
         try:
-            con = sqlite3.connect("file:" + quote(path) + "?mode=ro",
-                                  uri=True, timeout=2.0)
+            # tuning_pragmas=False — plain-SQLite defaults, no config
+            # load, no ambient-home side effect (see _chain_ids).
+            sdb = SessionDB(path, read_only=True, tuning_pragmas=False)
             try:
-                db_rows = []
-                for sid, source, title, display_name, last, ended, \
-                        archived in con.execute(SESSION_SQL, (lo, now)):
-                    db_rows.append({
-                        "id": sid,
-                        "source": source or "",
-                        "title": title or display_name or sid,
-                        "last": last,
-                        "ended": ended,
-                        "archived": bool(archived),
-                        "profile": profile,
-                        "state": "incomplete",
-                    })
-                try:
-                    lines = load_last_lines(con, [r["id"] for r in db_rows])
-                except sqlite3.Error as exc:
-                    # Sessions still list; the column just falls back to —.
-                    lines = {}
-                    notes.append("last-message data for %s (%s)"
-                                 % (profile, exc))
-                try:
-                    tools = load_last_tools(con, [r["id"] for r in db_rows])
-                except sqlite3.Error as exc:
-                    tools = {}
-                    notes.append("last-tool data for %s (%s)"
-                                 % (profile, exc))
-                lease_ids = set()
-                try:
-                    lease_ids = load_lease_ids(con, now)
-                except sqlite3.Error as exc:
-                    # No lease table (or unreadable): classification
-                    # degrades to Completed/Incomplete. One note, same
-                    # style as the preview fallbacks above.
-                    notes.append("turn leases for %s (%s)" % (profile, exc))
-                newest = {}
-                try:
-                    newest = load_newest_events(con,
-                                                [r["id"] for r in db_rows])
-                except sqlite3.Error as exc:
-                    newest = {}
-                    notes.append("completion state for %s (%s)"
-                                 % (profile, exc))
-                for r in db_rows:
-                    r["last_line_role"], r["last_line"] = \
-                        lines.get(r["id"], ("", ""))
-                    r["last_tool"] = tools.get(r["id"], "")
-                    # State precedence: archived -> closed first, then a
-                    # live lease/job -> active, else completed/incomplete.
-                    if r["archived"]:
-                        r["state"] = "closed"
-                    elif r["id"] in lease_ids:
-                        r["state"] = "active"
-                    else:
-                        r["state"] = classify_session(r, newest)
-                rows.extend(db_rows)
+                rich = sdb.list_sessions_rich(
+                    limit=LIST_ALL_LIMIT, order_by_last_active=True,
+                    open_first=True, include_archived=True,
+                    exclude_sources=("subagent",), compact_rows=True,
+                )
             finally:
-                con.close()
+                sdb.close()
+        except Exception as exc:
+            # Core listing failed for this DB: one note, its rows absent.
+            notes.append("%s: %s" % (profile, exc))
+            continue
+        db_rows = []
+        for s in rich:
+            last = s.get("last_active") or s.get("started_at") or 0.0
+            rested = s.get("ended_at") is not None or bool(s.get("archived"))
+            if rested and not bool(s.get("pinned")) \
+                    and not (lo <= last <= now):
+                continue
+            db_rows.append({
+                "id": s["id"],
+                "source": s.get("source") or "",
+                "title": s.get("title") or s.get("display_name")
+                or s["id"],
+                "last": last,
+                "ended": s.get("ended_at"),
+                "archived": bool(s.get("archived")),
+                "profile": profile,
+                "state": "incomplete",
+                # Chain keys for search: the projected row is the tip, so
+                # the root's id/title and every intermediate member id
+                # ride along as extra search spellings.
+                "root": s.get("_lineage_root_id") or "",
+                "lineage": list(s.get("_lineage_ids") or []),
+            })
+        try:
+            con = _connect_db(path)
         except sqlite3.Error as exc:
             notes.append("%s: %s" % (profile, exc))
+            continue
+        try:
+            try:
+                lines = load_last_lines(con, [r["id"] for r in db_rows])
+            except sqlite3.Error as exc:
+                # Sessions still list; the column just falls back to —.
+                lines = {}
+                notes.append("last-message data for %s (%s)"
+                             % (profile, exc))
+            try:
+                tools = load_last_tools(con, [r["id"] for r in db_rows])
+            except sqlite3.Error as exc:
+                tools = {}
+                notes.append("last-tool data for %s (%s)" % (profile, exc))
+            lease_ids = set()
+            try:
+                lease_ids = load_lease_ids(con, now)
+            except sqlite3.Error as exc:
+                # No lease table (or unreadable): classification
+                # degrades to Completed/Incomplete. One note, same
+                # style as the preview fallbacks above.
+                notes.append("turn leases for %s (%s)" % (profile, exc))
+            newest = {}
+            try:
+                newest = load_newest_events(con,
+                                            [r["id"] for r in db_rows])
+            except sqlite3.Error as exc:
+                newest = {}
+                notes.append("completion state for %s (%s)" % (profile, exc))
+            root_titles = {}
+            roots = [r["root"] for r in db_rows if r["root"]]
+            for start in range(0, len(roots), LAST_LINE_CHUNK):
+                chunk = roots[start:start + LAST_LINE_CHUNK]
+                root_titles.update(con.execute(
+                    ROOT_TITLE_SQL.format(
+                        placeholders=",".join("?" * len(chunk))), chunk))
+            for r in db_rows:
+                r["last_line_role"], r["last_line"] = \
+                    lines.get(r["id"], ("", ""))
+                r["last_tool"] = tools.get(r["id"], "")
+                extra = [r["root"], root_titles.get(r["root"], "")]
+                extra.extend(x for x in r["lineage"] if x != r["id"])
+                r["search_extra"] = " ".join(x for x in extra if x)
+                del r["root"], r["lineage"]
+                # State precedence: the projected tip's ended_at or
+                # archived flag -> closed first (the same split core's
+                # open_first ordering draws), then a live lease/job ->
+                # active, else completed/incomplete. An ended
+                # conversation is closed at archived=0 too, so it can
+                # never render under an open-labeled section.
+                if r["archived"] or r["ended"] is not None:
+                    r["state"] = "closed"
+                elif r["id"] in lease_ids:
+                    r["state"] = "active"
+                else:
+                    r["state"] = classify_session(r, newest)
+            rows.extend(db_rows)
+        finally:
+            con.close()
     # Confidently linked cross-profile children leave every inbox
     # section: they render as Sub-agents under their parent instead.
     # Nothing else is ever hidden — not by profile, source or title —
@@ -1149,7 +1546,12 @@ def load_sessions(now):
     if linked:
         rows = [r for r in rows
                 if (r["profile"], r["id"]) not in linked]
-    rows.sort(key=lambda r: r["last"], reverse=True)
+    # Global merge, applied before any rendering: open rows strictly
+    # before closed ones, canonical last-active order inside each
+    # partition, stable (profile, session id) tie-breakers so identical
+    # timestamps never shuffle between renders.
+    rows.sort(key=lambda r: (r["state"] == "closed", -(r["last"] or 0.0),
+                             r["profile"], str(r["id"])))
     return rows, notes
 
 
@@ -1159,8 +1561,9 @@ def mark_job_states(rows):
     The _jobs table is the second Active signal (a Mission Control
     composer reply running in this process); it wins over the
     DB-derived classification for the sessions it names — but never
-    over archived, which keeps a closed session Closed even while a
-    reply started earlier is still draining.
+    over a closed row (the projected tip's ended_at, or archived),
+    which keeps a closed session Closed even while a reply started
+    earlier is still draining.
     """
     if not _jobs or not rows:
         return
@@ -1172,10 +1575,14 @@ def mark_job_states(rows):
 
 
 def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
-    """Load one session's header and transcript page from its own DB.
+    """Load one conversation's header and transcript page from its DB.
 
-    dbs maps profile name -> DB path (discover_dbs()). Returns None when
-    the session id isn't in that profile's DB — a session id is never
+    dbs maps profile name -> DB path (discover_dbs()). The transcript,
+    the sub-agent section and the feed cursor span the conversation's
+    whole canonical chain (_chain_ids), so a root bookmark, a persisted
+    middle segment and the live tip all render the same page — row id
+    interleaves the members in write order. Returns None when the
+    session id isn't in that profile's DB — a session id is never
     looked up in any other DB. sqlite3.Error propagates so the caller
     can render a themed 500 (a locked DB is not "unknown session").
     The live-activity snapshot is computed here too, so the initial
@@ -1183,19 +1590,33 @@ def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
     server is currently running a composer reply for the session, and
     busy_since that turn's acceptance time — the floor scoping its
     first-output detection).
+
+    last_id is a durable high-water cursor: the newest row id captured
+    BEFORE the transcript rows are read, then raised to the newest id
+    the page actually contains. A row that lands between the cursor
+    capture and the row query is inside the page (and its id lifts the
+    cursor past it), and anything later is replayed by the first
+    after=last_id poll — every event appears exactly once, none is
+    lost to the snapshot/delta seam.
     """
-    con = sqlite3.connect("file:" + quote(dbs[profile]) + "?mode=ro",
-                          uri=True, timeout=2.0)
+    con = _connect_db(dbs[profile])
     try:
         sess = con.execute(CHAT_SESSION_SQL, (session_id,)).fetchone()
         if sess is None:
             return None
         title, display_name, started, last, source, thread_id, \
             archived = sess
-        rows = con.execute(CHAT_PAGE_SQL, (session_id,)).fetchall()
+        chain = _chain_ids(dbs[profile], session_id)
+        ph = ",".join("?" * len(chain))
         last_id = con.execute(
-            FEED_LAST_ID_SQL, (session_id,)).fetchone()[0] or 0
-        subagents = subagents_for(con, profile, session_id)
+            FEED_LAST_ID_CHAIN_SQL.format(placeholders=ph),
+            chain).fetchone()[0] or 0
+        rows = con.execute(
+            CHAT_PAGE_CHAIN_SQL.format(placeholders=ph), chain).fetchall()
+        for row in rows:
+            if row[3] > last_id:
+                last_id = row[3]
+        subagents = subagents_for(con, profile, chain)
         activity = compute_activity(con, session_id, time.time(),
                                     busy_job, busy_since)
     finally:
@@ -1217,23 +1638,32 @@ def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
     }
 
 
-def load_subagents(con, profile, parent_id):
-    """Direct sub-agent children of one session, oldest first.
+def load_subagents(con, profile, chain):
+    """Direct sub-agent children of one conversation, oldest first.
 
-    Called on the parent's own open connection, so the section always
-    reads the same profile DB as the conversation around it: one
-    bounded SUBAGENTS_SQL run, plus one batched SUBAGENT_LABEL_SQL run
-    only when some child has no title/display_name to show (the usual
-    case). Label falls back title -> display_name -> the cleaned first
-    user message, so a row reads as the goal the child was dispatched
-    for. Every child carries its profile (here always the parent's)
-    and started_at so it can merge with cross-profile children.
-    Every field is escaped later at render time.
+    *chain* is the canonical chain id list; a bare session id is still
+    accepted (it names that one segment), so every caller that held a
+    single id keeps working. Children hang off any member of the
+    canonical chain (a dispatch mid-conversation records that member's
+    id as its parent), so the
+    IN-list covers the whole conversation. Called on the conversation's
+    own open connection, so the section always reads the same profile
+    DB as the transcript around it: one bounded SUBAGENTS_CHAIN_SQL
+    run, plus one batched SUBAGENT_LABEL_SQL run only when some child
+    has no title/display_name to show (the usual case). Label falls
+    back title -> display_name -> the cleaned first user message, so a
+    row reads as the goal the child was dispatched for. Every child
+    carries its profile (here always the parent's) and started_at so it
+    can merge with cross-profile children. Every field is escaped later
+    at render time.
     """
+    if isinstance(chain, str):
+        chain = [chain]
     children = []
+    ph = ",".join("?" * len(chain))
     for sid, title, display_name, started, last, ended, end_reason \
-            in con.execute(SUBAGENTS_SQL,
-                           (parent_id, SUBAGENT_MAX_CHILDREN)):
+            in con.execute(SUBAGENTS_CHAIN_SQL.format(placeholders=ph),
+                           chain + [SUBAGENT_MAX_CHILDREN]):
         children.append({
             "id": sid,
             "profile": profile,
@@ -1553,8 +1983,7 @@ def _lineage_lookup(con_path, ids):
     rows = {}
     ids = list(ids)
     try:
-        con = sqlite3.connect("file:" + quote(con_path) + "?mode=ro",
-                              uri=True, timeout=2.0)
+        con = _connect_db(con_path)
         try:
             for start in range(0, len(ids), LAST_LINE_CHUNK):
                 chunk = ids[start:start + LAST_LINE_CHUNK]
@@ -1596,8 +2025,7 @@ def _lineage_job_children(specs, dbs_by_profile):
         if path is None:
             continue
         try:
-            con = sqlite3.connect("file:" + quote(path) + "?mode=ro",
-                                  uri=True, timeout=2.0)
+            con = _connect_db(path)
             try:
                 cands = con.execute(LINEAGE_WORKER_CANDIDATES_SQL, (
                     min(s["lo"] for s in wspecs),
@@ -1649,8 +2077,7 @@ def _lineage_terminal_claims(dbs, lo, hi):
     claims = {}
     for path, profile in dbs:
         try:
-            con = sqlite3.connect("file:" + quote(path) + "?mode=ro",
-                                  uri=True, timeout=2.0)
+            con = _connect_db(path)
             try:
                 sids = [r[0] for r in con.execute(
                     LINEAGE_WINDOW_SESSIONS_SQL, (lo, hi))]
@@ -1808,22 +2235,26 @@ def lineage_index(now):
         return index
 
 
-def subagents_for(con, profile, session_id):
+def subagents_for(con, profile, chain):
     """The children a conversation page and its feed polls show: the
-    same-profile source='subagent' children plus the confidently
-    linked cross-profile children of the lineage index, merged into
-    one oldest-first list whose rows each carry their own profile.
+    same-profile source='subagent' children of any chain member plus
+    the confidently linked cross-profile children of the lineage
+    index, merged into one oldest-first list whose rows each carry
+    their own profile.
 
     The 50-child bound (SUBAGENT_MAX_CHILDREN) is applied AFTER the
     merge, over the combined same- and cross-profile list, with the
     same explicit tie-breaker build_lineage sorts by — so a parent
     with runaway dispatches renders a bounded section no matter which
     DBs its children landed in."""
-    children = load_subagents(con, profile, session_id)
-    linked = lineage_index(time.time())["children"].get(
-        (profile, session_id))
-    if linked:
-        children = children + linked
+    if isinstance(chain, str):
+        chain = [chain]
+    children = load_subagents(con, profile, chain)
+    linked_index = lineage_index(time.time())["children"]
+    linked = []
+    for sid in chain:
+        linked.extend(linked_index.get((profile, sid)) or [])
+    children = children + linked
     children.sort(key=lambda c: (c.get("started") or 0, str(c["id"]),
                                  c.get("profile", "")))
     return children[:SUBAGENT_MAX_CHILDREN]
@@ -2339,31 +2770,49 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
     acceptance time) is that snapshot's turn floor, read under the
     same lock as busy so a job settling mid-poll can never be judged
     with half its state.
+
+    The cursor is a durable high-water mark: the newest row id over
+    the conversation's whole canonical chain, captured BEFORE the
+    snapshot/delta rows are read (a timestamp or mutable activity
+    field is never a cursor), then raised to the newest id the rows
+    actually contain when the poll was not capped. A row that lands
+    between the cursor capture and the row query is therefore inside
+    the snapshot (its id lifts the cursor past it), and anything later
+    is replayed by the next after=last_id poll — every event appears
+    exactly once, none is lost to the snapshot/delta seam. A capped
+    catch-up still stops at the newest row it actually sent.
     """
-    con = sqlite3.connect("file:" + quote(dbs[profile]) + "?mode=ro",
-                          uri=True, timeout=2.0)
+    con = _connect_db(dbs[profile])
     try:
         sess = con.execute(CHAT_SESSION_SQL, (session_id,)).fetchone()
         if sess is None:
             return None
         _title, _display_name, _started, _last, source, thread_id, \
             archived = sess
-        tip = con.execute(FEED_LAST_ID_SQL, (session_id,)).fetchone()[0] or 0
+        chain = _chain_ids(dbs[profile], session_id)
+        ph = ",".join("?" * len(chain))
+        # Cursor first: the high-water mark predates the snapshot.
+        tip = con.execute(
+            FEED_LAST_ID_CHAIN_SQL.format(placeholders=ph), chain
+        ).fetchone()[0] or 0
         if after > 0:
             rows = con.execute(
-                FEED_AFTER_SQL, (session_id, after, FEED_CATCHUP_MAX)
+                FEED_AFTER_CHAIN_SQL.format(placeholders=ph),
+                chain + [after, FEED_CATCHUP_MAX]
             ).fetchall()
             # Cursor math uses the delta alone — backfilled rows are
             # older than the cursor by construction and never affect
-            # it. Not capped -> the cursor can safely jump to the
-            # session tip (skipped rows included); capped -> stop at
-            # what was sent.
-            last_id = tip if len(rows) < FEED_CATCHUP_MAX else \
-                max([r[3] for r in rows] + [after])
+            # it. Not capped -> the cursor rises to the newest id the
+            # poll actually saw (tip included, skipped rows too);
+            # capped -> stop at what was sent.
+            if len(rows) >= FEED_CATCHUP_MAX:
+                last_id = max([r[3] for r in rows] + [after])
+            else:
+                last_id = max([tip] + [r[3] for r in rows])
             if rows and rows[0][0] == "tool":
                 back = con.execute(
-                    FEED_BACKFILL_SQL,
-                    (session_id, rows[0][3], FEED_BACKFILL_MAX)
+                    FEED_BACKFILL_CHAIN_SQL.format(placeholders=ph),
+                    chain + [rows[0][3], FEED_BACKFILL_MAX]
                 ).fetchall()
                 prefix = []
                 for row in back:  # newest -> oldest
@@ -2374,10 +2823,12 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
                 prefix.reverse()
                 rows = prefix + rows
         else:
-            rows = con.execute(CHAT_PAGE_SQL, (session_id,)).fetchall()
+            rows = con.execute(
+                CHAT_PAGE_CHAIN_SQL.format(placeholders=ph), chain
+            ).fetchall()
             rows.reverse()
-            last_id = tip
-        subagents = subagents_for(con, profile, session_id)
+            last_id = max([tip] + [r[3] for r in rows])
+        subagents = subagents_for(con, profile, chain)
         activity = compute_activity(con, session_id, time.time(),
                                     busy_job, busy_since)
     finally:
@@ -2393,11 +2844,10 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
 
 def load_session_cwd(profile, session_id, dbs):
     """(exists, cwd, archived) for one session in its own profile DB;
-    cwd may be None. The reply route resumes the session with this
-    directory as the child's working directory when it still exists,
-    and refuses new turns while archived is set."""
-    con = sqlite3.connect("file:" + quote(dbs[profile]) + "?mode=ro",
-                          uri=True, timeout=2.0)
+    cwd may be None. The reply route refuses new turns while archived
+    is set (and the page renders the working directory the session
+    was rooted in)."""
+    con = _connect_db(dbs[profile])
     try:
         row = con.execute(SESSION_CWD_SQL, (session_id,)).fetchone()
     finally:
@@ -2406,35 +2856,15 @@ def load_session_cwd(profile, session_id, dbs):
             bool(row[1]) if row is not None else False)
 
 
-def mission_control_ids():
-    """mission-control session ids from the main DB, newest first.
-
-    Bound by the same rule as discovery: a main DB symlinked outside
-    the configured home is not read at all."""
-    if not _db_stays_in_home(MAIN_DB, _home_root()):
-        return []
-    try:
-        con = sqlite3.connect("file:" + quote(MAIN_DB) + "?mode=ro",
-                              uri=True, timeout=2.0)
-        try:
-            return [r[0] for r in con.execute(
-                MISSION_CONTROL_IDS_SQL, (NEW_SESSION_SOURCE,))]
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return []
-
-
 # ---- Discord API plumbing -------------------------------------------
 # The token for a profile lives in the .env beside its state.db. It is
 # read fresh from disk (never cached across passes, never logged) and
 # only ever leaves the process as an in-memory Authorization header.
-def load_discord_token(db_path):
-    """The DISCORD_BOT_TOKEN from the .env beside one profile's DB, or
-    None (no file, no key, empty value). Parsed line-wise with
-    split('=', 1) so '=' inside the value survives; surrounding quotes
-    are stripped. The value is never written anywhere."""
-    env_path = os.path.join(os.path.dirname(db_path), ".env")
+def load_env_value(env_path, name):
+    """One KEY's value from a .env file, or None (no file, no such key,
+    empty value). Parsed line-wise with split('=', 1) so '=' inside the
+    value survives; surrounding quotes are stripped. The value is never
+    written anywhere."""
     try:
         with open(env_path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -2442,13 +2872,197 @@ def load_discord_token(db_path):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, value = line.split("=", 1)
-                if key.strip() != "DISCORD_BOT_TOKEN":
+                if key.strip() != name:
                     continue
                 value = value.strip().strip('"').strip("'").strip()
                 return value or None
     except OSError:
         pass
     return None
+
+
+def load_discord_token(db_path):
+    """The DISCORD_BOT_TOKEN from the .env beside one profile's DB, or
+    None. The value is never written anywhere."""
+    return load_env_value(os.path.join(os.path.dirname(db_path), ".env"),
+                          "DISCORD_BOT_TOKEN")
+
+
+# ---- core-API clarify client -----------------------------------------
+# Reads and answers the core's per-session clarify routes for the
+# transcript page only. Fail-closed on every axis: no key means no
+# call, an error never reaches the page as a crash, and nothing beyond
+# the bounded card fields ever crosses in either direction.
+
+
+def clarify_api_key(profile, dbs):
+    """The API_SERVER_KEY authorized for this profile's clarify routes,
+    or None. The default profile's key comes from the .env beside the
+    main DB; a named profile's key comes ONLY from the .env beside its
+    own state.db — never the main file, so a named profile without its
+    own key simply has no key. The value never leaves this process
+    except as one request's Authorization header."""
+    if profile == "default":
+        env_path = os.path.join(os.path.dirname(MAIN_DB), ".env")
+    else:
+        db_path = dbs.get(profile)
+        if not db_path:
+            return None
+        env_path = os.path.join(os.path.dirname(db_path), ".env")
+    return load_env_value(env_path, "API_SERVER_KEY")
+
+
+def core_api_request(method, path, profile, dbs, payload=None,
+                     timeout=None):
+    """One authenticated core API call -> (status, obj, err).
+
+    path is the route after the profile prefix (the caller quotes any
+    ids it embeds): "/v1/runs", "/v1/runs/<run_id>",
+    "/api/sessions/<sid>/clarify". err is None only on a 2xx whose body
+    parsed (or was empty); otherwise it is a bounded safe string
+    carrying the HTTP status or the failure class alone — never the
+    key, never the upstream body (exception text is reduced to its
+    class name so a URL can never leak either). The body read is capped
+    at CLARIFY_MAX_BODY_BYTES + 1; larger is an error. The key appears
+    only in the Authorization header of this one request object.
+    """
+    key = clarify_api_key(profile, dbs)
+    if not key:
+        return 0, None, "no API key configured"
+    url = (CLARIFY_API_BASE.rstrip("/") + "/p/"
+           + quote(profile, safe="") + path)
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + key)
+    req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    raw = b""
+    try:
+        with urllib.request.urlopen(
+                req,
+                timeout=CLARIFY_TIMEOUT_SECONDS if timeout is None
+                else timeout) as resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            raw = resp.read(CLARIFY_MAX_BODY_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        status = exc.code or 0
+        try:
+            raw = exc.read(CLARIFY_MAX_BODY_BYTES + 1)
+        except OSError:
+            raw = b""
+    except Exception as exc:  # keep the page alive no matter what
+        # Never include the exception text: it could echo the URL or
+        # environment. The class name is enough — and this arm also
+        # catches the http.client read errors (IncompleteRead and kin)
+        # that are neither OSError nor ValueError.
+        return 0, None, "request failed (%s)" % type(exc).__name__
+    if len(raw) > CLARIFY_MAX_BODY_BYTES:
+        return status, None, "response too large"
+    obj = None
+    if raw:
+        try:
+            obj = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            obj = None
+    if status < 200 or status >= 300:
+        return status, obj, "upstream HTTP %d" % status
+    if raw and obj is None:
+        return status, None, "unparseable response body"
+    return status, obj, None
+
+
+def clarify_request(method, profile, session_id, dbs, payload=None):
+    """One authenticated core clarify call -> (status, obj, err).
+
+    Thin path builder over core_api_request; same contract, same
+    bounds, same fail-closed error strings.
+    """
+    return core_api_request(
+        method,
+        "/api/sessions/" + quote(session_id, safe="") + "/clarify",
+        profile, dbs, payload)
+
+
+def clarify_fetch_card(profile, session_id, dbs):
+    """(card, err): the bounded pending clarify card for one session.
+
+    card is None with err None when the core affirmatively reports no
+    pending clarify ({"pending_clarify": null}); a dict {clarify_id,
+    question, choices, multi_select} when one is pending; None with a
+    safe err string on any failure. The upstream card is re-validated
+    and re-bounded here — a malformed or hostile card is an error,
+    never a crash and never rendered."""
+    status, obj, err = clarify_request("GET", profile, session_id, dbs)
+    if err is not None:
+        return None, err
+    if not isinstance(obj, dict):
+        return None, "unexpected response shape"
+    pending = obj.get("pending_clarify")
+    if pending is None:
+        return None, None
+    if not isinstance(pending, dict):
+        return None, "unexpected response shape"
+    cid = pending.get("clarify_id")
+    question = pending.get("question")
+    if not isinstance(cid, str) or not cid.strip() \
+            or len(cid) > CLARIFY_ID_MAX_CHARS:
+        return None, "unexpected response shape"
+    if not isinstance(question, str):
+        return None, "unexpected response shape"
+    choices_raw = pending.get("choices")
+    choices = None
+    if choices_raw is not None:
+        if not isinstance(choices_raw, list):
+            return None, "unexpected response shape"
+        cleaned = []
+        for choice in choices_raw[:CLARIFY_MAX_CHOICES]:
+            if not isinstance(choice, str) or not choice.strip():
+                return None, "unexpected response shape"
+            cleaned.append(choice.strip()[:CLARIFY_MAX_CHOICE_CHARS])
+        choices = cleaned
+    return {
+        "clarify_id": cid,
+        "question": question.strip()[:CLARIFY_MAX_QUESTION_CHARS],
+        "choices": choices,
+        "multi_select": bool(pending.get("multi_select")),
+    }, None
+
+
+def valid_clarify_response(resp):
+    """True when resp is exactly one of the two response shapes the
+    core accepts: a non-empty string, or a non-empty list (bounded by
+    CLARIFY_MAX_RESPONSE_ITEMS) of non-empty strings. Numbers, dicts,
+    booleans, null and empty shapes are refused before proxying."""
+    if isinstance(resp, str):
+        return bool(resp.strip()) and len(resp) <= MAX_TEXT_CHARS
+    if isinstance(resp, list) and resp \
+            and len(resp) <= CLARIFY_MAX_RESPONSE_ITEMS:
+        return all(isinstance(item, str) and item.strip()
+                   and len(item) <= MAX_TEXT_CHARS for item in resp)
+    return False
+
+
+def feed_clarify(profile, session_id, dbs, archived):
+    """The feed/poll shape of the pending clarify, or None on error.
+
+    {active, id, html} — html being the exact escaped card markup the
+    page renders. An archived session skips the upstream call entirely
+    (its card would be unanswerable) and reports none. None (the caller
+    omits the field) on any API error so an open page keeps its current
+    card instead of flashing it away on a blip; {active: False} only
+    ever means the core affirmatively reported no pending clarify."""
+    if archived:
+        return {"active": False, "id": "", "html": ""}
+    card, err = clarify_fetch_card(profile, session_id, dbs)
+    if err is not None:
+        return None
+    if card is None:
+        return {"active": False, "id": "", "html": ""}
+    return {"active": True, "id": card["clarify_id"],
+            "html": render_clarify_card(card)}
 
 
 def _discord_wait_turn():
@@ -2607,7 +3221,7 @@ def apply_discord_snapshot(db_path, active_ids, now):
     read back for exact equality before the commit — a mismatch rolls
     everything back. Returns the number of changed rows."""
     lo = now - WINDOW_SECONDS
-    con = sqlite3.connect(db_path, timeout=5.0)
+    con = _connect_db(db_path, write=True, timeout=5.0)
     try:
         tids = [r[0] for r in con.execute(
             DISCORD_RECENT_THREADS_SQL, (lo,))]
@@ -2713,16 +3327,18 @@ def set_session_archived(profile, session_id, dbs, desired):
     failure can no longer claim "nothing was changed": the payload
     carries discord_changed/sync_pending and says the background sync
     will retry, without a local affected count. A non-Discord (or
-    threadless) session flips only its own row — no Discord claim is
-    made. Every local write bumps the profile's archive epoch and runs
+    threadless) session flips every member of its canonical
+    compression chain in one transaction — the listed conversation is
+    its projected tip, so the root's row must follow the tip's — with
+    an exact read-back over the same set; no Discord claim is made.
+    Every local write bumps the profile's archive epoch and runs
     under _archive_epoch_lock, so a background snapshot fetched before
     the user acted can never overwrite this result. The payload always
     carries ok/archived/discord/thread_id/affected (or a bounded safe
     error)."""
     db_path = dbs[profile]
     try:
-        con = sqlite3.connect("file:" + quote(db_path) + "?mode=ro",
-                           uri=True, timeout=2.0)
+        con = _connect_db(db_path)
         try:
             row = con.execute(SESSION_STATE_SQL, (session_id,)).fetchone()
         finally:
@@ -2737,6 +3353,14 @@ def set_session_archived(profile, session_id, dbs, desired):
                   and SNOWFLAKE_RE.fullmatch(thread_id))
     base = {"archived": bool(desired), "discord": bool(is_discord),
             "thread_id": thread_id if is_discord else None}
+    # The canonical chain the close/reopen acts on: for a non-Discord
+    # conversation every compression member flips together (the listed
+    # conversation is its projected tip, so closing the tip must close
+    # the root's row too and vice versa). A Discord thread session
+    # keeps flipping by thread_id — continuation rows already share it.
+    chain = _chain_ids(db_path, session_id) if not is_discord \
+        else [session_id]
+    chain_ph = ",".join("?" * len(chain))
     if is_discord:
         token = load_discord_token(db_path)
         if not token:
@@ -2766,7 +3390,7 @@ def set_session_archived(profile, session_id, dbs, desired):
                 # lock so neither path can interleave.
                 _archive_epochs[db_path] = \
                     _archive_epochs.get(db_path, 0) + 1
-                conw = sqlite3.connect(db_path, timeout=5.0)
+                conw = _connect_db(db_path, write=True, timeout=5.0)
                 try:
                     conw.execute("BEGIN IMMEDIATE")
                     affected = conw.execute(
@@ -2811,14 +3435,18 @@ def set_session_archived(profile, session_id, dbs, desired):
             # so an in-flight snapshot can never land over this one.
             _archive_epochs[db_path] = \
                 _archive_epochs.get(db_path, 0) + 1
-            conw = sqlite3.connect(db_path, timeout=5.0)
+            conw = _connect_db(db_path, write=True, timeout=5.0)
             try:
                 conw.execute("BEGIN IMMEDIATE")
                 affected = conw.execute(
-                    SET_ARCHIVE_BY_ID_SQL, (archived_now, session_id)
+                    SET_ARCHIVE_BY_CHAIN_SQL.format(
+                        placeholders=chain_ph),
+                    [archived_now] + chain
                 ).rowcount
                 mismatch = conw.execute(
-                    COUNT_ID_MISMATCH_SQL, (session_id, archived_now)
+                    COUNT_CHAIN_MISMATCH_SQL.format(
+                        placeholders=chain_ph),
+                    chain + [archived_now]
                 ).fetchone()[0]
                 if mismatch:
                     raise sqlite3.Error("read-back mismatch")
@@ -2836,149 +3464,176 @@ def set_session_archived(profile, session_id, dbs, desired):
     return 200, {"ok": True, "affected": affected, **base}
 
 
-# ---- hermes subprocess plumbing -------------------------------------
-# Output lines the oneshot paths print the session id in: the machine-
-# readable "session_id:" line on stderr (quiet mode) and the human exit
-# summary's "Session:" / "--resume" hints on stdout. Anything that
-# matches the session-id character class is a candidate; the caller
-# verifies it against the DB before trusting it.
-SESSION_ID_LINE_RE = re.compile(
-    r"(?:^|\n)\s*(?:session_id:|Session:|--resume\s+)\s*"
-    r"([A-Za-z0-9_.-]+)")
+# ---- composer turn transport (core API runs) -------------------------
+# Every composer turn — a reply on an existing session or a fresh
+# launch from /new — runs as a /v1/runs run on the core API server,
+# never as an oneshot CLI subprocess. Two things make that the only
+# path: the run's agent carries the gateway clarify callback, so a
+# mid-turn question registers in tools.clarify_gateway under the exact
+# canonical session id and becomes the card this server can serve and
+# answer (the CLI's -q callback auto-answers instead — the bug the
+# review flagged), and the admission 202 names the session id
+# deterministically, so navigation needs no DB-row correlation.
+#
+# Nothing about a turn ever touches argv: the prompt goes only into
+# the body of the one admission request and the per-profile key only
+# into its Authorization header (see core_api_request). Admission is
+# synchronous with the POST that accepted the turn — an unavailable
+# core surfaces as an explicit failed send with the text restored,
+# never a silent fallback and never a duplicate run — while a
+# background poller holds the session's busy lease until the run
+# settles.
 
 
-def run_hermes(args, cwd=None, home=None):
-    """Run one hermes invocation to completion; (exit_code, stdout,
-    stderr). Output is captured here and never leaves this function's
-    callers — it is parsed for the session id / exit code only, never
-    logged or served. A child that outruns HERMES_TIMEOUT_SECONDS is
-    killed and reported as exit code 124. Children are registered for
-    shutdown cleanup while they live.
+def session_row_exists(db_path, session_id):
+    """True when the sessions table already has this row.
 
-    home is the trusted HERMES_HOME for this run (profile_home()'s
-    answer). With it the child runs against exactly the profile whose
-    DB the request was validated against — without it the child would
-    inherit this server's own HERMES_HOME and silently write the
-    default profile. argv is a list, never shell=True; the env is a
-    plain copy with one variable pinned."""
-    env = None
-    if home:
-        env = dict(os.environ)
-        env["HERMES_HOME"] = home
+    Admission names the id deterministically, but the core writes the
+    row when the agent starts executing, so a client that navigates
+    the instant it sees the id would otherwise race a page the DB
+    cannot serve yet. Bound by the same discovery rule as every other
+    read: a DB symlinked outside the configured home is not opened."""
     try:
-        proc = subprocess.Popen(
-            [resolve_hermes_bin()] + args, cwd=cwd, env=env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace")
-    except OSError as exc:
-        # Never include the exception string: it could carry environment
-        # details. The class name is enough for the note.
-        return (-1, "", "%s" % type(exc).__name__)
-    with _children_lock:
-        _children.add(proc)
+        con = _connect_db(db_path)
+    except sqlite3.Error:
+        return False
     try:
-        try:
-            out, err = proc.communicate(timeout=HERMES_TIMEOUT_SECONDS)
-            return (proc.returncode, out or "", err or "")
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.communicate(timeout=10)
-            except Exception:
-                pass
-            return (124, "", "")
+        row = con.execute(
+            "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+            (session_id,)).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
     finally:
-        with _children_lock:
-            _children.discard(proc)
+        con.close()
 
 
-def terminate_children():
-    """Best-effort: stop every hermes child still running (shutdown and
-    atexit path) so the server never leaves strays behind."""
-    with _children_lock:
-        procs = list(_children)
-    for proc in procs:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-    for proc in procs:
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+def admit_run(profile, dbs, session_id, text):
+    """Admit exactly one core API run for a composer turn.
+
+    (run_id, session_id, None) on a clean 202 — the session id being
+    the one asked for, or when session_id is empty the fresh
+    deterministic id the core assigned and echoed — and (None, None,
+    reason) otherwise, reason a bounded safe word for the failure
+    class ("unavailable", "refused", "malformed", "mismatch"). The
+    prompt appears only inside this one request's JSON body; the reply
+    statuses keep no trace of it."""
+    payload = {"input": text}
+    if session_id:
+        payload["session_id"] = session_id
+    status, obj, err = core_api_request(
+        "POST", "/v1/runs", profile, dbs, payload,
+        timeout=RUNS_TIMEOUT_SECONDS)
+    if err is not None:
+        return None, None, "unavailable"
+    if status != 202 or not isinstance(obj, dict):
+        return None, None, "refused"
+    run_id = obj.get("run_id")
+    sid = obj.get("session_id")
+    if not isinstance(run_id, str) or not run_id.strip() \
+            or not isinstance(sid, str) or not sid.strip():
+        return None, None, "malformed"
+    if session_id and sid != session_id:
+        # The core must run the exact session the composer addressed;
+        # anything else would silently fork the conversation.
+        return None, None, "mismatch"
+    return run_id, sid, None
 
 
-def parse_session_id(stdout, stderr):
-    """First plausible session id printed by a oneshot run, or None.
-    Both the quiet stderr line and the exit-summary stdout lines are
-    accepted; ids are validated against SESSION_ID_RE."""
-    for text in (stderr, stdout):
-        m = SESSION_ID_LINE_RE.search(text)
-        if m and SESSION_ID_RE.fullmatch(m.group(1)):
-            return m.group(1)
-    return None
+def run_state(profile, dbs, run_id):
+    """(state_word, err) for one admitted run.
+
+    The state word is the pollable status verb alone ("running",
+    "waiting_for_clarify", "completed", ...) — never a field that
+    could carry prompt, transcript, or card content."""
+    status, obj, err = core_api_request(
+        "GET", "/v1/runs/" + quote(run_id, safe=""), profile, dbs,
+        timeout=RUNS_TIMEOUT_SECONDS)
+    if err is not None or not isinstance(obj, dict):
+        return "", err or "unavailable"
+    state = obj.get("status")
+    return (state.strip() if isinstance(state, str) else ""), None
 
 
-def resolve_new_session_id(parsed, pre_ids):
-    """Pick the session /s/new just created.
-
-    Order: an id parsed from the output that really is a fresh
-    mission-control row; else the newest mission-control row that
-    appeared during the run; else (first ever run) the newest row at
-    all. None when nothing checks out."""
-    post_ids = mission_control_ids()
-    fresh = [sid for sid in post_ids if sid not in pre_ids]
-    if parsed is not None and (parsed in post_ids or parsed in fresh):
-        return parsed
-    if fresh:
-        return fresh[0]  # newest first
-    if post_ids and not pre_ids and parsed is None:
-        return post_ids[0]
-    return None
+def stop_run(profile, dbs, run_id):
+    """Best-effort stop of one run whose deadline was reached."""
+    core_api_request(
+        "POST", "/v1/runs/" + quote(run_id, safe="") + "/stop",
+        profile, dbs, {}, timeout=RUNS_TIMEOUT_SECONDS)
 
 
-def reply_worker(profile, session_id, cwd, text):
-    """Background job behind POST .../reply: run the resumed oneshot,
-    then release the session. The child runs with the trusted home of
-    the profile the POST was validated against (a profile that has
-    since vanished resolves to no home and the job just fails — code
-    -1, same note). A non-zero exit leaves a short note (exit code
-    only — never hermes output) for the feed to deliver once."""
+def wait_run_settled(profile, dbs, run_id, on_session_row=None):
+    """Poll one admitted run until it settles.
+
+    Returns the settling word: "completed", "failed" (the run reported
+    a terminal failure), or "timeout" (the deadline below was reached
+    and the run was stopped best-effort — the same bound the oneshot
+    CLI cap had, so a wedged run can never hold a session busy
+    forever). on_session_row(), when given, is called every pass until
+    it returns True; the fresh-launch worker uses it to publish the
+    session id exactly when the row becomes servable. Never raises."""
+    deadline = time.monotonic() + HERMES_TIMEOUT_SECONDS
+    notified = False
+    try:
+        while True:
+            state, _err = run_state(profile, dbs, run_id)
+            if state in RUN_TERMINAL_STATES:
+                return "completed" if state == "completed" else "failed"
+            if on_session_row is not None and not notified \
+                    and on_session_row():
+                notified = True
+            if time.monotonic() >= deadline:
+                stop_run(profile, dbs, run_id)
+                return "timeout"
+            time.sleep(RUN_POLL_SECONDS)
+    except Exception:
+        return "failed"
+
+
+def reply_worker(profile, session_id, run_id, dbs):
+    """Hold the session's busy lease while the admitted run executes.
+
+    Admission already happened synchronously in start_reply; this
+    thread only watches the run to its terminal state (so the busy and
+    typing semantics match the oneshot era, including a question that
+    legitimately pauses the run mid-turn), releases the lease exactly
+    once, and leaves the feed a one-shot canned note when the turn did
+    not complete. Never retries, never admits a second run."""
     key = (profile, session_id)
-    code = -1
-    try:
-        home = profile_home(profile)
-        if home is not None:
-            code, _out, _err = run_hermes(
-                ["--resume", session_id, "chat", "--oneshot", "-q", text],
-                cwd if cwd and os.path.isdir(cwd) else None, home=home)
-    finally:
-        with _jobs_lock:
-            _jobs.pop(key, None)
-            if code != 0:
-                _job_notes[key] = ("The reply run failed"
-                                   + (" (timed out)" if code == 124 else
-                                      " (exit code %d)" % code)
-                                   + "; nothing was added to the session.")
+    outcome = wait_run_settled(profile, dbs, run_id)
+    with _jobs_lock:
+        _jobs.pop(key, None)
+        if outcome != "completed":
+            _job_notes[key] = ("The reply run failed"
+                               + (" (timed out)"
+                                  if outcome == "timeout" else "")
+                               + "; nothing was added to the session.")
 
 
-def start_reply(profile, session_id, cwd, text):
-    """Try to start one reply job. Returns True when started, False when
-    a reply is already running for the session."""
+def start_reply(profile, session_id, text, dbs):
+    """Accept one composer reply: admit the core run, then hand the
+    lease to the poller.
+
+    Returns "started" (answer 202), "busy" (409 — a turn is already
+    running for the session) or "unavailable" (the core API could not
+    admit the run; nothing was created, so the client must surface a
+    failed send and restore the text). The lease is taken before
+    admission so a double submission cannot admit twice, and released
+    here when admission fails — no state outlives a refused turn."""
     key = (profile, session_id)
     with _jobs_lock:
         if key in _jobs:
-            return False
+            return "busy"
         _jobs[key] = {"started": time.time()}
-    threading.Thread(target=reply_worker,
-                     args=(profile, session_id, cwd, text),
-                     daemon=True).start()
-    return True
+    run_id, _sid, reason = admit_run(profile, dbs, session_id, text)
+    if run_id is None:
+        with _jobs_lock:
+            _jobs.pop(key, None)
+        return "unavailable"
+    threading.Thread(
+        target=reply_worker, args=(profile, session_id, run_id, dbs),
+        daemon=True).start()
+    return "started"
 
 
 def session_job_started(profile, session_id):
@@ -3011,13 +3666,13 @@ def session_job_state(profile, session_id):
 # exactly one background launch and answers 202 with an opaque job id;
 # the run's progress is served by GET /s/new/<job>. The registry below
 # is bounded and thread-safe and holds only opaque state — job id,
-# state word, session id, a canned error string, timestamps — never the
-# prompt (that goes only into the child's argv) and never hermes output
-# (parsed for the session id / exit code, then dropped).
-NEW_JOB_STARTING = "starting"   # accepted; worker not yet under the lock
-NEW_JOB_RUNNING = "running"     # the oneshot child is live
-NEW_JOB_DONE = "done"           # exited 0 with the session id resolved
-NEW_JOB_FAILED = "failed"       # exited non-zero, or nothing resolved
+# state word, session id, a canned error string, timestamps — never
+# the prompt (that goes only into the admission request's body) and
+# never core output (parsed for status words only, then dropped).
+NEW_JOB_STARTING = "starting"   # accepted; admission not yet complete
+NEW_JOB_RUNNING = "running"     # admitted; the run is executing
+NEW_JOB_DONE = "done"           # the run completed
+NEW_JOB_FAILED = "failed"       # admission failed, or the run failed
 NEW_JOB_LIVE_STATES = (NEW_JOB_STARTING, NEW_JOB_RUNNING)
 # Terminal jobs are pruned oldest-first past the cap and dropped once
 # they have been finished this long; a live job is never dropped (and
@@ -3028,16 +3683,14 @@ _new_jobs = {}
 _new_jobs_lock = threading.Lock()
 
 
-def _new_job_error(code, resolved):
-    """Canned failure line for a launch job: exit code or reason only —
-    never hermes output, never the prompt, nothing secret-shaped."""
-    if code == 124:
+def _new_job_error(reason):
+    """Canned failure line for a launch job: reason word only — never
+    core output, never the prompt, nothing secret-shaped."""
+    if reason == "timeout":
         return "the launch timed out"
-    if code < 0:
-        return "the launch could not start"
-    if code != 0:
-        return "the launch failed (exit code %d)" % code
-    return "the new session id could not be resolved"
+    if reason == "unavailable":
+        return "the agent gateway could not be reached"
+    return "the launch failed"
 
 
 def _prune_new_jobs_locked(now):
@@ -3088,122 +3741,92 @@ def new_job_payload(job_id):
         }
 
 
-def _watch_new_session(job_id, pre_ids, stop_event):
-    """Discover the correlated session row while the launch runs.
+def new_session_worker(job_id, text):
+    """One background launch behind POST /s/new.
 
-    Polls the main DB for the first mission-control row that was not
-    there when the child started (newest-first scan, so the first
-    fresh row is this launch's session — launches are serialized, no
-    other launch can add one mid-run). The moment it appears the job
-    records it — that is what lets the status route send the client to
-    /s/default/<id> before the oneshot finishes — and the session is
-    registered in the reply-jobs table, the same signal a composer
-    reply sets (stamped with the launch's own acceptance time, the
-    turn floor below), so the fresh page, its feed and the inbox all
-    truthfully show the turn as live while the launch still runs.
-    Stops at the event or once a row was found; never raises."""
-    pre = set(pre_ids)
-    try:
-        while not stop_event.is_set():
+    Under the launch lock (one at a time, so a duplicate POST can never
+    admit a second run): admit a fresh core run with no session id —
+    the core assigns the deterministic one and the 202 echoes it —
+    publish that id to the job the moment the session's row exists in
+    the main DB (the status route can then send the client to
+    /s/default/<id> before the run finishes, exactly when the page can
+    actually be served), register the busy lease for the fresh session
+    with the launch's own acceptance time as the turn floor, then
+    settle the job exactly once — done when the run completed, failed
+    otherwise. Never retries."""
+    reason = "unavailable"
+    sid = None
+    with _new_session_lock:
+        with _new_jobs_lock:
+            job = _new_jobs.get(job_id)
+            if job is None or job["state"] != NEW_JOB_STARTING:
+                return  # pruned or unknown: run nothing
+            job["state"] = NEW_JOB_RUNNING
+        dbs = {name: db_path for db_path, name in discover_dbs()}
+        run_id, sid, why = admit_run("default", dbs, "", text)
+        if run_id is None:
             sid = None
-            for cand in mission_control_ids():
-                if cand not in pre:
-                    sid = cand
-                    break
-            if sid is not None:
+            reason = why or "unavailable"
+        else:
+            with _new_jobs_lock:
+                job = _new_jobs.get(job_id)
+                created = (job or {}).get("created") or time.time()
+
+            def _publish_when_row_exists():
+                if not session_row_exists(MAIN_DB, sid):
+                    return False
                 with _new_jobs_lock:
                     job = _new_jobs.get(job_id)
                     if job is not None and not job.get("session_id"):
                         job["session_id"] = sid
-                    # The busy registration carries the job's acceptance
-                    # time, not this discovery moment: that stamp is the
-                    # floor that scopes first-output detection to the
-                    # launched turn, and rows written between acceptance
-                    # and discovery are that turn's own.
-                    started = (job or {}).get("created") or time.time()
+                # The busy registration carries the job's acceptance
+                # time, not this discovery moment: that stamp is the
+                # floor that scopes first-output detection to the
+                # launched turn, and rows written between acceptance
+                # and discovery are that turn's own.
                 with _jobs_lock:
                     if ("default", sid) not in _jobs:
-                        _jobs[("default", sid)] = {"started": started,
+                        _jobs[("default", sid)] = {"started": created,
                                                    "launch": job_id}
-                return
-            stop_event.wait(NEW_JOB_WATCH_SECONDS)
-    except Exception:
-        pass
+                return True
 
-
-def new_session_worker(job_id, text):
-    """One background launch behind POST /s/new.
-
-    Under the launch lock (one at a time, keeping the fresh-row
-    correlation unambiguous): snapshot the mission-control rows, start
-    the watcher that publishes the correlated session id while the
-    child runs, run the oneshot to completion (with the trusted home
-    of the main DB pinned in the child's environment, so the fresh
-    session lands in the profile this server actually lists as
-    "default"), then settle the job
-    exactly once — done when the child exited 0 and an id resolved,
-    failed otherwise. Never retries. A failure after the session row
-    already appeared also leaves the feed a one-shot note (exit code
-    only) for a client that navigated to the session page."""
-    key = None
-    code = -1
-    out = err = ""
-    try:
-        with _new_session_lock:
-            with _new_jobs_lock:
-                job = _new_jobs.get(job_id)
-                if job is None or job["state"] != NEW_JOB_STARTING:
-                    return  # pruned or unknown: run nothing
-                job["state"] = NEW_JOB_RUNNING
-            pre_ids = mission_control_ids()
-            stop = threading.Event()
-            watcher = threading.Thread(
-                target=_watch_new_session, args=(job_id, pre_ids, stop),
-                daemon=True)
-            watcher.start()
-            try:
-                code, out, err = run_hermes(
-                    ["chat", "--oneshot", "--source", NEW_SESSION_SOURCE,
-                     "-q", text], home=profile_home("default"))
-                parsed = parse_session_id(out, err)
-            finally:
-                stop.set()
-                watcher.join(timeout=5)
-            # Settle the correlated id: the watcher's in-run discovery
-            # wins (the client may already be on that page); the
-            # end-of-run diff is the fallback for a row the watcher
-            # never saw appear.
-            resolved = resolve_new_session_id(parsed, pre_ids)
-            with _new_jobs_lock:
-                job = _new_jobs.get(job_id)
-                if job is not None:
-                    job["session_id"] = job.get("session_id") or resolved
-    finally:
-        with _new_jobs_lock:
-            job = _new_jobs.get(job_id)
-            sid = (job or {}).get("session_id")
+            outcome = wait_run_settled(
+                "default", dbs, run_id,
+                on_session_row=_publish_when_row_exists)
+            reason = None if outcome == "completed" else outcome
+    with _new_jobs_lock:
+        job = _new_jobs.get(job_id)
+        resolved = (job or {}).get("session_id")
+        if resolved is None and sid and session_row_exists(MAIN_DB, sid):
+            # A run that settled before a poll ever observed the row (a
+            # fast failure after the agent already wrote it) still owns
+            # that row: publish it so a client can navigate and read the
+            # failure note — the end-of-run diff the oneshot era used.
+            resolved = sid
             if job is not None:
-                job["finished"] = time.time()
-                if code == 0 and sid:
-                    job["state"] = NEW_JOB_DONE
-                    job["error"] = ""
-                else:
-                    job["state"] = NEW_JOB_FAILED
-                    job["error"] = _new_job_error(code, bool(sid))
-                _prune_new_jobs_locked(time.time())
-        if sid:
-            # Release the busy registration the watcher made (a plain
-            # reply could not have taken the key meanwhile — it would
-            # have been refused 409), and on failure leave the session
-            # page a one-shot note, exactly like a failed reply run.
-            key = ("default", sid)
-            with _jobs_lock:
-                _jobs.pop(key, None)
-                if code != 0:
-                    _job_notes[key] = ("The new-session run failed"
-                                       + (" (timed out)" if code == 124 else
-                                          " (exit code %d)" % code)
-                                       + "; the session may be incomplete.")
+                job["session_id"] = sid
+        if job is not None:
+            job["finished"] = time.time()
+            if reason is None and resolved:
+                job["state"] = NEW_JOB_DONE
+                job["error"] = ""
+            else:
+                job["state"] = NEW_JOB_FAILED
+                job["error"] = _new_job_error(reason or "failed")
+            _prune_new_jobs_locked(time.time())
+    if resolved:
+        # Release the busy registration the publisher made (a plain
+        # reply could not have taken the key meanwhile — it would have
+        # been refused 409), and on failure leave the session page a
+        # one-shot note, exactly like a failed reply run.
+        key = ("default", resolved)
+        with _jobs_lock:
+            _jobs.pop(key, None)
+            if reason is not None:
+                _job_notes[key] = ("The new-session run failed"
+                                   + (" (timed out)"
+                                      if reason == "timeout" else "")
+                                   + "; the session may be incomplete.")
 
 
 def start_new_session(text):
@@ -3211,9 +3834,9 @@ def start_new_session(text):
 
     Registers an opaque job and starts exactly one background worker.
     While any launch is still live a second call is refused — one at a
-    time is what keeps the fresh-row correlation honest, so a duplicate
-    POST can never spawn a second run. The prompt text goes only to the
-    worker (and from there into the child's argv), never into the
+    time is what fails a double-submitted composer closed instead of
+    admitting a duplicate run. The prompt text goes only to the worker
+    (and from there into the admission request's body), never into the
     registry or any response."""
     with _new_jobs_lock:
         for job in _new_jobs.values():
@@ -3538,6 +4161,13 @@ body {
   transition: border-radius 0.15s ease, background-color 0.15s ease,
               color 0.15s ease;
 }
+/* an optional local avatar image fills the disc; the letter badge it
+   covers is the fallback when the file is absent or fails to load */
+.rail-ico .av-img {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block; border-radius: inherit;
+}
+.rail-ico .av-img.is-broken { display: none; }
 .rail-item:hover .rail-ico, .rail-item.is-selected .rail-ico {
   border-radius: 16px;
 }
@@ -3709,6 +4339,13 @@ details.convsec[open] .convsec-caret::before { transform: rotate(90deg); }
   background: var(--composer); color: var(--muted);
   font-size: 12px; font-weight: 700;
 }
+/* the optional avatar photo sits on top of the letter badge; the
+   error listener below adds is-broken so the letter shows through */
+.avatar .av-img {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  border-radius: 50%; object-fit: cover; display: block;
+}
+.avatar .av-img.is-broken { display: none; }
 .conv .avatar .pres {
   position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px;
   border-radius: 50%; background: var(--green);
@@ -4153,6 +4790,15 @@ body.view-list .main {
 # window.MC exposes re-bind hooks so the inbox's refresh swap can
 # re-apply everything to the fresh rows.
 SIDEBAR_JS = """"use strict";
+// Cover photos are optional: when an avatar image element fails to
+// load, hide it (capture phase — img error events do not bubble) so
+// the letter badge underneath shows instead.
+document.addEventListener("error", function (e) {
+  var t = e.target;
+  if (t && t.tagName === "IMG" && t.classList.contains("av-img")) {
+    t.classList.add("is-broken");
+  }
+}, true);
 window.MC = (function () {
   var input = document.getElementById("filter");
   var countEl = document.getElementById("shown");
@@ -4199,7 +4845,7 @@ window.MC = (function () {
   // ---- Closed section disclosure --------------------------------------
   // Collapsed by default in the served HTML; the user's toggle persists
   // in localStorage, survives the inbox refresh swap (rebind + restore),
-  // and a text search with matching archived rows expands it temporarily
+  // and a text search with matching closed rows expands it temporarily
   // without overwriting the saved choice.
   var CLOSED_KEY = "mission-control.closed-open";
   var closedSaved = false;
@@ -4414,6 +5060,11 @@ window.MC = (function () {
 # freely and only $tokens are substituted. The body is the Discord-style
 # shell: $sidebar (rail + conversation sidebar) plus the select-a-chat
 # splash in the main panel. The inline script contains no "$" on purpose.
+# Every shell — this one, CHAT_SHELL and the error/404 chrome — declares
+# an empty inline data-URI icon: without one a browser auto-requests
+# /favicon.ico, and the 404 lands as an error-level console entry. The
+# data URI needs no shipped file and no host/port, so the no-external-
+# assets, domain-independent contract holds.
 PAGE_SHELL = Template("""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4422,6 +5073,7 @@ PAGE_SHELL = Template("""<!DOCTYPE html>
 <meta name="color-scheme" content="dark">
 <meta http-equiv="refresh" content="$refresh_seconds">
 $csrf_meta
+<link rel="icon" href="data:,">
 <title>Mission Control &mdash; chats, last 24 hours</title>
 <style>$shell_css</style>
 </head>
@@ -4528,13 +5180,15 @@ CHAT_SHELL = Template("""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 $csrf_meta
+<link rel="icon" href="data:,">
 <title>Mission Control &mdash; transcript: $title</title>
 <style>$shell_css
+$clarify_css
 $live_css
 $typing_css
 $waiting_css</style>
 </head>
-<body class="view-chat" data-mode="$mode" data-profile="$profile_attr" data-session="$session_attr" data-poll-ms="$poll_ms" data-last-id="$last_id" data-archived="$archived_state">
+<body class="view-chat" data-mode="$mode" data-profile="$profile_attr" data-session="$session_attr" data-poll-ms="$poll_ms" data-last-id="$last_id" data-av-user="$avatar_user_attr" data-archived="$archived_state">
 
 $sidebar
 <main class="main">
@@ -4556,7 +5210,7 @@ $rows$typing_row$waiting_row      </ol>
 $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     </div>
   </div>
-  <form class="composer" id="composer" autocomplete="off">
+$clarify_card  <form class="composer" id="composer" autocomplete="off">
     <p class="composer-flash" id="composer-flash" role="status" hidden></p>
     <div class="composer-box">
       <textarea id="composer-text" rows="1" placeholder="$composer_placeholder" aria-label="Message text"$composer_disabled></textarea>
@@ -4579,6 +5233,10 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var pollMs = parseInt(body.getAttribute("data-poll-ms"), 10) || 2000;
   var busyPollMs = 700;   // while a reply is in flight, land it sooner
   var cursor = parseInt(body.getAttribute("data-last-id"), 10) || 0;
+  // The user's optional avatar URL ("" when none is served): the
+  // optimistic twin of a sent message layers it over the U badge
+  // exactly like the server-rendered rows do.
+  var avUserSrc = body.getAttribute("data-av-user") || "";
 
   var mainEl = document.querySelector(".main");
   var scroller = document.getElementById("scroller");
@@ -4610,6 +5268,11 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var archived = body.getAttribute("data-archived") === "1";  // closed
   var flashTimer = null;
   var pollTimer = null;
+  // A pending clarify card is server-rendered above the composer; the
+  // feed keeps it current (applyClarify). While one is live the normal
+  // composer stays disabled — the card is the only way to answer.
+  var clarifyActive = !!document.getElementById("clarify-card");
+  var clarifying = false;  // a clarify answer POST is on the wire
 
   // ---- same-origin POSTs --------------------------------------------
   // The page carries this server's CSRF token in a meta tag; every
@@ -4646,8 +5309,10 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   var turnResponded = true;
 
   // The composer's open placeholder is whatever the server rendered;
-  // while the session is closed both the banner and this swap apply.
+  // while the session is closed both the banner and this swap apply,
+  // and while a clarify card is live the placeholder points up at it.
   var CLOSED_PLACEHOLDER = "This session is closed.";
+  var CLARIFY_PLACEHOLDER = "Answer the question above";
   var openPlaceholder = box ? (box.getAttribute("placeholder") || "") : "";
 
   // One place that makes the page match the session's archive state:
@@ -4657,6 +5322,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   // change lands on an open page without a reload).
   function applySessionState(st) {
     if (!st || typeof st !== "object") return;
+    var wasArchived = archived;
     archived = !!st.archived;
     if (toggleBtn) {
       toggleBtn.textContent = archived ? "Reopen" : "Close";
@@ -4668,10 +5334,16 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     }
     if (closedBanner) closedBanner.hidden = !archived;
     if (box) {
-      box.disabled = archived || sending;
-      box.placeholder = archived ? CLOSED_PLACEHOLDER : openPlaceholder;
+      box.disabled = archived || sending || clarifyActive;
+      box.placeholder = archived ? CLOSED_PLACEHOLDER
+        : clarifyActive ? CLARIFY_PLACEHOLDER : openPlaceholder;
     }
-    if (sendBtn) sendBtn.disabled = archived || sending;
+    if (sendBtn) sendBtn.disabled = archived || sending || clarifyActive;
+    // An archive-state transition moves this session's sidebar row into
+    // or out of the Closed disclosure — re-render it from the server's
+    // own classification, only on the transition itself (never per
+    // poll), exactly like the busy-state transition in the feed handler.
+    if (wasArchived !== archived) refreshSidebar();
   }
 
   function reduced() {
@@ -4808,6 +5480,9 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
 
   function setTickState(rec, state) {
     if (rec.state === state) return;
+    // a failed send is terminal: no later feed echo, busy poll or job
+    // event may promote a rejected row back up the ladder
+    if (rec.state === "failed") return;
     // the delivery path only ever moves forward
     if (rec.state in TICK_ORDER && state in TICK_ORDER &&
         TICK_ORDER[state] < TICK_ORDER[rec.state]) return;
@@ -4821,7 +5496,10 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
 
   function findOutgoing(text) {
     for (var i = 0; i < outgoing.length; i++) {
-      if (!outgoing[i].adopted && outgoing[i].text === text) {
+      // A failed send was never stored, so its row can never be the
+      // twin of a server echo — the retry that lands is its own rec.
+      if (!outgoing[i].adopted && outgoing[i].state !== "failed" &&
+          outgoing[i].text === text) {
         return outgoing[i];
       }
     }
@@ -4850,6 +5528,17 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     letter.setAttribute("aria-hidden", "true");
     letter.textContent = "U";
     av.appendChild(letter);
+    // The optional user photo over the letter, same layering as the
+    // server-rendered rows; skipped entirely when none is served.
+    if (avUserSrc) {
+      var img = document.createElement("img");
+      img.className = "av-img";
+      img.src = avUserSrc;
+      img.alt = "You";
+      img.width = 40;
+      img.height = 40;
+      av.appendChild(img);
+    }
     var msgBody = document.createElement("div");
     msgBody.className = "msg-body";
     var head = document.createElement("div");
@@ -4916,8 +5605,190 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     holding = false;
     setWaiting();
     setSending(false);  // both modes: the composer comes back
-    if (box) { box.value = text; autosize(); }
+    if (box) {
+      // Restore the submitted text without clobbering anything typed
+      // after the send: keep both, failed text first so a retry is
+      // one press away, newer edit below it — deterministic order,
+      // nothing lost either way.
+      var current = box.value;
+      if (!current || current === text) {
+        box.value = text;
+      } else {
+        box.value = text + "\\n" + current;
+      }
+      autosize();
+    }
     showFlash(msg, 9000);
+  }
+
+  // ---- clarify card ---------------------------------------------------
+  // The pending clarify question renders as an escaped server-built
+  // card above the composer. Single-select choices submit themselves
+  // on click; multi-select toggles and answers through Submit (the
+  // UI-only Other contributes its typed text, never the label
+  // "Other"); free-text questions use the input. The card freezes
+  // while its answer is on the wire; a refusal flashes a safe note and
+  // re-polls (a new clarify id replaces the card and resets the
+  // selection, the same id preserves it exactly as the user left it).
+  // Answers go to the local clarify proxy with the exact clarify_id —
+  // never to /reply, never as a normal message.
+  function clarifyFlash(cardEl, msg) {
+    if (!cardEl) return;
+    var f = cardEl.querySelector(".clarify-flash");
+    if (!f) return;
+    f.textContent = msg;
+    f.hidden = false;
+    window.setTimeout(function () { f.hidden = true; }, 6000);
+  }
+
+  function setClarifyDisabled(cardEl, on) {
+    if (!cardEl) return;
+    var els = cardEl.querySelectorAll("button, input");
+    for (var i = 0; i < els.length; i++) els[i].disabled = on;
+  }
+
+  function submitClarify(response) {
+    var cardEl = document.getElementById("clarify-card");
+    if (!cardEl || clarifying) return;
+    clarifying = true;
+    setClarifyDisabled(cardEl, true);  // frozen while the answer sends
+    postJson(sessionUrl("/clarify"), {
+      clarify_id: cardEl.getAttribute("data-clarify-id") || "",
+      response: response
+    }).then(function (resp) {
+      return resp.json().catch(function () { return null; })
+        .then(function () { return resp.status; });
+    }).then(function (status) {
+      clarifying = false;
+      if (status === 200) {
+        // Resolved: drop the card at once; the next poll confirms.
+        applyClarify({ active: false, id: "", html: "" });
+        return;
+      }
+      // Refused or stale: recover safely and re-poll for the truth —
+      // a new clarify id replaces the card, the same one stays put.
+      setClarifyDisabled(cardEl, false);
+      clarifyFlash(cardEl, status === 400
+        ? "That answer was refused; adjust it and try again."
+        : "This question is no longer waiting; refreshing.");
+      window.setTimeout(pollOnce, 400);
+    }).catch(function () {
+      clarifying = false;
+      setClarifyDisabled(cardEl, false);
+      clarifyFlash(cardEl, "Sending the answer failed; try again.");
+      window.setTimeout(pollOnce, 400);
+    });
+  }
+
+  function wireClarify() {
+    var cardEl = document.getElementById("clarify-card");
+    if (!cardEl || cardEl.getAttribute("data-wired") === "1") return;
+    cardEl.setAttribute("data-wired", "1");
+    var multi = cardEl.getAttribute("data-multi") === "1";
+    var otherBox = cardEl.querySelector(".clarify-other-box");
+    var otherToggle = cardEl.querySelector(".clarify-other-toggle");
+    var otherInput = cardEl.querySelector(".clarify-other-input");
+    var otherSend = cardEl.querySelector(".clarify-other-send");
+    var submitBtn = cardEl.querySelector(".clarify-submit");
+
+    function otherValue() {
+      return otherInput ? String(otherInput.value || "").trim() : "";
+    }
+
+    // One choice button: single-select submits itself at once;
+    // multi-select toggles. (The Other toggle carries no data-value —
+    // its label can never become a response.)
+    var btns = cardEl.querySelectorAll(".clarify-choice[data-value]");
+    for (var i = 0; i < btns.length; i++) {
+      (function (btn) {
+        btn.addEventListener("click", function () {
+          if (multi) {
+            var on = btn.getAttribute("aria-pressed") === "true";
+            btn.setAttribute("aria-pressed", on ? "false" : "true");
+          } else {
+            submitClarify(btn.getAttribute("data-value"));
+          }
+        });
+      })(btns[i]);
+    }
+
+    if (otherToggle) otherToggle.addEventListener("click", function () {
+      var on = otherToggle.getAttribute("aria-pressed") === "true";
+      otherToggle.setAttribute("aria-pressed", on ? "false" : "true");
+      if (otherBox) otherBox.hidden = on;
+      if (!on && otherInput) otherInput.focus();
+    });
+
+    if (otherSend) otherSend.addEventListener("click", function () {
+      var text = otherValue();
+      if (!text) {
+        clarifyFlash(cardEl, "Type an answer first.");
+        if (otherInput) otherInput.focus();
+        return;
+      }
+      submitClarify(text);
+    });
+
+    if (otherInput) otherInput.addEventListener("keydown",
+      function (e) {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          if (otherSend) otherSend.click();
+          else if (submitBtn) submitBtn.click();
+        }
+      });
+
+    if (submitBtn) submitBtn.addEventListener("click", function () {
+      // Multi-select: every toggled choice, plus the Other text when
+      // present — never the literal "Other" label, never an empty list.
+      var vals = [];
+      var sel = cardEl.querySelectorAll(
+        '.clarify-choice[data-value][aria-pressed="true"]');
+      for (var j = 0; j < sel.length; j++) {
+        vals.push(sel[j].getAttribute("data-value"));
+      }
+      var text = otherValue();
+      if (text) vals.push(text);
+      if (!vals.length) {
+        clarifyFlash(cardEl, "Pick at least one choice.");
+        return;
+      }
+      submitClarify(vals);
+    });
+  }
+
+  function applyClarify(cl) {
+    // No field at all (a core API error) leaves the page exactly as
+    // it is; {active: false} removes the card; an active card replaces
+    // the DOM only when its clarify id is NEW — the same id keeps the
+    // card untouched, selection included.
+    if (!cl || typeof cl !== "object") return;
+    var active = !!(cl.active && cl.id && cl.html);
+    var current = document.getElementById("clarify-card");
+    if (!active) {
+      if (current && current.parentNode) {
+        current.parentNode.removeChild(current);
+      }
+      if (clarifyActive) {
+        clarifyActive = false;
+        applySessionState({ archived: archived });
+      }
+      return;
+    }
+    if (current && current.getAttribute("data-clarify-id") === cl.id) {
+      return;
+    }
+    if (current && current.parentNode) {
+      current.parentNode.removeChild(current);
+    }
+    if (form && form.parentNode) {
+      form.insertAdjacentHTML("beforebegin", cl.html);
+    }
+    wireClarify();
+    clarifyActive = true;
+    applySessionState({ archived: archived });
+    syncComposerVar();
+    updateJump();
   }
 
   // The direct-children section rides every poll: swap it in place so
@@ -5055,6 +5926,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
     if (data.note) showFlash(data.note, 9000);
     applySubagents(data.subagents);
     applySessionState(data.session_state);
+    applyClarify(data.clarify);
     if (grew) {
       if (emptyState) emptyState.hidden = true;
       if (stick) toBottom();
@@ -5090,8 +5962,8 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   }
   function setSending(on) {
     sending = on;
-    if (box) box.disabled = on || archived;
-    if (sendBtn) sendBtn.disabled = on || archived;
+    if (box) box.disabled = on || archived || clarifyActive;
+    if (sendBtn) sendBtn.disabled = on || archived || clarifyActive;
     if (!on) autosize();
   }
 
@@ -5099,7 +5971,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   // The launch runs server-side after a fast 202; the client only
   // watches GET <status_url> and leaves for the session page the
   // moment the correlated session id is published — long before the
-  // oneshot finishes. Polling is bounded (the server kills the run at
+  // run finishes. Polling is bounded (the server kills the run at
   // its own 900 s timeout; JOB_MAX_MS leaves that headroom); a
   // terminal failure or an unknown job never retries the launch, it
   // fails the send instead.
@@ -5128,7 +6000,7 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
           }
           if (st && st.session_id) {
             // the correlated session row exists — go to it now,
-            // without waiting for the oneshot to finish
+            // without waiting for the run to finish
             if (rec) setTickState(rec, "delivered");
             stopJobPoll();
             locked = true;  // the browser is off to the new transcript
@@ -5164,7 +6036,8 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   }
 
   function send() {
-    if (sending || locked || holding || archived || !box) return;
+    if (sending || locked || holding || archived || clarifyActive ||
+        !box) return;
     var text = box.value;
     if (!text.trim()) { box.focus(); return; }
     // The message is on screen before anything leaves the client, so a
@@ -5217,10 +6090,12 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
         return;
       }
       if (resp.status === 409) {
-        // Someone else's reply is already running: the message stays
-        // where it is and the composer comes back — no grey box.
-        showFlash("A reply is already running here; waiting for it to finish.");
-        if (rec) setTickState(rec, "sent");
+        // The turn was refused — another reply already running, or the
+        // session closed. The text never reached the session, so the
+        // optimistic row must fail (never Sent/Read) and the composer
+        // must come back with the exact text restored for retry.
+        failSend(rec, text, "A reply is already running here; your " +
+          "message was not sent and is back in the composer.");
         return;
       }
       if (resp.status === 404) {
@@ -5311,12 +6186,140 @@ $live_activity      <div class="latest" id="latest" aria-hidden="true"></div>
   setTyping();
   setWaiting();
   applySessionState({ archived: archived });
+  wireClarify();   // a server-rendered card is interactive from boot
   schedulePoll();
 })();
 </script>
 </body>
 </html>
 """)
+
+
+# The pending clarify card rides the chat shell (never /new: no session
+# means nothing can be asking), so its CSS is a token render_chat()
+# fills in and render_new() leaves empty.
+CLARIFY_CARD_CSS = """/* ---- clarify card ------------------------------------------------------
+   A pending clarify question as a Discord-style embed pinned directly
+   above the composer while the agent waits for the answer. */
+.clarify-card {
+  flex: none; margin: 0 16px 12px; padding: 10px 14px 12px;
+  background: var(--embed); border-radius: 4px;
+  border-left: 4px solid var(--blurple);
+}
+.clarify-tag {
+  display: inline-block; margin-bottom: 6px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px;
+  color: var(--agent-name); text-transform: uppercase;
+}
+.clarify-question {
+  margin: 0 0 8px; font-size: 14px; line-height: 20px;
+  color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.clarify-choices {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.clarify-choice {
+  height: 30px; padding: 0 12px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--field);
+  color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clarify-choice:hover:not(:disabled) {
+  border-color: var(--blurple); color: var(--ink);
+}
+.clarify-choice:focus-visible {
+  outline: 2px solid var(--blurple); outline-offset: 1px;
+}
+.clarify-choice[aria-pressed="true"] {
+  background: var(--blurple); border-color: var(--blurple); color: #fff;
+}
+.clarify-choice:disabled { opacity: 0.5; cursor: default; }
+.clarify-other-box {
+  display: flex; gap: 6px; margin-top: 8px; min-width: 0;
+}
+.clarify-other-box[hidden] { display: none; }
+.clarify-other-input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px;
+  border-radius: 4px; border: 1px solid var(--line);
+  background: var(--field); color: var(--ink-2); font: inherit;
+  font-size: 13px;
+}
+.clarify-other-input:focus { outline: none; border-color: var(--blurple); }
+.clarify-send {
+  flex: none; height: 34px; padding: 0 14px; border: none;
+  border-radius: 4px; background: var(--blurple); color: #fff;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.clarify-send:hover:not(:disabled) { background: var(--blurple-hover); }
+.clarify-send:focus-visible {
+  outline: 2px solid var(--blurple); outline-offset: 1px;
+}
+.clarify-send:disabled { opacity: 0.5; cursor: default; }
+.clarify-submit { display: block; margin-top: 8px; }
+.clarify-flash {
+  margin: 8px 0 0; font-size: 12px; color: var(--yellow);
+}
+.clarify-flash[hidden] { display: none; }
+@media (max-width: 900px) { .clarify-card { margin: 0 12px 8px; } }
+"""
+
+
+def render_clarify_card(card):
+    """The pending clarify card -> its escaped Discord-style embed HTML
+    (rendered directly above the composer).
+
+    Every field is HTML-escaped, question and choices included; each
+    choice value also rides a data-value attribute (escaped with
+    quotes) so the client sends back exactly what it received. "Other"
+    is a UI-only affordance — its label is never a response — and the
+    open-text input covers both free-text questions and the Other
+    path. The card-level Submit button exists only for multi-select
+    cards; a single-select choice submits itself the moment it is
+    clicked."""
+    if not card:
+        return ""
+    esc = html.escape
+    multi = bool(card.get("multi_select"))
+    choices = card.get("choices") or []
+    out = [
+        '<div class="clarify-card" id="clarify-card" '
+        'data-clarify-id="%s" data-multi="%d" role="group" '
+        'aria-label="Clarification question">\n'
+        % (esc(card["clarify_id"], quote=True), 1 if multi else 0),
+        '  <span class="clarify-tag">Clarify</span>\n',
+        '  <p class="clarify-question">%s</p>\n' % esc(card["question"]),
+    ]
+    if choices:
+        out.append('  <div class="clarify-choices">\n')
+        for choice in choices:
+            out.append(
+                '    <button type="button" class="clarify-choice" '
+                'data-value="%s">%s</button>\n'
+                % (esc(choice, quote=True), esc(choice)))
+        out.append('    <button type="button" class="clarify-choice '
+                   'clarify-other-toggle" aria-pressed="false" '
+                   'data-other="1">Other</button>\n')
+        out.append('  </div>\n')
+    # The open-text input: visible from the start on a free-text
+    # question, revealed by the Other toggle otherwise. Its own send
+    # button exists only when it is the sole submit path (single
+    # select); a multi-select card answers through its own Submit.
+    other_send = "" if (multi and choices) else (
+        '    <button type="button" class="clarify-send '
+        'clarify-other-send">Submit</button>\n')
+    out.append(
+        '  <div class="clarify-other-box"%s>\n'
+        '    <input class="clarify-other-input" type="text" '
+        'placeholder="Type your answer" aria-label="Your answer">\n'
+        '%s'
+        '  </div>\n' % ("" if not choices else " hidden", other_send))
+    if multi and choices:
+        out.append('  <button type="button" class="clarify-send '
+                   'clarify-submit">Submit</button>\n')
+    out.append('  <p class="clarify-flash" role="status" hidden></p>\n')
+    out.append('</div>\n')
+    return "".join(out)
 
 
 # The typing indicator and the live activity strip exist only on a real
@@ -5432,11 +6435,11 @@ WAITING_CSS = """/* ---- waiting-for-first-response row ------------------------
 """
 
 # A %-format exactly like TYPING_ROW: render_chat() fills in the
-# session profile's identity, render_new() the default profile's — the
-# waiting row shows on both pages, because a first send on /new waits
-# for its first response too.
+# session profile's identity (label, letter, optional avatar image),
+# render_new() the default profile's — the waiting row shows on both
+# pages, because a first send on /new waits for its first response too.
 WAITING_ROW = """    <li class="msg from-agent waiting-row" id="waiting-row" hidden>
-      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span></span>
+      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span>%s</span>
       <div class="msg-body">
         <div class="msg-head"><span class="msg-author">%s</span></div>
         <p class="text waiting-text" role="status"><i class="w-dot" aria-hidden="true"></i><span>Waiting for first response&hellip;</span></p>
@@ -5445,10 +6448,10 @@ WAITING_ROW = """    <li class="msg from-agent waiting-row" id="waiting-row" hid
 """
 
 # A %-format (not $tokens: substituted values are never re-scanned) —
-# render_chat() fills in the current chat profile's label and badge
-# letter.
+# render_chat() fills in the current chat profile's label, badge letter
+# and optional avatar image.
 TYPING_ROW = """    <li class="msg from-agent typing-row" id="typing-row" hidden>
-      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span></span>
+      <span class="avatar" title="%s (assistant)"><span aria-hidden="true">%s</span>%s</span>
       <div class="msg-body">
         <div class="msg-head"><span class="msg-author">%s</span></div>
         <p class="text typing-dots" role="status" aria-label="%s is working"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i></p>
@@ -5495,9 +6498,10 @@ def render_rail(active_profile, presence):
             '<a class="rail-item%s" href="/?profile=%s"'
             ' data-profile-filter="%s" title="%s" aria-label="%s chats">'
             '<span class="rail-ico">'
-            '<span aria-hidden="true">%s</span></span>%s</a>\n'
+            '<span aria-hidden="true">%s</span>%s</span>%s</a>\n'
             % (sel, esc(key), esc(key), esc(ident["label"]),
-               esc(ident["label"]), esc(ident["letter"]), pres))
+               esc(ident["label"]), esc(ident["letter"]),
+               avatar_img(ident["avatar"], ident["label"], 48), pres))
     return '<nav class="rail" aria-label="Profiles">\n%s</nav>\n' % \
         "".join(items)
 
@@ -5510,16 +6514,23 @@ def render_conv_row(now, r, selected=None):
     green presence badge while the session is Active), the title with a
     small relative time on the right, and one preview line — owning
     profile label, last message, optional last-tool chip. Closed rows
-    carry the Archived chip. The pre-lowered search blob rides on
+    carry the chip saying why — Archived, or Ended when only the tip's
+    ended_at closed them. The pre-lowered search blob rides on
     data-q, the owning profile on data-profile (the rail filter), the
     section on data-state.
     """
     esc = html.escape
     ident = profile_identity(r["profile"])
+    # The search blob resolves the conversation, not just the surfaced
+    # row: the root's id and title ride alongside the tip's (plus every
+    # intermediate member id), so searching either end of a compressed
+    # chain — or a bookmarked middle segment — finds the one entry the
+    # listing projects it to.
     blob = " ".join([str(r["id"]), str(r["title"]), r["profile"],
                      ident["label"], str(r["source"]),
                      r["last_line"].replace("\n", " "),
-                     r["last_tool"]]).lower()
+                     r["last_tool"],
+                     r.get("search_extra", "")]).lower()
     title = str(r["title"])
     if r["last_line"]:
         preview_text = esc(r["last_line"])
@@ -5534,12 +6545,20 @@ def render_conv_row(now, r, selected=None):
         tool_chip = ('<span class="conv-tool" title="last tool: %s">%s'
                      '</span>'
                      % (esc(r["last_tool"]), esc(r["last_tool"])))
-    # Closed rows say so in words: a compact Archived chip beside the
-    # title, closed rows only — never on any other state.
-    archived_chip = ""
+    # Closed rows say so in words, and say which kind of closed: a
+    # compact chip beside the title, closed rows only — never on any
+    # other state. Archived for the archive flag, Ended for a
+    # conversation the tip's ended_at closed while still unarchived.
+    closed_chip = ""
     if r["state"] == "closed":
-        archived_chip = ('<span class="conv-archived"'
-                         ' title="archived conversation">Archived</span>')
+        if r["archived"]:
+            closed_chip = ('<span class="conv-archived"'
+                           ' title="archived conversation">'
+                           'Archived</span>')
+        else:
+            closed_chip = ('<span class="conv-archived"'
+                           ' title="ended conversation (not archived)">'
+                           'Ended</span>')
     pres = ""
     if r["state"] == "active":
         pres = ('<i class="pres" role="img" aria-label="live session"'
@@ -5555,7 +6574,7 @@ def render_conv_row(now, r, selected=None):
         ' data-profile="%s">'
         '<a class="conv-link" href="%s">'
         '<span class="avatar" title="profile: %s">'
-        '<span aria-hidden="true">%s</span>%s</span>'
+        '<span aria-hidden="true">%s</span>%s%s</span>'
         '<div class="conv-main">'
         '<div class="conv-top">'
         '<h2 class="conv-title" title="%s">%s</h2>'
@@ -5570,9 +6589,10 @@ def render_conv_row(now, r, selected=None):
         % (sel, esc(blob), esc(r["state"]), esc(r["profile"]),
            esc(url), esc(ident["label"]),
            esc(ident["letter"]),
+           avatar_img(ident["avatar"], ident["label"], 32),
            pres,
            esc("%s \N{BULLET} %s" % (title, ident["label"])), esc(title),
-           archived_chip,
+           closed_chip,
            r["last"], esc(fmt_time(r["last"])),
            esc(fmt_rel(now, r["last"])),
            body_title, no_line, esc(ident["label"]), preview_text,
@@ -5580,11 +6600,17 @@ def render_conv_row(now, r, selected=None):
 
 
 def render_conv_sections(now, rows, selected=None):
-    """Rows -> the honest sections (Active / Closed / Open · completed /
-    Open · unfinished), newest-first inside each, with count badges.
+    """Rows -> the honest sections (Active / Open · completed /
+    Open · unfinished / Closed), newest-first inside each, with count
+    badges.
 
-    Active and Completed always render (stable hooks + count badges),
-    Incomplete and Closed only when they have members. Closed is a
+    Every open section renders before Closed: the buckets are filled
+    from the state each row already carries before the first section
+    is emitted, so a closed session (the tip's ended_at, or archived)
+    never precedes an open one however newer its last activity is.
+    Active and Completed always render
+    (stable hooks + count badges), Incomplete and Closed only when
+    they have members. Closed is a
     native <details> disclosure with no "open" attribute in the served
     HTML — first visit (and every no-JS reload) lands collapsed, like a
     collapsed Discord category; the client script restores the user's
@@ -5745,7 +6771,7 @@ def render_sidebar(now, rows, notes, selected=None, active_profile="",
         '  </div>\n'
         '  <footer class="sb-user">'
         '<span class="avatar">'
-        '<span aria-hidden="true">U</span></span>'
+        '<span aria-hidden="true">U</span>%s</span>'
         '<span class="sb-user-meta">'
         '<span class="sb-user-name">You</span>'
         '<span class="sb-user-status">%s</span>'
@@ -5753,7 +6779,7 @@ def render_sidebar(now, rows, notes, selected=None, active_profile="",
         '</nav>\n'
         % (rail, "".join(chips), len(rows), noscript,
            hooks, notes_block, no_rows_hidden, esc(no_rows_msg),
-           sections, status))
+           sections, avatar_img(user_avatar_url(), "You", 32), status))
 
 
 def render(now, rows, notes, active_profile=""):
@@ -5860,10 +6886,12 @@ def render_chat_text(it, cont="", identity=None):
         av_letter = "U"
         av_title = "user message"
         author = USER_LABEL
+        av_img = avatar_img(user_avatar_url(), USER_LABEL, 40)
     else:
         av_letter = identity["letter"]
         av_title = "%s (assistant)" % identity["label"]
         author = identity["label"]
+        av_img = avatar_img(identity["avatar"], identity["label"], 40)
     if cont:
         # Continuation: no avatar, no author — a small timestamp in the
         # gutter, revealed while the row is hovered (CSS).
@@ -5874,18 +6902,19 @@ def render_chat_text(it, cont="", identity=None):
             '<div class="msg-body"><p class="text">%s</p></div></li>\n'
             % (side, cont, esc(fmt_time(it["ts"])),
                esc(fmt_hhmm(it["ts"])), esc(it["text"])))
-    # Plain letter badge: no image assets exist, so there is nothing to
-    # load and nothing to break.
+    # Letter badge with the optional avatar image layered on top; when
+    # the file is missing the img never renders, and when it fails
+    # mid-load the error listener hides it — the letter always shows.
     return (
         '<li class="msg %s">'
         '<span class="avatar" title="%s">'
-        '<span aria-hidden="true">%s</span></span>'
+        '<span aria-hidden="true">%s</span>%s</span>'
         '<div class="msg-body">'
         '<div class="msg-head"><span class="msg-author">%s</span>'
         '<span class="mtime" title="%s">%s</span></div>'
         '<p class="text">%s</p></div></li>\n'
         % (side, esc(av_title),
-           esc(av_letter), esc(author), esc(fmt_time(it["ts"])),
+           esc(av_letter), av_img, esc(author), esc(fmt_time(it["ts"])),
            esc(fmt_short(it["ts"])), esc(it["text"])))
 
 
@@ -6077,8 +7106,15 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
     closed_banner = (
         '<div class="closed-banner" id="closed-banner" role="status"%s>'
         'Session closed</div>\n' % ("" if archived else " hidden"))
+    # The pending clarify card (already-escaped HTML, "" when none):
+    # while one is active the composer renders disabled with the
+    # clarify placeholder — the question above is the only way to answer.
+    clarify_html = chat.get("clarify_card") or ""
+    card_active = bool(clarify_html)
     if archived:
         placeholder = "This session is closed."
+    elif card_active:
+        placeholder = "Answer the question above"
     else:
         placeholder = "Message %s\N{HORIZONTAL ELLIPSIS}" % ident["label"]
 
@@ -6108,7 +7144,7 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         session_toggle=session_toggle,
         closed_banner=closed_banner,
         archived_state="1" if archived else "0",
-        composer_disabled=" disabled" if archived else "",
+        composer_disabled=" disabled" if (archived or card_active) else "",
         # Direct subagent children sit just under the header; ""
         # (nothing at all) when the session has none.
         subagents=render_subagents(now, chat["profile"],
@@ -6127,15 +7163,24 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         rows="".join(parts),
         poll_ms=FEED_POLL_MS,
         last_id=chat["last_id"],
+        # The pending clarify card above the composer, escaped HTML
+        # straight from the core card ("" when none is pending).
+        clarify_card=clarify_html,
+        clarify_css=CLARIFY_CARD_CSS,
+        avatar_user_attr=esc(user_avatar_url()),
         live_css=LIVE_CSS,
         typing_css=TYPING_CSS,
         waiting_css=WAITING_CSS,
         typing_row=TYPING_ROW % (esc(ident["label"]),
                                  esc(ident["letter"]),
+                                 avatar_img(ident["avatar"],
+                                            ident["label"], 40),
                                  esc(ident["label"]),
                                  esc(ident["label"])),
         waiting_row=WAITING_ROW % (esc(ident["label"]),
                                    esc(ident["letter"]),
+                                   avatar_img(ident["avatar"],
+                                              ident["label"], 40),
                                    esc(ident["label"])),
         typing_selector='"#typing-row"',
         composer_placeholder=esc(placeholder),
@@ -6149,7 +7194,7 @@ def render_new(inbox_rows=None, inbox_notes=None):
     render — the inline script sends the first message to POST /s/new,
     gets its fast 202, shows the waiting row while it polls the launch
     job's status, and navigates to /s/default/<id> the moment the
-    correlated session id is published (without waiting for the oneshot
+    correlated session id is published (without waiting for the run
     to finish); a terminal job failure fails the optimistic message and
     restores the composer. The typing row and the live activity strip
     are deliberately absent (markup, CSS and selector alike): a blank
@@ -6196,6 +7241,10 @@ def render_new(inbox_rows=None, inbox_notes=None):
         rows="",
         poll_ms=FEED_POLL_MS,
         last_id=0,
+        # Nor a clarify card: no session means nothing can be asking.
+        clarify_card="",
+        clarify_css="",
+        avatar_user_attr=esc(user_avatar_url()),
         live_css="",
         typing_css="",
         # The waiting row rides /new too: after the launch is accepted
@@ -6205,6 +7254,8 @@ def render_new(inbox_rows=None, inbox_notes=None):
         typing_row="",
         waiting_row=WAITING_ROW % (esc(new_ident["label"]),
                                    esc(new_ident["letter"]),
+                                   avatar_img(new_ident["avatar"],
+                                              new_ident["label"], 40),
                                    esc(new_ident["label"])),
         typing_selector='""',
         composer_placeholder=esc(
@@ -6217,6 +7268,7 @@ def error_page(exc):
     return (
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
         "<meta charset=\"utf-8\">\n<meta name=\"color-scheme\" content=\"dark\">\n"
+        "<link rel=\"icon\" href=\"data:,\">\n"
         "<title>Mission Control &mdash; error</title>\n"
         "<style>\n"
         "body { margin: 0; background: #313338; color: #dbdee1; font-family: system-ui,\n"
@@ -6236,6 +7288,7 @@ def not_found_page(detail):
     return (
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
         "<meta charset=\"utf-8\">\n<meta name=\"color-scheme\" content=\"dark\">\n"
+        "<link rel=\"icon\" href=\"data:,\">\n"
         "<title>Mission Control &mdash; not found</title>\n"
         "<style>\n"
         "body { margin: 0; background: #313338; color: #dbdee1; font-family: system-ui,\n"
@@ -6280,6 +7333,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_avatar(self, path):
+        """Serve one fixed avatar PNG (never any other file).
+
+        The path arrives already resolved by the avatar URL helpers —
+        a fixed filename inside a trusted home, re-checked here (size
+        cap included) so a file that changed on disk since its URL was
+        rendered can neither grow the response without bound nor
+        escape: anything but a serveable PNG is the themed 404, and
+        the page's letter badge shows instead.
+        """
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read(AVATAR_MAX_BYTES + 1)
+        except OSError:
+            self._not_found("There is no avatar at this address.")
+            return
+        if len(body) > AVATAR_MAX_BYTES:
+            self._not_found("There is no avatar at this address.")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", AVATAR_CONTENT_TYPE)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", AVATAR_CACHE_CONTROL)
         self.end_headers()
         self.wfile.write(body)
 
@@ -6335,7 +7414,66 @@ class Handler(BaseHTTPRequestHandler):
             return 413, ""
         return None, text
 
+    def _host_allowed(self):
+        """True when the request's Host header names this server.
+
+        The Host is normalized (_normalize_host) and must be a member
+        of the trusted set derived from the configured bind address
+        (_server_trusted_hosts; see --trusted-host). Forwarded /
+        X-Forwarded-* are never consulted: without an explicitly
+        trusted proxy those headers are client-controlled."""
+        host = _normalize_host(self.headers.get("Host"))
+        return host is not None and \
+            host in _server_trusted_hosts(self.server)
+
+    def _origin_allowed(self, value):
+        """True when an Origin/Referer URL names exactly this server.
+
+        Two accepted shapes, both requiring the URL's host to be in the
+        trusted Host set (see --trusted-host): the direct-access shape
+        — scheme http and the exact port this server bound (an absent
+        port means the scheme default 80) — and the trusted-proxy
+        shape — scheme https on the default public port (443 or
+        absent), for a deployment whose TLS terminator forwards to this
+        HTTP socket under a host the operator explicitly trusted.
+        Anything else — another scheme, a non-default https port, an
+        untrusted host, a malformed or credential-bearing URL — is
+        refused. Forwarded / X-Forwarded-* headers are never consulted
+        to make this decision: without an explicitly trusted proxy
+        those headers are client-controlled."""
+        try:
+            parts = urlsplit(value)
+            port = parts.port  # None when absent; ValueError on garbage
+        except ValueError:
+            return False
+        if parts.scheme not in ("http", "https"):
+            return False
+        host = _normalize_host(parts.netloc)
+        if host is None or \
+                host not in _server_trusted_hosts(self.server):
+            return False
+        try:
+            bound = self.server.server_address[1]
+        except (AttributeError, IndexError):
+            bound = None
+        if parts.scheme == "https":
+            # Trusted reverse proxy: the browser's public origin is the
+            # TLS terminator's (host the operator listed), never this
+            # backend socket's address or port.
+            return port in (443, None)
+        return port == bound if bound is not None else port in (80, None)
+
     def do_GET(self):
+        # Host first: every HTML page this server emits carries the
+        # CSRF token, so a Host this server was not configured to serve
+        # is refused (421 Misdirected Request) before any page — or any
+        # JSON — is emitted. A DNS-rebinding origin therefore cannot
+        # even read a token to post back, however well it matches its
+        # own Origin header.
+        if not self._host_allowed():
+            self.close_connection = True
+            self._send_page(421, MISDIRECTED_HTML)
+            return
         # Only the path picks the route; a query string never does
         # (the feed reads its cursor out of parts.query itself).
         parts = urlsplit(self.path)
@@ -6363,6 +7501,30 @@ class Handler(BaseHTTPRequestHandler):
         # POST /s/new.
         if path == "/new":
             self._send_page(200, render_new(*self._inbox()).encode("utf-8"))
+            return
+
+        # GET /avatar/<profile> and GET /avatar-user: the optional local
+        # avatar PNGs, by their fixed filenames inside a home this server
+        # already trusts. Anything else — an unknown profile, a missing,
+        # swapped, or oversized file — is the themed 404; the letter
+        # badge the img covers is the fallback everywhere.
+        if path == USER_AVATAR_PATH:
+            home = os.path.dirname(os.path.abspath(MAIN_DB))
+            served = _avatar_served_file(home, USER_AVATAR_FILE)
+            if served is None:
+                self._not_found("There is no avatar at this address.")
+            else:
+                self._send_avatar(served)
+            return
+        m = AVATAR_PATH_RE.match(path)
+        if m is not None:
+            home = profile_home(unquote(m.group(1)))
+            served = (_avatar_served_file(home, PROFILE_AVATAR_FILE)
+                      if home is not None else None)
+            if served is None:
+                self._not_found("There is no avatar at this address.")
+            else:
+                self._send_avatar(served)
             return
 
         # GET /s/<profile>/<id>/feed?after=<message_id>: the transcript
@@ -6412,6 +7574,11 @@ class Handler(BaseHTTPRequestHandler):
         if chat is None:
             self._not_found("Unknown profile or session id.")
             return
+        # The pending clarify card rides the initial render too (""
+        # when none is pending, the core is unreachable, or the session
+        # is closed — never a failed page).
+        cl = feed_clarify(profile, session_id, dbs, chat["archived"])
+        chat["clarify_card"] = cl["html"] if cl else ""
         self._send_page(200, render_chat(chat, *self._inbox())
                         .encode("utf-8"))
 
@@ -6440,7 +7607,10 @@ class Handler(BaseHTTPRequestHandler):
         activity is the recomputed live strip snapshot: {active,
         state, pending_count, names, html}, html being the exact
         markup the page renders ("" when there is nothing to show). A
-        finished job's failure note rides along exactly once.
+        finished job's failure note rides along exactly once. clarify
+        (backwards-compatible addition, omitted on any core API error
+        so an open page keeps its current card) is the pending clarify
+        card {active, id, html} from the authenticated core GET.
         """
         dbs = {name: db_path for db_path, name in discover_dbs()}
         if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
@@ -6517,6 +7687,15 @@ class Handler(BaseHTTPRequestHandler):
             # reload. Backwards-compatible addition.
             "session_state": feed["session_state"],
         }
+        # The pending clarify card, as {active, id, html}: active false
+        # removes a visible card, a new id replaces it (selection
+        # resets), the same id preserves it. Omitted entirely whenever
+        # the core clarify GET fails, so a blip never flashes a card
+        # away — and never fails the poll.
+        clarify = feed_clarify(profile, session_id, dbs,
+                               feed["session_state"]["archived"])
+        if clarify is not None:
+            payload["clarify"] = clarify
         if note:
             payload["note"] = note
         self._send_json(200, payload)
@@ -6525,14 +7704,23 @@ class Handler(BaseHTTPRequestHandler):
         """Header-only forgery check for every state-changing route.
 
         Returns None when the request may proceed, else the HTTP status
-        to answer with (403/415). Runs before any POST handler parses a
+        to answer with (403/415/421). Runs before any POST handler parses a
         body, touches SQLite or calls Discord, so a browser-simple
         cross-origin request can never mutate anything:
 
-        - Origin (when the client sends one) must name this server —
-          compared against the Host header, never against a configured
-          list, so the rule holds on any bind address. Absent Origin is
-          a non-browser client and still faces the two checks below.
+        - The Host header itself must name this server (the
+          DNS-rebinding case: an origin whose Host AND Origin both name
+          the attacker used to sail through an origin==host
+          comparison). Untrusted Host -> 421.
+        - Origin (when the client sends one) must name exactly this
+          server — trusted host, and either the direct-access shape
+          (http scheme plus the port this server actually bound) or the
+          trusted-proxy shape (https scheme on the default public
+          port, for a TLS terminator the operator listed with
+          --trusted-host) — never merely echo the request's own Host,
+          and never anything a Forwarded / X-Forwarded-* header claims.
+          A Referer, when Origin is absent but Referer rides along, is
+          held to the same rule.
         - The content type must be application/json exactly. An HTML
           form can only send the "simple" types, so this alone stops
           every forged form post.
@@ -6543,14 +7731,18 @@ class Handler(BaseHTTPRequestHandler):
 
         The token value is never included in the response or the log.
         """
+        if not self._host_allowed():
+            return 421
         origin = self.headers.get("Origin")
         if origin:
-            host = self.headers.get("Host")
-            try:
-                origin_host = urlsplit(origin).netloc
-            except ValueError:
-                origin_host = ""
-            if not host or origin_host != host:
+            if not self._origin_allowed(origin):
+                return 403
+        else:
+            # Absent Origin is a non-browser client; a Referer, when
+            # one rides along, still names where the request came from
+            # and is held to the same rule.
+            referer = self.headers.get("Referer")
+            if referer and not self._origin_allowed(referer):
                 return 403
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0]
         if ctype.strip().lower() != "application/json":
@@ -6580,6 +7772,10 @@ class Handler(BaseHTTPRequestHandler):
         m = REPLY_PATH_RE.match(path)
         if m is not None:
             self._post_reply(unquote(m.group(1)), unquote(m.group(2)))
+            return
+        m = CLARIFY_PATH_RE.match(path)
+        if m is not None:
+            self._post_clarify(unquote(m.group(1)), unquote(m.group(2)))
             return
         m = ARCHIVE_PATH_RE.match(path)
         if m is not None:
@@ -6618,10 +7814,13 @@ class Handler(BaseHTTPRequestHandler):
     def _post_reply(self, profile, session_id):
         """POST /s/<profile>/<id>/reply — accept one composer turn.
 
-        202 {ok: true} once the background resume has started; 409 while
+        202 {ok: true} once the core API has admitted the run; 409 while
         one is already running or the session is closed, 400/413 for
-        empty or oversize text, 404 for an unknown profile/session.
-        Hermes output never reaches the response — only these statuses do.
+        empty or oversize text, 404 for an unknown profile/session, and
+        503 when the core API could not admit the turn — which is an
+        explicit failed send (the client restores the text), never a
+        silent fallback to a CLI run. Core output never reaches the
+        response — only these statuses do.
         """
         dbs = {name: db_path for db_path, name in discover_dbs()}
         if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
@@ -6634,8 +7833,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(err, {"ok": False, "error": "bad request body"})
             return
         try:
-            exists, cwd, archived = load_session_cwd(profile, session_id,
-                                                     dbs)
+            exists, _cwd, archived = load_session_cwd(profile, session_id,
+                                                      dbs)
         except sqlite3.Error:
             self._send_json(500, {"ok": False, "error": "database error"})
             return
@@ -6648,9 +7847,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(409, {"ok": False,
                                   "error": "the session is closed"})
             return
-        if not start_reply(profile, session_id, cwd, text):
+        outcome = start_reply(profile, session_id, text, dbs)
+        if outcome == "busy":
             self._send_json(409, {"ok": False,
                                   "error": "a reply is already running"})
+            return
+        if outcome != "started":
+            # Admission failed synchronously: nothing ran, nothing was
+            # written, and the client must show a failed send with the
+            # text restored — there is no auto-answer fallback path.
+            self._send_json(503, {"ok": False,
+                                  "error": "agent gateway unavailable"})
             return
         self._send_json(202, {"ok": True})
 
@@ -6660,12 +7867,11 @@ class Handler(BaseHTTPRequestHandler):
         Validation is synchronous (411/413/400 for a bad body).
         Acceptance registers exactly one bounded background job and
         returns the opaque job id plus its status URL; 409 while
-        another launch is still live (one at a time keeps the
-        fresh-row correlation honest — a duplicate POST can never spawn
-        a second run). The session id, once the correlated row appears
-        mid-run, is served by GET /s/new/<job>; only these opaque
-        fields ever reach the client, never the prompt or hermes
-        output.
+        another launch is still live (one at a time fails a duplicate
+        POST closed instead of admitting a second run). The session id
+        — assigned deterministically by the core admission and served
+        by GET /s/new/<job> once the row exists — is the only thing the
+        client ever learns; never the prompt, never core output.
         """
         err, text = self._composer_text()
         if err is not None:
@@ -6680,17 +7886,121 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(202, {"ok": True, "job": job_id,
                               "status_url": "/s/new/" + job_id})
 
+    def _clarify_body(self):
+        """(error, clarify_id, response) for a clarify POST: a bounded
+        JSON object {"clarify_id": 1-128-char string, "response": a
+        non-empty string or a short list of non-empty strings}. error
+        is None only for a fully valid payload; every malformed body is
+        one canned 400, so nothing beyond the safe status set — and
+        never an upstream or echo detail — ever answers."""
+        raw_len = self.headers.get("Content-Length")
+        if raw_len is None:
+            return "length", "", None
+        try:
+            length = int(raw_len)
+        except ValueError:
+            return "length", "", None
+        if length <= 0 or length > MAX_BODY_BYTES:
+            return "length", "", None
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+        if ctype.strip().lower() != "application/json":
+            return "ctype", "", None
+        try:
+            raw = self.rfile.read(length)
+        except OSError:
+            return "read", "", None
+        if len(raw) != length:
+            return "read", "", None
+        try:
+            obj = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return "json", "", None
+        if not isinstance(obj, dict):
+            return "json", "", None
+        clarify_id = obj.get("clarify_id")
+        if not isinstance(clarify_id, str):
+            return "clarify_id", "", None
+        clarify_id = clarify_id.strip()
+        if not clarify_id or len(clarify_id) > CLARIFY_ID_MAX_CHARS:
+            return "clarify_id", "", None
+        response = obj.get("response")
+        if not valid_clarify_response(response):
+            return "response", "", None
+        if isinstance(response, str):
+            response = response.strip()
+        else:
+            response = [item.strip() for item in response]
+        return None, clarify_id, response
+
+    def _post_clarify(self, profile, session_id):
+        """POST /s/<profile>/<id>/clarify — answer the pending clarify.
+
+        Validates the profile/session pair, the body shape, the
+        session's existence and open state locally, then proxies the
+        core API's clarify POST carrying exactly the clarify_id the
+        client holds. Only 200/400/404/409/503 JSON ever answers, every
+        error a canned safe string (the upstream body is never echoed);
+        nothing here touches /reply or writes any user message.
+        """
+        dbs = {name: db_path for db_path, name in discover_dbs()}
+        if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
+            self.close_connection = True
+            self._send_json(404, {"ok": False,
+                                  "error": "unknown profile or session"})
+            return
+        err, clarify_id, response = self._clarify_body()
+        if err is not None:
+            self._send_json(400, {"ok": False, "error": "bad request body"})
+            return
+        try:
+            exists, _cwd, archived = load_session_cwd(profile, session_id,
+                                                      dbs)
+        except sqlite3.Error:
+            self._send_json(503, {"ok": False,
+                                  "error": "session lookup failed"})
+            return
+        if not exists:
+            self._send_json(404, {"ok": False, "error": "unknown session"})
+            return
+        # A closed session refuses clarify answers even when a stale
+        # client still shows the card.
+        if archived:
+            self._send_json(409, {"ok": False,
+                                  "error": "the session is closed"})
+            return
+        status, _obj, err = clarify_request(
+            "POST", profile, session_id, dbs,
+            {"clarify_id": clarify_id, "response": response})
+        if err is None and status == 200:
+            self._send_json(200, {"ok": True, "resolved": True,
+                                  "clarify_id": clarify_id})
+        elif status == 400:
+            self._send_json(400, {"ok": False,
+                                  "error": "invalid clarify response"})
+        elif status == 404:
+            self._send_json(404, {"ok": False,
+                                  "error": "no pending clarify"})
+        elif status == 409:
+            self._send_json(409, {"ok": False,
+                                  "error": "clarify not pending"})
+        else:
+            # Any other upstream verdict — auth failure, 5xx, timeout,
+            # unparseable — reads as an availability problem from here.
+            self._send_json(503, {"ok": False,
+                                  "error": "clarify upstream unavailable"})
+
     def _get_new_job(self, job_id):
         """GET /s/new/<job> — the bounded status object for one launch.
 
         {ok, job, status: starting|running|done|failed, session_id?,
         url?, error} and nothing else: the registry never held the
-        prompt or any hermes output, so there is nothing secret to
-        leak. session_id is published as soon as the correlated row
-        appears — while status is still running — so the client can
-        navigate to /s/default/<id> without waiting for the oneshot.
-        404 for an unknown or pruned job id; the client treats that as
-        terminal and never retries the launch."""
+        prompt or any core output, so there is nothing secret to
+        leak. session_id is published as soon as the session's row
+        exists in the main DB — while status is still running — so the
+        client can navigate to /s/default/<id> the moment that page is
+        servable, without waiting for the run. 404 for an unknown or
+        pruned job id; the client treats that as terminal and never
+        retries the launch."""
         payload = new_job_payload(job_id)
         if payload is None:
             self._send_json(404, {"ok": False, "error": "unknown job"})
@@ -6719,6 +8029,148 @@ def _is_loopback(host):
         return False  # a hostname, wildcard, or non-loopback address
 
 
+# ---- trusted Host and origin binding ---------------------------------
+# DNS-rebinding defense: a request's own Host header proves nothing,
+# because the connection arriving on our socket may be an attacker
+# domain rebound to our address. Every HTML page this server emits
+# carries the CSRF token and every state-changing route accepts it, so
+# both token-bearing pages and POSTs are refused unless the Host names
+# an address this server deliberately serves. The default trusted set
+# is derived from the configured bind address; Forwarded /
+# X-Forwarded-* are never consulted — without an explicitly trusted
+# proxy those headers are client-controlled, and this server has no
+# proxy-trust mechanism at all.
+
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+WILDCARD_BINDS = ("", "*", "::", "0.0.0.0")
+# One hostname label: letters/digits/hyphen/underscore, no leading or
+# trailing hyphen; dots join labels. Anything else a Host header might
+# carry is refused before it can match anything.
+HOSTNAME_RE = re.compile(
+    r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?"
+    r"(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$")
+
+# The themed 421 page: Host refused before anything token-bearing or
+# state-changing is considered.
+MISDIRECTED_HTML = (
+    "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n"
+    "<title>Misdirected request</title>\n</head>\n<body>\n"
+    "<h1>This address is not served here.</h1>\n"
+    "<p>The request named a host this server was not configured to "
+    "serve.</p>\n</body>\n</html>\n").encode("utf-8")
+
+
+def _normalize_host(value):
+    """Host header / bind spelling -> one comparable host string, or
+    None.
+
+    Strips the port (an IPv6 literal only in its bracketed form, per
+    RFC 7230 — a bare unbracketed one is refused), lowercases, drops
+    one trailing dot, and canonicalizes IP literals through
+    ipaddress so ::1, [::1] and 0:0:0:0:0:0:0:1 all compare equal.
+    None means the value is not a host this parser accepts — garbage,
+    whitespace, delimiters — and can never match a trusted entry."""
+    if not isinstance(value, str):
+        return None
+    host = value.strip()
+    if not host:
+        return None
+    if host.startswith("["):
+        end = host.find("]")
+        if end == -1:
+            return None
+        name = host[1:end]
+        rest = host[end + 1:]
+        if rest and not rest.startswith(":"):
+            return None
+    else:
+        host_part, sep, port_part = host.partition(":")
+        if sep:
+            # An explicit port: exactly one, digits only. Anything else
+            # where the port belongs — including a second colon, i.e. a
+            # bare unbracketed IPv6 literal — is refused rather than
+            # silently truncated to its first segment.
+            if ":" in port_part or not port_part.isdigit():
+                return None
+        name = host_part
+    name = name.strip().rstrip(".").lower()
+    if not name or any(ch.isspace() or ch in '/\\?#@,%"' for ch in name):
+        return None
+    try:
+        return str(ipaddress.ip_address(name))
+    except ValueError:
+        return name if HOSTNAME_RE.fullmatch(name) else None
+
+
+def _local_interface_ips():
+    """Best-effort set of this machine's own interface addresses.
+
+    Used only to size the default trusted set for a wildcard bind —
+    which genuinely answers on every one of them. Any failure (no
+    resolver, odd platform) yields an empty set: the trusted set stays
+    smaller and access uses a name that is listed."""
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            raw = info[4][0].split("%", 1)[0]
+            try:
+                ips.add(str(ipaddress.ip_address(raw)))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return ips
+
+
+def _default_trusted_hosts(bind_host):
+    """Trusted Host set for one configured bind address.
+
+    A loopback bind (the default) trusts the loopback spellings —
+    localhost, 127.0.0.1, ::1 — since any of them may be how the user
+    reaches the socket and none can name another machine. A wildcard
+    bind answers on every interface, so it also trusts this machine's
+    own interface addresses. An explicit non-loopback address trusts
+    exactly itself: binding a LAN IP is a deliberate act, and reaching
+    that socket under any other name needs an explicit --trusted-host
+    entry."""
+    name = _normalize_host(bind_host)
+    if name is None or name in WILDCARD_BINDS:
+        return set(LOOPBACK_HOSTS) | _local_interface_ips()
+    if name == "localhost":
+        return set(LOOPBACK_HOSTS)
+    try:
+        if ipaddress.ip_address(name).is_loopback:
+            return set(LOOPBACK_HOSTS) | {name}
+    except ValueError:
+        pass
+    return {name}
+
+
+def _server_trusted_hosts(server):
+    """The trusted Host set in force on one HTTP server instance.
+
+    main() pins the CLI-derived set (bind-derived defaults plus any
+    explicit --trusted-host entries) onto the instance; a
+    directly-constructed server — as the tests build — derives the set
+    from its own bound address, cached on the instance after the first
+    ask so a request never re-runs interface enumeration."""
+    pinned = getattr(server, "trusted_hosts", None)
+    if pinned is not None:
+        return pinned
+    cached = getattr(server, "_trusted_hosts_cache", None)
+    if cached is None:
+        try:
+            bind = server.server_address[0]
+        except (AttributeError, IndexError):
+            bind = "127.0.0.1"
+        cached = _default_trusted_hosts(bind)
+        try:
+            server._trusted_hosts_cache = cached
+        except Exception:
+            pass
+    return cached
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="hermes mission_control serve",
@@ -6731,17 +8183,26 @@ def main(argv=None):
                          "explicit, UNAUTHENTICATED, and only safe on a "
                          "trusted private network")
     ap.add_argument("--port", type=int, default=9136)
+    ap.add_argument("--trusted-host", action="append", default=[],
+                    metavar="HOST",
+                    help="additional Host header value this server "
+                         "answers for (repeatable). By default only the "
+                         "bind address itself is trusted — plus, for a "
+                         "loopback or wildcard bind, the local "
+                         "machine's own addresses — and requests whose "
+                         "Host names anything else are refused with 421. "
+                         "Forwarded/X-Forwarded-* headers are never "
+                         "trusted.")
     ap.add_argument("--no-discord-sync", action="store_true",
                     help="disable the background Discord archive sync "
                          "(for proof servers against synthetic data)")
     args = ap.parse_args(argv)
-    atexit.register(terminate_children)
     # Backstop for the sync thread too: any exit path sets its stop
     # event (the finally below joins it).
     atexit.register(_discord_sync_stop.set)
 
     # SIGTERM stops the loop the same way Ctrl-C does, so the finally
-    # block (and atexit backstop) can reap any in-flight hermes child.
+    # block (and atexit backstop) can shut the sync thread down.
     # Windows has no deliverable SIGTERM; Ctrl-C still stops the loop.
     if hasattr(signal, "SIGTERM"):
         def _stop(signum, frame):
@@ -6749,36 +8210,56 @@ def main(argv=None):
 
         signal.signal(signal.SIGTERM, _stop)
 
-    # A non-loopback bind is a deliberate act: say plainly what it
-    # exposes. The server has NO authentication — anyone who can reach
-    # the address can read every session and send replies.
-    if not _is_loopback(args.host):
-        print("WARNING: binding %s — Mission Control has no built-in "
-              "authentication. Anyone who can reach this address can "
-              "read the session transcript and send messages. Keep it "
-              "on a trusted private network or put an authenticating "
-              "proxy in front." % args.host, flush=True)
-
-    # The Discord -> DB archive mirror: exactly one daemon thread, its
-    # first pass immediately, then every DISCORD_SYNC_INTERVAL_SECONDS
-    # until the stop event. Proof servers opt out with --no-discord-sync.
+    # From here on everything runs inside the stop-guard: a SIGTERM (or
+    # Ctrl-C) that lands mid-startup — say, between the flushed startup
+    # line and the serve loop — is caught here, not traced out of main.
     sync_thread = None
-    if not args.no_discord_sync:
-        sync_thread = threading.Thread(
-            target=discord_sync_loop, name="discord-sync", daemon=True)
-        sync_thread.start()
-
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    # Report the port actually bound: --port 0 asks the OS for a free
-    # port, which is how a test (or anything else that must not race
-    # for a fixed number) gets one — server_address carries the real
-    # value back after the bind.
-    bound_port = httpd.server_address[1]
-    print("serving on http://%s:%d/ (home: %s, profiles: %s%s)"
-          % (args.host, bound_port, display_hermes_home(),
-             ", ".join(p for _, p in discover_dbs()),
-             "" if sync_thread else ", discord-sync off"), flush=True)
+    httpd = None
     try:
+        # A non-loopback bind is a deliberate act: say plainly what it
+        # exposes. The server has NO authentication — anyone who can
+        # reach the address can read every session and send replies.
+        if not _is_loopback(args.host):
+            print("WARNING: binding %s — Mission Control has no built-in "
+                  "authentication. Anyone who can reach this address can "
+                  "read the session transcript and send messages. Keep it "
+                  "on a trusted private network or put an authenticating "
+                  "proxy in front." % args.host, flush=True)
+
+        # The Discord -> DB archive mirror: exactly one daemon thread,
+        # its first pass immediately, then every
+        # DISCORD_SYNC_INTERVAL_SECONDS until the stop event. Proof
+        # servers opt out with --no-discord-sync.
+        if not args.no_discord_sync:
+            sync_thread = threading.Thread(
+                target=discord_sync_loop, name="discord-sync", daemon=True)
+            sync_thread.start()
+
+        httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+        # Pin the Host-trust set for the whole serve lifetime: the
+        # bind-derived defaults plus every explicit --trusted-host
+        # entry (refused spellings are dropped with a warning, since a
+        # typo there would silently keep the request refused).
+        trusted = _default_trusted_hosts(args.host)
+        for extra in args.trusted_host:
+            name = _normalize_host(extra)
+            if name is None or name in WILDCARD_BINDS:
+                print("WARNING: ignoring unparseable --trusted-host %r"
+                      % (extra,), flush=True)
+            elif name not in trusted:
+                trusted.add(name)
+                print("serving Host %s in addition to the bind address"
+                      % (name,), flush=True)
+        httpd.trusted_hosts = trusted
+        # Report the port actually bound: --port 0 asks the OS for a
+        # free port, which is how a test (or anything else that must not
+        # race for a fixed number) gets one — server_address carries the
+        # real value back after the bind.
+        bound_port = httpd.server_address[1]
+        print("serving on http://%s:%d/ (home: %s, profiles: %s%s)"
+              % (args.host, bound_port, display_hermes_home(),
+                 ", ".join(p for _, p in discover_dbs()),
+                 "" if sync_thread else ", discord-sync off"), flush=True)
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
@@ -6786,8 +8267,8 @@ def main(argv=None):
         _discord_sync_stop.set()
         if sync_thread is not None:
             sync_thread.join(timeout=DISCORD_TIMEOUT_SECONDS + 2)
-        httpd.server_close()
-        terminate_children()
+        if httpd is not None:
+            httpd.server_close()
 
 
 if __name__ == "__main__":

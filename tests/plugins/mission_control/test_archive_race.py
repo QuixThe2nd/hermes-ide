@@ -22,6 +22,7 @@ import itertools
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -37,23 +38,15 @@ _MODULE_SEQ = itertools.count()
 THREAD = "1234567890123456789"
 OTHER = "9876543210987654321"
 
-SESSION_SCHEMA = """
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  source TEXT NOT NULL,
-  title TEXT,
-  display_name TEXT,
-  started_at REAL NOT NULL,
-  ended_at REAL,
-  end_reason TEXT,
-  last_activity_at REAL,
-  archived INTEGER NOT NULL DEFAULT 0,
-  hidden INTEGER NOT NULL DEFAULT 0,
-  cwd TEXT,
-  thread_id TEXT,
-  parent_session_id TEXT
-);
-"""
+# The production schema, imported from core: the listing is now served
+# by the core projection (list_sessions_rich), so fixture DBs must
+# answer exactly the SQL the live ones do — the synthetic subset below
+# predated that and lacks the columns the projection reads.
+sys.path.insert(0, REPO)
+
+from hermes_state_common import SCHEMA_SQL  # noqa: E402
+
+SESSION_SCHEMA = SCHEMA_SQL
 
 # Three rows on the fixture thread (the mirror flips every row of a
 # thread), one on another active thread.
