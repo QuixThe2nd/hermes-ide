@@ -2834,11 +2834,6 @@ def test_owner_loop_duplicate_handoff_failed_close_stays_tracked(
     )
 
     untracked_tasks: list = []
-    real_create_task = asyncio.get_running_loop().create_task
-
-    def _record_create_task(coro):
-        untracked_tasks.append(coro)
-        return real_create_task(coro)
 
     caller = _ClientCallThread(provider).start()
     try:
@@ -2850,11 +2845,14 @@ def test_owner_loop_duplicate_handoff_failed_close_stays_tracked(
         loop_done = threading.Event()
 
         async def _probe():
-            monkeypatch.setattr(
-                asyncio.get_running_loop(),
-                "create_task",
-                _record_create_task,
-            )
+            loop = asyncio.get_running_loop()
+            real_create_task = loop.create_task
+
+            def _record_create_task(coro):
+                untracked_tasks.append(coro)
+                return real_create_task(coro)
+
+            monkeypatch.setattr(loop, "create_task", _record_create_task)
             try:
                 loop_outcome["value"] = provider._get_client()
             except BaseException as exc:
@@ -2943,8 +2941,11 @@ def test_shutdown_current_client_failed_close_stays_tracked(
 ):
     """Shutdown sweep keeps a failed published-client close tracked."""
     provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
     _reset_gated_client(blocked=False)
-    _GatedHindsightClient.fail_closes = 1
+    # Park the first scheduled close in-flight so shutdown's abandoned-setup
+    # sweep joins the same attempt instead of launching a second one.
+    _GatedHindsightClient.block_closes = 1
 
     client = _GatedHindsightClient()
     provider._client = client
@@ -2961,9 +2962,10 @@ def test_shutdown_current_client_failed_close_stays_tracked(
     setup = setups[0]
     assert setup.tracked_client() is client
     assert not setup.settled.is_set()
-    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S)
     assert client.close_attempts == ["hindsight-loop"]
 
+    _GatedHindsightClient.close_gate.set()
+    assert _GatedHindsightClient.closed.wait(timeout=_GATE_WAIT_S)
     settled = provider._reconcile_close_attempt(setup)
     assert settled
     assert client.close_threads == ["hindsight-loop"]
@@ -2975,8 +2977,13 @@ def test_recreate_install_shares_shutdown_generation_no_second_close(
 ):
     """Recreate/install must share one generation with shutdown's close."""
     provider, stale, _stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
+    provider._timeout = 0.25
+    _reset_gated_client(blocked=False)
+    # Park the first scheduled close in-flight through shutdown and fenced
+    # install so both paths join the same attempt, never overlap a second.
+    _GatedHindsightClient.block_closes = 1
 
-    replacement_inner = _LoopBoundHindsightClient()
+    replacement_inner = _GatedHindsightClient()
     replacement = _LoopBoundEmbeddedClient(replacement_inner)
     monkeypatch.setattr(provider, "_build_client", lambda: replacement)
 
@@ -3033,15 +3040,18 @@ def test_recreate_install_shares_shutdown_generation_no_second_close(
     ]
     assert len(setups) == 1, setups
     setup = setups[0]
-    assert replacement.close_attempts.count("hindsight-loop") == 1, (
-        replacement.close_attempts
-    )
+    assert setup.tracked_client() is replacement
+    assert replacement_inner.close_attempts == ["hindsight-loop"]
     assert not setup.settled.is_set()
+    # Fenced _install_client must reuse the shutdown generation, not overlap.
+    assert provider._generation_for_client(replacement) is setup
 
+    _GatedHindsightClient.close_gate.set()
+    assert _GatedHindsightClient.closed.wait(timeout=_GATE_WAIT_S)
     settled = provider._reconcile_close_attempt(setup)
     assert settled
-    assert replacement.close_attempts.count("hindsight-loop") == 2
-    assert replacement.close_threads == ["hindsight-loop"]
+    assert replacement_inner.close_threads == ["hindsight-loop"]
+    assert setup.settled.is_set()
 
 
 def test_register_abandoned_setup_concurrent_identity_idempotent(
@@ -3068,6 +3078,8 @@ def test_register_abandoned_setup_concurrent_identity_idempotent(
     assert provider._abandoned_setup is setup
     assert setup not in provider._extra_abandoned_setups
     assert list(provider._iter_abandoned_setups()).count(setup) == 1
+
+    provider._clear_abandoned_setup(setup)
 
     primary = hindsight_mod._ClientSetup()
     provider._register_abandoned_setup(primary)
