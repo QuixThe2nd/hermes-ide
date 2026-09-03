@@ -87,6 +87,51 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
     assert "example.rules" not in agent._cached_system_prompt_static
 
 
+def test_real_plugin_manager_includes_hermes_starts_section_only_when_loaded(
+    tmp_path, monkeypatch
+):
+    """The bundled hermes_starts guidance reaches the real system prompt via the
+    real plugin manager, and disappears from the same path once the plugin is
+    disabled — unloading removes the guidance exactly as it removes the tool."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Pin the workspace block (see the frozen-section test above for why) so
+    # the interesting difference between the two prompts below is the plugin
+    # section, not unrelated volatile bytes.
+    monkeypatch.setattr(
+        "agent.coding_context.build_coding_workspace_block",
+        lambda cwd=None: "Workspace (snapshot at session start):\n- Root: /pinned",
+    )
+
+    heading = "## Plugin Context: hermes_starts.structural_asks"
+
+    def _prompt_after_rediscovery():
+        for key in list(sys.modules):
+            if key.startswith("plugins.hermes_starts"):
+                del sys.modules[key]
+        manager = PluginManager()
+        manager.discover_and_load(force=True)
+        monkeypatch.setattr(plugins, "_plugin_manager", manager)
+        agent = _real_agent(session_id="hermes-starts-section-test")
+        return manager, build_system_prompt(agent)
+
+    manager, loaded_prompt = _prompt_after_rediscovery()
+    assert manager._plugins["hermes_starts"].enabled is True
+    assert heading in loaded_prompt
+    # after_memory placement: the section lands in the volatile tail, ahead of
+    # the conversation stamp — never inside the cacheable static prefix.
+    assert loaded_prompt.index(heading) < loaded_prompt.index("Conversation started:")
+
+    # Disabling the plugin removes the guidance from the very same path.
+    (home / "config.yaml").write_text(
+        json.dumps({"plugins": {"disabled": ["hermes_starts"]}}), encoding="utf-8"
+    )
+    manager_disabled, disabled_prompt = _prompt_after_rediscovery()
+    assert manager_disabled._plugins["hermes_starts"].enabled is False
+    assert heading not in disabled_prompt
+
+
 def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tmp_path):
     """The existing persisted full prompt is the only resume state required."""
     db_path = tmp_path / "state.db"

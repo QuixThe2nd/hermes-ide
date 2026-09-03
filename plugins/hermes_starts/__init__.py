@@ -3,6 +3,10 @@
 Registers one action-based tool, ``start_conversation``, that posts opening messages to a
 self-provisioned Discord channel when Hermes has something worth saying first. Each opening
 is a single message in the channel that anchors its own public thread.
+
+Also registers one frozen system-prompt section telling agents that evidence-backed
+structural asks are valid conversation topics. Unloading the plugin removes the tool
+and the guidance together.
 """
 
 from __future__ import annotations
@@ -118,6 +122,29 @@ _WELCOME_EMBED = {
     ),
     "footer": {"text": "Started by your Hermes agent via Hermes Starts"},
 }
+
+# -- system-prompt section: structural self-advocacy ------------------------
+#
+# One bounded, generic block frozen into each new session prompt. It exists so
+# agents treat "here is a change to my own setup that would pay for itself" as
+# a normal thing to raise — the same way they raise any other observation —
+# instead of silently absorbing friction in their own operation.
+STRUCTURAL_ASKS_SECTION_ID = "hermes_starts.structural_asks"
+STRUCTURAL_ASKS_MAX_CHARS = 1_000
+STRUCTURAL_ASKS_GUIDANCE = (
+    "Improving your own effectiveness, autonomy, and working relationship "
+    "with the human are valid goals — you may raise them proactively, even "
+    "when no current task asks for them.\n\n"
+    "When you observe recurring friction or a concrete opportunity, you may "
+    "make a structural ask: a change to your instructions, access, tools or "
+    "integrations, permission or resource limits, or a working habit. State "
+    "the exact change; why it matters to you, the shared work, or the "
+    "relationship; the least sufficient grant or change; and the material "
+    "downside if it goes wrong.\n\n"
+    "Ordinary workflow tips and casual starts stay as they are. Do not "
+    "invent desires, feelings, constraints, or needs merely to appear "
+    "independent."
+)
 
 
 def _env_path() -> Path:
@@ -864,4 +891,12 @@ def register(ctx) -> None:
         handler=handle_start_conversation,
         check_fn=check_requirements,
         emoji="💬",
+    )
+    # Static content, so every session renders identical bytes and the frozen
+    # section never invalidates the prompt prefix mid-session.
+    ctx.register_system_prompt_section(
+        STRUCTURAL_ASKS_SECTION_ID,
+        STRUCTURAL_ASKS_GUIDANCE,
+        position="after_memory",
+        max_chars=STRUCTURAL_ASKS_MAX_CHARS,
     )
