@@ -959,19 +959,92 @@ def _is_retired_ox_alpha_entry(entry: Any) -> bool:
     )
 
 
-def _primary_routes_retired_model(raw_model: Any) -> bool:
-    """True when the primary ``model`` value is the retired Ox Alpha route.
+def _normalized_primary_route(config: Any) -> Tuple[str, str, Any]:
+    """Classify the primary route from a NORMALIZED COPY of the raw config.
+
+    Returns ``(model_id, provider, endpoint)`` — the route the config actually
+    LOADS as, computed with the same root/nested/alias semantics
+    ``_normalize_root_model_keys`` applies at the load/save chokepoint:
+
+    * a scalar root ``model:`` is the id of an otherwise-empty model section;
+    * the id is read under the canonical ``default`` key, then the legacy
+      ``model``/``name`` aliases, and a dict-valued id is flattened with the
+      canonical ``split_model_config_default`` splitter (the same one
+      ``_get_model_config`` uses at load time);
+    * provider precedence: an explicit ``model.provider`` wins, else the
+      nested default's provider, else the outer/merged default — and a
+      ROOT-level ``provider:`` folds in first whenever the model section
+      carries none, exactly as the load-time normalizer does. Without that
+      fold a supported legacy shape (``model: <retired id>`` + root
+      ``provider: custom:local``) would classify from the model id alone and
+      retire the user's custom route;
+    * the endpoint follows the loader's precedence — ``model.base_url``, then
+      a root ``base_url``, then the ``api_base`` alias inside the model
+      section, then a root ``api_base`` — because a root-level endpoint (or
+      its alias) is what makes the runtime resolve a custom endpoint instead
+      of inferring OpenRouter.
+
+    The normalized view exists ONLY for classification: nothing here writes
+    back, so a valid custom route named in a legacy shape is never
+    destructively rewritten merely to be recognized.
+    """
+    if not isinstance(config, dict):
+        return ("", "", None)
+    raw_model = config.get("model")
+    if isinstance(raw_model, dict):
+        model_section: Dict[str, Any] = dict(raw_model)
+    elif raw_model not in (None, ""):
+        model_section = {"default": raw_model}
+    else:
+        model_section = {}
+
+    raw_id: Any = None
+    for key in ("default", "model", "name"):
+        if model_section.get(key) not in (None, ""):
+            raw_id = model_section.get(key)
+            break
+    from hermes_cli.config import split_model_config_default
+
+    model_id, nested_provider = split_model_config_default(raw_id)
+
+    outer_provider = str(model_section.get("provider") or "").strip()
+    if nested_provider and (not outer_provider or outer_provider.lower() == "auto"):
+        # Nested provider wins over an absent/``auto`` outer one — the
+        # load-time flattener's rule.
+        provider: str = nested_provider
+    else:
+        provider = outer_provider
+    if not provider:
+        # Root-level ``provider:`` folds into the model section at load time
+        # only when the model section still carries none — same gate here.
+        provider = str(config.get("provider") or "").strip()
+
+    # Endpoint, in the loader's precedence order: model.base_url, then the
+    # root-level fold-in, then the api_base alias (root before the model
+    # section, matching _normalize_root_model_keys' alias loop).
+    endpoint = (
+        model_section.get("base_url")
+        or config.get("base_url")
+        or config.get("api_base")
+        or model_section.get("api_base")
+    )
+    return (str(model_id or "").strip(), provider, endpoint)
+
+
+def _primary_routes_retired_model(config: Any) -> bool:
+    """True when the primary route the raw config loads as is the retired one.
 
     OpenRouter's ``vendor/model`` id namespacing is what makes the bare id
     ``stealth/ox-alpha`` resolvable at all, so a bare primary string — or a
-    dict whose id (``default``/``model``/``name``) is the retired model with
-    the provider omitted, or explicitly ``auto`` — infers the same
+    model section whose id (``default``/``model``/``name``) is the retired
+    model with the provider omitted, or explicitly ``auto`` — infers the same
     OpenRouter route an explicit ``provider: openrouter`` pins. A named
     custom provider serving the same model id is a different route and is
-    never matched here; so is a bare/``auto`` primary whose custom
-    ``base_url`` (or its ``api_base`` alias, normalized below) makes the
-    runtime resolve a custom endpoint (e.g. a local server) instead of
-    inferring OpenRouter — v41 must preserve that route.
+    never matched here; so is a route whose custom ``base_url`` (or its
+    ``api_base`` alias) makes the runtime resolve a user-owned endpoint
+    (e.g. a local server) instead of inferring OpenRouter — v41 must
+    preserve that route, for the modern nested shape AND the legacy
+    root-level one (``_normalized_primary_route`` folds both in).
 
     A dict-valued id (``model.default: {provider: ..., model: ...}``) is
     flattened with the canonical ``split_model_config_default`` splitter —
@@ -980,7 +1053,7 @@ def _primary_routes_retired_model(raw_model: Any) -> bool:
     to be flattened back into the dead route after the version is stamped.
     Provider precedence mirrors ``_normalize_root_model_keys``' flattening:
     the nested provider wins only over an absent or ``auto`` outer
-    ``model.provider`` — an explicitly configured outer provider pins the
+    provider — an explicitly configured outer provider pins the
     manual route the config actually loads as, which is never the retired
     one, so it must survive the scrub untouched. ``auto`` is matched
     case-insensitively after whitespace trim, the same normalization every
@@ -990,24 +1063,8 @@ def _primary_routes_retired_model(raw_model: Any) -> bool:
     hand the classifier an ``auto`` it then resolves by inference,
     scrubbing the manual nested route it was supposed to protect.
     """
-    if isinstance(raw_model, dict):
-        raw_id: Any = None
-        for key in ("default", "model", "name"):
-            if raw_model.get(key) not in (None, ""):
-                raw_id = raw_model.get(key)
-                break
-        from hermes_cli.config import split_model_config_default
-
-        model_id, nested_provider = split_model_config_default(raw_id)
-        outer_provider = str(raw_model.get("provider") or "").strip()
-        if outer_provider and outer_provider.lower() != "auto":
-            provider: Any = outer_provider
-        else:
-            provider = nested_provider or outer_provider
-        base_url = _endpoint_url(raw_model)
-    else:
-        model_id, provider, base_url = raw_model, None, None
-    return is_retired_ox_alpha_route(provider, model_id, base_url)
+    model_id, provider, endpoint = _normalized_primary_route(config)
+    return is_retired_ox_alpha_route(provider, model_id, endpoint)
 
 
 def _canonicalize_outer_auto_sentinel(config: Dict[str, Any]) -> bool:
@@ -1156,7 +1213,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     config = read_raw_config()
 
     canonicalized_auto_sentinel = _canonicalize_outer_auto_sentinel(config)
-    primary_retired = _primary_routes_retired_model(config.get("model"))
+    primary_retired = _primary_routes_retired_model(config)
 
     # Effective chain (fallback_providers in order, then legacy
     # fallback_model, deduped by route identity) minus the retired route.

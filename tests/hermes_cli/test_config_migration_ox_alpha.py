@@ -357,8 +357,10 @@ class TestOxAlphaPromotionPreservesModelSettings:
                     "default": "stealth/ox-alpha",
                     "provider": "openrouter",
                     # Route-owned fields of the RETIRED route: replaced by the
-                    # promotee's (or dropped when it carries none).
-                    "base_url": "https://retired-endpoint.invalid/v1",
+                    # promotee's (or dropped when it carries none). The
+                    # endpoint is the OFFICIAL OpenRouter host — a custom
+                    # endpoint would be a user-owned route that survives.
+                    "base_url": "https://openrouter.ai/api/v1",
                     "key_env": "RETIRED_ROUTE_KEY",
                     "api_mode": "anthropic_messages",
                     # Non-route model-level controls: must survive verbatim.
@@ -425,7 +427,8 @@ class TestOxAlphaPromotionPreservesModelSettings:
                 "model": {
                     "default": "stealth/ox-alpha",
                     "provider": "openrouter",
-                    "base_url": "https://retired-endpoint.invalid/v1",
+                    # Official OpenRouter endpoint: still the retired route.
+                    "base_url": "https://openrouter.ai/api/v1",
                     "api_key": "sk-retired",
                     "api_mode": "anthropic_messages",
                 },
@@ -1145,7 +1148,7 @@ class TestOxAlphaPromotionEndpointAlias:
         assert raw["fallback_providers"] == [{"provider": "zai", "model": "glm-4.7"}]
         # The promoted custom-endpoint route is not the retired one, and a
         # rerun is a no-op (idempotent).
-        assert _primary_routes_retired_model(raw["model"]) is False
+        assert _primary_routes_retired_model(raw) is False
         assert second == {"env_added": [], "config_added": [], "warnings": []}
         assert _read_config(config_path)["model"] == raw["model"]
         assert loaded["model"]["base_url"] == "http://127.0.0.1:8080/v1"
@@ -1327,7 +1330,389 @@ class TestOxAlphaAutoResolvedFallbackScrub:
         assert raw.get("fallback_providers", []) == []
 
 
-class TestOxAlphaIdempotence:
+class TestOxAlphaLegacyRootShapeRoute:
+    """Legacy root-level route fields (fix-4 review, defect 1).
+
+    Normal loading folds a root ``provider:`` / ``base_url:`` / ``api_base:``
+    into the model section (``_normalize_root_model_keys``) — and the runtime
+    resolves the folded endpoint as a custom route BEFORE any OpenRouter
+    inference. Classification used to read ``config["model"]`` alone, so a
+    supported legacy shape like ``model: stealth/ox-alpha`` + root
+    ``provider: custom:local`` was mistaken for the inferred OpenRouter route:
+    the custom route was un-set and a fallback promoted over it. The
+    classifier must normalize the FULL raw config with the loader's own
+    semantics — without rewriting the legacy shape it merely recognizes.
+    """
+
+    def test_root_custom_provider_survives_without_fallback_promotion(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "provider": "custom:local",
+                "base_url": "http://127.0.0.1:9000/v1",
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            loaded = load_config()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+            after_second = _read_config(config_path)
+
+        # The legacy shape is preserved verbatim — the custom route is never
+        # destructively normalized, and the fallback is NOT promoted over it.
+        assert after_first == {
+            "_config_version": 40,
+            "model": "stealth/ox-alpha",
+            "provider": "custom:local",
+            "base_url": "http://127.0.0.1:9000/v1",
+            "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+        }
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        # What the file loads as is the custom route, not the dead inference.
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        assert loaded["model"]["provider"] == "custom:local"
+        assert loaded["model"]["base_url"] == "http://127.0.0.1:9000/v1"
+        assert loaded["fallback_providers"] == [{"provider": "zai", "model": "glm-4.7"}]
+        # Second pass: idempotent, still untouched.
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert after_second == after_first
+
+    def test_root_custom_base_url_and_api_base_alias_survive(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "base_url": "http://127.0.0.1:9001/v1",
+                "api_base": "http://127.0.0.1:9002/v1",
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            loaded = load_config()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+            after_second = _read_config(config_path)
+
+        # Both endpoint spellings survive untouched: the canonical root
+        # base_url AND the root api_base alias.
+        assert after_first == {
+            "_config_version": 40,
+            "model": "stealth/ox-alpha",
+            "base_url": "http://127.0.0.1:9001/v1",
+            "api_base": "http://127.0.0.1:9002/v1",
+            "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+        }
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        # The loader folds the root endpoint in (base_url wins over the
+        # alias) — the resolved route is the custom endpoint.
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        assert loaded["model"]["base_url"] == "http://127.0.0.1:9001/v1"
+        assert loaded["fallback_providers"] == [{"provider": "zai", "model": "glm-4.7"}]
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert after_second == after_first
+
+    def test_root_api_base_alias_alone_survives(self, tmp_path):
+        """The alias alone names the custom endpoint — the same route a root
+        ``base_url`` would, so it survives too."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "api_base": "http://127.0.0.1:9003/v1",
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            loaded = load_config()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+
+        assert after_first == {
+            "_config_version": 40,
+            "model": "stealth/ox-alpha",
+            "api_base": "http://127.0.0.1:9003/v1",
+            "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+        }
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert loaded["model"]["base_url"] == "http://127.0.0.1:9003/v1"
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+
+    def test_root_named_custom_provider_without_endpoint_survives(self, tmp_path):
+        """A named custom provider is never the INFERRED OpenRouter route —
+        even with no endpoint in sight, the provider context alone changes
+        what the id resolves as (the entry's own endpoint, or an explicit
+        resolution error). Only a bare/``auto``/openrouter provider infers."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "provider": "custom:local",
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            second = _run_v41()
+
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert _read_config(config_path) == {
+            "_config_version": 40,
+            "model": "stealth/ox-alpha",
+            "provider": "custom:local",
+            "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+        }
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+
+    def test_root_auto_provider_without_endpoint_still_retires(self, tmp_path):
+        """The fold-in must not shield the inferred route: a root/outer
+        ``auto`` provider with no endpoint still resolves to OpenRouter."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "provider": "auto",
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert raw.get("fallback_providers", []) == []
+
+
+class TestOxAlphaExplicitOpenRouterEndpoint:
+    """Endpoint host is decisive for an EXPLICIT ``provider: openrouter`` too
+    (fix-4 review, defect 2). The predicate used to return True for the
+    provider before ever looking at ``base_url``, so a route the user pinned
+    to their own endpoint — resolved as that endpoint at runtime — was
+    destroyed. An absent endpoint, or one on openrouter.ai or a subdomain,
+    stays retired."""
+
+    def test_custom_endpoint_primary_survives_as_primary_and_fallback(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "stealth/ox-alpha",
+                    "provider": "openrouter",
+                    "base_url": "https://proxy.example/v1",
+                    "key_env": "MY_PROXY_KEY",
+                    "api_mode": "chat_completions",
+                },
+                "fallback_providers": [
+                    {
+                        "provider": "openrouter",
+                        "model": "stealth/ox-alpha",
+                        "base_url": "https://proxy.example/v1",
+                        "key_env": "MY_PROXY_KEY",
+                    },
+                    {"provider": "zai", "model": "glm-4.7"},
+                ],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            loaded = load_config()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+            after_second = _read_config(config_path)
+
+        # Both occurrences survive verbatim: primary keeps its metadata, the
+        # fallback keeps its slot, and nothing was promoted or reported.
+        assert after_first == {
+            "_config_version": 40,
+            "model": {
+                "default": "stealth/ox-alpha",
+                "provider": "openrouter",
+                "base_url": "https://proxy.example/v1",
+                "key_env": "MY_PROXY_KEY",
+                "api_mode": "chat_completions",
+            },
+            "fallback_providers": [
+                {
+                    "provider": "openrouter",
+                    "model": "stealth/ox-alpha",
+                    "base_url": "https://proxy.example/v1",
+                    "key_env": "MY_PROXY_KEY",
+                },
+                {"provider": "zai", "model": "glm-4.7"},
+            ],
+        }
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        assert loaded["model"]["base_url"] == "https://proxy.example/v1"
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert after_second == after_first
+
+    def test_custom_endpoint_fallback_survives_under_live_primary(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+                "fallback_providers": [
+                    {"provider": "nous", "model": "kimi-k3"},
+                    {
+                        "provider": "openrouter",
+                        "model": "stealth/ox-alpha",
+                        "base_url": "https://proxy.example/v1",
+                        "api_key": "sk-fake-proxy",
+                    },
+                    {"provider": "zai", "model": "glm-4.7"},
+                ],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+
+        # The user-owned fallback keeps its exact slot and order.
+        assert after_first == {
+            "_config_version": 40,
+            "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+            "fallback_providers": [
+                {"provider": "nous", "model": "kimi-k3"},
+                {
+                    "provider": "openrouter",
+                    "model": "stealth/ox-alpha",
+                    "base_url": "https://proxy.example/v1",
+                    "api_key": "sk-fake-proxy",
+                },
+                {"provider": "zai", "model": "glm-4.7"},
+            ],
+        }
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+
+    def test_openrouter_subdomain_endpoint_still_retires(self, tmp_path):
+        """An endpoint ON openrouter.ai's host family is the official route —
+        still retired."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "stealth/ox-alpha",
+                    "provider": "openrouter",
+                    "base_url": "https://api.openrouter.ai/api/v1",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert raw.get("fallback_providers", []) == []
+
+    def test_lookalike_endpoint_survives(self, tmp_path):
+        """A host that merely CONTAINS the openrouter.ai string is not the
+        official route — the same host-gate the runtime applies."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "stealth/ox-alpha",
+                    "provider": "openrouter",
+                    "base_url": "https://openrouter.ai.attacker.test/v1",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = _run_v41()
+
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert _read_config(config_path)["model"] == {
+            "default": "stealth/ox-alpha",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai.attacker.test/v1",
+        }
+
+    def test_explicit_openrouter_without_endpoint_still_retires(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "stealth/ox-alpha", "provider": "openrouter"},
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert raw.get("fallback_providers", []) == []
+
+    def test_explicit_openrouter_official_endpoint_still_retires(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "stealth/ox-alpha",
+                    "provider": "openrouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert raw.get("fallback_providers", []) == []
+
+    def test_predicate_is_endpoint_decisive_for_explicit_openrouter(self):
+        """Direct predicate-level lock on the repaired boundary."""
+        from hermes_cli.fallback_config import is_retired_ox_alpha_route
+
+        # Custom endpoint: user-owned, survives — for every provider form.
+        assert is_retired_ox_alpha_route(
+            "openrouter", "stealth/ox-alpha", "https://proxy.example/v1"
+        ) is False
+        assert is_retired_ox_alpha_route(
+            "OpenRouter", " Stealth/OX-Alpha ", "https://proxy.example/v1"
+        ) is False
+        # Official host family: retired.
+        assert is_retired_ox_alpha_route(
+            "openrouter", "stealth/ox-alpha", "https://openrouter.ai/api/v1"
+        ) is True
+        assert is_retired_ox_alpha_route(
+            "openrouter", "stealth/ox-alpha", "https://api.openrouter.ai/api/v1"
+        ) is True
+        # No endpoint: retired.
+        assert is_retired_ox_alpha_route("openrouter", "stealth/ox-alpha", "") is True
+        assert is_retired_ox_alpha_route("openrouter", "stealth/ox-alpha") is True
+        # Lookalike host: survives.
+        assert is_retired_ox_alpha_route(
+            "openrouter", "stealth/ox-alpha", "https://openrouter.ai.evil/v1"
+        ) is False
+        # Other named providers: never the retired route.
+        assert is_retired_ox_alpha_route(
+            "my-gateway", "stealth/ox-alpha", ""
+        ) is False
+
+
+
     def test_second_run_is_a_no_op(self, tmp_path):
         _write_config(
             tmp_path,

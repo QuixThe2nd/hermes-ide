@@ -93,21 +93,23 @@ def is_retired_ox_alpha_route(
 ) -> bool:
     """True only for the exact retired ``openrouter/stealth/ox-alpha`` route.
 
-    Provider and model are case/whitespace normalized. An explicit
-    ``openrouter`` provider always names the retired route. A bare or
-    ``auto`` provider infers OpenRouter for this vendor-namespaced model id
-    — unless a custom ``base_url`` is configured, which the runtime resolves
-    as a custom endpoint before any OpenRouter inference (mirroring the
-    resolve_runtime_provider host gate); only a base_url ON openrouter.ai
-    keeps the inferred route. Any other named provider serving the same
-    model id is a different, still-valid route and never matches.
+    Provider and model are case/whitespace normalized. The endpoint host is
+    DECISIVE for every provider form — explicit ``openrouter``, ``auto``, and
+    omitted alike — because that is what decides the route at runtime: a
+    custom ``base_url`` (e.g. ``https://proxy.example/v1``) is resolved as
+    that user-owned endpoint BEFORE any OpenRouter inference (the
+    ``resolve_runtime_provider`` host gate, mirroring
+    ``models.validate_model_for_provider``'s openrouter→custom reclassification),
+    so retiring it would destroy a working manual route. Only an ABSENT
+    endpoint — or one whose host is ``openrouter.ai`` or a subdomain, which
+    the runtime treats as the official route — leaves the route retired. Any
+    other named provider serving the same model id is a different,
+    still-valid route and never matches.
     """
     if str(model or "").strip().lower() != RETIRED_OX_ALPHA_MODEL:
         return False
     normalized = str(provider or "").strip().lower()
-    if normalized == RETIRED_OX_ALPHA_PROVIDER:
-        return True
-    if normalized not in ("", "auto"):
+    if normalized not in ("", RETIRED_OX_ALPHA_PROVIDER, "auto"):
         return False
     url = str(base_url or "").strip()
     if not url:
