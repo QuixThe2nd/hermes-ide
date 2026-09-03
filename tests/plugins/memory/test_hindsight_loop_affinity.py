@@ -583,16 +583,19 @@ class _GatedHindsightClient(_LoopBoundHindsightClient):
 
     Construction signals ``started``, then blocks until ``gate`` opens (or
     raises immediately while ``fail_constructions`` counts down), modeling a
-    first-client build that is slower than any request timeout. Every close
-    is recorded with the thread it ran on, and ``events`` preserves the
-    total order of constructions vs closes for the next-builder boundary
-    assertions.
+    first-client build that is slower than any request timeout. ``aclose``
+    raises while ``fail_closes`` counts down, modeling a client whose close
+    itself fails. Every close attempt is recorded with the thread it ran
+    on, and ``events`` preserves the total order of constructions vs closes
+    for the next-builder boundary assertions.
     """
 
     started: threading.Event | None = None
     gate: threading.Event | None = None
     closed: threading.Event | None = None
+    close_failed: threading.Event | None = None
     fail_constructions = 0
+    fail_closes = 0
     constructed: list["_GatedHindsightClient"] = []
     events: list[tuple[str, "_GatedHindsightClient"]] = []
     _order_lock = threading.Lock()
@@ -614,6 +617,13 @@ class _GatedHindsightClient(_LoopBoundHindsightClient):
             type(self).events.append(("constructed", self))
 
     async def aclose(self):
+        if type(self).fail_closes:
+            type(self).fail_closes -= 1
+            with type(self)._order_lock:
+                type(self).events.append(("close-failed", self))
+            if type(self).close_failed is not None:
+                type(self).close_failed.set()
+            raise RuntimeError("simulated close failure")
         self.close_threads.append(threading.current_thread().name)
         try:
             await super().aclose()
@@ -628,12 +638,16 @@ def _reset_gated_client(*, blocked: bool) -> tuple[threading.Event, ...]:
     """Arm per-test class state; returns (started, gate, closed).
 
     ``blocked=False`` leaves the gate open so construction runs immediately.
+    The class-level ``close_failed`` Event (signalled when an aclose attempt
+    raises) is also armed for the failed-close regressions.
     """
     started, gate, closed = threading.Event(), threading.Event(), threading.Event()
     _GatedHindsightClient.started = started
     _GatedHindsightClient.gate = gate
     _GatedHindsightClient.closed = closed
+    _GatedHindsightClient.close_failed = threading.Event()
     _GatedHindsightClient.fail_constructions = 0
+    _GatedHindsightClient.fail_closes = 0
     _GatedHindsightClient.constructed = []
     _GatedHindsightClient.events = []
     if not blocked:
@@ -836,3 +850,246 @@ def test_failed_first_build_surfaces_error_and_next_call_rebuilds(
     assert "error" not in second, second.get("error")
     assert _GatedHindsightClient.constructed == [second["value"]]
     assert provider._client is second["value"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: the abandoned-setup join is bounded and fail-closed.
+#
+# Nothing mechanically guarantees _build_client() or the late client's
+# aclose() ever finish, so the join that waits for an abandoned generation
+# must itself be bounded: on expiry the caller gets an error, the exact
+# generation stays recorded for later reconciliation, and NO replacement is
+# built. settled must mean "safely terminal" (failed build, or a client
+# actually closed) — never mere coroutine completion — and shutdown must
+# reconcile a close that failed there. All waits below are Event-gated or
+# monkeypatched to sub-second bounds; no production-duration sleeps.
+# ---------------------------------------------------------------------------
+
+
+def test_never_settling_abandoned_setup_fails_next_caller_closed(
+    tmp_path, monkeypatch
+):
+    """A wedged abandoned generation must not hang every later caller.
+
+    Production defect: _join_abandoned_client_setup() waited on settled
+    with NO timeout while the caller held _client_lock, so one wedged
+    generation — a build or cleanup that never finishes — blocked every
+    later first-use caller forever. The join must instead be bounded and
+    fail CLOSED: bounded error to the caller, the exact generation kept
+    recorded for later reconciliation, no replacement constructed.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    monkeypatch.setattr(hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 0.5, raising=False)
+    started, gate, closed = _reset_gated_client(blocked=True)
+
+    first = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    # Past both budgets (0.25s request / 0.5s setup) with the build gated.
+    time.sleep(1.0)
+    outcome = first.join()
+    assert type(outcome["error"]).__name__ == "TimeoutError", outcome["error"]
+
+    # The abandoned cleanup never settles: the gate stays closed, so the
+    # coroutine never completes and its close never runs. The next caller
+    # must get a bounded cleanup-pending error — never a hang, never a
+    # replacement built beside the un-reconciled generation.
+    second = _ClientCallThread(provider).start()
+    outcome2 = second.join()
+    assert "value" not in outcome2, (
+        "a wedged abandoned setup must not hand out a client"
+    )
+    error2 = outcome2["error"]
+    assert type(error2).__name__ == "TimeoutError", error2
+    assert "fail-closed" in str(error2), error2
+    assert provider._abandoned_setup is not None, (
+        "fail-closed join dropped the wedged generation instead of keeping "
+        "it recorded for later reconciliation"
+    )
+    assert _GatedHindsightClient.constructed == [], (
+        "a replacement was constructed while the abandoned generation "
+        "could not be reconciled"
+    )
+
+    # Recovery stays possible: once the wedged build finally completes, its
+    # own coroutine closes the late client and settles the generation.
+    gate.set()
+    assert closed.wait(timeout=_GATE_WAIT_S), (
+        "late client of the finally-settled generation was never closed"
+    )
+
+
+def test_failed_late_close_blocks_replacement_until_reconciled(
+    tmp_path, monkeypatch
+):
+    """A close that raises must leave settled CLEAR and the client tracked.
+
+    Production defect: _aclose_client() swallowed close errors and the
+    setup coroutine set settled unconditionally, so the next builder's join
+    mistook a possibly-still-live late client for a finished cleanup and
+    built a replacement beside it — an orphan nobody (including shutdown,
+    which only saw self._client) would ever close.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    monkeypatch.setattr(hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 0.5, raising=False)
+    started, gate, closed = _reset_gated_client(blocked=True)
+    # The late client's close raises once; every later attempt succeeds.
+    _GatedHindsightClient.fail_closes = 1
+
+    first = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    time.sleep(1.0)
+    outcome = first.join()
+    assert type(outcome["error"]).__name__ == "TimeoutError", outcome["error"]
+
+    # The build completes LATE and its close FAILS on the owning loop.
+    gate.set()
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "late client close was never attempted"
+    )
+    late = _GatedHindsightClient.constructed[0]
+    setup = provider._abandoned_setup
+    assert setup is not None
+    # Coroutine completion is NOT a safe disposition: settled alone must
+    # not authorize a replacement while the late client may still be live.
+    assert not setup.settled.is_set()
+    assert setup.tracked_client() is late
+    assert late.close_threads == []  # no successful close has happened yet
+
+    # The next caller's bounded join sees the tracked close failure and
+    # retries the close itself, ON the owning loop; only once that
+    # succeeds is exactly one replacement built.
+    replacement = _ClientCallThread(provider).start().join()
+    assert "error" not in replacement, replacement.get("error")
+    assert _GatedHindsightClient.constructed == [late, replacement["value"]]
+    assert late.close_threads == ["hindsight-loop"]
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", late)) < events.index(
+        ("constructed", replacement["value"])
+    )
+    assert provider._client is replacement["value"]
+
+    provider.shutdown()
+    assert replacement["value"].close_threads == ["hindsight-loop"]
+
+
+def test_shutdown_reconciles_tracked_client_after_failed_late_close(
+    tmp_path, monkeypatch
+):
+    """shutdown() must not let a close-failed abandoned client die live.
+
+    Production defect: shutdown() closed only self._client and dropped the
+    abandoned setup entirely, so a late client whose coroutine-close raised
+    outlived the provider with no remaining reference that could close it.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    monkeypatch.setattr(hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 0.5, raising=False)
+    started, gate, closed = _reset_gated_client(blocked=True)
+    _GatedHindsightClient.fail_closes = 1
+
+    first = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    time.sleep(1.0)
+    outcome = first.join()
+    assert type(outcome["error"]).__name__ == "TimeoutError", outcome["error"]
+
+    gate.set()
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "late client close was never attempted"
+    )
+    late = _GatedHindsightClient.constructed[0]
+    setup = provider._abandoned_setup
+    assert setup is not None
+    # The failed close left the generation unsafe (settled clear) — which
+    # is exactly why shutdown must take over the tracked client below.
+    assert not setup.settled.is_set()
+    assert setup.tracked_client() is late
+    assert late.close_threads == []
+
+    provider.shutdown()
+    assert provider._client is None
+    assert late.close_threads == ["hindsight-loop"], (
+        "shutdown did not make a bounded owning-loop close attempt for the "
+        "tracked abandoned client"
+    )
+    assert provider._abandoned_setup is None
+
+
+def test_abandoned_join_is_bounded_and_keeps_owning_loop_live(
+    tmp_path, monkeypatch
+):
+    """No wait path may block the owning Hindsight loop thread.
+
+    Production defect: the abandoned join waited on settled with no timeout
+    WHILE HOLDING _client_lock, so a wedged generation starved every later
+    first-use caller forever — including a loop-side _get_client(), which
+    would park the shared loop thread on that lock. The join must release
+    the caller within a deterministic bound, and the wait machinery itself
+    must never sit on the owning loop: every wait runs on the caller
+    thread, and the loop only ever runs short close attempts.
+
+    The wedged state here is a close that keeps failing (the loop is idle
+    between attempts), so loop liveness is attributable to the provider's
+    wait paths alone — not to the gated construction fake, which models a
+    slow synchronous install by parking the loop on purpose.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    monkeypatch.setattr(hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 0.5, raising=False)
+    started, gate, closed = _reset_gated_client(blocked=True)
+    # Both close attempts fail — the coroutine's own and the join's retry —
+    # leaving the generation recorded but permanently unsafe to replace.
+    _GatedHindsightClient.fail_closes = 2
+
+    first = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    time.sleep(1.0)
+    outcome = first.join()
+    assert type(outcome["error"]).__name__ == "TimeoutError", outcome["error"]
+
+    # The build completes late; its close fails, so the generation is
+    # recorded unsafe (settled clear, client tracked) and the loop is idle.
+    gate.set()
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "late client close was never attempted"
+    )
+    late = _GatedHindsightClient.constructed[0]
+    assert late.close_threads == []
+
+    second = _ClientCallThread(provider).start()
+    # Let the second caller reach the abandoned join and take the lock.
+    time.sleep(0.3)
+
+    async def _loop_probe():
+        await asyncio.sleep(0)
+        return "alive"
+
+    # While the join is waiting, the owning loop stays live: the wait runs
+    # on the caller thread, so work scheduled on the loop keeps running.
+    probe = safe_schedule_threadsafe(_loop_probe(), hindsight_mod._get_loop())
+    assert probe is not None, "could not schedule the loop-liveness probe"
+    assert probe.result(timeout=5.0) == "alive"
+
+    # And the join is bounded: even with its close retry failing, the
+    # caller releases _client_lock within the deterministic budget instead
+    # of holding it forever.
+    assert provider._client_lock.acquire(timeout=5.0), (
+        "abandoned join held _client_lock past its bounded wait"
+    )
+    provider._client_lock.release()
+
+    outcome2 = second.join()
+    assert "value" not in outcome2, outcome2
+    assert type(outcome2["error"]).__name__ == "TimeoutError", outcome2["error"]
+    assert _GatedHindsightClient.constructed == [late], (
+        "a replacement was constructed beside the unreconciled generation"
+    )
+
+    # Shutdown makes the final bounded owning-loop close attempt itself.
+    provider.shutdown()
+    assert late.close_threads == ["hindsight-loop"]

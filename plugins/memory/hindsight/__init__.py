@@ -416,15 +416,28 @@ class _ClientSetup:
       client nobody installed or released (embedded finalization is
       disabled — the daemon/session it holds would otherwise never be
       freed).
+
+    ``settled`` means a SAFE terminal disposition, not mere coroutine
+    completion: the build failed before producing a client (``fail()``),
+    or an abandoned client was actually closed (``closed()``, or
+    ``note_retry_closed()`` after a reconciliation close). A close that
+    raised leaves ``settled`` clear with the exact client still tracked
+    (``close_failed()``), so no replacement may be treated as installed
+    while the displaced client may still be live — the join retry in
+    _join_abandoned_client_setup() or shutdown() must close it first.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._client: Any = None
         self._abandoned = False
-        # Set once disposition is final: the client was handed to a caller,
-        # closed by the coroutine, or the build failed. The next builder
-        # waits on this before treating a replacement as installed.
+        # "" while the build/cleanup is still in flight; "closed" once the
+        # abandoned client is safely released; "close-failed" while the
+        # tracked client still needs a reconciliation close attempt.
+        self._outcome = ""
+        # Set once disposition is SAFE-terminal: the build failed with no
+        # client to release, or an abandoned client was closed. The next
+        # builder waits on this before treating a replacement as installed.
         self.settled = threading.Event()
 
     def offer(self, client) -> bool:
@@ -462,6 +475,39 @@ class _ClientSetup:
     def fail(self) -> None:
         """Loop side: the build raised — nothing to hand over or close."""
         self.settled.set()
+
+    def closed(self) -> None:
+        """Loop side: the abandoned client was closed successfully."""
+        with self._lock:
+            self._client = None
+            self._outcome = "closed"
+        self.settled.set()
+
+    def close_failed(self) -> None:
+        """Loop side: closing the abandoned client raised.
+
+        The exact client stays tracked (``tracked_client()``) so a later
+        reconciliation — the join retry or shutdown — can retry the close,
+        and ``settled`` stays clear so that reconciliation is mandatory:
+        coroutine completion alone must not authorize a replacement while
+        the displaced client may still be live.
+        """
+        with self._lock:
+            if self._client is not None:
+                self._outcome = "close-failed"
+
+    def tracked_client(self):
+        """Caller side: the client a failed close left potentially live."""
+        with self._lock:
+            return self._client if self._outcome == "close-failed" else None
+
+    def note_retry_closed(self) -> None:
+        """Caller side: reconciliation closed the tracked client."""
+        with self._lock:
+            if self._outcome == "close-failed":
+                self._client = None
+                self._outcome = "closed"
+                self.settled.set()
 
 
 # ---------------------------------------------------------------------------
@@ -913,10 +959,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # build a client and leak all but the last one.
         self._client_lock = threading.Lock()
         # A first-client setup whose waiting caller timed out but whose
-        # coroutine is still building on the owning loop. Its eventual client
-        # gets closed by that coroutine; the next builder joins it first (see
-        # _join_abandoned_client_setup) so no replacement is installed while
-        # the displaced client is still live.
+        # coroutine is still building (or cleaning up) on the owning loop.
+        # Its eventual client gets closed by that coroutine; the next
+        # builder joins it first (see _join_abandoned_client_setup) —
+        # bounded, and fail-closed while the generation is unsettled — so
+        # no replacement is installed while the displaced client may still
+        # be live. Shutdown also reconciles a close that failed there.
         self._abandoned_setup: _ClientSetup | None = None
         # Bank defaults (retain mission + seeded directives) apply once, on
         # first client creation — see _apply_bank_defaults().
@@ -1427,7 +1475,10 @@ class HindsightMemoryProvider(MemoryProvider):
         and if it still expires, the setup is marked abandoned so the
         coroutine itself closes the client it completes with, ON the owning
         loop — a completed client can never remain orphaned (installed by
-        nobody, closed by nobody, invisible to shutdown()).
+        nobody, closed by nobody, invisible to shutdown()). If even that
+        close raises, the setup stays unsettled with the exact client
+        tracked, so the next builder's join (or shutdown) must reconcile it
+        before any replacement is treated as installed.
 
         Runs on a caller thread holding _client_lock; nothing in the
         coroutine takes that lock, so the bounded waits below cannot
@@ -1442,15 +1493,17 @@ class HindsightMemoryProvider(MemoryProvider):
             except BaseException:
                 setup.fail()
                 raise
-            try:
-                if not setup.offer(client):
-                    # Every caller gave up while the build kept running —
-                    # nobody will install this client, and shutdown() can no
-                    # longer see it. Release it right here, on the owning
-                    # loop, before any replacement can be built.
-                    await self._aclose_client(client)
-            finally:
-                setup.settled.set()
+            if setup.offer(client):
+                return client
+            # Every caller gave up while the build kept running — nobody
+            # will install this client, and shutdown() can no longer see
+            # it. Release it right here, on the owning loop. A failed close
+            # is recorded as such (client tracked, settled left clear) so
+            # it authorizes nothing: reconciliation must close it first.
+            if await self._aclose_client(client):
+                setup.closed()
+            else:
+                setup.close_failed()
             return client
 
         from agent.async_utils import safe_schedule_threadsafe
@@ -1470,32 +1523,59 @@ class HindsightMemoryProvider(MemoryProvider):
             self._abandoned_setup = setup
             raise TimeoutError(
                 f"Hindsight client setup did not complete within {wait:.0f}s; "
-                "the client it completes with will be closed on the Hindsight "
-                "loop"
+                "the client it completes with is tracked for cleanup on the "
+                "Hindsight loop, and no replacement is built until that "
+                "cleanup settles"
             ) from None
 
     def _join_abandoned_client_setup(self) -> None:
-        """Let a previously abandoned setup finish before another client is
-        treated as installed.
+        """Reconcile a previously abandoned setup, BOUNDED, before another
+        client is treated as installed.
 
         The abandoned setup's coroutine closes the client it completes with
         (see _await_client_setup); building a replacement before that would
         briefly leave two live clients, with nobody left to release the
-        displaced one — shutdown() would close only the replacement.
+        displaced one — shutdown() would close only the replacement. But
+        this join runs on a caller thread holding _client_lock, and neither
+        _build_client() nor the late client's aclose() is mechanically
+        guaranteed to finish, so an unbounded wait here would let one wedged
+        generation hang every later caller forever.
 
-        The wait is unbounded by design: every step of _build_client() is
-        itself time-bounded (the lazy install subprocess carries its own
-        timeout), and a build that hung forever would be stuck ON the shared
-        loop thread, stalling all Hindsight operations with or without this
-        join. Waiting on the settled event therefore buys strict ordering at
-        no additional hang risk, and cannot deadlock — the coroutine never
-        takes _client_lock, which the joining caller holds.
+        The join therefore waits at most _client_setup_timeout() and fails
+        CLOSED on expiry: the exact abandoned generation stays recorded for
+        the next caller (or shutdown) to reconcile, no replacement is
+        constructed, and the caller gets a bounded cleanup-pending error. If
+        the coroutine already tracked a client it failed to close, one
+        bounded owning-loop close attempt is made here first — success
+        settles the generation and authorizes exactly one replacement.
+
+        Cannot deadlock: the abandoned coroutine never takes _client_lock,
+        and the retry close is scheduled via _run_sync from this caller
+        thread (never from the owning loop, which only awaits _aclose_client
+        directly). The lock-held retry window is bounded by the request
+        timeout — the same exposure _await_client_setup's own bounded wait
+        already has.
         """
         setup = self._abandoned_setup
         if setup is None:
             return
+        wait = self._client_setup_timeout()
+        if not setup.settled.wait(timeout=wait):
+            client = setup.tracked_client()
+            if client is not None:
+                try:
+                    retry_closed = bool(self._run_sync(self._aclose_client(client)))
+                except Exception:
+                    retry_closed = False
+                if retry_closed:
+                    setup.note_retry_closed()
+            if not setup.settled.is_set():
+                raise TimeoutError(
+                    f"Hindsight abandoned client setup has not finished "
+                    f"cleaning up within {wait:.0f}s; provider left "
+                    "fail-closed (cleanup pending, no replacement built)"
+                ) from None
         self._abandoned_setup = None
-        setup.settled.wait()
 
     def _build_client(self):
         """Construct the SDK client object. Must run ON the owning loop."""
@@ -1547,7 +1627,7 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._api_url, bool(self._api_key), kwargs["timeout"])
         return Hindsight(**kwargs)
 
-    async def _aclose_client(self, client) -> None:
+    async def _aclose_client(self, client) -> bool:
         """Coroutine twin of _close_client() — close a client on the owning loop.
 
         The client's aiohttp session is bound to the loop it was constructed on
@@ -1559,9 +1639,15 @@ class HindsightMemoryProvider(MemoryProvider):
         from a caller thread, or awaited directly by loop-side cleanup that
         must not block on its own loop (the abandoned-setup path in
         _await_client_setup). Never raises.
+
+        Returns True when *client* is released (or was None); False when the
+        close attempt itself failed. Callers that must guarantee
+        cleanup-before-replacement (the abandoned-setup handshake) use that
+        outcome to keep the client tracked and fail closed — coroutine
+        completion alone never counts as cleanup.
         """
         if client is None:
-            return
+            return True
         try:
             if self._mode == "local_embedded":
                 # HindsightEmbedded.close() delegates to its sync client.close().
@@ -1584,8 +1670,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     result = aclose()
                     if inspect.isawaitable(result):
                         await result
+            return True
         except Exception:
             logger.debug("Hindsight: closing a displaced client failed", exc_info=True)
+            return False
 
     def _close_client(self, client) -> None:
         """Close a client this provider is done with, on the owning loop.
@@ -2915,6 +3003,16 @@ class HindsightMemoryProvider(MemoryProvider):
         client = self._client
         self._client = None
         self._close_client(client)
+        # An abandoned setup may still track a late client its coroutine
+        # FAILED to close. Nobody will join that generation anymore, so
+        # shutdown makes the bounded owning-loop close attempt itself —
+        # the reference must not die with the provider still live. (An
+        # abandoned coroutine still mid-build is left alone: it closes its
+        # own client when it completes, and shutdown never waits on it.)
+        setup = self._abandoned_setup
+        if setup is not None:
+            self._abandoned_setup = None
+            self._close_client(setup.tracked_client())
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin
