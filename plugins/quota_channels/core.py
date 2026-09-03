@@ -102,6 +102,7 @@ QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
 # pending usage-limit resets stack one full wallet each, so the stride only
 # breaks past ~99k simultaneous resets — far off any real account.
 _RANK_BUCKET_STRIDE = 1e9
+_NEVER_SCORED_RANK = 2 * _RANK_BUCKET_STRIDE
 
 
 class QuotaChannelsError(Exception):
@@ -247,12 +248,7 @@ def save_wallet_state(
     wallet_high_water: int,
 ) -> None:
     """Persist wallet Discord mappings without advancing quota success or readings."""
-    prior = load_state()
-    state: Dict[str, Any] = {}
-    if "last_quota_success" in prior:
-        state["last_quota_success"] = prior["last_quota_success"]
-    if isinstance(prior.get("readings"), Mapping):
-        state["readings"] = prior["readings"]
+    state = dict(load_state())
     state["zai_wallet_channels"] = dict(wallet_channels)
     state["zai_wallet_ordinals"] = dict(wallet_ordinals)
     state["zai_wallet_ordinal_high_water"] = int(wallet_high_water)
@@ -2376,14 +2372,35 @@ def run_tick(
                     if isinstance(entry, Mapping):
                         readings[key] = dict(entry)
 
-        if successes:
+        sort_participants: List[Tuple[str, str, str]] = list(successes)
+        if zai_enabled and wallet_channels:
+            success_keys = {key for _, _, key in successes}
+            for entry_id, channel_id in wallet_channels.items():
+                reading_key = zai_wallets.wallet_reading_key(entry_id)
+                if reading_key in success_keys:
+                    continue
+                ordinal = wallet_ordinals.get(entry_id)
+                if ordinal is not None:
+                    display = zai_wallets.wallet_display_label(int(ordinal))
+                else:
+                    display = reading_key
+                sort_participants.append((display, channel_id, reading_key))
+
+        if sort_participants:
             ranks = quota_display_ranks(readings, reliability)
-            entries = [
-                (label, channel_id, ranks[key]) for label, channel_id, key in successes
-            ]
+            entries: List[Tuple[str, str, float]] = []
+            for label, channel_id, key in sort_participants:
+                if key in ranks:
+                    entries.append((label, channel_id, ranks[key]))
+                elif str(key).startswith("zai:"):
+                    entries.append((label, channel_id, _NEVER_SCORED_RANK))
+                else:
+                    entries.append((label, channel_id, ranks[key]))
             sorted_channels = sort_voice_channels(
                 config, entries, headers, http_fn=http_fn
             )
+
+        if successes:
             last = save_state(
                 readings, now_fn=now_fn, wallet_state=wallet_state or None
             )

@@ -37,9 +37,9 @@ ZAI_PROVIDER_SLUG = "zai"
 
 @dataclass(frozen=True)
 class ZaiWallet:
-  entry_id: str
-  runtime_api_key: str
-  pool_label: str = ""
+    entry_id: str
+    runtime_api_key: str
+    pool_label: str = ""
 
 
 def wallet_reading_key(entry_id: str) -> str:
@@ -75,7 +75,9 @@ def read_zai_pool_raw(hermes_home) -> Tuple[Optional[List[Mapping[str, Any]]], b
     """Return (pool_entries, pool_unreadable).
 
     ``pool_entries`` is None when unreadable. An empty list means a readable
-    pool with an explicit empty ``credential_pool.zai`` list.
+    pool with an explicit empty ``credential_pool.zai`` list. Any non-mapping
+    row in a non-empty list marks the snapshot unreadable for destructive
+    reconcile while still returning valid mapping rows for enumeration.
     """
     auth_path = hermes_home / "auth.json"
     if not auth_path.exists():
@@ -99,32 +101,39 @@ def read_zai_pool_raw(hermes_home) -> Tuple[Optional[List[Mapping[str, Any]]], b
     if not entries:
         return [], False
     cleaned: List[Mapping[str, Any]] = []
+    has_malformed = False
     for entry in entries:
         if isinstance(entry, Mapping):
             cleaned.append(entry)
+        else:
+            has_malformed = True
     if not cleaned:
         return None, True
-    return cleaned, False
+    return cleaned, has_malformed
 
 
 def enumerate_zai_wallets(hermes_home) -> Tuple[List[ZaiWallet], bool]:
     """Enumerate unique Z.AI wallets in stable pool order.
 
     First-seen entry id wins when two pool rows share the exact same runtime
-    key. When the readable pool is empty, a single ``secrets/zai.env`` key
-    becomes a synthetic ``legacy-env`` wallet.
+    key (dedupe only; not malformed). Mapping rows missing id or runtime key
+    mark the snapshot unreadable for destructive reconcile. When the readable
+    pool is empty, a single ``secrets/zai.env`` key becomes a synthetic
+    ``legacy-env`` wallet.
     """
     pool_entries, pool_unreadable = read_zai_pool_raw(hermes_home)
 
     wallets: List[ZaiWallet] = []
     seen_keys: Set[str] = set()
-    if not pool_unreadable and pool_entries is not None:
+    if pool_entries is not None:
         for entry in pool_entries:
             entry_id = str(entry.get("id") or "").strip()
             if not entry_id:
+                pool_unreadable = True
                 continue
             runtime_key = _runtime_key_from_pool_entry(entry)
             if not runtime_key:
+                pool_unreadable = True
                 continue
             if runtime_key in seen_keys:
                 continue

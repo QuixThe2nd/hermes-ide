@@ -9,7 +9,7 @@ from datetime import datetime
 import pytest
 
 from plugins.quota_channels import core as core
-from plugins.quota_channels.core import run_tick, state_path, validate_quota_config
+from plugins.quota_channels.core import run_tick, save_wallet_state, state_path, validate_quota_config
 from plugins.quota_channels.zai_wallets import (
     LEGACY_ENV_WALLET_ID,
     ZaiWalletError,
@@ -886,6 +886,61 @@ class TestWalletReconcileRegressions:
         assert saved["readings"]["zai"] == prior["readings"]["zai"]
         return discord, saved
 
+    def _run_partial_malformed_non_destructive_tick(
+        self, wallet_env, monkeypatch, pool_entries
+    ):
+        prior = {
+            "last_quota_success": 777,
+            "readings": {
+                wallet_reading_key("w1"): {"pct": 40, "reset_seconds": DAY, "label": "z.ai 1"},
+                wallet_reading_key("w2"): {"pct": 60, "reset_seconds": DAY, "label": "z.ai 2"},
+                "zai": {"pct": 60, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        (wallet_env / "auth.json").write_text(
+            json.dumps({"credential_pool": {"zai": pool_entries}}),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+                {"id": "c5", "position": 14},
+            ],
+            existing={"c3", "extra", "c5"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3", "grok": "c5"},
+                "enabled_providers": ["zai", "grok"],
+            }
+        )
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {"grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY)},
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        blob = json.dumps(result)
+        assert "sk-secret" not in blob
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        return discord, saved
+
     def test_mapping_shaped_garbage_pool_non_destructive(self, wallet_env, monkeypatch):
         self._run_non_destructive_grok_tick(
             wallet_env, monkeypatch, [{}, {"foo": 1}]
@@ -895,3 +950,223 @@ class TestWalletReconcileRegressions:
         self._run_non_destructive_grok_tick(
             wallet_env, monkeypatch, [{"id": "w1"}]
         )
+
+    @pytest.mark.parametrize(
+        "pool_entries",
+        [
+            pytest.param(
+                [{"id": "w1", "access_token": "k1"}, "garbage"],
+                id="valid_plus_non_mapping",
+            ),
+            pytest.param(
+                [{"id": "w1", "access_token": "k1"}, {"id": "w2"}],
+                id="valid_plus_id_without_key",
+            ),
+            pytest.param(
+                [{"id": "w1", "access_token": "k1"}, {"access_token": "k2"}],
+                id="valid_plus_key_without_id",
+            ),
+        ],
+    )
+    def test_partial_malformed_pool_enumerates_valid_and_blocks_deletes(
+        self, wallet_env, monkeypatch, pool_entries
+    ):
+        _write_pool(wallet_env, pool_entries)
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert unreadable
+        assert len(wallets) == 1
+        assert wallets[0].entry_id == "w1"
+        self._run_partial_malformed_non_destructive_tick(
+            wallet_env, monkeypatch, pool_entries
+        )
+
+    def test_duplicate_key_pool_remains_readable(self, wallet_env):
+        _write_pool(
+            wallet_env,
+            [
+                {"id": "a1", "access_token": "same-key", "label": "first"},
+                {"id": "a2", "access_token": "same-key", "label": "second"},
+            ],
+        )
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert not unreadable
+        assert len(wallets) == 1
+
+
+class TestWalletSortParticipants:
+    def _capture_sort_entries(self, monkeypatch):
+        captured = []
+
+        def _spy(config, entries, headers, http_fn=core.default_http):
+            captured.extend(entries)
+            return False
+
+        monkeypatch.setattr(core, "sort_voice_channels", _spy)
+        return captured
+
+    def _two_wallet_prior_state(self, w2_prior_pct=55):
+        return {
+            "last_quota_success": 999,
+            "readings": {
+                wallet_reading_key("w1"): {
+                    "pct": 10,
+                    "reset_seconds": DAY,
+                    "label": "z.ai 1",
+                },
+                wallet_reading_key("w2"): {
+                    "pct": w2_prior_pct,
+                    "reset_seconds": DAY,
+                    "label": "z.ai 2",
+                },
+                "zai": {"pct": w2_prior_pct, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+
+    def test_failed_wallet_with_prior_reading_included_in_sort(
+        self, wallet_env, monkeypatch
+    ):
+        _write_pool(
+            wallet_env,
+            [
+                {"id": "w1", "access_token": "sk-secret-wallet-aaa"},
+                {"id": "w2", "access_token": "sk-secret-wallet-bbb"},
+            ],
+        )
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(
+            json.dumps(self._two_wallet_prior_state()), encoding="utf-8"
+        )
+        real = core._zai_quota_metrics
+
+        def flaky(http_fn=None, now_fn=None, api_key=None):
+            if api_key == "sk-secret-wallet-bbb":
+                raise core.QuotaChannelsError("z.ai usage endpoint returned 500")
+            return real(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
+
+        monkeypatch.setattr(core, "_zai_quota_metrics", flaky)
+        captured = self._capture_sort_entries(monkeypatch)
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+            ],
+            existing={"c3", "extra"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        sort_ids = [cid for _, cid, _ in captured]
+        assert sort_ids == ["c3", "extra"]
+        ranks = {cid: rank for _, cid, rank in captured}
+        assert ranks["extra"] != 2 * 1e9
+        assert len(captured) == 2
+
+    def test_never_scored_failed_wallet_sorts_to_tail(
+        self, wallet_env, monkeypatch
+    ):
+        _write_pool(
+            wallet_env,
+            [
+                {"id": "w1", "access_token": "sk-secret-wallet-aaa"},
+                {"id": "w2", "access_token": "sk-secret-wallet-bbb"},
+            ],
+        )
+        prior = {
+            "last_quota_success": 999,
+            "readings": {
+                wallet_reading_key("w1"): {
+                    "pct": 10,
+                    "reset_seconds": DAY,
+                    "label": "z.ai 1",
+                },
+                "zai": {"pct": 10, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        real = core._zai_quota_metrics
+
+        def flaky(http_fn=None, now_fn=None, api_key=None):
+            if api_key == "sk-secret-wallet-bbb":
+                raise core.QuotaChannelsError("z.ai usage endpoint returned 500")
+            return real(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
+
+        monkeypatch.setattr(core, "_zai_quota_metrics", flaky)
+        captured = self._capture_sort_entries(monkeypatch)
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+            ],
+            existing={"c3", "extra"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3"},
+                "enabled_providers": ["zai"],
+            }
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        sort_ids = [cid for _, cid, _ in captured]
+        assert sort_ids == ["c3", "extra"]
+        ranks = {cid: rank for _, cid, rank in captured}
+        assert ranks["c3"] < ranks["extra"]
+        assert ranks["extra"] == 2 * 1e9
+
+        captured.clear()
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_100.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert [cid for _, cid, _ in captured] == ["c3", "extra"]
+
+
+class TestSaveWalletState:
+    def test_save_wallet_state_preserves_unknown_fields(self, wallet_env):
+        prior = {
+            "last_quota_success": 4242,
+            "readings": {"zai": {"pct": 50, "reset_seconds": DAY, "label": "z.ai"}},
+            "zai_wallet_channels": {"old": "c9"},
+            "zai_wallet_ordinals": {"old": 1},
+            "zai_wallet_ordinal_high_water": 1,
+            "future_flag": True,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        save_wallet_state({"w1": "c3"}, {"w1": 2}, 2)
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["future_flag"] is True
+        assert saved["last_quota_success"] == 4242
+        assert saved["readings"] == prior["readings"]
+        assert saved["zai_wallet_channels"] == {"w1": "c3"}
+        assert saved["zai_wallet_ordinals"] == {"w1": 2}
+        assert saved["zai_wallet_ordinal_high_water"] == 2
