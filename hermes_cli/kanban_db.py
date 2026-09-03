@@ -735,6 +735,75 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "kanban.db"
 
 
+def _live_install_root() -> Optional[Path]:
+    """Best-effort path of the REAL installed Hermes root, ignoring env.
+
+    Fresh-process test helpers override ``HOME``/``HERMES_HOME`` to isolate
+    themselves, which makes ``get_default_hermes_root()`` useless for
+    detecting "am I about to touch the live board?": it would happily return
+    the temp home. The passwd database still knows the account's true home,
+    so the live install root can be recovered on POSIX regardless of env
+    overrides. Returns None when the platform gives nothing usable (the
+    caller's remaining checks then apply unchanged).
+    """
+    try:
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA", "").strip()
+            if not base:
+                return None
+            return Path(base) / "hermes"
+        import pwd
+
+        pw_dir = pwd.getpwuid(os.getuid()).pw_dir  # windows-footgun: ok (POSIX branch, gated by sys.platform above)
+        if not pw_dir:
+            return None
+        return Path(pw_dir) / ".hermes"
+    except Exception:
+        return None
+
+
+def require_disposable_board(
+    expect_under: Optional[str | Path] = None,
+) -> Path:
+    """Fail closed unless the resolved Kanban DB is disposable.
+
+    Guard for fresh-process test helpers and worktree reproductions that
+    create tasks or spawn workers in child processes. Call it before the
+    first create/heartbeat/complete. Two traps make silent live-board
+    writes easy:
+
+      * forgetting the isolation env entirely resolves the live install;
+      * setting ``HERMES_HOME`` to a *profile* path inside the real install
+        still lands on the shared root (:func:`kanban_home` maps profiles
+        up by design), so "temporary home routing" is not automatically
+        disposable.
+
+    Raises RuntimeError when the resolved DB lives under the real installed
+    root (default OR named boards), or — when ``expect_under`` is given —
+    outside that directory. Returns the resolved DB path on success.
+    """
+    db = kanban_db_path().resolve()
+    live_root = _live_install_root()
+    if live_root is not None:
+        live_root = live_root.resolve()
+        if db == live_root or live_root in db.parents:
+            raise RuntimeError(
+                f"Refusing to touch the live Kanban board ({db}). Point "
+                "this process at a disposable home first: set "
+                "HERMES_KANBAN_HOME (and optionally HERMES_KANBAN_DB) to a "
+                "temp directory before creating tasks or spawning workers."
+            )
+    if expect_under is not None:
+        root = Path(expect_under).expanduser().resolve()
+        if not (db == root or root in db.parents):
+            raise RuntimeError(
+                f"Resolved Kanban DB {db} is outside the expected "
+                f"disposable root {root}. Check HERMES_KANBAN_HOME / "
+                "HERMES_KANBAN_DB routing for this process."
+            )
+    return db
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
