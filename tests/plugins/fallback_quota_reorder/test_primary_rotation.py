@@ -188,10 +188,12 @@ class TestPrimaryPromotion:
         assert providers == ["xai-oauth", "zai", "openrouter"]
 
 
-class TestUnlimitedPrimaryRotation:
-    """The unlimited openrouter/stealth/ox-alpha route competes for primary."""
+class TestRetiredOxAlphaPrimaryRotation:
+    """The retired openrouter/stealth/ox-alpha route never competes for
+    primary: it is unscored, never promoted, and reinserts at the chain end
+    rather than by a synthetic score."""
 
-    def test_unlimited_route_promotes_and_displaced_reinserts(
+    def test_retired_route_is_not_promoted_and_tails_unscored(
         self, monkeypatch, tmp_path: Path
     ):
         names = _names(
@@ -212,21 +214,22 @@ class TestUnlimitedPrimaryRotation:
 
         result = run_reorder(config_path=quota_config)
 
-        # synthetic full wallet at the reference horizon: exactly 1.0, so
-        # ox-alpha beats codex (0.9) and the current primary kimi (0.8)
+        # the retired route once scored a synthetic 1.0 and won this race;
+        # now the best real wallet (codex 0.9) is promoted instead
         assert result["primary_desired"] == PrimarySlot(
-            provider="openrouter", model="stealth/ox-alpha"
+            provider="openai-codex", model="codex"
         )
         assert result["would_change"] is True
         loaded = load_config()
-        assert loaded["model"]["provider"] == "openrouter"
-        assert loaded["model"]["default"] == "stealth/ox-alpha"
+        assert loaded["model"]["provider"] == "openai-codex"
+        assert loaded["model"]["default"] == "codex"
         providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
-        # the promoted entry graduates out of the chain; displaced kimi (0.8)
-        # reinserts ahead of the unscored tail but behind codex (0.9)
-        assert providers == ["openai-codex", "kimi-coding", "xai-oauth"]
+        # displaced kimi (0.8) reinserts by its real score; the retired
+        # route keeps its unscored-tail position ahead of grok only by
+        # original index, with no synthetic quota
+        assert providers == ["kimi-coding", "openrouter", "xai-oauth"]
 
-    def test_reliability_derates_an_already_primary_unlimited_route(
+    def test_retired_primary_is_displaced_and_reenters_at_chain_end(
         self, monkeypatch, tmp_path: Path
     ):
         names = _names(codex=f"Codex: 90% {BULLET} 7d left")  # 0.9
@@ -240,6 +243,8 @@ class TestUnlimitedPrimaryRotation:
             model={"provider": "openrouter", "default": "stealth/ox-alpha"},
         )
         _patch_channel_names(monkeypatch, names)
+        # an untracked primary has no reading, so no reliability rate can
+        # keep it in the slot — the ledger entry is loaded and then unused
         monkeypatch.setattr(
             core,
             "rates_for_providers",
@@ -250,16 +255,17 @@ class TestUnlimitedPrimaryRotation:
 
         result = run_reorder(config_path=quota_config)
 
-        # derated ox-alpha (1.0 * 0.5 = 0.5) loses the slot to codex (0.9)
+        # every scored winner outranks an untracked one: codex (0.9) takes
+        # the slot from the retired route at any uptime
         assert result["primary_desired"] == PrimarySlot(
             provider="openai-codex", model="codex"
         )
         loaded = load_config()
         assert loaded["model"]["provider"] == "openai-codex"
         providers = [entry["provider"] for entry in get_fallback_chain(loaded)]
-        # displaced ox-alpha reenters by its derated synthetic 0.5, ahead
-        # of the unscored tail
-        assert providers == ["openrouter", "xai-oauth"]
+        # the displaced retired route reenters by score 0 — at the END of
+        # the chain, never by a synthetic reading
+        assert providers == ["xai-oauth", "openrouter"]
 
 
 class TestLowQuotaPrimary:

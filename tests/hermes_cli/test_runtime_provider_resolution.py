@@ -594,6 +594,324 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_promoted_custom_fallback_key_env_authenticates_on_primary_path(monkeypatch):
+    """A custom fallback promoted to the primary ``model:`` section by the
+    v41 Ox Alpha retirement keeps authenticating through key_env.
+
+    On the fallback path ``resolve_entry_api_key`` dereferences the env
+    name; after promotion the reference sits on the generic primary
+    custom-endpoint path, which used to read only an inline ``model.api_key``
+    and degraded to "no-key-required" → 401 on the first request. The real
+    resolution path must dereference the reference in memory (the secret is
+    never written back into config).
+    """
+    promoted_model_cfg = {
+        "default": "my-model",
+        "provider": "custom",
+        "base_url": "http://localhost:8000/v1",
+        "api_mode": "anthropic",
+        "key_env": "MY_GATEWAY_KEY",
+    }
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: promoted_model_cfg)
+    monkeypatch.setattr(rp, "load_config", lambda: {"providers": {}, "custom_providers": []})
+    monkeypatch.setattr(
+        rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False)
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("MY_GATEWAY_KEY", "sk-gateway-from-env")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-must-not-leak")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://localhost:8000/v1"
+    assert resolved["api_key"] == "sk-gateway-from-env"
+    # Resolution is read-only: the config dict still carries the env NAME,
+    # never the dereferenced secret.
+    assert promoted_model_cfg["key_env"] == "MY_GATEWAY_KEY"
+    assert "api_key" not in promoted_model_cfg
+
+
+def test_promoted_custom_fallback_api_key_env_alias_resolves(monkeypatch):
+    """``api_key_env`` (the documented alias) dereferences identically."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "default": "my-model",
+            "provider": "custom",
+            "base_url": "https://my-gateway.example/v1",
+            "api_key_env": "GW_KEY",
+        },
+    )
+    monkeypatch.setattr(rp, "load_config", lambda: {"providers": {}, "custom_providers": []})
+    monkeypatch.setattr(
+        rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False)
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("GW_KEY", "sk-alias-from-env")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "sk-alias-from-env"
+
+
+def test_promoted_custom_fallback_inline_api_key_still_wins(monkeypatch):
+    """Precedence is unchanged: an inline ``model.api_key`` beats key_env."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "default": "my-model",
+            "provider": "custom",
+            "base_url": "https://my-gateway.example/v1",
+            "api_key": "sk-inline",
+            "key_env": "GW_KEY",
+        },
+    )
+    monkeypatch.setattr(rp, "load_config", lambda: {"providers": {}, "custom_providers": []})
+    monkeypatch.setattr(
+        rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False)
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("GW_KEY", "sk-env-must-lose")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_key"] == "sk-inline"
+
+
+def test_promoted_custom_fallback_unresolvable_key_env_keeps_placeholder(monkeypatch):
+    """A key_env naming an unset variable must not crash resolution — the
+    endpoint falls back to the same no-key-required placeholder as before."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "default": "my-model",
+            "provider": "custom",
+            "base_url": "https://my-gateway.example/v1",
+            "key_env": "GW_KEY_DEFINITELY_UNSET",
+        },
+    )
+    monkeypatch.setattr(rp, "load_config", lambda: {"providers": {}, "custom_providers": []})
+    monkeypatch.setattr(
+        rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False)
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("GW_KEY_DEFINITELY_UNSET", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "no-key-required"
+
+
+class TestPromotedOfficialOpenRouterFallbackCredential:
+    """Regression (brief 5, defect 3): a promoted OFFICIAL OpenRouter
+    fallback (no custom endpoint — the hosted route) carrying ``key_env`` or
+    ``api_key_env`` used to lose its configured credential: ``cfg_api_key``
+    was computed but omitted from the official-host candidate list, so the
+    runtime fell straight to the ambient env keys. Candidate order is:
+    explicit override, configured reference, ambient OPENROUTER, ambient
+    OPENAI — and the dereferenced secret lives in memory only."""
+
+    @staticmethod
+    def _promoted_cfg(key_field: str) -> dict:
+        cfg = {
+            "default": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            key_field: "PROMOTED_ROUTE_KEY",
+        }
+        return cfg
+
+    def _resolve(self, monkeypatch, model_cfg, requested="openrouter", **kwargs):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
+        # The openrouter credential pool ingests an ambient OPENROUTER_API_KEY
+        # and would short-circuit resolution before the candidate list under
+        # test — neutralize it, as every other candidate-list test here does.
+        monkeypatch.setattr(
+            rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False)
+        )
+        monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        return rp.resolve_runtime_provider(requested=requested, **kwargs)
+
+    def test_key_env_resolves_named_credential(self, monkeypatch):
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-promoted-from-env")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resolved = self._resolve(monkeypatch, self._promoted_cfg("key_env"))
+
+        assert resolved["provider"] == "openrouter"
+        assert resolved["base_url"].startswith("https://openrouter.ai")
+        assert resolved["api_key"] == "sk-promoted-from-env"
+
+    def test_api_key_env_alias_resolves_named_credential(self, monkeypatch):
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-alias-from-env")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resolved = self._resolve(monkeypatch, self._promoted_cfg("api_key_env"))
+
+        assert resolved["api_key"] == "sk-alias-from-env"
+
+    def test_configured_reference_beats_ambient_openrouter_key(self, monkeypatch):
+        """Both the configured and the ambient OpenRouter key exist — the
+        route's own credential wins."""
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-configured-wins")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-ambient-must-lose")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resolved = self._resolve(monkeypatch, self._promoted_cfg("key_env"))
+
+        assert resolved["api_key"] == "sk-configured-wins"
+
+    def test_missing_configured_env_falls_through_to_ambient(self, monkeypatch):
+        """An empty/unresolved configured reference falls through — it never
+        blocks the ambient keys."""
+        monkeypatch.delenv("PROMOTED_ROUTE_KEY", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-ambient-fallback")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resolved = self._resolve(monkeypatch, self._promoted_cfg("key_env"))
+
+        assert resolved["api_key"] == "sk-ambient-fallback"
+
+    def test_missing_configured_env_falls_through_to_openai_key(self, monkeypatch):
+        monkeypatch.delenv("PROMOTED_ROUTE_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-last-resort")
+
+        resolved = self._resolve(monkeypatch, self._promoted_cfg("key_env"))
+
+        assert resolved["api_key"] == "sk-openai-last-resort"
+
+    def test_explicit_override_beats_configured_reference(self, monkeypatch):
+        """Candidate order: the explicit runtime override stays first."""
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-configured")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-ambient")
+
+        resolved = self._resolve(
+            monkeypatch,
+            self._promoted_cfg("key_env"),
+            explicit_api_key="sk-explicit-one-off",
+        )
+
+        assert resolved["api_key"] == "sk-explicit-one-off"
+
+    def test_inline_api_key_still_wins_over_key_env(self, monkeypatch):
+        """``resolve_entry_api_key`` precedence: inline ``model.api_key``
+        first, the named reference second."""
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-from-env")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        model_cfg = {
+            "default": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "api_key": "sk-inline",
+            "key_env": "PROMOTED_ROUTE_KEY",
+        }
+        resolved = self._resolve(monkeypatch, model_cfg)
+
+        assert resolved["api_key"] == "sk-inline"
+
+    def test_resolved_secret_is_never_persisted_into_config(self, monkeypatch):
+        """Resolution is read-only: the config dict keeps the env NAME (a
+        secret reference, never the resolved value)."""
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-must-not-be-written")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        model_cfg = self._promoted_cfg("key_env")
+        self._resolve(monkeypatch, model_cfg)
+
+        assert model_cfg["key_env"] == "PROMOTED_ROUTE_KEY"
+        assert "api_key" not in model_cfg
+
+
+class TestCustomEndpointCredentialBehaviorUnchanged:
+    """Regression (brief 5, item 6): adding the configured credential to the
+    OFFICIAL OpenRouter candidate list must not disturb the custom-endpoint
+    branch — the custom path keeps its own ``use_config_base_url`` gate, and
+    ambient OpenRouter/OpenAI keys stay host-gated."""
+
+    def test_custom_endpoint_resolves_config_key_env_as_before(self, monkeypatch):
+        """A promoted custom endpoint (non-OpenRouter host) still
+        authenticates through its ``key_env`` on the custom branch."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "default": "my-model",
+                "provider": "custom",
+                "base_url": "https://gateway.example/v1",
+                "key_env": "CUSTOM_ENDPOINT_KEY",
+            },
+        )
+        monkeypatch.setattr(rp, "load_config", lambda: {"providers": {}, "custom_providers": []})
+        monkeypatch.setattr(
+            rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False)
+        )
+        monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("CUSTOM_ENDPOINT_KEY", "sk-custom-endpoint-env")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-must-not-win")
+
+        resolved = rp.resolve_runtime_provider(requested="custom")
+
+        assert resolved["provider"] == "custom"
+        assert resolved["base_url"] == "https://gateway.example/v1"
+        assert resolved["api_key"] == "sk-custom-endpoint-env"
+
+    def test_openrouter_key_never_leaks_to_custom_endpoint(self, monkeypatch):
+        """The ambient OpenRouter key stays host-gated on the custom branch:
+        an unrelated local endpoint still gets the no-key placeholder."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "default": "my-model",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:8100/v1",
+            },
+        )
+        monkeypatch.setattr(rp, "load_config", lambda: {"providers": {}, "custom_providers": []})
+        monkeypatch.setattr(
+            rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False)
+        )
+        monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-must-not-leak")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-must-not-leak")
+
+        resolved = rp.resolve_runtime_provider(requested="custom")
+
+        assert resolved["base_url"] == "http://127.0.0.1:8100/v1"
+        assert resolved["api_key"] == "no-key-required"
+
+
 def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monkeypatch):
     """Regression for #14676: /model can select Custom while YAML still lists another provider."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")

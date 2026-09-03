@@ -52,7 +52,7 @@ class TestRunReorderWritePath:
         names = default_channel_names()
         # already in inverse-time desired order — 0.9/0.8/0.7/0.6 at the
         # 7d reference horizon, cursor's 25d reset dilutes it to ~0.24, and
-        # plain openrouter (not ox-alpha) tails unscored — so nothing moves
+        # plain openrouter tails unscored — so nothing moves
         entries = [
             {"provider": "openai-codex", "model": "codex"},
             {"provider": "kimi-coding", "model": "kimi"},

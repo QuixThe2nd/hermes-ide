@@ -1,6 +1,6 @@
 # quota_channels
 
-Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, **Grok**, and **OpenRouter** under a **Models** category. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex, z.ai, and Cursor, and pending usage-limit resets for Codex, Grok, and z.ai — all in the same channel name. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
+Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, and **Grok** under a **Models** category. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex, z.ai, and Cursor, and pending usage-limit resets for Codex, Grok, and z.ai — all in the same channel name. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
 
 ## What it does
 
@@ -18,11 +18,7 @@ Voice channels are ordered by the **same policy as `fallback_quota_reorder`** (t
 
 `score = (quota_frac × 168/hours_remaining + Σ_credits 168/hours_credit_expires) × rate_24h × rate_1h`
 
-where the uptime factors come from the fallback reliability ledger (`HERMES_HOME/fallback_quota_reorder_reliability.jsonl`) with its usual sample thresholds — a provider with too few samples stays neutral at 1.0. Discord order therefore uses exactly the score failover uses, **pending usage-limit resets included for Codex, Grok, and z.ai**: each pending reset adds one full wallet on **its own expiry clock**, so a `0% • 1 reset in 1h` row outranks a `100% • 7d left` one. For Codex and z.ai the per-credit clocks come from the precise state row (`reset_expiry_horizons`) — two credits expiring in 3d and 9d score `168/72 + 168/216`, never `2 × 168/72`; the single `in <t>` countdown the channel shows is the **earliest** expiry and is display-only. Grok reports one soonest token expiry, which each of its resets spends on (the legacy single-clock shape — also what a Codex or z.ai row without the richer list keeps meaning). A reset whose expiry is unknown adds nothing to the score — the usage-reset countdown is never borrowed as a stand-in, because urgency would not be measurable — but it still renders as a count and still keeps a 0% wallet out of the low-quota sink. The reset counts, the display expiry, and the per-credit horizons are persisted in `quota_channels_state.json` alongside each reading (`reset_count`, `reset_expiry_seconds`, `reset_expiry_horizons`) so the fallback reorder scores the same wallet from precise state as from the channel name; rows without a resets API keep the remaining term alone. Entries below 5% with no pending resets sink behind all healthy entries (still by score among themselves) — a 0% wallet with a pending reset is treated as spendable capacity and stays healthy — and ties keep the spec order (Codex, Kimi, z.ai, Cursor, Grok, OpenRouter). Quota keys map to routing providers `codex→openai-codex`, `kimi→kimi-coding`, `zai→zai`, `cursor→cursor`, `grok→xai-oauth`, `openrouter→openrouter`. The current primary model stays in the display and simply sorts by its own score.
-
-### The virtual OpenRouter row
-
-`OpenRouter` is a virtual row for the unlimited Ox Alpha model (`openrouter/stealth/ox-alpha`). There is no quota API to call: the channel carries the managed name `OpenRouter: 100% • Unlimited`, and its state reading is a synthetic full wallet — 100% against exactly 168 hours — so with neutral uptime it scores exactly 1.0 and observed uptime derates it through the same factors as everyone else.
+where the uptime factors come from the fallback reliability ledger (`HERMES_HOME/fallback_quota_reorder_reliability.jsonl`) with its usual sample thresholds — a provider with too few samples stays neutral at 1.0. Discord order therefore uses exactly the score failover uses, **pending usage-limit resets included for Codex, Grok, and z.ai**: each pending reset adds one full wallet on **its own expiry clock**, so a `0% • 1 reset in 1h` row outranks a `100% • 7d left` one. For Codex and z.ai the per-credit clocks come from the precise state row (`reset_expiry_horizons`) — two credits expiring in 3d and 9d score `168/72 + 168/216`, never `2 × 168/72`; the single `in <t>` countdown the channel shows is the **earliest** expiry and is display-only. Grok reports one soonest token expiry, which each of its resets spends on (the legacy single-clock shape — also what a Codex or z.ai row without the richer list keeps meaning). A reset whose expiry is unknown adds nothing to the score — the usage-reset countdown is never borrowed as a stand-in, because urgency would not be measurable — but it still renders as a count and still keeps a 0% wallet out of the low-quota sink. The reset counts, the display expiry, and the per-credit horizons are persisted in `quota_channels_state.json` alongside each reading (`reset_count`, `reset_expiry_seconds`, `reset_expiry_horizons`) so the fallback reorder scores the same wallet from precise state as from the channel name; rows without a resets API keep the remaining term alone. Entries below 5% with no pending resets sink behind all healthy entries (still by score among themselves) — a 0% wallet with a pending reset is treated as spendable capacity and stays healthy — and ties keep the spec order (Codex, Kimi, z.ai, Cursor, Grok). Quota keys map to routing providers `codex→openai-codex`, `kimi→kimi-coding`, `zai→zai`, `cursor→cursor`, `grok→xai-oauth`. The current primary model stays in the display and simply sorts by its own score.
 
 ## Configuration
 
@@ -40,25 +36,23 @@ quota_channels:
     zai: "VOICE_CHANNEL_ID"
     cursor: "VOICE_CHANNEL_ID"
     grok: "VOICE_CHANNEL_ID"
-    openrouter: "VOICE_CHANNEL_ID"
-  enabled_providers:             # optional; default = the wired rows
+  enabled_providers:             # optional; default = every wired row
     codex: true
     kimi: true
     zai: true
     cursor: true
     grok: true
-    openrouter: true
 ```
 
 `enabled_providers` may also be a list, e.g. `["codex", "kimi"]`.
 
-**Upgrade note:** a config written before OpenRouter existed (the original five channel IDs, no `enabled_providers`) keeps validating and running unchanged; the OpenRouter row auto-enables as soon as its channel ID is wired. An explicit `enabled_providers` list or map still controls every row, OpenRouter included.
+**Upgrade note:** a config that still carries a `channel_ids.openrouter` entry (the retired virtual row) keeps validating and running unchanged; the leftover key activates nothing and can be deleted whenever convenient.
 
 **Upgrade note:** Updating the plugin automatically enriches existing quota channels for Codex, z.ai, and Cursor with a `<compact> tok/7d` segment — no config changes required.
 
 ## Rolling 7-day token enrichment
 
-Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request. OpenRouter is virtual — no quota or token HTTP request at all.
+Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request.
 
 | Provider | Source | Notes |
 |----------|--------|-------|
@@ -66,7 +60,6 @@ Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel
 | z.ai | `GET …/model-usage` with UTC `startTime`/`endTime` as `yyyy-MM-dd HH:mm:ss` | HTTP 200 with empty body is an error, not zero |
 | Cursor | `POST …/GetAggregatedUsageEvents` (epoch-ms strings, now−7d..now) | Total = input + output only; cache tokens excluded |
 | Kimi, Grok | — | Quota-only channel names; no token HTTP call |
-| OpenRouter | — | Virtual unlimited row; managed name, no HTTP call |
 
 If a token fetch fails, the channel is still renamed with fresh quota data. When the current name already contains a parseable `tok/7d` segment, that segment is preserved; otherwise the name is quota-only. Token failures never block other providers, sorting, or the category update. Quota fetch failures leave that channel completely unchanged.
 

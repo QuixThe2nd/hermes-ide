@@ -508,9 +508,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Synced against https://opencode.ai/docs/zen/ + live GET /zen/v1/models
     # (2026-08-20). Zen/Go are _LIVE_FIRST_PICKER_PROVIDERS, so this list is a
     # discovery floor — live entries lead in the picker and stale curated
-    # names never pollute the top.
+    # names never pollute the top. The retired "Ox Alpha" preview slug
+    # (x-preview-f-free) is deliberately absent: automatic product handling
+    # is retired with the preview, while a manually typed wire id still
+    # routes generically (opencode_model_api_mode / *-free keyless handling).
     "opencode-zen": [
-        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
         "kimi-k3",
         "kimi-k2.5",
         "kimi-k2.6",

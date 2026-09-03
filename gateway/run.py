@@ -31583,9 +31583,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         them back on first use and re-resolve credentials via the normal
         runtime provider resolution — api_key is never persisted to disk.
 
-        No-op when an in-memory override already exists (live state wins) or
+        No-op when an in-memory override already exists (live state wins),
         when the store has nothing persisted (e.g. the user ran /new, which
-        clears both the in-memory dict and the persisted field).
+        clears both the in-memory dict and the persisted field), or when the
+        persisted override is the retired ``openrouter/stealth/ox-alpha``
+        route (scrubbed from config by the v41 migration; a persisted
+        override must not resurrect a route whose every request now fails).
         """
         _rehydrate_state = self._peek_session_state(session_key)
         if (
@@ -31604,6 +31607,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
         if not persisted:
+            return
+        # Retired Ox Alpha route: the v41 config migration scrubbed
+        # openrouter/stealth/ox-alpha from config.yaml because every request
+        # on it now fails. A /model override persisted while the route was
+        # live must not resurrect it over the migrated (promoted) config —
+        # skip the rehydrate and keep the configured default. Exact-route
+        # match only: a custom provider/base_url serving the same model id
+        # is a different, still-valid route and keeps rehydrating.
+        from hermes_cli.fallback_config import is_retired_ox_alpha_route
+
+        if is_retired_ox_alpha_route(
+            persisted.get("provider"),
+            persisted.get("model"),
+            persisted.get("base_url"),
+        ):
+            logger.info(
+                "Skipping rehydrate of retired Ox Alpha /model override for "
+                "session=%s; using the migrated config route",
+                session_key,
+            )
             return
         override: Dict[str, Any] = {
             "model": persisted.get("model"),

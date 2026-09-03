@@ -9376,8 +9376,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         kept so the session still opens (the first turn surfaces the auth
         error instead of the resume dying).
 
-        Skips when the session has no model recorded or when the CLI was
-        launched with an explicit ``-m`` override (user intent wins).
+        Skips when the session has no model recorded, when the CLI was
+        launched with an explicit ``-m`` override (user intent wins), or when
+        the stored route is the retired ``openrouter/stealth/ox-alpha``
+        route (the v41 config migration removed it; a persisted session row
+        must not resurrect a route whose every request now fails).
         """
         stored_model = (session_meta or {}).get("model")
         if not stored_model:
@@ -9408,6 +9411,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ) or None
             except Exception:
                 stored_provider = None
+        # Retired Ox Alpha route: the v41 migration scrubbed it from
+        # config.yaml because every request on it now fails. A session row
+        # persisted while the route was live must not resurrect it over the
+        # migrated (promoted) config — skip the restore and resume on the
+        # ambient model. Exact-route match only: a custom provider/base_url
+        # serving the same model id is a different, still-valid route and
+        # keeps restoring normally.
+        from hermes_cli.fallback_config import is_retired_ox_alpha_route
+
+        if is_retired_ox_alpha_route(stored_provider, stored_model, stored_base_url):
+            return
         model_changed = stored_model != self.model
         provider_changed = bool(stored_provider) and stored_provider != self.provider
         if not model_changed and not provider_changed:

@@ -97,6 +97,19 @@ class TestOpenCodeFreeModelLists:
         from hermes_cli.models import _PROVIDER_MODELS
         assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
 
+    def test_retired_ox_alpha_not_in_curated_zen_inventories(self):
+        """The retired Ox Alpha preview slug is gone from every curated
+        picker inventory (models.py catalog + setup.py samples), so
+        authenticated Zen users can no longer select a dead model id —
+        while generic manual wire-ID handling stays intact."""
+        from hermes_cli.models import _PROVIDER_MODELS, is_opencode_zen_free_model
+        from hermes_cli.setup import _DEFAULT_PROVIDER_MODELS
+        assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-zen"]
+        assert "x-preview-f-free" not in _DEFAULT_PROVIDER_MODELS["opencode-zen"]
+        # Manual wire-ID runtime handling is retained: a typed id still
+        # classifies as a keyless Zen free slug.
+        assert is_opencode_zen_free_model("x-preview-f-free")
+
 
 class TestOpenCodeFreeRuntimeKeyless:
     """The runtime resolver pins every opencode-free model keyless."""

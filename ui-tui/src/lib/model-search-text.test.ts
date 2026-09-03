@@ -14,9 +14,9 @@ describe('modelSearchText', () => {
     expect(modelSearchText('K3')).toBe('K3 kimi-k3 kimi')
   })
 
-  it('adds ox-alpha aliases for the Ox Alpha preview wire id', () => {
-    expect(modelSearchText('x-preview-f-free')).toBe('x-preview-f-free ox-alpha ox')
-    expect(modelSearchText('X-Preview-F-Free')).toBe('X-Preview-F-Free ox-alpha ox')
+  it('does not brand the retired Ox Alpha preview wire id', () => {
+    expect(modelSearchText('x-preview-f-free')).toBe('x-preview-f-free')
+    expect(modelSearchText('X-Preview-F-Free')).toBe('X-Preview-F-Free')
   })
 })
 
@@ -38,11 +38,14 @@ describe('model picker search with aliases', () => {
     expect(ranked).toEqual([])
   })
 
-  it('surfaces the Ox Alpha preview slug when the user searches ox', () => {
+  it('does not surface the retired preview slug for codename queries', () => {
     const zenModels = ['x-preview-f-free', 'gpt-5.6-sol', 'kimi-k3']
     const ranked = fuzzyRank(zenModels, 'ox', modelSearchText).map(r => r.item)
-    expect(ranked).toContain('x-preview-f-free')
+    expect(ranked).not.toContain('x-preview-f-free')
     const rankedFull = fuzzyRank(zenModels, 'ox-alpha', modelSearchText).map(r => r.item)
-    expect(rankedFull).toContain('x-preview-f-free')
+    expect(rankedFull).not.toContain('x-preview-f-free')
+    // the wire id itself still finds the model — manually entered ids stay usable
+    const rankedId = fuzzyRank(zenModels, 'x-preview', modelSearchText).map(r => r.item)
+    expect(rankedId).toContain('x-preview-f-free')
   })
 })

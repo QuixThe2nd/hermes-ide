@@ -1483,6 +1483,18 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
+    if not cfg_api_key:
+        # A promoted fallback route (v41 Ox Alpha retirement) — or a
+        # hand-written config — may reference its credential by env-var
+        # name (``key_env`` / ``api_key_env``) instead of inlining it.
+        # Resolve the reference exactly as fallback entries do, so a custom
+        # fallback keeps authenticating after graduating to the primary
+        # ``model:`` section instead of degrading to "no-key-required" and
+        # 401ing. The resolved secret is used in memory only — never
+        # written back into config.
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        cfg_api_key = resolve_entry_api_key(model_cfg) or ""
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
@@ -1538,8 +1550,19 @@ def _resolve_openrouter_runtime(
         and base_url == (env_openrouter_base_url or "").rstrip("/")
     )
     if _is_openrouter_context:
+        # ``cfg_api_key`` is the config-resolved credential (inline
+        # ``model.api_key`` or a promoted fallback's ``key_env``/``api_key_env``
+        # reference, dereferenced above through ``resolve_entry_api_key``). The
+        # official-host branch used to omit it, so a promoted official
+        # OpenRouter fallback lost its configured credential and degraded to
+        # the ambient env keys. It slots in after an explicit runtime override
+        # and before the ambient OPENROUTER/OPENAI env keys; an empty or
+        # unresolved reference just falls through, exactly like every other
+        # candidate. The dereferenced value lives in memory only — it is never
+        # persisted, printed, or logged.
         api_key_candidates = [
             explicit_api_key,
+            cfg_api_key,
             _getenv("OPENROUTER_API_KEY"),
             _getenv("OPENAI_API_KEY"),
         ]

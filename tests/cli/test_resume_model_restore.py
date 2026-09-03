@@ -261,6 +261,86 @@ def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
     assert stub.provider == "openrouter"
 
 
+# ── retired Ox Alpha route must not be restored over migrated config ──
+
+
+def test_restore_session_model_skips_retired_ox_alpha_route():
+    """A session persisted on the retired openrouter/stealth/ox-alpha route
+    resumes on the ambient (migrated/promoted) config instead of the dead
+    route — the v41 migration scrubbed it from config.yaml, and restoring
+    the row would resurrect it."""
+    calls = {}
+
+    class _Agent:
+        def switch_model(self, **kwargs):
+            calls.update(kwargs)
+
+    stub = _make_stub(agent=_Agent())
+    stub._restore_session_model(_row(
+        model="stealth/ox-alpha",
+        model_config={
+            "gateway_runtime": {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        },
+    ))
+    assert stub.model == "ambient-model"
+    assert stub.provider == "openrouter"
+    assert stub.base_url == "https://openrouter.ai/api/v1"
+    assert calls == {}  # no in-place agent swap either
+
+
+def test_restore_session_model_skips_retired_route_billing_provider_row():
+    """billing_provider-only rows (sessions that never ran /model) with the
+    retired model id are skipped too — the model alone names the route."""
+    stub = _make_stub()
+    stub._restore_session_model({
+        "model": "stealth/ox-alpha",
+        "model_config": None,
+        "billing_provider": "openrouter",
+    })
+    assert stub.model == "ambient-model"
+    assert stub.provider == "openrouter"  # ambient, not restored
+
+
+def test_restore_session_model_custom_endpoint_same_model_id_restores(monkeypatch):
+    """Manual/custom-provider compatibility: a custom endpoint serving the
+    same model id is a DIFFERENT route — restoring it must keep working."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: "custom:localgw")
+    stub = _make_stub()
+    stub._restore_session_model(_row(
+        model="stealth/ox-alpha",
+        model_config={
+            "gateway_runtime": {
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:65534/v1",
+                "api_mode": "chat_completions",
+            },
+        },
+    ))
+    assert stub.model == "stealth/ox-alpha"
+    assert stub.provider == "custom:localgw"
+    assert stub.base_url == "http://127.0.0.1:65534/v1"
+
+
+def test_restore_session_model_named_provider_same_model_id_restores(monkeypatch):
+    """A named custom provider serving the same model id keeps restoring."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "is_routable_provider", lambda _p: True)
+    stub = _make_stub()
+    stub._restore_session_model(_row(
+        model="stealth/ox-alpha",
+        model_config={"gateway_runtime": {"provider": "my-gateway"}},
+    ))
+    assert stub.model == "stealth/ox-alpha"
+    assert stub.provider == "my-gateway"
+    assert stub.requested_provider == "my-gateway"
+
+
 # ── round trip: persist → get_session shape → restore ───────────────
 
 

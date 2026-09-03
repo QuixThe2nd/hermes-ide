@@ -141,6 +141,66 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
 
 
+def test_runner_rehydrate_skips_retired_ox_alpha_override(store_factory):
+    """A /model override persisted on the retired openrouter/stealth/ox-alpha
+    route must not be rehydrated over the migrated (promoted) config — the
+    v41 migration removed the route because every request on it now fails.
+    No override is installed and no credential re-resolution is attempted
+    for the dead provider."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "stealth/ox-alpha",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+
+    runner = _make_runner(store_factory())
+    resolutions = []
+
+    def _recorder(provider):
+        resolutions.append(provider)
+        return {"api_key": "sk-must-not-be-used"}
+
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider", _recorder
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    assert resolutions == []
+    # No session state (and therefore no override) was created — the next
+    # turn resolves from the migrated config default.
+    assert runner._peek_session_state(session_key) is None
+
+
+def test_runner_rehydrate_custom_endpoint_same_model_id_still_restores(store_factory):
+    """Manual/custom-provider compatibility: a custom endpoint serving the
+    same model id is a DIFFERENT route — its override keeps rehydrating."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "stealth/ox-alpha",
+            "base_url": "http://127.0.0.1:65534/v1",
+        },
+    )
+
+    runner = _make_runner(store_factory())
+    runner._rehydrate_session_model_override(session_key)
+
+    state = runner._peek_session_state(session_key)
+    override = state.conversation.model_override if state else None
+    assert override is not None
+    assert override["model"] == "stealth/ox-alpha"
+    assert override["base_url"] == "http://127.0.0.1:65534/v1"
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None
