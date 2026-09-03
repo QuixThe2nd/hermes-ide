@@ -1550,8 +1550,19 @@ def _resolve_openrouter_runtime(
         and base_url == (env_openrouter_base_url or "").rstrip("/")
     )
     if _is_openrouter_context:
+        # ``cfg_api_key`` is the config-resolved credential (inline
+        # ``model.api_key`` or a promoted fallback's ``key_env``/``api_key_env``
+        # reference, dereferenced above through ``resolve_entry_api_key``). The
+        # official-host branch used to omit it, so a promoted official
+        # OpenRouter fallback lost its configured credential and degraded to
+        # the ambient env keys. It slots in after an explicit runtime override
+        # and before the ambient OPENROUTER/OPENAI env keys; an empty or
+        # unresolved reference just falls through, exactly like every other
+        # candidate. The dereferenced value lives in memory only — it is never
+        # persisted, printed, or logged.
         api_key_candidates = [
             explicit_api_key,
+            cfg_api_key,
             _getenv("OPENROUTER_API_KEY"),
             _getenv("OPENAI_API_KEY"),
         ]

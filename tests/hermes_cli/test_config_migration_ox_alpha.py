@@ -14,6 +14,7 @@ runs (the driver's separate version stamp stays out of the picture), the
 same pattern TestCustomProviderCompatibility uses for floor-refused steps.
 """
 
+import copy
 import os
 import textwrap
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from hermes_cli.config import DEFAULT_CONFIG, load_config
 
 
 def _write_config(tmp_path, data):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return config_path
@@ -219,8 +221,10 @@ class TestOxAlphaPrimaryUnset:
             results = _run_v41()
 
         raw = _read_config(config_path)
-        # The unconfigured empty value used by DEFAULT_CONFIG (absent or "").
-        assert raw.get("model") in (None, "")
+        # The route is unset (canonical default → the DEFAULT_CONFIG empty
+        # value) and the route-owned keys are gone — the section itself
+        # survives retirement.
+        assert raw["model"] == {"default": ""}
         assert raw.get("fallback_providers", []) == []
         assert len(results["warnings"]) == 1
         assert "hermes model" in results["warnings"][0]
@@ -481,7 +485,9 @@ class TestOxAlphaNestedDefault:
             results = _run_v41()
 
         raw = _read_config(config_path)
-        assert raw.get("model") in (None, "")
+        # Route unset, section retained (canonical ``default`` only — the
+        # nested shape had no other keys to preserve).
+        assert raw["model"] == {"default": ""}
         assert len(results["warnings"]) == 1
         assert "hermes model" in results["warnings"][0]
 
@@ -1711,6 +1717,610 @@ class TestOxAlphaExplicitOpenRouterEndpoint:
             "my-gateway", "stealth/ox-alpha", ""
         ) is False
 
+
+class TestOxAlphaNoSurvivorKeepsModelControls:
+    """Regression (brief 5, defect 1): the no-survivor branch used to assign
+    the scalar DEFAULT_CONFIG model ('') to a dict ``model:`` section,
+    deleting every route-independent control with the route. Retirement owns
+    the ROUTE, not the section: route-owned keys leave, everything else stays
+    byte/value-identical, and only the canonical ``default`` becomes ''."""
+
+    _CONTROLS = {
+        "streaming": False,
+        "max_tokens": 1234,
+        "context_length": 200000,
+        "default_headers": {"X-Custom": "yes", "X-Trace": "abc"},
+        "lmstudio_load_mode": "always",
+        "openai_runtime": "codex_app_server",
+        "unknown_extension": {"nested": [1, 2, {"deep": True}]},
+    }
+
+    def _write(self, tmp_path, model):
+        return _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": model,
+                "fallback_providers": [
+                    # Only fallback is the retired route itself.
+                    {"provider": "openrouter", "model": "stealth/ox-alpha"},
+                ],
+            },
+        )
+
+    def test_dict_primary_keeps_every_non_route_control(self, tmp_path):
+        config_path = self._write(
+            tmp_path,
+            {
+                "default": "stealth/ox-alpha",
+                "provider": "openrouter",
+                # Route-owned fields of the retired route itself.
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-retired",
+                "key_env": "RETIRED_ROUTE_KEY",
+                "api_mode": "chat_completions",
+                # Legacy id aliases: route-owned, must not linger.
+                "model": "stealth/ox-alpha",
+                "name": "stealth/ox-alpha",
+                "api_base": "https://openrouter.ai/api/v1",
+                "reasoning_echo": True,
+                **self._CONTROLS,
+            },
+        )
+        controls_snapshot = copy.deepcopy(self._CONTROLS)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = _run_v41()
+            raw = _read_config(config_path)
+            loaded = load_config()
+            second = _run_v41()
+
+        # Route-owned keys are gone (route + every alias + promotable field);
+        # only the canonical default carries the unset value.
+        assert raw["model"] == {"default": "", **controls_snapshot}
+        assert "provider" not in raw["model"]
+        assert "base_url" not in raw["model"]
+        assert "api_base" not in raw["model"]
+        assert "model" not in raw["model"]
+        assert "name" not in raw["model"]
+        assert "api_key" not in raw["model"]
+        assert "key_env" not in raw["model"]
+        assert "api_mode" not in raw["model"]
+        assert "reasoning_echo" not in raw["model"]
+        # Controls are value-identical (deep-compared via the == above) — and
+        # the loaded view serves them unchanged.
+        assert loaded["model"]["streaming"] is False
+        assert loaded["model"]["max_tokens"] == 1234
+        assert loaded["model"]["context_length"] == 200000
+        assert loaded["model"]["default_headers"] == {"X-Custom": "yes", "X-Trace": "abc"}
+        assert loaded["model"]["lmstudio_load_mode"] == "always"
+        assert loaded["model"]["openai_runtime"] == "codex_app_server"
+        assert loaded["model"]["unknown_extension"] == controls_snapshot["unknown_extension"]
+        assert loaded["model"]["default"] == ""
+        # Warning still points at `hermes model`.
+        assert len(results["warnings"]) == 1
+        assert "hermes model" in results["warnings"][0]
+        assert raw.get("fallback_providers", []) == []
+        # Second run: no-op.
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert _read_config(config_path) == raw
+
+    def test_scalar_primary_keeps_minimal_empty_default(self, tmp_path):
+        """A scalar primary still collapses to the scalar default — the
+        minimal behavior is unchanged."""
+        config_path = self._write(tmp_path, "stealth/ox-alpha")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw.get("model") in (None, "")
+        assert len(results["warnings"]) == 1
+        assert "hermes model" in results["warnings"][0]
+        assert results["config_added"] == [
+            "removed retired 'openrouter/stealth/ox-alpha' fallback route(s)"
+        ]
+
+    def test_scalar_primary_with_sibling_controls_not_invented(self, tmp_path):
+        """No-survivor retirement never materializes unrelated defaults: a
+        scalar primary stays scalar even when other top-level sections
+        exist."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "agent": {"max_turns": 100},
+                "custom_top_level": 7,
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw.get("model") in (None, "")
+        assert raw["agent"] == {"max_turns": 100}
+        assert raw["custom_top_level"] == 7
+
+
+class TestOxAlphaEnvRefClassification:
+    """Regression (brief 5, defect 2): routes written as ``${VAR}`` /
+    ``${env:VAR}`` references load EXPANDED at runtime, but classification
+    read the literal strings — a v40 route resolving to the retired hosted
+    route could be stamped v41 and stay active forever. Classification now
+    runs on a deep-copied, env-expanded view (the same ``_expand_env_vars``
+    load_config uses); the raw file keeps its templates."""
+
+    def test_primary_refs_resolving_to_retired_route_retire(self, tmp_path):
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "${OX_MODEL_ID}",
+                    "provider": "${OX_PROVIDER}",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "OX_MODEL_ID": "stealth/ox-alpha",
+            "OX_PROVIDER": "openrouter",
+        }
+        with patch.dict(os.environ, env):
+            first = _run_v41()
+            loaded = load_config()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+
+        # The route retires exactly as the literal spelling would: the
+        # surviving fallback is promoted, no warning (a replacement exists).
+        assert after_first["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert first["config_added"]
+        assert first["warnings"] == []
+        # The raw file never sees an expanded value: only the surviving
+        # fallback's own literal route.
+        assert "${OX_MODEL_ID}" not in config_path.read_text(encoding="utf-8")
+        assert "${OX_PROVIDER}" not in config_path.read_text(encoding="utf-8")
+        # Second pass: idempotent.
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert _read_config(config_path) == after_first
+        # Sanity: without the env the same config would have been the
+        # unresolved template (kept literal), so the expansion is what made
+        # this the retired route.
+        assert loaded["model"]["default"] == "glm-4.7"
+
+    def test_primary_refs_resolving_to_custom_route_survive(self, tmp_path):
+        """A custom provider expansion is a different, valid route."""
+        original = yaml.safe_dump(
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "${OX_MODEL_ID}",
+                    "provider": "${OX_PROVIDER}",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            }
+        )
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(original, encoding="utf-8")
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "OX_MODEL_ID": "my-model",
+            "OX_PROVIDER": "custom:local",
+        }
+        with patch.dict(os.environ, env):
+            first = _run_v41()
+            loaded = load_config()
+
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert config_path.read_text(encoding="utf-8") == original
+        assert loaded["model"]["default"] == "my-model"
+        assert loaded["model"]["provider"] == "custom:local"
+
+    def test_primary_refs_resolving_to_openrouter_other_model_survive(self, tmp_path):
+        """OpenRouter + a DIFFERENT model id is not the retired route."""
+        original = yaml.safe_dump(
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "${OX_MODEL_ID}",
+                    "provider": "${OX_PROVIDER}",
+                },
+            }
+        )
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(original, encoding="utf-8")
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "OX_MODEL_ID": "openai/gpt-5.4",
+                "OX_PROVIDER": "openrouter",
+            },
+        ):
+            first = _run_v41()
+
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_unset_refs_survive_untouched(self, tmp_path):
+        """Unresolved references stay literal and are preserved
+        conservatively — an unprovable route is never retired."""
+        original = yaml.safe_dump(
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "${OX_MODEL_ID_DEFINITELY_UNSET}",
+                    "provider": "${OX_PROVIDER_DEFINITELY_UNSET}",
+                },
+            }
+        )
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(original, encoding="utf-8")
+        env = {"HERMES_HOME": str(tmp_path)}
+        for name in ("OX_MODEL_ID_DEFINITELY_UNSET", "OX_PROVIDER_DEFINITELY_UNSET"):
+            os.environ.pop(name, None)
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("OX_MODEL_ID_DEFINITELY_UNSET", None)
+            os.environ.pop("OX_PROVIDER_DEFINITELY_UNSET", None)
+            first = _run_v41()
+            loaded = load_config()
+
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert config_path.read_text(encoding="utf-8") == original
+        # load_config keeps the literal placeholder too (unresolved).
+        assert loaded["model"]["default"] == "${OX_MODEL_ID_DEFINITELY_UNSET}"
+
+    def test_env_colon_prefix_resolving_to_retired_route_retires(self, tmp_path):
+        """``${env:VAR}`` — the documented SecretRef alias the existing
+        helper supports — classifies identically."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "${env:OX_MODEL_ID}",
+                    "provider": "${env:OX_PROVIDER}",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "OX_MODEL_ID": "stealth/ox-alpha",
+                "OX_PROVIDER": "openrouter",
+            },
+        ):
+            first = _run_v41()
+            after_first = _read_config(config_path)
+
+        assert after_first["model"] == {"default": "glm-4.7", "provider": "zai"}
+        assert first["config_added"]
+        assert "${env:OX_MODEL_ID}" not in config_path.read_text(encoding="utf-8")
+
+    def test_endpoint_ref_resolving_to_official_host_retires(self, tmp_path):
+        """An endpoint reference resolving to openrouter.ai names the hosted
+        route; the same ref resolving to a custom host survives raw."""
+        retired = _write_config(
+            tmp_path / "a",
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": "stealth/ox-alpha",
+                    "provider": "openrouter",
+                    "base_url": "${OX_ENDPOINT}",
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path / "a"),
+                "OX_ENDPOINT": "https://openrouter.ai/api/v1",
+            },
+        ):
+            first = _run_v41()
+
+        assert first["config_added"]
+        assert _read_config(retired)["model"] == {
+            "default": "glm-4.7",
+            "provider": "zai",
+        }
+        assert "${OX_ENDPOINT}" not in retired.read_text(encoding="utf-8")
+
+        # Root-level endpoint alias spellings classify through the fold-in.
+        for root_key in ("base_url", "api_base"):
+            home = tmp_path / f"root-{root_key}"
+            custom = _write_config(
+                home,
+                {
+                    "_config_version": 40,
+                    "model": "stealth/ox-alpha",
+                    root_key: "${OX_ENDPOINT}",
+                },
+            )
+            with patch.dict(
+                os.environ,
+                {"HERMES_HOME": str(home), "OX_ENDPOINT": "http://127.0.0.1:9100/v1"},
+            ):
+                result = _run_v41()
+
+            assert result == {"env_added": [], "config_added": [], "warnings": []}
+            assert "${OX_ENDPOINT}" in custom.read_text(encoding="utf-8")
+
+        # ...and the root-level ref resolving to the OFFICIAL host still
+        # retires (the fold-in makes it the hosted route).
+        home = tmp_path / "root-retired"
+        hosted = _write_config(
+            home,
+            {
+                "_config_version": 40,
+                "model": "stealth/ox-alpha",
+                "base_url": "${OX_ENDPOINT}",
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(home), "OX_ENDPOINT": "https://api.openrouter.ai/api/v1"},
+        ):
+            result = _run_v41()
+
+        assert result["warnings"]
+        assert "hermes model" in result["warnings"][0]
+        # Scalar primary → scalar default; save_config strips that
+        # default-valued key (the raw template stays, folded into the
+        # model section by the save-time normalizer).
+        assert _read_config(hosted)["model"] == {"base_url": "${OX_ENDPOINT}"}
+
+    def test_fallback_refs_resolving_to_retired_route_removed_by_position(
+        self, tmp_path
+    ):
+        """Modern and legacy fallback entries written as ``${VAR}`` templates
+        retire through the same expanded view — removed at their raw
+        position, with surviving entries keeping raw templates, order, and
+        metadata."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+                "fallback_providers": [
+                    {
+                        "provider": "nous",
+                        "model": "kimi-k3",
+                        "key_env": "${NOUS_KEY_VAR}",
+                    },
+                    {
+                        "provider": "${FB_PROVIDER}",
+                        "model": "${FB_MODEL}",
+                        "priority": 5,
+                    },
+                    {
+                        "provider": "${CUSTOM_PROVIDER_VAR}",
+                        "model": "${FB_MODEL}",
+                        "base_url": "${FB_ENDPOINT}",
+                    },
+                ],
+                "fallback_model": [
+                    {
+                        "provider": "${LEGACY_PROVIDER}",
+                        "model": "${LEGACY_MODEL}",
+                        "reasoning_echo": True,
+                    },
+                    {"provider": "zai", "model": "glm-4.7"},
+                ],
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "FB_PROVIDER": "openrouter",
+                "FB_MODEL": "stealth/ox-alpha",
+                "FB_ENDPOINT": "http://127.0.0.1:9200/v1",
+                "LEGACY_PROVIDER": "auto",
+                "LEGACY_MODEL": "stealth/ox-alpha",
+            },
+        ):
+            first = _run_v41()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+
+        # Retired entries leave their RAW positions; survivors keep order,
+        # raw templates, and metadata untouched.
+        assert after_first["fallback_providers"] == [
+            {"provider": "nous", "model": "kimi-k3", "key_env": "${NOUS_KEY_VAR}"},
+            {
+                "provider": "${CUSTOM_PROVIDER_VAR}",
+                "model": "${FB_MODEL}",
+                "base_url": "${FB_ENDPOINT}",
+            },
+        ]
+        assert after_first["fallback_model"] == [{"provider": "zai", "model": "glm-4.7"}]
+        assert after_first["model"] == {
+            "default": "openai/gpt-5.4",
+            "provider": "openrouter",
+        }
+        assert first["config_added"] == [
+            "removed retired 'openrouter/stealth/ox-alpha' fallback route(s)"
+        ]
+        raw_text = config_path.read_text(encoding="utf-8")
+        assert "${NOUS_KEY_VAR}" in raw_text
+        assert "${CUSTOM_PROVIDER_VAR}" in raw_text
+        assert "${FB_ENDPOINT}" in raw_text
+        # Second pass: idempotent — the survivors still classify as
+        # non-retired (custom endpoint / unresolved template).
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+        assert _read_config(config_path) == after_first
+
+    def test_fallback_refs_resolving_to_custom_route_survive(self, tmp_path):
+        """A custom expansion (named provider or custom endpoint) survives
+        with its templates intact."""
+        original = yaml.safe_dump(
+            {
+                "_config_version": 40,
+                "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+                "fallback_providers": [
+                    {
+                        "provider": "${FB_PROVIDER}",
+                        "model": "${FB_MODEL}",
+                    },
+                ],
+            }
+        )
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(original, encoding="utf-8")
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "FB_PROVIDER": "custom:local",
+                "FB_MODEL": "stealth/ox-alpha",
+            },
+        ):
+            first = _run_v41()
+
+        assert first == {"env_added": [], "config_added": [], "warnings": []}
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_promotion_carries_raw_templates_not_expanded_values(self, tmp_path):
+        """A surviving ``${VAR}`` fallback promoted to the primary keeps its
+        RAW templates — the expanded view is classification-only."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "stealth/ox-alpha", "provider": "openrouter"},
+                "fallback_providers": [
+                    {
+                        "provider": "${GATEWAY_PROVIDER}",
+                        "model": "${GATEWAY_MODEL}",
+                        "base_url": "${GATEWAY_ENDPOINT}",
+                        "key_env": "${GATEWAY_KEY_VAR}",
+                    },
+                ],
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "GATEWAY_PROVIDER": "custom:local",
+                "GATEWAY_MODEL": "my-model",
+                "GATEWAY_ENDPOINT": "http://127.0.0.1:9300/v1",
+                "GATEWAY_KEY_VAR": "GATEWAY_KEY",
+            },
+        ):
+            first = _run_v41()
+            after_first = _read_config(config_path)
+            second = _run_v41()
+
+        assert after_first["model"] == {
+            "default": "${GATEWAY_MODEL}",
+            "provider": "${GATEWAY_PROVIDER}",
+            "base_url": "${GATEWAY_ENDPOINT}",
+            "key_env": "${GATEWAY_KEY_VAR}",
+        }
+        assert first["config_added"]
+        raw_text = config_path.read_text(encoding="utf-8")
+        for template in (
+            "${GATEWAY_MODEL}",
+            "${GATEWAY_PROVIDER}",
+            "${GATEWAY_ENDPOINT}",
+            "${GATEWAY_KEY_VAR}",
+        ):
+            assert template in raw_text
+        assert second == {"env_added": [], "config_added": [], "warnings": []}
+
+    def test_sentinel_canonicalization_scopes_by_expanded_model_id(self, tmp_path):
+        """The variant-auto-sentinel rewrite reads the expanded model id too:
+        a sentinel on a nested ${VAR} id that resolves to the retired model
+        with a custom provider is canonicalized; one resolving to an
+        unrelated model is untouched."""
+        sentinel = _write_config(
+            tmp_path / "sentinel",
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": {"provider": "custom:local", "model": "${OX_MODEL_ID}"},
+                    "provider": " AUTO ",
+                },
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path / "sentinel"), "OX_MODEL_ID": "stealth/ox-alpha"},
+        ):
+            first = _run_v41()
+
+        raw = _read_config(sentinel)
+        # The sentinel is canonicalized to exact ``auto``; the save-time
+        # normalizer then flattens the nested id to the string default, so
+        # the persisted file loads as the protected custom route — with the
+        # RAW template intact (never the expanded value).
+        assert raw["model"]["provider"] == "custom:local"
+        assert raw["model"]["default"] == "${OX_MODEL_ID}"
+        assert any("canonicalized" in entry for entry in first["config_added"])
+        assert "${OX_MODEL_ID}" in sentinel.read_text(encoding="utf-8")
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path / "sentinel"), "OX_MODEL_ID": "stealth/ox-alpha"},
+        ):
+            loaded = load_config()
+        assert loaded["model"]["provider"] == "custom:local"
+        assert loaded["model"]["default"] == "stealth/ox-alpha"
+
+        # Non-retired expansion: sentinel left byte-for-byte alone.
+        original = yaml.safe_dump(
+            {
+                "_config_version": 40,
+                "model": {
+                    "default": {"provider": "my-gateway", "model": "${OTHER_MODEL}"},
+                    "provider": " AUTO ",
+                },
+            }
+        )
+        untouched = tmp_path / "untouched" / "config.yaml"
+        untouched.parent.mkdir(parents=True)
+        untouched.write_text(original, encoding="utf-8")
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path / "untouched"), "OTHER_MODEL": "glm-5.3"},
+        ):
+            result = _run_v41()
+
+        assert result == {"env_added": [], "config_added": [], "warnings": []}
+        assert untouched.read_text(encoding="utf-8") == original
+
+    def test_classification_view_is_never_serialized(self, tmp_path):
+        """Direct lock: expansion happens on a copy. After a migration pass
+        over a config full of unrelated templates, every unrelated
+        ``${VAR}`` value survives verbatim."""
+        config_path = _write_config(
+            tmp_path,
+            {
+                "_config_version": 40,
+                "model": {"default": "stealth/ox-alpha", "provider": "openrouter"},
+                "custom_templates": {
+                    "a": "${SECRET_A}",
+                    "b": "${env:SECRET_B}",
+                    "c": ["${SECRET_C}", {"d": "${SECRET_D}"}],
+                },
+                "fallback_providers": [{"provider": "zai", "model": "glm-4.7"}],
+            },
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            _run_v41()
+
+        raw = _read_config(config_path)
+        assert raw["custom_templates"] == {
+            "a": "${SECRET_A}",
+            "b": "${env:SECRET_B}",
+            "c": ["${SECRET_C}", {"d": "${SECRET_D}"}],
+        }
 
 
     def test_second_run_is_a_no_op(self, tmp_path):
