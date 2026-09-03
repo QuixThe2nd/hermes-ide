@@ -2082,11 +2082,7 @@ class HindsightMemoryProvider(MemoryProvider):
         installed = False
         if self._client_lock.acquire(blocking=False):
             try:
-                if (
-                    self._client is None
-                    and self._active_setup is None
-                    and not self._has_unsettled_abandoned_setup()
-                ):
+                if self._client is None and self._active_setup is None:
                     # The slot is still free and no handoff can conflict.
                     # (A settled generation that arrived during the build
                     # is confirmed released; its record can go.) The
@@ -2096,14 +2092,24 @@ class HindsightMemoryProvider(MemoryProvider):
                     # sweep and re-checks _shutting_down inside that
                     # serialization, so a shutdown that began while this
                     # build ran finds the slot empty — never a client
-                    # installed after the sweep already passed.
+                    # installed after the sweep already passed. The
+                    # unsettled-abandoned recheck must not block on
+                    # _publish_lock — under contention skip install and
+                    # fall through to the tracked-release paths below.
                     if self._publish_lock.acquire(blocking=False):
                         try:
+                            unsettled = any(
+                                not s.settled.is_set()
+                                for s in self._abandoned_setup_snapshot_unlocked()
+                            )
                             if (
-                                self._client is None
+                                not unsettled
+                                and self._client is None
                                 and not self._shutting_down.is_set()
                             ):
-                                for settled in list(self._iter_abandoned_setups()):
+                                for settled in list(
+                                    self._abandoned_setup_snapshot_unlocked()
+                                ):
                                     if settled.settled.is_set():
                                         self._clear_abandoned_setup(settled)
                                 self._client = client

@@ -3180,7 +3180,7 @@ def test_owner_loop_duplicate_handoff_publish_lock_contended_stays_tracked(
             assert lock_held.wait(timeout=_GATE_WAIT_S)
 
             gate.set()
-            assert loop_done.wait(timeout=2.0), (
+            assert loop_done.wait(timeout=_GATE_WAIT_S), (
                 "owner-loop _get_client() hung under publish-lock contention"
             )
             probe.result(timeout=5.0)
