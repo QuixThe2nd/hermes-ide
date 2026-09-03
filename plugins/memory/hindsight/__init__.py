@@ -533,6 +533,29 @@ class _ClientSetup:
             self._abandoned = True
             return True
 
+    def hand_back(self, client) -> None:
+        """Caller side: return a client that arrived but may not be installed.
+
+        Used when shutdown fences a finished first-client handoff: the setup
+        completed (or the caller received the offered client), but nobody is
+        allowed to install or use it anymore. The client is tracked in the
+        same recorded state a failed loop-side close leaves — outcome
+        ``"close-failed"``, i.e. a close is owed and not yet made — so the
+        generation's single-slot reconciliation protocol owns its
+        exactly-once release on the owning loop, and ``settled`` stays
+        clear until that close is confirmed. A generation that already
+        reached a safe terminal disposition (or a None client) has nothing
+        to track and is left untouched.
+        """
+        if client is None:
+            return
+        with self._cond:
+            if self.settled.is_set():
+                return
+            self._client = client
+            self._outcome = "close-failed"
+            self._cond.notify_all()
+
     def fail(self) -> None:
         """Loop side: the build raised — nothing to hand over or close."""
         with self._cond:
@@ -1201,6 +1224,19 @@ class HindsightMemoryProvider(MemoryProvider):
         # (foreground tool thread, prefetch thread, writer thread) can't each
         # build a client and leak all but the last one.
         self._client_lock = threading.Lock()
+        # Serializes PUBLICATION of a client into ``self._client`` against
+        # shutdown()'s close sweep. Callers may hold _client_lock across
+        # their whole bounded setup/reconciliation wait, so shutdown must
+        # not queue behind that lock — this one is only ever held for a
+        # check-and-assign (a handful of instructions) on every path: the
+        # caller-thread and owner-loop publishes, _install_client, and the
+        # sweep's read-and-drop. The owning loop only ever TRY-acquires it,
+        # so no path can park the loop thread. A publisher that observes
+        # ``_shutting_down`` set inside this serialization publishes nothing
+        # and owns the client's exactly-once release; one that published
+        # before the sweep acquired it leaves the client for the sweep to
+        # close. Either order, each client gets exactly one closer.
+        self._publish_lock = threading.Lock()
         # A first-client setup whose waiting caller timed out but whose
         # coroutine is still building (or cleaning up) on the owning loop.
         # Its eventual client gets closed by that coroutine; the next
@@ -1698,15 +1734,38 @@ class HindsightMemoryProvider(MemoryProvider):
                         # contextvars context (profile secret scope under
                         # multiplex_profiles), so get_secret() inside
                         # _build_client still resolves profile-scoped keys.
-                        self._client = self._await_client_setup()
+                        client = self._await_client_setup()
                         # The handoff ends HERE, not when the setup Future
                         # became ready: _active_setup stays set across the
                         # whole offer/claim/install window so the owner-loop
                         # branch (which takes no blocking lock) keeps
                         # failing closed until the client is actually
                         # installed. The lock is held continuously, so no
-                        # loop-side install can interleave.
-                        self._active_setup = None
+                        # loop-side install can interleave. The install
+                        # itself is a fenced publish: _publish_lock
+                        # serializes this check-and-assign against
+                        # shutdown()'s read-and-drop sweep, so a shutdown
+                        # that began while this caller was parked (or in
+                        # the ready-but-uninstalled window) leaves the slot
+                        # EMPTY — the finished client is disposed of through
+                        # the generation instead of installed after the
+                        # sweep has already passed (see
+                        # _reject_client_after_shutdown).
+                        with self._publish_lock:
+                            if (
+                                client is not None
+                                and not self._shutting_down.is_set()
+                            ):
+                                self._client = client
+                                published = True
+                            else:
+                                published = False
+                        if published:
+                            self._active_setup = None
+                        else:
+                            # Raises: a client produced once shutdown began
+                            # is never installed or returned as usable.
+                            self._reject_client_after_shutdown(client)
         # First client creation is also where bank defaults go out —
         # initialize() stays lazy (it never builds a client), so this is the
         # earliest point the Banks API is actually reachable. No-op on every
@@ -1752,9 +1811,26 @@ class HindsightMemoryProvider(MemoryProvider):
         handoff owns the slot. Either way the loser is released on the
         owning loop via create_task — never stored over the winner, never
         orphaned, exactly one terminal owner per constructed client.
+
+        Shutdown fences this path twice: no build starts once
+        ``_shutting_down`` is set (fail-closed before constructing
+        anything), and a build already in flight when the flag landed is
+        refused at the fenced publish (see _publish_lock) and released
+        exactly once on this loop through a tracked generation — never
+        installed, never returned, never orphaned.
         """
         if self._client is not None:
             return
+        if self._shutting_down.is_set():
+            # Fail fast BEFORE building: once shutdown begins, no owner-loop
+            # first-client setup may construct a client at all. (A build
+            # already in flight when the flag landed is fenced at the
+            # install below.)
+            raise RuntimeError(
+                "Hindsight client cannot be built from the owning loop "
+                "while shutdown is in progress (provider fail-closed: "
+                "no client built)"
+            )
         if self._active_setup is not None:
             raise RuntimeError(
                 "Hindsight client cannot be built from the owning loop "
@@ -1791,14 +1867,41 @@ class HindsightMemoryProvider(MemoryProvider):
                 ):
                     # The slot is still free and no handoff can conflict.
                     # (A settled generation that arrived during the build
-                    # is confirmed released; its record can go.)
-                    self._abandoned_setup = None
-                    self._client = client
-                    installed = True
+                    # is confirmed released; its record can go.) The
+                    # publish is itself fenced: _publish_lock (TRY-acquired
+                    # — this thread IS the owning loop) serializes the
+                    # check-and-assign against shutdown()'s read-and-drop
+                    # sweep and re-checks _shutting_down inside that
+                    # serialization, so a shutdown that began while this
+                    # build ran finds the slot empty — never a client
+                    # installed after the sweep already passed.
+                    if self._publish_lock.acquire(blocking=False):
+                        try:
+                            if (
+                                self._client is None
+                                and not self._shutting_down.is_set()
+                            ):
+                                self._abandoned_setup = None
+                                self._client = client
+                                installed = True
+                        finally:
+                            self._publish_lock.release()
             finally:
                 self._client_lock.release()
         if installed:
             return
+        if self._shutting_down.is_set():
+            # Shutdown fenced this in-place build out of the slot: the
+            # client must be closed exactly once on this (owning) loop,
+            # with the outcome tracked — never installed, never orphaned.
+            # Scheduling only; the loop must not wait on its own close.
+            self._release_fenced_client_on_owning_loop(client)
+            raise RuntimeError(
+                "Hindsight client built on the owning loop was fenced out "
+                "by shutdown (provider fail-closed: client tracked for "
+                "exactly-one release on the owning loop, no client "
+                "installed or returned)"
+            )
         # A caller thread owns the slot through its setup/install handoff
         # (or installed a client while this in-place build ran): the
         # caller's side wins, and this duplicate is released on the owning
@@ -1814,6 +1917,35 @@ class HindsightMemoryProvider(MemoryProvider):
                 "fail-closed: duplicate build released on the owning loop, "
                 "no overwrite)"
             )
+
+    def _release_fenced_client_on_owning_loop(self, client) -> None:
+        """Track and schedule one exactly-once release for a client that an
+        owner-loop build produced while shutdown fenced the install.
+
+        Runs ON the owning loop thread. A fresh generation is recorded with
+        the client handed back (the recorded "close owed" state) and
+        registered as the provider's abandoned setup BEFORE the close is
+        scheduled — the outcome stays tracked fail-closed even if the loop
+        dies before the attempt runs, and a concurrent reconciler (shutdown
+        or a caller-thread join) shares the generation's single in-flight
+        slot instead of overlapping this close. The attempt is scheduled,
+        never awaited: the loop must not block on anything, least of all
+        its own close.
+        """
+        from agent.async_utils import safe_schedule_threadsafe
+
+        setup = _ClientSetup()
+        setup.hand_back(client)
+        # Safe against displacement: this branch is reachable only from
+        # _get_client_on_owning_loop's install checks, which require no
+        # unsettled abandoned generation to exist.
+        self._abandoned_setup = setup
+        setup.launch_retry(
+            lambda attempt: safe_schedule_threadsafe(
+                self._reconciliation_close_coro(setup, client, attempt),
+                _get_loop(),
+            )
+        )
 
     def _client_setup_timeout(self) -> float:
         """Wait budget for first-client construction — NOT the request timeout.
@@ -1861,8 +1993,25 @@ class HindsightMemoryProvider(MemoryProvider):
         Runs on a caller thread holding _client_lock; nothing in the
         coroutine takes that lock, so the bounded waits below cannot
         deadlock against loop-side work.
+
+        Shutdown fences both sides of the handshake. A setup that has not
+        started refuses to start once ``_shutting_down`` is set; a build
+        that completes after the flag landed closes its own client ON the
+        owning loop and returns None instead of a usable client (a failed
+        close stays recorded on the generation); and a client that reached
+        the waiting caller before the flag landed is handed to _get_client
+        uninstalled — its fenced publish (see _get_client) then disposes of
+        it through the generation and fails the caller closed. No side may
+        install or return a first client that shutdown has already begun
+        to reject.
         """
         self._join_abandoned_client_setup()
+        if self._shutting_down.is_set():
+            raise RuntimeError(
+                "Hindsight is shutting down; no first client will be "
+                "built (provider fail-closed: setup refused after "
+                "shutdown began)"
+            )
         setup = _ClientSetup()
         self._active_setup = setup
         try:
@@ -1872,6 +2021,35 @@ class HindsightMemoryProvider(MemoryProvider):
                 except BaseException:
                     setup.fail()
                     raise
+                if self._shutting_down.is_set():
+                    # Shutdown began while this first client was being
+                    # built: nobody may install or return it as usable, and
+                    # the caller-side close sweep has already passed
+                    # self._client. Hand it to the generation FIRST (a
+                    # disposal close that fails must leave the exact client
+                    # tracked) and release it through the generation's
+                    # single-slot reconciliation — scheduled here on the
+                    # owning loop, never awaited: the loop must not wait on
+                    # its own close, and the slot makes any concurrent
+                    # reconciler (the caller's disposition, a join, or a
+                    # later shutdown) WAIT on this attempt instead of
+                    # overlapping it.
+                    setup.hand_back(client)
+                    launched = setup.launch_retry(
+                        lambda attempt: safe_schedule_threadsafe(
+                            self._reconciliation_close_coro(setup, client, attempt),
+                            _get_loop(),
+                        )
+                    )
+                    if not launched:
+                        # Unreachable for this generation (its slot is
+                        # free); kept so a defensive failure still closes
+                        # the client instead of wedging it un-scheduled.
+                        if await self._aclose_client(client):
+                            setup.closed()
+                        else:
+                            setup.close_failed()
+                    return None
                 if setup.offer(client):
                     return client
                 # Every caller gave up while the build kept running — nobody
@@ -1891,30 +2069,94 @@ class HindsightMemoryProvider(MemoryProvider):
                 raise RuntimeError("Hindsight loop unavailable")
             wait = self._client_setup_timeout()
             try:
-                return future.result(timeout=wait)
+                client = future.result(timeout=wait)
             except concurrent.futures.TimeoutError:
                 if not setup.abandon():
                     # Completed in the instant between the wait expiring and
                     # the abandon check — take what arrived instead of
                     # failing. The active registration stays: the caller
-                    # clears it after installing this client.
+                    # clears it after publishing this client.
                     client = setup.claim()
-                    if client is not None:
-                        return client
-                # The active registration becomes the abandoned generation
-                # BEFORE it is cleared, so the owner-loop branch never sees
-                # a window with the handoff recorded nowhere.
-                self._abandoned_setup = setup
-                raise TimeoutError(
-                    f"Hindsight client setup did not complete within {wait:.0f}s; "
-                    "the client it completes with is tracked for cleanup on the "
-                    "Hindsight loop, and no replacement is built until that "
-                    "cleanup settles"
-                ) from None
+                    if client is None:
+                        # Nothing arrived after all: the active registration
+                        # becomes the abandoned generation BEFORE it is
+                        # cleared, so the owner-loop branch never sees a
+                        # window with the handoff recorded nowhere.
+                        self._abandoned_setup = setup
+                        raise TimeoutError(
+                            f"Hindsight client setup did not complete within "
+                            f"{wait:.0f}s; the client it completes with is "
+                            "tracked for cleanup on the Hindsight loop, and "
+                            "no replacement is built until that cleanup "
+                            "settles"
+                        ) from None
+                    # A client arrived in the abandon window: fall through
+                    # uninstalled — the fenced publish in _get_client()
+                    # decides whether it may still be published.
+                else:
+                    # The active registration becomes the abandoned generation
+                    # BEFORE it is cleared, so the owner-loop branch never sees
+                    # a window with the handoff recorded nowhere.
+                    self._abandoned_setup = setup
+                    raise TimeoutError(
+                        f"Hindsight client setup did not complete within "
+                        f"{wait:.0f}s; the client it completes with is "
+                        "tracked for cleanup on the Hindsight loop, and "
+                        "no replacement is built until that cleanup "
+                        "settles"
+                    ) from None
+            # Whatever the coroutine produced — the finished client, or None
+            # when it already disposed of a shutdown-fenced one — goes back
+            # to _get_client() uninstalled; its publish-vs-shutdown fence
+            # (under _publish_lock) installs the client or drives the
+            # generation's exactly-once release and fails this caller
+            # closed.
+            return client
         except BaseException:
             if self._active_setup is setup:
                 self._active_setup = None
             raise
+
+    def _reject_client_after_shutdown(self, client) -> None:
+        """Dispose of a finished first client the shutdown fence blocked.
+
+        Runs on the caller thread inside _client_lock (never on the owning
+        loop). *client* is the client the setup completed with, or None
+        when the setup coroutine already disposed of it on the owning loop
+        (it closes a shutdown-fenced build itself; a failed close stays
+        recorded on the generation). The generation is handed the client
+        and registered as the provider's abandoned setup, then driven
+        through the same bounded single-slot reconciliation a join or
+        shutdown uses — exactly one close attempt on the owning loop — and
+        only a CONFIRMED close clears it; anything else keeps the exact
+        generation and tracked client recorded fail-closed. Whatever the
+        outcome, this raises: a client produced after shutdown began is
+        never installed or returned as usable.
+        """
+        setup = self._active_setup
+        if setup is None:
+            setup = _ClientSetup()
+        if client is not None:
+            setup.hand_back(client)
+        self._active_setup = None
+        if self._abandoned_setup is None:
+            self._abandoned_setup = setup
+        settled = self._reconcile_close_attempt(setup)
+        if settled:
+            if self._abandoned_setup is setup:
+                self._abandoned_setup = None
+        else:
+            logger.warning(
+                "Hindsight: a client finished after shutdown began could "
+                "not be confirmed released; keeping the generation and its "
+                "tracked client recorded (fail-closed)"
+            )
+        raise RuntimeError(
+            "Hindsight shutdown began during the first-client setup; the "
+            "finished client was not installed or returned as usable "
+            "(provider fail-closed: the client is released on the owning "
+            "Hindsight loop)"
+        ) from None
 
     def _join_abandoned_client_setup(self) -> None:
         """Reconcile a previously abandoned setup, BOUNDED, before another
@@ -2188,17 +2430,57 @@ class HindsightMemoryProvider(MemoryProvider):
         otherwise the one another thread installed while *client* was being
         built — the loser is closed instead of being stored over the winner
         (which would orphan the winner's session and strand callers on a
-        client bound to a daemon the winner already replaced).
+        client bound to a daemon the winner already replaced). A shutdown
+        that began before the publish fences it out the same way: the
+        client is closed on the owning loop and never published (the
+        publish is serialized against the sweep by _publish_lock, so the
+        sweep cannot race past it and leave an unclosed client behind).
         """
+        from agent.async_utils import safe_schedule_threadsafe
+
+        shutdown_fenced = False
+        fenced_setup = None
         with self._client_lock:
             current = self._client
-            if current is None:
-                self._client = client
-                return client
             if current is client:
                 # Normal path: _get_client() cached this one itself.
                 return client
-        logger.debug("Hindsight: a newer client was installed concurrently; closing the duplicate")
+            if current is None:
+                with self._publish_lock:
+                    if (
+                        self._client is None
+                        and not self._shutting_down.is_set()
+                    ):
+                        self._client = client
+                        return client
+                    if (
+                        self._client is None
+                        and self._shutting_down.is_set()
+                    ):
+                        shutdown_fenced = True
+                        fenced_setup = _ClientSetup()
+                        fenced_setup.hand_back(client)
+                        if self._abandoned_setup is None:
+                            self._abandoned_setup = fenced_setup
+        if shutdown_fenced:
+            logger.debug(
+                "Hindsight: shutdown fenced client publish; tracking for "
+                "exactly-once release on the owning loop"
+            )
+            setup = fenced_setup
+            setup.launch_retry(
+                lambda attempt: safe_schedule_threadsafe(
+                    self._reconciliation_close_coro(setup, client, attempt),
+                    _get_loop(),
+                )
+            )
+            return current
+        # A newer client is installed: *client* loses — closed on the owning
+        # loop, never stored over the winner.
+        logger.debug(
+            "Hindsight: a newer client was installed concurrently; "
+            "closing the duplicate"
+        )
         self._close_client(client)
         return current
 
@@ -3490,9 +3772,17 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_thread.join(timeout=5.0)
         # Drop the reference first, then close: _close_client() releases the
         # session on the shared owning loop (never from this thread), the same
-        # path a retry-displaced client already went through.
-        client = self._client
-        self._client = None
+        # path a retry-displaced client already went through. The
+        # read-and-drop is a fenced sweep: _publish_lock serializes it
+        # against every client publish (caller-thread setup, owner-loop
+        # build, _install_client), each of which re-checks _shutting_down
+        # inside the same serialization — so a publish either completes
+        # before this sweep (its client is closed below) or refuses and
+        # disposes of the client itself through its generation. No client
+        # can land in self._client after the sweep and outlive shutdown.
+        with self._publish_lock:
+            client = self._client
+            self._client = None
         self._close_client(client)
         # An abandoned setup may still track a late client its coroutine
         # FAILED to close. Nobody will join that generation anymore, so
@@ -3526,6 +3816,18 @@ class HindsightMemoryProvider(MemoryProvider):
                     if state == ""
                     else "close failed or still in flight",
                 )
+        # An ACTIVE first-client setup (a caller parked mid-build inside
+        # _await_client_setup, or in its future-ready-but-uninstalled
+        # window) is deliberately NOT waited on here: shutdown must stay
+        # bounded while that caller's wait may span the whole install
+        # allowance. Both of its sides fence themselves against the sweep
+        # above — the setup coroutine closes a client that completes after
+        # the flag is set (ON the owning loop, exactly once), and the
+        # caller's fenced publish under _publish_lock refuses to install
+        # and instead drives the generation's bounded exactly-once release
+        # before failing closed (see _reject_client_after_shutdown). The
+        # owner-loop first-build path fences itself the same way (see
+        # _get_client_on_owning_loop).
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

@@ -375,6 +375,18 @@ def test_first_use_on_writer_thread_stays_on_owning_loop(tmp_path, monkeypatch, 
         "user: ping", "assistant: pong",
         session_id="loop-session",
     )
+    # Let the writer finish its retain BEFORE shutdown begins: this test
+    # targets the writer-triggered FIRST build's loop affinity, and a
+    # first-client setup that straddles shutdown() is now (correctly)
+    # fenced out and dropped instead of installed — a different regression
+    # (see test_shutdown_fences_parked_caller_setup_and_closes_late_client).
+    # Poll unfinished_tasks like the provider's own drain barrier does.
+    deadline = time.monotonic() + 10.0
+    while provider._retain_queue.unfinished_tasks > 0 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert provider._retain_queue.unfinished_tasks == 0, (
+        "writer never drained the queued auto-retain"
+    )
     provider.shutdown()
 
     client = _assert_single_loop_owned_client()
@@ -1852,9 +1864,10 @@ def test_mid_close_cancellation_holds_slot_until_finalization(
     parked: the slot stays held (the terminal Future is NOT proof the close
     stopped), a concurrent caller and shutdown() both fail bounded without
     scheduling another close, and the loop stays responsive. After
-    finalization is released, the SAME generation becomes retryable,
-    exactly one later close succeeds on the owning loop, and exactly one
-    replacement is built only after that close confirms.
+    finalization is released, the SAME generation becomes retryable and
+    exactly one later close succeeds on the owning loop — and because
+    shutdown() already began, no replacement may then be built at all: the
+    reconciling caller still fails closed and nothing new is constructed.
     """
     provider, late, setup = _abandon_setup_with_failed_late_close(
         tmp_path, monkeypatch, fail_closes=1
@@ -1968,24 +1981,516 @@ def test_mid_close_cancellation_holds_slot_until_finalization(
     assert setup.tracked_client() is late
     assert not setup.settled.is_set()
 
-    # Exactly one later close succeeds, on the owning loop; the SAME
-    # generation settles only then, and exactly one replacement follows.
+    # Exactly one later close succeeds, on the owning loop, and the SAME
+    # generation settles then — but shutdown() has already begun, so no
+    # replacement may be built beside it: the reconciling caller drives the
+    # confirmed close and still fails closed, constructing nothing.
     fourth = _ClientCallThread(provider).start()
     outcome4 = fourth.join()
-    assert "error" not in outcome4, outcome4.get("error")
+    assert "value" not in outcome4, outcome4
+    assert type(outcome4["error"]).__name__ == "RuntimeError", outcome4["error"]
+    assert "fail-closed" in str(outcome4["error"]), outcome4["error"]
     assert len(aclose_calls) == 2
     assert late.close_attempts == ["hindsight-loop", "hindsight-loop"]
     assert late.close_threads == ["hindsight-loop"]
     assert setup.settled.is_set()
     assert setup.tracked_client() is None
     assert provider._abandoned_setup is None
-    assert _GatedHindsightClient.constructed == [late, outcome4["value"]]
-    assert provider._client is outcome4["value"]
-    with _GatedHindsightClient._order_lock:
-        events = list(_GatedHindsightClient.events)
-    assert events.index(("closed", late)) < events.index(
-        ("constructed", outcome4["value"])
+    assert _GatedHindsightClient.constructed == [late]
+    assert provider._client is None
+
+    # A repeat shutdown stays bounded and closes nothing further.
+    provider.shutdown()
+    assert len(aclose_calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression: shutdown() must fence every first-client build/install path.
+#
+# Reproduced on the rejected change: a caller-thread first-client setup was
+# parked mid-build; shutdown() set _shutting_down, observed self._client is
+# None, ignored the in-flight (_active_setup) handoff, and returned; the
+# parked caller's build then completed and installed its client AFTER
+# shutdown — live, usable, and invisible to the close sweep that had
+# already passed:
+#
+#     {'active_before_shutdown': True, 'shutdown_seconds': 0.0,
+#      'caller_error': None, 'installed_after_shutdown': True,
+#      'close_threads_after_shutdown': []}
+#
+# Once shutdown begins, no first-build path — caller-thread setup, the
+# future-ready-but-uninstalled handoff window, or the owner-loop first
+# build — may install or return a newly built client as usable; the fenced
+# client must be closed exactly once on the owning loop, tracked
+# fail-closed whenever that close cannot be confirmed; shutdown() and the
+# fenced caller stay bounded; and the owning loop never blocks.
+# ---------------------------------------------------------------------------
+
+
+def test_shutdown_fences_parked_caller_setup_and_closes_late_client(
+    tmp_path, monkeypatch
+):
+    """The reproduced blocker: parked first-client setup vs shutdown().
+
+    The caller's first-client build is gated mid-construction on the owning
+    loop. shutdown() must return promptly WITHOUT waiting for (or losing)
+    the in-flight setup; when the build then completes, the caller must get
+    an error instead of a usable client, provider._client must stay None,
+    the late client must be closed exactly once on the owning loop, and no
+    replacement may appear.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    started, gate, closed = _reset_gated_client(blocked=True)
+
+    caller = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+
+    # shutdown() while the setup is parked: bounded, and the slot stays
+    # empty (nothing to sweep — the client does not exist yet).
+    began = time.monotonic()
+    provider.shutdown()
+    shutdown_seconds = time.monotonic() - began
+    assert shutdown_seconds < 5.0, (
+        f"shutdown blocked {shutdown_seconds:.2f}s on a parked first-client "
+        "setup instead of returning bounded"
     )
+    assert provider._client is None
+
+    # The parked build now completes — after shutdown began.
+    gate.set()
+    outcome = caller.join()
+    assert "value" not in outcome, (
+        "caller received a usable client from a setup that completed after "
+        "shutdown began"
+    )
+    error = outcome["error"]
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+
+    # Never installed; closed exactly once, on the owning loop.
+    assert provider._client is None, "late client installed after shutdown"
+    late = _GatedHindsightClient.constructed[0]
+    assert closed.wait(timeout=_GATE_WAIT_S), (
+        "client completed after shutdown began was never closed"
+    )
+    assert late.close_attempts == ["hindsight-loop"], (
+        "the fenced client was not closed exactly once on the owning loop"
+    )
+    assert late.close_threads == ["hindsight-loop"]
+    # The generation was driven to a confirmed close (settled and cleared),
+    # and no replacement was built beside it.
+    assert provider._abandoned_setup is None
+    assert _GatedHindsightClient.constructed == [late]
+
+    # The owning loop stayed responsive through the whole fenced handoff.
+    from agent.async_utils import safe_schedule_threadsafe
+
+    async def _loop_probe():
+        await asyncio.sleep(0)
+        return "alive"
+
+    probe = safe_schedule_threadsafe(_loop_probe(), hindsight_mod._get_loop())
+    assert probe is not None
+    assert probe.result(timeout=5.0) == "alive"
+
+
+def test_shutdown_during_ready_but_uninstalled_handoff_fences_install(
+    tmp_path, monkeypatch
+):
+    """The future-ready-before-install window: shutdown lands between the
+    setup Future completing and the caller installing the client.
+
+    The setup coroutine finished and its Future is ready, but the caller
+    has not assigned self._client yet. shutdown() runs in that window and
+    its close sweep passes an empty slot. The resumed caller must refuse to
+    publish, dispose of the client through the generation's bounded
+    exactly-once owning-loop close, and fail closed — never install a
+    client the sweep can no longer see.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    _reset_gated_client(blocked=False)  # construction runs immediately
+
+    a_ready = threading.Event()
+    release_caller = threading.Event()
+    real_await = provider._await_client_setup
+
+    def _pause_before_install():
+        # Inside _get_client under _client_lock: the setup Future has
+        # completed with client A, but the caller has not published it yet.
+        client = real_await()
+        a_ready.set()
+        assert release_caller.wait(timeout=_GATE_WAIT_S), (
+            "test harness never released the paused caller"
+        )
+        return client
+
+    monkeypatch.setattr(provider, "_await_client_setup", _pause_before_install)
+
+    caller = _ClientCallThread(provider).start()
+    try:
+        assert a_ready.wait(timeout=_GATE_WAIT_S), (
+            "caller never reached the ready-but-uninstalled window"
+        )
+        client_a = _GatedHindsightClient.constructed[0]
+        assert provider._client is None
+
+        # The owning loop is idle in this window; it must stay responsive.
+        from agent.async_utils import safe_schedule_threadsafe
+
+        async def _loop_probe():
+            await asyncio.sleep(0)
+            return "alive"
+
+        probe = safe_schedule_threadsafe(
+            _loop_probe(), hindsight_mod._get_loop()
+        )
+        assert probe is not None
+        assert probe.result(timeout=5.0) == "alive"
+
+        # Shutdown sweeps the (empty) slot while the handoff is parked.
+        began = time.monotonic()
+        provider.shutdown()
+        assert time.monotonic() - began < 5.0
+        assert provider._client is None
+    finally:
+        release_caller.set()
+
+    # The resumed caller must NOT publish the fenced client.
+    outcome = caller.join()
+    assert "value" not in outcome, (
+        "caller installed/returned a client whose handoff lost to shutdown"
+    )
+    error = outcome["error"]
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+
+    assert provider._client is None
+    # The fenced client was released exactly once, on the owning loop,
+    # through the generation's single-slot reconciliation.
+    assert client_a.close_attempts == ["hindsight-loop"], (
+        "the fenced handoff client was not closed exactly once"
+    )
+    assert client_a.close_threads == ["hindsight-loop"]
+    assert provider._abandoned_setup is None
+    assert _GatedHindsightClient.constructed == [client_a]
+
+
+def test_shutdown_fences_owner_loop_first_build_and_closes_loser(
+    tmp_path, monkeypatch
+):
+    """Owner-loop first build vs shutdown: no install, tracked release.
+
+    A REAL owner-loop _get_client() build is gated mid-construction (the
+    loop itself is parked inside the fake build). shutdown() must return
+    bounded even while the owning loop is parked; once the build resumes
+    and completes, the loop path must refuse the install, close the client
+    exactly once on the owning loop with the outcome tracked on a
+    generation, and fail closed — never publish into a slot the sweep has
+    already passed.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    started, gate, closed = _reset_gated_client(blocked=True)
+
+    loop_outcome: dict = {}
+    loop_done = threading.Event()
+
+    async def _get_client_on_loop():
+        # The REAL _get_client(), invoked on the owning loop thread.
+        try:
+            loop_outcome["value"] = provider._get_client()
+        except BaseException as exc:
+            loop_outcome["error"] = exc
+        finally:
+            loop_done.set()
+
+    probe = safe_schedule_threadsafe(
+        _get_client_on_loop(), hindsight_mod._get_loop()
+    )
+    assert probe is not None, "could not schedule the owner-loop probe"
+    assert started.wait(timeout=_GATE_WAIT_S), "loop-side build never started"
+
+    # The owning loop itself is parked inside the gated build: shutdown
+    # must still return bounded (it may not depend on the loop thread).
+    began = time.monotonic()
+    provider.shutdown()
+    assert time.monotonic() - began < 5.0, (
+        "shutdown blocked on a parked owning-loop first build"
+    )
+    assert provider._client is None
+
+    gate.set()
+    assert loop_done.wait(timeout=_GATE_WAIT_S)
+    probe.result(timeout=5.0)
+    assert "value" not in loop_outcome, loop_outcome
+    error = loop_outcome.get("error")
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+
+    # Never installed; released exactly once on the owning loop, with the
+    # outcome tracked on a generation that reaches a confirmed close.
+    assert provider._client is None
+    loser = _GatedHindsightClient.constructed[0]
+    assert closed.wait(timeout=_GATE_WAIT_S), (
+        "loop-built client fenced out by shutdown was never closed"
+    )
+    assert loser.close_attempts == ["hindsight-loop"], (
+        "the fenced loop-built client was not closed exactly once"
+    )
+    assert loser.close_threads == ["hindsight-loop"]
+    tracked = provider._abandoned_setup
+    assert tracked is not None, "fenced loop build left no tracked generation"
+    assert tracked.settled.is_set(), (
+        "tracked generation never reached a confirmed close"
+    )
+    assert _GatedHindsightClient.constructed == [loser]
+
+    # The owning loop is free again and responsive.
+    async def _loop_probe():
+        await asyncio.sleep(0)
+        return "alive"
+
+    responsiveness = safe_schedule_threadsafe(
+        _loop_probe(), hindsight_mod._get_loop()
+    )
+    assert responsiveness is not None
+    assert responsiveness.result(timeout=5.0) == "alive"
+
+
+def test_first_client_setup_refused_after_shutdown(tmp_path, monkeypatch):
+    """No first-client setup may START once shutdown has begun.
+
+    A provider that has shut down must fail closed on the next first-use
+    call without constructing anything — not build a client into a slot the
+    close sweep has already passed.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
 
     provider.shutdown()
-    assert outcome4["value"].close_threads == ["hindsight-loop"]
+
+    outcome = _ClientCallThread(provider).start().join()
+    assert "value" not in outcome, (
+        "a first client was built and returned after shutdown began"
+    )
+    error = outcome["error"]
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+    assert _GatedHindsightClient.constructed == [], (
+        "a client was constructed after shutdown began"
+    )
+    assert provider._client is None
+    assert provider._abandoned_setup is None
+
+
+def test_fenced_late_client_with_failed_close_stays_tracked_fail_closed(
+    tmp_path, monkeypatch
+):
+    """A shutdown-fenced client whose loop-side close FAILS must stay
+    tracked until a confirmed close, then settle exactly once.
+
+    The setup coroutine hands its shutdown-fenced client to the generation
+    and schedules the disposal close on the owning loop; that close RAISES
+    (recorded on the generation). The caller is parked until AFTER that
+    failure is recorded — deterministically separating the failed disposal
+    from what must happen next — so its disposition has to drive the SAME
+    generation's single-slot reconciliation, retrying the close exactly
+    once on the owning loop, and only a CONFIRMED close may clear the
+    record. The caller fails closed either way; nothing is ever installed.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    started, gate, closed = _reset_gated_client(blocked=True)
+    # The coroutine's post-shutdown disposal close fails once; every later
+    # attempt succeeds.
+    _GatedHindsightClient.fail_closes = 1
+
+    # Park the caller AFTER the setup returns: the generation already owns
+    # the fenced client with its disposal attempt scheduled, but the
+    # caller-side disposition has not run — the exact handoff point where
+    # the recorded close failure must be reconciled, not dropped.
+    setup_returned = threading.Event()
+    release_caller = threading.Event()
+    real_await = provider._await_client_setup
+
+    def _pause_after_setup():
+        client = real_await()
+        setup_returned.set()
+        assert release_caller.wait(timeout=_GATE_WAIT_S), (
+            "test harness never released the paused caller"
+        )
+        return client
+
+    monkeypatch.setattr(provider, "_await_client_setup", _pause_after_setup)
+
+    caller = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+
+    provider.shutdown()
+    assert provider._client is None
+
+    gate.set()
+    assert setup_returned.wait(timeout=_GATE_WAIT_S), (
+        "the setup coroutine never completed after shutdown began"
+    )
+    setup = provider._active_setup
+    assert setup is not None, "fenced setup generation was not observable"
+
+    # The coroutine's disposal close ran exactly once, on the owning loop,
+    # and FAILED: the attempt's report landed (hand_back already records
+    # the owed close, so the reconcilable STATE is set from the start —
+    # what must be awaited is the attempt finishing), the exact client
+    # stays tracked with the failure recorded as retryable, and nothing
+    # has settled.
+    deadline = time.monotonic() + _GATE_WAIT_S
+    while setup.retry_future() is not None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert setup.retry_future() is None, (
+        "the failed disposal close never reported its outcome"
+    )
+    assert setup.wait_reconcilable(timeout=0.5) == "retry", (
+        "the failed disposal close was not recorded as retryable on the "
+        "tracked generation"
+    )
+    late = _GatedHindsightClient.constructed[0]
+    assert late.close_attempts == ["hindsight-loop"], (
+        "the loop-side disposal close did not run exactly once"
+    )
+    assert not setup.settled.is_set()
+    assert setup.tracked_client() is late
+    assert provider._abandoned_setup is None
+
+    release_caller.set()
+    outcome = caller.join()
+    assert "value" not in outcome, outcome
+    error = outcome["error"]
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+
+    # Exactly two close attempts total — the failed disposal plus the
+    # disposition's single reconciliation retry — both on the owning loop,
+    # with exactly one confirmed close.
+    assert late.close_attempts == ["hindsight-loop", "hindsight-loop"], (
+        "expected exactly the failed loop-side disposal attempt plus one "
+        "confirmed reconciliation retry"
+    )
+    assert late.close_threads == ["hindsight-loop"]
+    assert closed.wait(timeout=_GATE_WAIT_S), "the retry close never confirmed"
+    assert provider._client is None
+    # The generation settled only via the confirmed retry close, and only
+    # then was the record cleared.
+    assert setup.settled.is_set()
+    assert provider._abandoned_setup is None
+    assert provider._active_setup is None
+    assert _GatedHindsightClient.constructed == [late]
+
+
+def test_install_client_shutdown_fence_uses_tracked_close_protocol(
+    tmp_path, monkeypatch
+):
+    """_install_client must not use swallowing _close_client when shutdown
+    fences publication — the loser stays on the generation's reconciliation
+    protocol until a confirmed close."""
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    _GatedHindsightClient.fail_closes = 1
+
+    loser = _GatedHindsightClient()
+    assert loser is _GatedHindsightClient.constructed[0]
+
+    close_client_calls = []
+
+    def _fail_if_close_client(client):
+        close_client_calls.append(client)
+        raise AssertionError(
+            "_close_client must not be used for shutdown-fenced publish"
+        )
+
+    monkeypatch.setattr(provider, "_close_client", _fail_if_close_client)
+
+    provider._client = None
+    provider._shutting_down.set()
+
+    result = provider._install_client(loser)
+    assert result is None
+    assert provider._client is None
+    setup = provider._abandoned_setup
+    assert setup is not None
+    assert setup.tracked_client() is loser
+    assert not setup.settled.is_set()
+    assert close_client_calls == []
+
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "the first tracked close never attempted"
+    )
+    assert loser.close_attempts == ["hindsight-loop"]
+    assert not setup.settled.is_set()
+    assert setup.tracked_client() is loser
+    assert provider._abandoned_setup is setup
+
+    settled = provider._reconcile_close_attempt(setup)
+    assert settled
+    assert setup.settled.is_set()
+    assert loser.close_attempts == ["hindsight-loop", "hindsight-loop"]
+    assert loser.close_threads == ["hindsight-loop"]
+    assert _GatedHindsightClient.closed.wait(timeout=_GATE_WAIT_S)
+    assert close_client_calls == []
+
+
+def test_release_fenced_client_launch_retry_false_stays_fail_closed(
+    tmp_path, monkeypatch
+):
+    """When launch_retry refuses, _release_fenced_client_on_owning_loop must
+    not clear _abandoned_setup or start untracked _aclose_client."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    client = _GatedHindsightClient()
+
+    aclose_calls = 0
+    real_aclose = provider._aclose_client
+
+    async def _tracked_aclose(c):
+        nonlocal aclose_calls
+        aclose_calls += 1
+        return await real_aclose(c)
+
+    monkeypatch.setattr(provider, "_aclose_client", _tracked_aclose)
+
+    real_launch_retry = hindsight_mod._ClientSetup.launch_retry
+
+    def _launch_retry_false(self, schedule):
+        return False
+
+    monkeypatch.setattr(
+        hindsight_mod._ClientSetup, "launch_retry", _launch_retry_false
+    )
+
+    async def _invoke_release():
+        provider._release_fenced_client_on_owning_loop(client)
+
+    release_future = safe_schedule_threadsafe(
+        _invoke_release(), hindsight_mod._get_loop()
+    )
+    assert release_future is not None
+    release_future.result(timeout=5.0)
+
+    setup = provider._abandoned_setup
+    assert setup is not None
+    assert setup.tracked_client() is client
+    assert not setup.settled.is_set()
+    assert aclose_calls == 0
+
+    monkeypatch.setattr(
+        hindsight_mod._ClientSetup, "launch_retry", real_launch_retry
+    )
+
+    settled = _call_in_thread(provider._reconcile_close_attempt, setup)
+    assert settled
+    assert setup.settled.is_set()
+    assert client.close_threads == ["hindsight-loop"]
+    assert aclose_calls == 1
