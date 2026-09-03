@@ -585,23 +585,29 @@ class _GatedHindsightClient(_LoopBoundHindsightClient):
     raises immediately while ``fail_constructions`` counts down), modeling a
     first-client build that is slower than any request timeout. ``aclose``
     raises while ``fail_closes`` counts down, modeling a client whose close
-    itself fails. Every close attempt is recorded with the thread it ran
-    on, and ``events`` preserves the total order of constructions vs closes
-    for the next-builder boundary assertions.
+    itself fails, and parks on ``close_gate`` while ``block_closes`` counts
+    down, modeling a reconciliation close that outlives the reconciler's
+    bounded wait. Every close attempt is recorded (at entry, so a scheduled
+    but never-run attempt is still visible) with the thread it ran on, and
+    ``events`` preserves the total order of constructions vs closes for the
+    next-builder boundary assertions.
     """
 
     started: threading.Event | None = None
     gate: threading.Event | None = None
     closed: threading.Event | None = None
     close_failed: threading.Event | None = None
+    close_gate: threading.Event | None = None
     fail_constructions = 0
     fail_closes = 0
+    block_closes = 0
     constructed: list["_GatedHindsightClient"] = []
     events: list[tuple[str, "_GatedHindsightClient"]] = []
     _order_lock = threading.Lock()
 
     def __init__(self, **kwargs):
         self.close_threads: list[str] = []
+        self.close_attempts: list[str] = []
         if type(self).fail_constructions:
             type(self).fail_constructions -= 1
             raise RuntimeError("simulated lazy-install failure")
@@ -617,6 +623,9 @@ class _GatedHindsightClient(_LoopBoundHindsightClient):
             type(self).events.append(("constructed", self))
 
     async def aclose(self):
+        # Recorded at entry, before any gating: a close the test merely
+        # SCHEDULED onto a parked loop must still be countable here.
+        self.close_attempts.append(threading.current_thread().name)
         if type(self).fail_closes:
             type(self).fail_closes -= 1
             with type(self)._order_lock:
@@ -624,6 +633,11 @@ class _GatedHindsightClient(_LoopBoundHindsightClient):
             if type(self).close_failed is not None:
                 type(self).close_failed.set()
             raise RuntimeError("simulated close failure")
+        if type(self).block_closes:
+            type(self).block_closes -= 1
+            assert type(self).close_gate.wait(timeout=_GATE_WAIT_S), (
+                "gated close never released"
+            )
         self.close_threads.append(threading.current_thread().name)
         try:
             await super().aclose()
@@ -639,15 +653,18 @@ def _reset_gated_client(*, blocked: bool) -> tuple[threading.Event, ...]:
 
     ``blocked=False`` leaves the gate open so construction runs immediately.
     The class-level ``close_failed`` Event (signalled when an aclose attempt
-    raises) is also armed for the failed-close regressions.
+    raises) and the ``close_gate``/``block_closes`` parking controls are
+    also armed for the failed-/parked-close regressions.
     """
     started, gate, closed = threading.Event(), threading.Event(), threading.Event()
     _GatedHindsightClient.started = started
     _GatedHindsightClient.gate = gate
     _GatedHindsightClient.closed = closed
     _GatedHindsightClient.close_failed = threading.Event()
+    _GatedHindsightClient.close_gate = threading.Event()
     _GatedHindsightClient.fail_constructions = 0
     _GatedHindsightClient.fail_closes = 0
+    _GatedHindsightClient.block_closes = 0
     _GatedHindsightClient.constructed = []
     _GatedHindsightClient.events = []
     if not blocked:
@@ -1093,3 +1110,220 @@ def test_abandoned_join_is_bounded_and_keeps_owning_loop_live(
     # Shutdown makes the final bounded owning-loop close attempt itself.
     provider.shutdown()
     assert late.close_threads == ["hindsight-loop"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: fail-closed ownership across reconciliation attempts.
+#
+# The join/shutdown reconciliation must (a) keep the unsafe generation
+# tracked when its own close attempt fails — dropping the provider's last
+# reference to a possibly-live client is the leak the tracking exists to
+# prevent; (b) wake on a RECORDED close failure promptly instead of
+# sleeping out the (correctly large) setup allowance first; and (c) never
+# schedule a second concurrent close for one client when an earlier
+# reconciler's attempt is still in flight, while still recording that
+# attempt's late result so the generation settles and exactly one
+# replacement is permitted afterward.
+# ---------------------------------------------------------------------------
+
+
+def _abandon_setup_with_failed_late_close(
+    tmp_path, monkeypatch, *, fail_closes: int
+):
+    """Drive the provider into the close-failed abandoned state.
+
+    Returns (provider, late, setup): the first caller abandoned the gated
+    build, the build completed late on the owning loop, and its close
+    failed ``fail_closes`` times — leaving the exact client tracked on an
+    unsettled abandoned generation.
+    """
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    monkeypatch.setattr(hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 0.5, raising=False)
+    started, gate, _closed = _reset_gated_client(blocked=True)
+    _GatedHindsightClient.fail_closes = fail_closes
+
+    first = _ClientCallThread(provider).start()
+    assert started.wait(timeout=_GATE_WAIT_S), "client build never started"
+    time.sleep(1.0)
+    outcome = first.join()
+    assert type(outcome["error"]).__name__ == "TimeoutError", outcome["error"]
+
+    gate.set()
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "late client close was never attempted"
+    )
+    late = _GatedHindsightClient.constructed[0]
+    setup = provider._abandoned_setup
+    assert setup is not None, "abandoned generation was dropped"
+    assert setup.tracked_client() is late
+    return provider, late, setup
+
+
+def test_shutdown_keeps_unsafe_generation_tracked_across_failed_reconciles(
+    tmp_path, monkeypatch
+):
+    """Consecutive failed shutdown reconciliations must not drop the client.
+
+    Production defect: shutdown() nulled ``_abandoned_setup`` BEFORE making
+    its close attempt, and _close_client() discarded both the attempt's
+    boolean outcome and its timeout — so a reconciliation close that failed
+    (or timed out) destroyed the provider's last tracked reference to a
+    possibly-live client. Every failed reconciliation must keep the exact
+    generation and client recorded, and only safe settlement may clear it.
+    """
+    provider, late, setup = _abandon_setup_with_failed_late_close(
+        tmp_path, monkeypatch, fail_closes=3
+    )
+
+    # First shutdown reconciliation fails: the generation survives it.
+    provider.shutdown()
+    assert provider._abandoned_setup is setup, (
+        "shutdown dropped an unresolved abandoned generation"
+    )
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+    assert late.close_attempts == ["hindsight-loop", "hindsight-loop"], (
+        "shutdown did not make exactly one bounded owning-loop close attempt"
+    )
+
+    # Second shutdown reconciliation fails too: still tracked, still live
+    # for a later reconciler — never dropped while the outcome is unsafe.
+    provider.shutdown()
+    assert provider._abandoned_setup is setup, (
+        "a second failed shutdown reconciliation dropped the generation"
+    )
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+    assert late.close_attempts == ["hindsight-loop"] * 3
+
+    # Recovery stays possible: the next reconciliation succeeds and only
+    # then is the generation cleared.
+    provider.shutdown()
+    assert provider._abandoned_setup is None
+    assert setup.settled.is_set()
+    assert setup.tracked_client() is None
+    assert late.close_threads == ["hindsight-loop"]
+
+
+def test_recorded_close_failure_wakes_next_caller_promptly(tmp_path, monkeypatch):
+    """A close failure already on record must be retried NOW, not after the
+    full setup allowance.
+
+    Production defect: _join_abandoned_client_setup() waited out all of
+    _client_setup_timeout() on ``settled`` before it ever consulted the
+    tracked client, so with the (correctly large, install-scale) setup
+    allowance a close the abandoned coroutine had already failed sat
+    between every later caller and its reconciliation retry for the whole
+    budget — 300s by default.
+    """
+    provider, late, setup = _abandon_setup_with_failed_late_close(
+        tmp_path, monkeypatch, fail_closes=1
+    )
+    # Make the setup allowance production-scale NOW: any join that sleeps
+    # it out before reconciling stalls far beyond what this test tolerates.
+    monkeypatch.setattr(hindsight_mod, "_CLIENT_SETUP_TIMEOUT", 30.0, raising=False)
+
+    second = _ClientCallThread(provider).start()
+    assert _GatedHindsightClient.closed.wait(timeout=3.0), (
+        "a close failure recorded before the join did not wake the next "
+        "caller promptly — reconciliation stalled for the full setup "
+        "allowance"
+    )
+    outcome = second.join()
+    assert "error" not in outcome, outcome.get("error")
+    assert late.close_threads == ["hindsight-loop"]
+    assert setup.settled.is_set()
+    assert provider._abandoned_setup is None
+    # Exactly one replacement, built only after the failed close was
+    # reconciled — never beside a possibly-live displaced client.
+    assert _GatedHindsightClient.constructed == [late, outcome["value"]]
+    assert provider._client is outcome["value"]
+
+
+def test_in_flight_reconciliation_close_is_never_duplicated(tmp_path, monkeypatch):
+    """One in-flight close per generation; the late result is not lost.
+
+    Production defect: a reconciliation close whose coroutine outlived the
+    reconciler's bounded wait left no record of the attempt, so a second
+    caller scheduled ANOTHER aclose() for the same possibly-live client —
+    concurrent closes on one client — and the parked attempt's eventual
+    success died with its abandoned Future: nothing settled the generation.
+    """
+    provider, late, setup = _abandon_setup_with_failed_late_close(
+        tmp_path, monkeypatch, fail_closes=1
+    )
+    # The first reconciliation close parks on close_gate well past the
+    # 0.25s reconciler bound; once released it succeeds.
+    _GatedHindsightClient.block_closes = 1
+
+    # Count every _aclose_client the provider schedules. The counter is a
+    # SYNC wrapper (append, then hand back the awaiting coroutine) so a
+    # close the caller thread merely schedules onto the parked loop is
+    # counted at creation time — exactly the duplicate the unfixed
+    # provider issues, whose coroutine would otherwise sit invisibly in
+    # the loop's queue.
+    aclose_targets: list = []
+    real_aclose_client = provider._aclose_client
+
+    def _counting_aclose(client):
+        aclose_targets.append(client)
+
+        async def _awaited():
+            return await real_aclose_client(client)
+
+        return _awaited()
+
+    monkeypatch.setattr(provider, "_aclose_client", _counting_aclose)
+
+    # Caller 2 reconciles; its one attempt parks and outlives the caller's
+    # bounded wait. The attempt — not a replacement — must stay tracked.
+    # (The coroutine's own failed close predates the counting patch; only
+    # caller 2's reconciliation attempt is counted.)
+    second = _ClientCallThread(provider).start()
+    outcome2 = second.join()
+    assert type(outcome2["error"]).__name__ == "TimeoutError", outcome2["error"]
+    assert aclose_targets == [late]
+    assert late.close_attempts == ["hindsight-loop", "hindsight-loop"]
+    assert provider._abandoned_setup is setup
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+
+    # Caller 3 must WAIT on caller 2's in-flight attempt — never schedule
+    # a concurrent duplicate close for the same client.
+    third = _ClientCallThread(provider).start()
+    time.sleep(0.8)  # caller 3 sits in (and exhausts) its bounded wait
+    assert len(aclose_targets) == 1, (
+        "a second caller scheduled a concurrent duplicate close for the "
+        "same client while a reconciliation attempt was in flight"
+    )
+    assert provider._abandoned_setup is setup
+    outcome3 = third.join()
+    assert type(outcome3["error"]).__name__ == "TimeoutError", outcome3["error"]
+    assert len(aclose_targets) == 1
+
+    # The parked attempt finally succeeds: its result is recorded on the
+    # generation (not lost with the caller that timed out), the SAME
+    # generation settles, and exactly one replacement is permitted after.
+    _GatedHindsightClient.close_gate.set()
+    assert _GatedHindsightClient.closed.wait(timeout=_GATE_WAIT_S), (
+        "parked reconciliation close never finished"
+    )
+    assert setup.settled.is_set()
+    assert setup.tracked_client() is None
+    assert len(aclose_targets) == 1
+
+    fourth = _ClientCallThread(provider).start()
+    outcome4 = fourth.join()
+    assert "error" not in outcome4, outcome4.get("error")
+    assert _GatedHindsightClient.constructed == [late, outcome4["value"]]
+    assert provider._client is outcome4["value"]
+    assert late.close_attempts == ["hindsight-loop", "hindsight-loop"]
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", late)) < events.index(
+        ("constructed", outcome4["value"])
+    )
+
+    provider.shutdown()
+    assert outcome4["value"].close_threads == ["hindsight-loop"]
