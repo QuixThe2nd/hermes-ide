@@ -2636,31 +2636,112 @@ def test_recreate_client_fails_closed_when_stale_close_fails(
     ]
 
 
+def _stale_is_live(stale, aclose_targets):
+    """True while the stale wrapper or its inner client has not been released."""
+    inner = stale._client
+    return stale not in aclose_targets and inner is not None
+
+
+def _stale_is_tracked(provider, stale):
+    """True when stale is still published or owned by a tracked generation."""
+    if provider._client is stale:
+        return True
+    for gen in _unresolved_generations(provider):
+        if isinstance(gen, hindsight_mod._ClientSetup) and gen.tracked_client() is stale:
+            return True
+    return False
+
+
 def test_recreate_client_does_not_overlap_shutdown_owned_close(
     tmp_path, monkeypatch
 ):
-    """Recreate must not start a second close when shutdown already swept the
-    published client and owns its release."""
+    """Recreate must not leave the stale client live and untracked across
+    shutdown while _ClientSetup construction is parked before registration."""
     provider, stale, _stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
 
     aclose_targets = []
+    aclose_threads = []
 
     real_aclose = provider._aclose_client
 
     async def _track_aclose(client):
         aclose_targets.append(client)
+        aclose_threads.append(threading.current_thread().name)
         return await real_aclose(client)
 
     monkeypatch.setattr(provider, "_aclose_client", _track_aclose)
 
-    provider._shutting_down.set()
-    with provider._publish_lock:
-        provider._client = None
+    entered = threading.Event()
+    gate = threading.Event()
+    real_setup_init = hindsight_mod._ClientSetup.__init__
 
-    with pytest.raises(RuntimeError, match="fail-closed"):
-        provider._recreate_client(stale)
+    def _gated_setup_init(self, *args, **kwargs):
+        entered.set()
+        assert gate.wait(timeout=_GATE_WAIT_S), (
+            "recreate _ClientSetup construction gate never released"
+        )
+        return real_setup_init(self, *args, **kwargs)
 
-    assert aclose_targets == [], (
-        "recreate started a close while shutdown already owns the stale client"
+    monkeypatch.setattr(hindsight_mod._ClientSetup, "__init__", _gated_setup_init)
+
+    recreate_outcome = {}
+
+    def _run_recreate():
+        try:
+            recreate_outcome["value"] = provider._recreate_client(stale)
+        except BaseException as exc:
+            recreate_outcome["error"] = exc
+
+    recreate_thread = threading.Thread(target=_run_recreate, name="recreate-worker")
+    recreate_thread.start()
+
+    assert entered.wait(timeout=_GATE_WAIT_S), (
+        "recreate never parked in _ClientSetup construction"
     )
-    assert provider._client is None
+
+    provider.shutdown()
+
+    assert not (
+        _stale_is_live(stale, aclose_targets) and not _stale_is_tracked(provider, stale)
+    ), (
+        "shutdown returned while the stale client was still live and untracked "
+        f"(aclose_targets={aclose_targets!r}, stale._client is not None="
+        f"{stale._client is not None}, provider._client is stale="
+        f"{provider._client is stale}, unresolved={_unresolved_generations(provider)!r})"
+    )
+
+    gate.set()
+    recreate_thread.join(timeout=30)
+    assert not recreate_thread.is_alive(), "recreate worker hung after gate release"
+
+    assert "error" in recreate_outcome, recreate_outcome
+    error = recreate_outcome["error"]
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+
+    assert aclose_threads == ["hindsight-loop"], (
+        f"expected exactly one owning-loop close of the stale client, got {aclose_threads!r}"
+    )
+    assert aclose_targets.count(stale) == 1, aclose_targets
+
+
+def test_register_abandoned_setup_is_identity_idempotent(tmp_path, monkeypatch):
+    """Registering the same _ClientSetup twice must not duplicate tracking."""
+    provider = _make_provider(tmp_path, monkeypatch)
+    first = hindsight_mod._ClientSetup()
+    second = hindsight_mod._ClientSetup()
+
+    provider._register_abandoned_setup(first)
+    provider._register_abandoned_setup(first)
+    assert provider._abandoned_setup is first
+    assert provider._extra_abandoned_setups == []
+
+    provider._register_abandoned_setup(second)
+    provider._register_abandoned_setup(second)
+    assert provider._abandoned_setup is first
+    assert provider._extra_abandoned_setups == [second]
+
+    provider._clear_abandoned_setup(first)
+    assert provider._abandoned_setup is None
+    assert provider._extra_abandoned_setups == [second]
+    assert first not in provider._extra_abandoned_setups

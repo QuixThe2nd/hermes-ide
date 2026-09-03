@@ -1791,7 +1791,16 @@ class HindsightMemoryProvider(MemoryProvider):
         return False
 
     def _register_abandoned_setup(self, setup: _ClientSetup) -> None:
-        """Record an unresolved generation without displacing a prior one."""
+        """Record an unresolved generation without displacing a prior one.
+
+        Identity-idempotent: registering the same setup object twice is a
+        no-op so a duplicate register cannot leave a stale extra entry after
+        the primary is cleared.
+        """
+        if self._abandoned_setup is setup:
+            return
+        if setup in self._extra_abandoned_setups:
+            return
         if self._abandoned_setup is None:
             self._abandoned_setup = setup
         else:
@@ -2522,9 +2531,10 @@ class HindsightMemoryProvider(MemoryProvider):
         reconciliation protocol BEFORE any replacement is built or
         published — a failed, pending, canceled, shutdown-racing, or
         unconfirmable close leaves the provider fail-closed with the exact
-        stale generation still recorded. The slot clear is serialized
-        against shutdown()'s _publish_lock sweep (check-and-assign only,
-        never waiting while that lock is held). If another thread installed
+        stale generation still recorded. Registration of the stale
+        generation and clearing the published slot happen atomically under
+        _client_lock then _publish_lock (register+clear in one critical
+        section, never clear-then-later-track). If another thread installed
         a fresher client while the stale close was settling, that newer
         client wins and is returned without clobbering it.
         """
@@ -2539,6 +2549,9 @@ class HindsightMemoryProvider(MemoryProvider):
             if current is not stale:
                 return current
 
+        setup = _ClientSetup()
+        setup.hand_back(stale)
+
         with self._client_lock:
             with self._publish_lock:
                 if self._shutting_down.is_set():
@@ -2550,12 +2563,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 current = self._client
                 if current is not stale:
                     return current
-                if current is stale:
-                    self._client = None
+                self._register_abandoned_setup(setup)
+                self._client = None
 
-        setup = _ClientSetup()
-        setup.hand_back(stale)
-        self._register_abandoned_setup(setup)
         if not self._reconcile_close_attempt(setup):
             raise RuntimeError(
                 "Hindsight stale client could not be confirmed released; "
