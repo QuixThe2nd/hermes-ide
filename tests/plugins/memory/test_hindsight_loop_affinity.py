@@ -2745,3 +2745,345 @@ def test_register_abandoned_setup_is_identity_idempotent(tmp_path, monkeypatch):
     assert provider._abandoned_setup is None
     assert provider._extra_abandoned_setups == [second]
     assert first not in provider._extra_abandoned_setups
+
+
+def test_ensure_writer_never_clears_shutdown_fence_after_sync_turn_check(
+    tmp_path, monkeypatch
+):
+    """_ensure_writer must not clear the monotonic shutdown fence."""
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._auto_retain = True
+    provider._retain_every_n_turns = 1
+    _reset_gated_client(blocked=False)
+
+    before_writer = threading.Event()
+    release_writer = threading.Event()
+    real_ensure_writer = provider._ensure_writer
+
+    def _gated_ensure_writer():
+        before_writer.set()
+        assert release_writer.wait(timeout=_GATE_WAIT_S), (
+            "test never released _ensure_writer gate"
+        )
+        return real_ensure_writer()
+
+    monkeypatch.setattr(provider, "_ensure_writer", _gated_ensure_writer)
+
+    sync_started = threading.Event()
+    sync_done = threading.Event()
+    sync_outcome: dict = {}
+
+    def _run_sync_turn():
+        sync_started.set()
+        try:
+            provider.sync_turn("user", "assistant")
+            sync_outcome["ok"] = True
+        except BaseException as exc:
+            sync_outcome["error"] = exc
+        finally:
+            sync_done.set()
+
+    sync_thread = threading.Thread(target=_run_sync_turn, daemon=True)
+    sync_thread.start()
+    assert sync_started.wait(timeout=_GATE_WAIT_S), "sync_turn never started"
+    assert before_writer.wait(timeout=_GATE_WAIT_S), "_ensure_writer never reached"
+
+    provider.shutdown()
+    assert provider._shutting_down.is_set()
+    release_writer.set()
+    assert sync_done.wait(timeout=_GATE_WAIT_S), "sync_turn hung"
+
+    assert provider._shutting_down.is_set()
+    writer = provider._writer_thread
+    assert writer is None or not writer.is_alive()
+
+    with pytest.raises(RuntimeError, match="fail-closed"):
+        _call_in_thread(provider._get_client)
+
+    # Direct path: dead writer + fence set => no-op, fence stays set.
+    provider._writer_thread = None
+    provider._ensure_writer()
+    assert provider._shutting_down.is_set()
+    assert provider._writer_thread is None
+
+
+def test_owner_loop_duplicate_handoff_failed_close_stays_tracked(
+    tmp_path, monkeypatch
+):
+    """Owner-loop loser close failure stays on a tracked generation."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    _reset_gated_client(blocked=False)
+    _GatedHindsightClient.fail_closes = 1
+
+    caller_parked = threading.Event()
+    release_caller = threading.Event()
+    real_await = provider._await_client_setup
+
+    def _parked_before_setup_registration():
+        caller_parked.set()
+        assert release_caller.wait(timeout=_GATE_WAIT_S), (
+            "test harness never released the paused caller"
+        )
+        return real_await()
+
+    monkeypatch.setattr(
+        provider, "_await_client_setup", _parked_before_setup_registration
+    )
+
+    untracked_tasks: list = []
+    real_create_task = asyncio.get_running_loop().create_task
+
+    def _record_create_task(coro):
+        untracked_tasks.append(coro)
+        return real_create_task(coro)
+
+    caller = _ClientCallThread(provider).start()
+    try:
+        assert caller_parked.wait(timeout=_GATE_WAIT_S), (
+            "caller never reached the pre-setup window"
+        )
+
+        loop_outcome: dict = {}
+        loop_done = threading.Event()
+
+        async def _probe():
+            monkeypatch.setattr(
+                asyncio.get_running_loop(),
+                "create_task",
+                _record_create_task,
+            )
+            try:
+                loop_outcome["value"] = provider._get_client()
+            except BaseException as exc:
+                loop_outcome["error"] = exc
+            finally:
+                loop_done.set()
+
+        probe = safe_schedule_threadsafe(_probe(), hindsight_mod._get_loop())
+        assert probe is not None
+        assert loop_done.wait(timeout=2.0), (
+            "owner-loop _get_client() blocked behind the caller's lock"
+        )
+        probe.result(timeout=5.0)
+        assert "value" not in loop_outcome, loop_outcome
+        assert type(loop_outcome.get("error")).__name__ == "RuntimeError"
+
+        assert len(_GatedHindsightClient.constructed) == 1
+        loser = _GatedHindsightClient.constructed[0]
+        assert untracked_tasks == [], (
+            "duplicate handoff used untracked create_task(_aclose_client)"
+        )
+
+        setups = [
+            s
+            for s in _unresolved_generations(provider)
+            if isinstance(s, hindsight_mod._ClientSetup)
+            and s.owned_client() is loser
+        ]
+        assert len(setups) == 1
+        setup = setups[0]
+        assert setup.tracked_client() is loser
+        assert not setup.settled.is_set()
+        assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S)
+        assert loser.close_attempts == ["hindsight-loop"]
+
+        settled = provider._reconcile_close_attempt(setup)
+        assert settled
+        assert setup.settled.is_set()
+        assert loser.close_threads == ["hindsight-loop"]
+    finally:
+        release_caller.set()
+    caller.join()
+
+
+def test_install_client_loser_failed_close_stays_tracked(tmp_path, monkeypatch):
+    """_install_client loser path tracks failed closes; never _close_client."""
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    _GatedHindsightClient.fail_closes = 1
+
+    winner = _GatedHindsightClient()
+    loser = _GatedHindsightClient()
+    provider._client = winner
+
+    close_client_calls: list = []
+
+    def _fail_close_client(client):
+        close_client_calls.append(client)
+        raise AssertionError("_close_client must not dispose install losers")
+
+    monkeypatch.setattr(provider, "_close_client", _fail_close_client)
+
+    assert provider._install_client(loser) is winner
+    assert provider._client is winner
+    assert close_client_calls == []
+
+    setups = [
+        s
+        for s in _unresolved_generations(provider)
+        if isinstance(s, hindsight_mod._ClientSetup)
+        and s.owned_client() is loser
+    ]
+    assert len(setups) == 1
+    setup = setups[0]
+    assert setup.tracked_client() is loser
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S)
+
+    settled = provider._reconcile_close_attempt(setup)
+    assert settled
+    assert loser.close_threads == ["hindsight-loop"]
+    assert close_client_calls == []
+
+
+def test_shutdown_current_client_failed_close_stays_tracked(
+    tmp_path, monkeypatch
+):
+    """Shutdown sweep keeps a failed published-client close tracked."""
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    _GatedHindsightClient.fail_closes = 1
+
+    client = _GatedHindsightClient()
+    provider._client = client
+
+    provider.shutdown()
+
+    setups = [
+        s
+        for s in _unresolved_generations(provider)
+        if isinstance(s, hindsight_mod._ClientSetup)
+        and s.owned_client() is client
+    ]
+    assert len(setups) == 1
+    setup = setups[0]
+    assert setup.tracked_client() is client
+    assert not setup.settled.is_set()
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S)
+    assert client.close_attempts == ["hindsight-loop"]
+
+    settled = provider._reconcile_close_attempt(setup)
+    assert settled
+    assert client.close_threads == ["hindsight-loop"]
+    assert setup.settled.is_set()
+
+
+def test_recreate_install_shares_shutdown_generation_no_second_close(
+    tmp_path, monkeypatch
+):
+    """Recreate/install must share one generation with shutdown's close."""
+    provider, stale, _stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
+
+    replacement_inner = _LoopBoundHindsightClient()
+    replacement = _LoopBoundEmbeddedClient(replacement_inner)
+    monkeypatch.setattr(provider, "_build_client", lambda: replacement)
+
+    real_get_client = provider._get_client
+    get_client_published = threading.Event()
+    release_install = threading.Event()
+    install_entered = threading.Event()
+    real_install = provider._install_client
+
+    def _gated_get_client():
+        client = real_get_client()
+        get_client_published.set()
+        assert release_install.wait(timeout=_GATE_WAIT_S), (
+            "test never released recreate install gate"
+        )
+        return client
+
+    def _gated_install(client):
+        install_entered.set()
+        return real_install(client)
+
+    monkeypatch.setattr(provider, "_get_client", _gated_get_client)
+    monkeypatch.setattr(provider, "_install_client", _gated_install)
+
+    recreate_outcome: dict = {}
+
+    def _run_recreate():
+        try:
+            recreate_outcome["value"] = provider._recreate_client(stale)
+        except BaseException as exc:
+            recreate_outcome["error"] = exc
+
+    recreate_thread = threading.Thread(target=_run_recreate, daemon=True)
+    recreate_thread.start()
+
+    assert get_client_published.wait(timeout=_GATE_WAIT_S), (
+        "_get_client never published the replacement"
+    )
+    assert provider._client is replacement
+
+    provider.shutdown()
+    release_install.set()
+    recreate_thread.join(timeout=_GATE_WAIT_S)
+    assert not recreate_thread.is_alive(), "recreate hung past install gate"
+
+    assert provider._client is None
+    assert "value" not in recreate_outcome or recreate_outcome.get("value") is None
+
+    setups = [
+        s
+        for s in _unresolved_generations(provider)
+        if isinstance(s, hindsight_mod._ClientSetup)
+        and s.owned_client() is replacement
+    ]
+    assert len(setups) == 1, setups
+    setup = setups[0]
+    assert replacement.close_attempts.count("hindsight-loop") == 1, (
+        replacement.close_attempts
+    )
+    assert not setup.settled.is_set()
+
+    settled = provider._reconcile_close_attempt(setup)
+    assert settled
+    assert replacement.close_attempts.count("hindsight-loop") == 2
+    assert replacement.close_threads == ["hindsight-loop"]
+
+
+def test_register_abandoned_setup_concurrent_identity_idempotent(
+    tmp_path, monkeypatch
+):
+    """Concurrent registration of the same setup object is identity-idempotent."""
+    provider = _make_provider(tmp_path, monkeypatch)
+    setup = hindsight_mod._ClientSetup()
+    barrier = threading.Barrier(2)
+    outcomes: list = []
+
+    def _register():
+        barrier.wait(timeout=_GATE_WAIT_S)
+        provider._register_abandoned_setup(setup)
+        outcomes.append("ok")
+
+    threads = [threading.Thread(target=_register) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=_GATE_WAIT_S)
+        assert not t.is_alive(), "register thread hung"
+    assert outcomes == ["ok", "ok"]
+    assert provider._abandoned_setup is setup
+    assert setup not in provider._extra_abandoned_setups
+    assert list(provider._iter_abandoned_setups()).count(setup) == 1
+
+    primary = hindsight_mod._ClientSetup()
+    provider._register_abandoned_setup(primary)
+    raced = hindsight_mod._ClientSetup()
+    barrier2 = threading.Barrier(2)
+
+    def _register_raced():
+        barrier2.wait(timeout=_GATE_WAIT_S)
+        provider._register_abandoned_setup(raced)
+
+    threads2 = [threading.Thread(target=_register_raced) for _ in range(2)]
+    for t in threads2:
+        t.start()
+    for t in threads2:
+        t.join(timeout=_GATE_WAIT_S)
+        assert not t.is_alive(), "register thread hung"
+    assert provider._abandoned_setup is primary
+    assert provider._extra_abandoned_setups.count(raced) == 1
+    assert list(provider._iter_abandoned_setups()).count(raced) == 1

@@ -500,6 +500,8 @@ class _ClientSetup:
         # attempt keeps the slot until note_retry_outcome() records the
         # final outcome after all cancellation/finalization completed.
         self._retry_started = False
+        # Stable identity for lookup after a confirmed close clears _client.
+        self._owned_client: Any = None
 
     def offer(self, client) -> bool:
         """Loop side: present the finished client.
@@ -552,6 +554,7 @@ class _ClientSetup:
         with self._cond:
             if self.settled.is_set():
                 return
+            self._owned_client = client
             self._client = client
             self._outcome = "close-failed"
             self._cond.notify_all()
@@ -590,6 +593,11 @@ class _ClientSetup:
         """Caller side: the client a failed close left potentially live."""
         with self._cond:
             return self._client if self._outcome == "close-failed" else None
+
+    def owned_client(self):
+        """The client this generation was handed for close, even after settlement."""
+        with self._cond:
+            return self._owned_client
 
     def wait_reconcilable(self, timeout: float) -> str:
         """Caller side: block until this generation needs a reconciler.
@@ -1236,7 +1244,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # and owns the client's exactly-once release; one that published
         # before the sweep acquired it leaves the client for the sweep to
         # close. Either order, each client gets exactly one closer.
-        self._publish_lock = threading.Lock()
+        self._publish_lock = threading.RLock()
+        # Clients already claimed for shutdown/recreate close — survives
+        # generation clear so a late _install_client cannot launch a second
+        # close after shutdown confirmed the first.
+        self._shutdown_claimed_client_ids: set[int] = set()
+        self._shutdown_settled_client_ids: set[int] = set()
         # A first-client setup whose waiting caller timed out but whose
         # coroutine is still building (or cleaning up) on the owning loop.
         # Its eventual client gets closed by that coroutine; the next
@@ -1777,11 +1790,23 @@ class HindsightMemoryProvider(MemoryProvider):
         self._apply_bank_defaults()
         return self._client
 
+    def _abandoned_setup_snapshot_unlocked(self) -> list:
+        """Return a consistent copy; caller must hold ``_publish_lock``."""
+        items: list = []
+        if self._abandoned_setup is not None:
+            items.append(self._abandoned_setup)
+        items.extend(self._extra_abandoned_setups)
+        return items
+
+    def _abandoned_setup_snapshot(self) -> list:
+        """Return a consistent copy of every abandoned generation."""
+        with self._publish_lock:
+            return self._abandoned_setup_snapshot_unlocked()
+
     def _iter_abandoned_setups(self):
         """Yield every abandoned generation the provider is tracking."""
-        if self._abandoned_setup is not None:
-            yield self._abandoned_setup
-        yield from self._extra_abandoned_setups
+        for setup in self._abandoned_setup_snapshot():
+            yield setup
 
     def _has_unsettled_abandoned_setup(self) -> bool:
         """True while any tracked abandoned generation is not safely settled."""
@@ -1790,8 +1815,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 return True
         return False
 
-    def _register_abandoned_setup(self, setup: _ClientSetup) -> None:
-        """Record an unresolved generation without displacing a prior one.
+    def _register_abandoned_setup_unlocked(self, setup: _ClientSetup) -> None:
+        """Record an unresolved generation; caller must hold ``_publish_lock``.
 
         Identity-idempotent: registering the same setup object twice is a
         no-op so a duplicate register cannot leave a stale extra entry after
@@ -1806,12 +1831,112 @@ class HindsightMemoryProvider(MemoryProvider):
         else:
             self._extra_abandoned_setups.append(setup)
 
-    def _clear_abandoned_setup(self, setup: _ClientSetup) -> None:
-        """Drop a safely settled generation from provider tracking."""
+    def _register_abandoned_setup(self, setup: _ClientSetup) -> None:
+        """Record an unresolved generation without displacing a prior one."""
+        with self._publish_lock:
+            self._register_abandoned_setup_unlocked(setup)
+
+    def _clear_abandoned_setup_unlocked(self, setup: _ClientSetup) -> None:
+        """Drop a safely settled generation; caller must hold ``_publish_lock``."""
         if self._abandoned_setup is setup:
             self._abandoned_setup = None
         elif setup in self._extra_abandoned_setups:
             self._extra_abandoned_setups.remove(setup)
+
+    def _clear_abandoned_setup(self, setup: _ClientSetup) -> None:
+        """Drop a safely settled generation from provider tracking."""
+        owned = setup.owned_client()
+        with self._publish_lock:
+            self._clear_abandoned_setup_unlocked(setup)
+            if owned is not None and setup.settled.is_set():
+                self._shutdown_settled_client_ids.add(id(owned))
+                self._shutdown_claimed_client_ids.add(id(owned))
+
+    def _client_identity(self, client) -> int | None:
+        return id(client) if client is not None else None
+
+    def _is_client_shutdown_settled(self, client) -> bool:
+        identity = self._client_identity(client)
+        if identity is None:
+            return True
+        with self._publish_lock:
+            return identity in self._shutdown_settled_client_ids
+
+    def _mark_client_shutdown_settled_unlocked(self, client) -> None:
+        identity = self._client_identity(client)
+        if identity is not None:
+            self._shutdown_settled_client_ids.add(identity)
+            self._shutdown_claimed_client_ids.add(identity)
+
+    def _generation_for_client_unlocked(self, client) -> _ClientSetup | None:
+        """Find a tracked generation owning *client*; caller holds publish lock."""
+        if client is None:
+            return None
+        for setup in self._abandoned_setup_snapshot_unlocked():
+            if setup.owned_client() is client or setup.tracked_client() is client:
+                return setup
+        return None
+
+    def _generation_for_client(self, client) -> _ClientSetup | None:
+        with self._publish_lock:
+            return self._generation_for_client_unlocked(client)
+
+    def _claim_client_for_close_unlocked(self, client) -> _ClientSetup:
+        """Return or create the single generation that owns *client*'s close."""
+        existing = self._generation_for_client_unlocked(client)
+        identity = self._client_identity(client)
+        if existing is not None:
+            if identity is not None:
+                self._shutdown_claimed_client_ids.add(identity)
+            return existing
+        setup = _ClientSetup()
+        setup.hand_back(client)
+        self._register_abandoned_setup_unlocked(setup)
+        if identity is not None:
+            self._shutdown_claimed_client_ids.add(identity)
+        return setup
+
+    def _claim_client_for_close(self, client) -> _ClientSetup:
+        with self._publish_lock:
+            return self._claim_client_for_close_unlocked(client)
+
+    def _launch_tracked_close(self, setup: _ClientSetup, client) -> bool:
+        """Schedule one reconciliation close when the slot is free."""
+        from agent.async_utils import safe_schedule_threadsafe
+
+        if setup.settled.is_set():
+            return True
+        target = client or setup.owned_client() or setup.tracked_client()
+        if target is None:
+            return True
+        if setup.retry_future() is not None:
+            return True
+        return setup.launch_retry(
+            lambda attempt: safe_schedule_threadsafe(
+                self._reconciliation_close_coro(setup, target, attempt),
+                _get_loop(),
+            )
+        )
+
+    def _is_on_owning_loop(self) -> bool:
+        try:
+            return asyncio.get_running_loop() is _get_loop()
+        except RuntimeError:
+            return False
+
+    def _release_loser_client(self, client) -> None:
+        """Track and close a displaced client through the generation protocol."""
+        if client is None:
+            return
+        if self._is_client_shutdown_settled(client):
+            return
+        setup = self._claim_client_for_close(client)
+        if self._is_on_owning_loop():
+            self._launch_tracked_close(setup, client)
+            return
+        self._reconcile_close_attempt(setup)
+        if setup.settled.is_set():
+            self._clear_abandoned_setup(setup)
 
     def _get_client_on_owning_loop(self) -> None:
         """Loop-thread twin of the first-use branch: never waits, fails closed.
@@ -1941,11 +2066,29 @@ class HindsightMemoryProvider(MemoryProvider):
         # A caller thread owns the slot through its setup/install handoff
         # (or installed a client while this in-place build ran): the
         # caller's side wins, and this duplicate is released on the owning
-        # loop — never stored over the winner, never orphaned. create_task
-        # from the loop thread schedules the close without any blocking
-        # wait. If NO client is installed now, fail closed rather than hand
+        # loop — never stored over the winner, never orphaned. The close
+        # is tracked on a generation and scheduled without blocking the
+        # loop. If NO client is installed now, fail closed rather than hand
         # back None.
-        asyncio.get_running_loop().create_task(self._aclose_client(client))
+        if self._publish_lock.acquire(blocking=False):
+            try:
+                setup = self._claim_client_for_close_unlocked(client)
+            finally:
+                self._publish_lock.release()
+        else:
+            raise RuntimeError(
+                "Hindsight client slot is owned by an in-flight "
+                "setup/install handoff on a caller thread (provider "
+                "fail-closed: could not record duplicate build for "
+                "tracked release on the owning loop)"
+            )
+        if not self._launch_tracked_close(setup, client):
+            raise RuntimeError(
+                "Hindsight client slot is owned by an in-flight "
+                "setup/install handoff on a caller thread (provider "
+                "fail-closed: duplicate build tracked but close could "
+                "not be scheduled on the owning loop)"
+            )
         if self._client is None:
             raise RuntimeError(
                 "Hindsight client slot is owned by an in-flight "
@@ -1968,20 +2111,16 @@ class HindsightMemoryProvider(MemoryProvider):
         never awaited: the loop must not block on anything, least of all
         its own close.
         """
-        from agent.async_utils import safe_schedule_threadsafe
-
-        setup = _ClientSetup()
-        setup.hand_back(client)
-        # Safe against displacement: this branch is reachable only from
-        # _get_client_on_owning_loop's install checks, which require no
-        # unsettled abandoned generation to exist.
-        self._register_abandoned_setup(setup)
-        setup.launch_retry(
-            lambda attempt: safe_schedule_threadsafe(
-                self._reconciliation_close_coro(setup, client, attempt),
-                _get_loop(),
-            )
-        )
+        if self._is_client_shutdown_settled(client):
+            return
+        if self._publish_lock.acquire(blocking=False):
+            try:
+                setup = self._claim_client_for_close_unlocked(client)
+            finally:
+                self._publish_lock.release()
+        else:
+            return
+        self._launch_tracked_close(setup, client)
 
     def _client_setup_timeout(self) -> float:
         """Wait budget for first-client construction — NOT the request timeout.
@@ -2475,10 +2614,8 @@ class HindsightMemoryProvider(MemoryProvider):
         publish is serialized against the sweep by _publish_lock, so the
         sweep cannot race past it and leave an unclosed client behind).
         """
-        from agent.async_utils import safe_schedule_threadsafe
-
         shutdown_fenced = False
-        fenced_setup = None
+        fenced_client = None
         with self._client_lock:
             current = self._client
             if current is client:
@@ -2497,21 +2634,21 @@ class HindsightMemoryProvider(MemoryProvider):
                         and self._shutting_down.is_set()
                     ):
                         shutdown_fenced = True
-                        fenced_setup = _ClientSetup()
-                        fenced_setup.hand_back(client)
-                        self._register_abandoned_setup(fenced_setup)
+                        fenced_client = client
         if shutdown_fenced:
+            if self._is_client_shutdown_settled(fenced_client):
+                return current
             logger.debug(
                 "Hindsight: shutdown fenced client publish; tracking for "
                 "exactly-once release on the owning loop"
             )
-            setup = fenced_setup
-            setup.launch_retry(
-                lambda attempt: safe_schedule_threadsafe(
-                    self._reconciliation_close_coro(setup, client, attempt),
-                    _get_loop(),
-                )
-            )
+            setup = self._claim_client_for_close(fenced_client)
+            if self._is_on_owning_loop():
+                self._launch_tracked_close(setup, fenced_client)
+            else:
+                self._reconcile_close_attempt(setup)
+                if setup.settled.is_set():
+                    self._clear_abandoned_setup(setup)
             return current
         # A newer client is installed: *client* loses — closed on the owning
         # loop, never stored over the winner.
@@ -2519,7 +2656,7 @@ class HindsightMemoryProvider(MemoryProvider):
             "Hindsight: a newer client was installed concurrently; "
             "closing the duplicate"
         )
-        self._close_client(client)
+        self._release_loser_client(client)
         return current
 
     def _recreate_client(self, stale):
@@ -2698,9 +2835,10 @@ class HindsightMemoryProvider(MemoryProvider):
         thread = self._writer_thread
         if thread is not None and thread.is_alive():
             return
-        # If the previous writer exited (e.g. after a prior shutdown), reset
-        # the flag so this fresh writer is allowed to drain new jobs.
-        self._shutting_down.clear()
+        if self._shutting_down.is_set():
+            # Once shutdown begins the monotonic fence stays set — never
+            # resurrect a writer that could accept new retain jobs.
+            return
         # Per-provider background threads start with an EMPTY contextvars
         # Context. Under multiplex_profiles the spawning thread carries the
         # profile's secret scope + HERMES_HOME override (gateway/run.py wraps
@@ -3862,7 +4000,17 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._publish_lock:
             client = self._client
             self._client = None
-        self._close_client(client)
+        if client is not None and not self._is_client_shutdown_settled(client):
+            setup = self._claim_client_for_close(client)
+            settled = self._reconcile_close_attempt(setup)
+            if settled:
+                self._clear_abandoned_setup(setup)
+            else:
+                logger.warning(
+                    "Hindsight shutdown: published client could not be "
+                    "confirmed released; keeping the generation and its "
+                    "tracked client recorded (fail-closed)"
+                )
         # An abandoned setup may still track a late client its coroutine
         # FAILED to close. Nobody will join that generation anymore, so
         # shutdown makes a bounded owning-loop reconciliation attempt
