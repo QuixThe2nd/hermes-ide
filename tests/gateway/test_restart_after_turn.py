@@ -17,20 +17,19 @@ def test_parse_restart_after_turn_timeout_defaults_and_clamps():
     assert parse_restart_after_turn_timeout("120") == 120.0
 
 
-def test_default_restart_after_turn_timeout_is_human_tolerable():
-    """The shipped default must not make interactive restarts block for hours.
+def test_default_restart_after_turn_timeout_stays_parseable():
+    """The legacy key ships a stable default purely for old-config compat.
 
-    A wedged turn must not pin `hermes gateway restart` for 6h — the
-    default is a safety valve for hung agents, not a target latency
-    (#79133). 900-1800s protects long autonomous turns while keeping
-    worst-case interactive restart in human-tolerable territory.
+    The value is NON-authoritative for restart progress: the in-band wait
+    is unbounded and no value — the default included — is a force cap
+    (#77184). It only sizes the CLI's advisory observation budget.
     """
-    assert 900 <= DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT <= 1800
-    # An interactive restart's printed wait budget stays under ~32 min.
+    assert DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT == 1800.0
+    # The advisory CLI observation budget is derived, not a force deadline.
     budget = resolve_restart_exit_wait_budget(
         60, DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, headroom=15
     )
-    assert budget <= 1875
+    assert budget == 60 + 1800 + 15
 
 
 def test_resolve_restart_exit_wait_budget_covers_both_phases():
@@ -40,7 +39,9 @@ def test_resolve_restart_exit_wait_budget_covers_both_phases():
 
 
 def test_load_restart_after_turn_timeout_preserves_zero(tmp_path, monkeypatch):
-    """Config/env ``0`` must disable after-turn wait, not fall back to default."""
+    """Legacy ``0`` keeps parsing (old configs load unchanged); it grants no
+    restart-progress authority — see test_restart_drain.py for the
+    non-authoritative behaviour proofs (#77184)."""
     import gateway.run as gateway_run
 
     monkeypatch.delenv("HERMES_RESTART_AFTER_TURN_TIMEOUT", raising=False)

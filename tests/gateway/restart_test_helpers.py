@@ -83,7 +83,7 @@ def make_restart_runner(
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False
-    runner._detached_restart_helper_started = False
+    runner._detached_restart_watcher_started = False
     runner._restart_command_source = None
     runner._restart_generation = 0
     runner._restart_cycle_open = False
@@ -121,6 +121,14 @@ def make_restart_runner(
     runner.begin_user_restart = GatewayRunner.begin_user_restart.__get__(
         runner, GatewayRunner
     )
+    runner._stage_and_promote_restart_marker = (
+        GatewayRunner._stage_and_promote_restart_marker.__get__(
+            runner, GatewayRunner
+        )
+    )
+    runner._rollback_aborted_user_restart = (
+        GatewayRunner._rollback_aborted_user_restart.__get__(runner, GatewayRunner)
+    )
     runner._handle_restart_command = GatewayRunner._handle_restart_command.__get__(
         runner, GatewayRunner
     )
@@ -154,6 +162,23 @@ def make_restart_runner(
     runner._active_work_count = GatewayRunner._active_work_count.__get__(
         runner, GatewayRunner
     )
+    runner._active_deferred_agent_worker_count = (
+        GatewayRunner._active_deferred_agent_worker_count.__get__(
+            runner, GatewayRunner
+        )
+    )
+    runner._pending_background_task_count = (
+        GatewayRunner._pending_background_task_count.__get__(runner, GatewayRunner)
+    )
+    runner._authoritative_active_work_count = (
+        GatewayRunner._authoritative_active_work_count.__get__(runner, GatewayRunner)
+    )
+    runner._probed_active_work_count = (
+        GatewayRunner._probed_active_work_count.__get__(runner, GatewayRunner)
+    )
+    runner._slash_drain_gate_notice = GatewayRunner._slash_drain_gate_notice.__get__(
+        runner, GatewayRunner
+    )
     runner._persist_active_agents = GatewayRunner._persist_active_agents.__get__(
         runner, GatewayRunner
     )
@@ -169,8 +194,10 @@ def make_restart_runner(
     runner._get_cached_session_source = GatewayRunner._get_cached_session_source.__get__(
         runner, GatewayRunner
     )
-    runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
-        runner, GatewayRunner
+    runner._launch_detached_restart_watcher = (
+        GatewayRunner._launch_detached_restart_watcher.__get__(
+            runner, GatewayRunner
+        )
     )
     runner._await_active_work_before_restart = (
         GatewayRunner._await_active_work_before_restart.__get__(runner, GatewayRunner)
@@ -206,9 +233,6 @@ def make_restart_runner(
         GatewayRunner._finalize_restart_wind_down_offer.__get__(runner, GatewayRunner)
     )
     runner._wedged_agent_count = GatewayRunner._wedged_agent_count.__get__(
-        runner, GatewayRunner
-    )
-    runner._awaitable_work_count = GatewayRunner._awaitable_work_count.__get__(
         runner, GatewayRunner
     )
     runner._is_user_authorized = lambda _source: True

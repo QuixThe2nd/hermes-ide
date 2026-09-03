@@ -5,16 +5,19 @@ That blocks new threads for as long as the slowest session keeps running.
 
 This module is the weaker fix that still covers that symptom:
 
-1. Snapshot every live chat (except the /restart requester) at the moment
-   the park steer is sent. Persist that list so the next process can see it.
-2. Steer each live chat agent once: park at a safe pause and end the turn.
-3. Mark those sessions ``resume_pending`` with ``cooperative_restart``.
-4. Startup auto-resume continues ONLY sessions from that snapshot. Leftover
+1. Steer each live chat (except the /restart requester) once: park at a
+   safe pause and end the turn.
+2. Persist exactly the session keys whose agent ACCEPTED that steer —
+   nothing else — so the next process can see who parked on request.
+3. Mark only those accepted sessions ``resume_pending`` with
+   ``cooperative_restart``.
+4. Startup auto-resume continues ONLY sessions from that receipt. Leftover
    ``resume_pending`` flags on chats that were idle at steer time stay idle.
 
-An empty snapshot is a real receipt: resume nobody. A missing file means
-the previous process never started a cooperative restart (crash / drain
-timeout / older build) and the usual resume_pending scan still applies.
+An empty accepted set is a real receipt: the pause was requested and
+nobody accepted, so resume nobody. A missing file means the previous
+process never started a cooperative restart (crash / older build) and the
+usual resume_pending scan still applies.
 
 Cron and API-server work are not steered — they have no chat loop that can
 park on request. The existing drain wait still covers them.
@@ -75,8 +78,12 @@ RESTART_WIND_DOWN_SEND_WAIT_SECONDS = 5.0
 WIND_DOWN_TERMINAL_OPTED_IN = "opted_in"
 WIND_DOWN_TERMINAL_NO_TARGETS = "no_targets"
 WIND_DOWN_TERMINAL_DRAINED = "drained"
-WIND_DOWN_TERMINAL_SAFETY_CAP = "safety_cap"
 WIND_DOWN_TERMINAL_CLOSED = "closed"
+
+# No "safety cap" terminal exists: a user-requested restart never proceeds
+# while active work remains, so no terminal edit may say a cap was reached
+# or that the restart is proceeding over live work. The only completions are
+# drained / opted-in / no-targets / closed.
 
 
 def normalize_pause_emoji(name: Optional[str]) -> Optional[str]:
@@ -136,11 +143,6 @@ def restart_wind_down_terminal_spec(
             WIND_DOWN_TERMINAL_DRAINED: (
                 "✅ Active sessions finished",
                 "Active sessions finished and the restart is proceeding.",
-            ),
-            WIND_DOWN_TERMINAL_SAFETY_CAP: (
-                "⏳ Restart proceeding",
-                "The restart wait reached its safety cap, so the restart is "
-                "proceeding now.",
             ),
             WIND_DOWN_TERMINAL_CLOSED: (
                 "⏸️ Restart wind-down closed",
@@ -209,8 +211,17 @@ def resume_allowlist_path():
     return get_hermes_home() / "gateway" / RESUME_ALLOWLIST_FILENAME
 
 
-def write_resume_allowlist(session_keys: Iterable[str]) -> list[str]:
-    """Persist the steer-time active-chat snapshot. Empty is a real receipt."""
+def write_resume_allowlist(session_keys: Iterable[str]) -> bool:
+    """Persist exactly the accepted-steer receipt. Empty is a real receipt.
+
+    Returns True only when the accepted set — empty included — is durably on
+    disk. A failed write must not leave an older cycle's receipt standing in
+    for this one: the next boot would read those stale keys as "resume
+    exactly these" for a cycle that never steered them. So on failure the
+    stale file is explicitly invalidated (best-effort unlink); if even that
+    fails, the caller keeps its "written" latch unset so the cycle-finalize
+    path clears the receipt again before anything can rely on it.
+    """
     keys: list[str] = []
     seen: set[str] = set()
     for raw in session_keys:
@@ -226,10 +237,20 @@ def write_resume_allowlist(session_keys: Iterable[str]) -> list[str]:
         )
     except Exception:
         logger.warning(
-            "cooperative restart: failed to persist resume allowlist",
+            "cooperative restart: failed to persist the accepted-steer "
+            "resume receipt; invalidating any stale receipt",
             exc_info=True,
         )
-    return keys
+        try:
+            resume_allowlist_path().unlink(missing_ok=True)
+        except OSError:
+            logger.debug(
+                "cooperative restart: could not invalidate the stale resume "
+                "receipt after a failed write",
+                exc_info=True,
+            )
+        return False
+    return True
 
 
 def load_resume_allowlist() -> Optional[set[str]]:
@@ -297,39 +318,30 @@ def should_auto_resume_session(
     return bool(session_key) and session_key in allowlist
 
 
-def snapshot_active_sessions_for_restart(runner: Any) -> list[str]:
-    """Log the live chats at the moment the park steer is sent.
-
-    An empty snapshot is deliberately *not* persisted: an empty allowlist
-    means "resume nobody", while an empty snapshot at opt-in time means
-    "nobody was left to ask" — a different promise.
-    """
-    keys = [session_key for session_key, _agent in iter_steerable_agents(runner)]
-    if keys:
-        write_resume_allowlist(keys)
-    logger.info(
-        "Cooperative restart snapshot: %d active chat(s) at steer time%s",
-        len(keys),
-        f" ({', '.join(keys[:8])})" if keys else "",
-    )
-    return keys
-
-
 def steer_running_agents_for_restart(runner: Any) -> list[str]:
     """Inject a one-shot park steer into each live chat agent.
 
     Returns the session keys that accepted a steer. Never interrupts. A
     missing ``steer()`` or a rejected empty agent is skipped.
+
+    Every key this pass ATTEMPTED (accepted or not) is folded into
+    ``runner._cooperative_restart_sessions``, which is what makes the steer
+    exactly-once per session: a later pass — or a duplicate opt-in — skips
+    them instead of re-asking. Rejected keys are recorded but are the
+    caller's business alone: only accepted keys may be persisted or marked.
     """
     steered: list[str] = []
     already = getattr(runner, "_cooperative_restart_sessions", None)
-    seen = set(already) if already else set()
+    attempted = list(already) if already else []
+    seen = set(attempted)
     for session_key, agent in iter_steerable_agents(runner):
         if session_key in seen:
             continue
         steer = getattr(agent, "steer", None)
         if not callable(steer):
             continue
+        attempted.append(session_key)
+        seen.add(session_key)
         try:
             accepted = bool(steer(COOPERATIVE_RESTART_STEER))
         except Exception:
@@ -341,6 +353,7 @@ def steer_running_agents_for_restart(runner: Any) -> list[str]:
             continue
         if accepted:
             steered.append(session_key)
+    runner._cooperative_restart_sessions = attempted
     return steered
 
 

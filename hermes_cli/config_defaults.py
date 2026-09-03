@@ -100,8 +100,9 @@ DEFAULT_CONFIG = {
         },
         # Force-interrupt budget once gateway stop()/drain has begun
         # (seconds). Applies to SIGTERM/external stop and to the final
-        # phase of in-band restart after any after-turn wait. 0 = interrupt
-        # immediately (upstream default).
+        # phase of in-band restart, which now always begins only after
+        # active work has drained. 0 = interrupt immediately (upstream
+        # default).
         #
         # NOTE(hermes-ide): fork default is a 24h drain. The drain loop
         # refuses new sessions and waits for running turns/cron/api work —
@@ -109,8 +110,8 @@ DEFAULT_CONFIG = {
         # 2026-08-23). systemd unit generation derives
         # TimeoutStopSec = drain + 30s from this same value, so regenerated
         # units stay consistent automatically. For in-band restart
-        # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
-        # active turns finish *before* stop() begins (#77184).
+        # (/restart, SIGUSR1), the pre-stop() wait for active turns is
+        # unbounded — see restart_after_turn_timeout below (#77184).
         "restart_drain_timeout": 86400,
         # Cron-only floor under the stop()/drain wait (seconds). A chat turn
         # interrupted by a restart is announced to the user and resumed on
@@ -121,15 +122,14 @@ DEFAULT_CONFIG = {
         # NOTE(hermes-ide): matches restart_drain_timeout's 24h for the same
         # reason — in-flight cron runs drain instead of dying mid-flight.
         "cron_drain_timeout": 86400,
-        # In-band restart wait for active turns to finish before stop()
-        # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
-        # this cap for in-flight agents/cron/api runs to complete naturally
-        # so the requesting turn is not amputated by restart_drain_timeout.
-        # 0 = legacy behaviour (enter stop()/drain immediately). Default
-        # 30 min is a safety valve for wedged agents, not a target latency —
-        # an interactive `hermes gateway restart` must never block for hours
-        # on a turn that wedged (#79133). Long unattended turns can raise
-        # this in config.yaml.
+        # LEGACY, non-authoritative. The in-band restart wait (/restart,
+        # SIGUSR1) is unbounded: new work is refused and the restart
+        # proceeds to stop() only once every in-flight agent/cron/api run
+        # has finished — however long that takes. A restart never forces
+        # active work. This key is retained only so existing configs keep
+        # loading and CLI observers can size their advisory wait budget
+        # (`hermes gateway restart` prints a "still draining" hint instead
+        # of waiting forever); no value — 0 included — is a deadline.
         "restart_after_turn_timeout": 1800,
         # Upper bound (seconds) a submitted prompt waits for the deferred
         # agent build (MCP discovery, model metadata, skills scan) before
