@@ -3125,6 +3125,8 @@ def test_owner_loop_duplicate_handoff_publish_lock_contended_stays_tracked(
     provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
     provider._timeout = 0.25
     started, gate, closed = _reset_gated_client(blocked=True)
+    # Park the first scheduled close so mid-lock settled inspection cannot race.
+    _GatedHindsightClient.block_closes = 1
 
     caller_parked = threading.Event()
     release_caller = threading.Event()
@@ -3204,14 +3206,10 @@ def test_owner_loop_duplicate_handoff_publish_lock_contended_stays_tracked(
             holder.join(timeout=_GATE_WAIT_S)
             assert not holder.is_alive(), "publish-lock holder hung"
 
-        if closed.is_set():
-            assert loser.close_attempts == ["hindsight-loop"]
-            assert loser.close_threads == ["hindsight-loop"]
-        else:
-            settled = provider._reconcile_close_attempt(setup)
-            assert settled
-            assert loser.close_attempts == ["hindsight-loop"]
-            assert loser.close_threads == ["hindsight-loop"]
+        _GatedHindsightClient.close_gate.set()
+        assert _GatedHindsightClient.closed.wait(timeout=_GATE_WAIT_S)
+        assert loser.close_attempts == ["hindsight-loop"]
+        assert loser.close_threads == ["hindsight-loop"]
     finally:
         release_caller.set()
     caller.join()
@@ -3226,6 +3224,8 @@ def test_release_fenced_client_publish_lock_contended_stays_tracked(
     provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
     provider._timeout = 0.25
     started, gate, closed = _reset_gated_client(blocked=True)
+    # Park the first scheduled close so mid-lock settled inspection cannot race.
+    _GatedHindsightClient.block_closes = 1
 
     loop_outcome: dict = {}
     loop_done = threading.Event()
@@ -3288,13 +3288,9 @@ def test_release_fenced_client_publish_lock_contended_stays_tracked(
         holder.join(timeout=_GATE_WAIT_S)
         assert not holder.is_alive(), "publish-lock holder hung"
 
-    if closed.is_set():
-        assert loser.close_attempts == ["hindsight-loop"]
-        assert loser.close_threads == ["hindsight-loop"]
-    else:
-        settled = provider._reconcile_close_attempt(setup)
-        assert settled
-        assert loser.close_attempts == ["hindsight-loop"]
-        assert loser.close_threads == ["hindsight-loop"]
+    _GatedHindsightClient.close_gate.set()
+    assert _GatedHindsightClient.closed.wait(timeout=_GATE_WAIT_S)
+    assert loser.close_attempts == ["hindsight-loop"]
+    assert loser.close_threads == ["hindsight-loop"]
     assert provider._client is None
     assert _GatedHindsightClient.constructed == [loser]
