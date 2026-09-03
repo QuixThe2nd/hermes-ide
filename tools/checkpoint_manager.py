@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -191,6 +192,37 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
     except ValueError:
         return f"File path escapes the working directory via traversal: {file_path!r}"
     return None
+
+
+_UNBORN_NESTED_REPO_RE = re.compile(
+    r"error: '([^']+)' does not have a commit checked out")
+
+
+def _unborn_nested_repo_retry_args(stderr: str) -> Optional[List[str]]:
+    """Retry ``git add`` args excluding embedded repos with no checked-out commit.
+
+    ``git add -A`` is fatal when the work tree contains a nested git
+    repository (or a worktree) whose HEAD is unborn::
+
+        error: 'embedded/' does not have a commit checked out
+        fatal: adding files failed
+
+    Re-running with the offending paths excluded via ``:(exclude)``
+    pathspecs stages the rest of the tree.  Returns ``None`` when stderr
+    shows a different failure.
+    """
+    raw_paths = _UNBORN_NESTED_REPO_RE.findall(stderr or "")
+    paths: List[str] = []
+    for raw in raw_paths:
+        rel = raw.rstrip("/").strip()
+        # Defensive: only plain relative in-tree paths are excludable.
+        if not rel or rel.startswith("/") or ".." in rel.split("/"):
+            continue
+        if rel not in paths:
+            paths.append(rel)
+    if not paths:
+        return None
+    return ["add", "-A", "--", "."] + [f":(exclude){p}" for p in paths]
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +818,9 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
+        # Per-session suppression of directories whose staging
+        # deterministically failed (never retried within this session).
+        self._failed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
 
     # ------------------------------------------------------------------
@@ -911,9 +946,24 @@ class CheckpointManager:
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        # Skip root, home, and volatile temp roots — staging them would walk
+        # systemd-private-*, other users' scratch, and nested-repo trees.
+        temp_root = tempfile.gettempdir()
+        too_broad = {
+            "/",
+            str(Path.home()),
+            temp_root,
+            str(Path(temp_root).resolve()),
+            "/tmp",
+            "/var/tmp",
+            "/dev/shm",
+            "/run",
+        }
+        if abs_dir in too_broad:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
+            return False
+
+        if abs_dir in self._failed_dirs:
             return False
 
         if abs_dir in self._checkpointed_dirs:
@@ -1317,7 +1367,21 @@ class CheckpointManager:
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:
-            logger.debug("Checkpoint git-add failed: %s", err)
+            retry_args = _unborn_nested_repo_retry_args(err)
+            if retry_args is not None:
+                ok, _, err = _run_git(
+                    retry_args, store, working_dir,
+                    timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+                )
+        if not ok:
+            # Deterministic staging failure (unreadable paths, pathological
+            # trees): suppress this directory for the rest of the session so
+            # the failure is not retried on every turn.
+            self._failed_dirs.add(str(working_dir))
+            logger.debug(
+                "Checkpoint staging failed in %s; skipping this directory "
+                "for the rest of the session: %s", working_dir, err,
+            )
             return False
 
         if self.max_file_size_mb > 0:
