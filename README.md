@@ -28,7 +28,7 @@ Discord History provides read-only search over an owner-authorized PostgreSQL ar
 
 Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats.
 
-The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates one Discord voice channel for each of five AI providers and orders them with the same score used by fallback routing:
+The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates Discord voice channels under a Models category — one row each for Codex, Kimi, Cursor, and Grok, and one row per Z.AI credential-pool wallet (`z.ai 1`, `z.ai 2`, …) — ordered with the same score used by fallback routing:
 
 `quota_frac × (168h / hours_to_reset) + one full wallet per pending usage-limit reset (Codex/Grok/z.ai), all × uptime_24h × uptime_1h`
 

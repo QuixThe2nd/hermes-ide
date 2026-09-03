@@ -520,7 +520,7 @@ class TestStatePersistence:
         )
 
         assert result["success"] is True
-        provider = result["providers"]["z.ai"]
+        provider = result["providers"]["z.ai 1"]
         assert provider["reset_count"] == 1
         assert provider["reset_expiry_seconds"] == OBSERVED_EXPIRY_SECS
         assert provider["reset_expiry_horizons"] == [OBSERVED_EXPIRY_SECS]
@@ -534,6 +534,7 @@ class TestStatePersistence:
             "reset_expiry_seconds": OBSERVED_EXPIRY_SECS,
             "reset_expiry_horizons": [OBSERVED_EXPIRY_SECS],
         }
+        assert state["readings"]["zai:legacy-env"]["pct"] == 0
 
     def test_tick_with_failed_reset_lookup_persists_no_reset_fields(
         self, monkeypatch, tmp_path
@@ -565,7 +566,7 @@ class TestStatePersistence:
         )
 
         assert result["success"] is True
-        provider = result["providers"]["z.ai"]
+        provider = result["providers"]["z.ai 1"]
         assert provider["remaining"] == 60  # the normal quota read stayed fresh
         assert "z.ai reset-list endpoint returned 503" in provider["reset_error"]
         state = load_state()
@@ -575,6 +576,7 @@ class TestStatePersistence:
             "reset_seconds": float(4 * DAY),
             "label": "z.ai",
         }
+        assert state["readings"]["zai:legacy-env"]["pct"] == 60
         assert state_path().exists()
 
 

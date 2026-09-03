@@ -64,7 +64,7 @@ _TOK_SEGMENT = r"(?: • \d+(?:\.\d+)?[KMB]? tok/7d)?"
 _RESETS_SEGMENT = r"(?: • (\d+) resets?(?: in (\d+)(d|h|m))?)?"
 
 STANDARD_NAME_RE = re.compile(
-    rf"^(Codex|Kimi|Grok|z\.ai): (\d+)%{_TOK_SEGMENT} • {_COUNTDOWN_GROUP}"
+    rf"^(Codex|Kimi|Grok|z\.ai(?: \d+)?): (\d+)%{_TOK_SEGMENT} • {_COUNTDOWN_GROUP}"
     rf"{_RESETS_SEGMENT}$"
 )
 CURSOR_NAME_RE = re.compile(

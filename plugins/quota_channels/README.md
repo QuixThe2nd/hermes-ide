@@ -1,6 +1,6 @@
 # quota_channels
 
-Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, and **Grok** under a **Models** category. Renames one configured voice channel per provider with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex, z.ai, and Cursor, and pending usage-limit resets for Codex, Grok, and z.ai — all in the same channel name. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
+Discord voice-channel model quota display for **Codex**, **Kimi**, **z.ai**, **Cursor**, and **Grok** under a **Models** category. Renames configured voice channels with remaining quota percentages, a granular time-until-reset countdown (days at 2+ days out, then hours, then minutes), rolling 7-day consumed tokens for Codex, z.ai, and Cursor, and pending usage-limit resets for Codex, Grok, and z.ai — all in the channel name. Codex, Kimi, Cursor, and Grok each have one voice row; **z.ai has one row per credential-pool wallet** (`z.ai 1`, `z.ai 2`, …) keyed by the immutable pool entry id. Channels are ordered by the same spendability score the fallback router uses (see below), and the category label stays fresh between cron ticks.
 
 ## What it does
 
@@ -50,9 +50,11 @@ quota_channels:
 
 **Upgrade note:** Updating the plugin automatically enriches existing quota channels for Codex, z.ai, and Cursor with a `<compact> tok/7d` segment — no config changes required.
 
+**Upgrade note (1.4.0):** Multiple Z.AI credentials in `auth.json` `credential_pool.zai` each get their own numbered voice row. On first run with extra wallets, the legacy `channel_ids.zai` channel binds to the first wallet (stable pool order after in-memory key dedupe); additional wallets get new voice channels under `category_id`. Ordinal numbers bind once to entry ids in `quota_channels_state.json` and are never reclaimed. `readings.zai` remains a single alias for the best currently spendable wallet so `fallback_quota_reorder` keeps working unchanged.
+
 ## Rolling 7-day token enrichment
 
-Each provider has **one** voice channel. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request.
+Codex, Kimi, Cursor, and Grok each have **one** voice row. For Codex, z.ai, and Cursor the channel name includes quota fields plus a rolling 7-day token total between the percentage segment and the reset countdown, e.g. `Codex: 99% • 2.2B tok/7d • 7d left` and `z.ai 2: 74% • 250.0M tok/7d • 4d left`. Kimi and Grok have no account-wide consumed-token API; their channels stay quota-only and make **no** token-related HTTP request.
 
 | Provider | Source | Notes |
 |----------|--------|-------|
@@ -89,7 +91,7 @@ A failed or unparseable resets lookup never fails the provider's tick: Codex kee
 |----------|----------|-------|
 | Discord bot | `HERMES_HOME/secrets/discord.env` | `DISCORD_BOT_TOKEN=` |
 | Kimi | `HERMES_HOME/.env` | `KIMI_API_KEY=` |
-| z.ai | `HERMES_HOME/secrets/zai.env` | `ZAI_API_KEY=` (raw Authorization header) |
+| z.ai | `HERMES_HOME/secrets/zai.env` **or** `HERMES_HOME/auth.json` `credential_pool.zai[]` | `ZAI_API_KEY=` (raw Authorization header) when the pool is empty; one wallet row per pool entry (immutable `id`) when the pool is populated. Duplicate exact runtime keys are deduped in memory only (first id wins). |
 | Codex | `HERMES_HOME/auth.json` | `providers.openai-codex.tokens` (OAuth refresh on 401) |
 | Grok | `HERMES_HOME/auth.json` | `providers.xai-oauth.tokens` (OAuth refresh once on 401) |
 | Cursor | `~/.config/cursor/auth.json` | `accessToken` JWT (re-run `agent login` on 401) |

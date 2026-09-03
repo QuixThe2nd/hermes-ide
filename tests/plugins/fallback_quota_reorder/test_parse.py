@@ -100,6 +100,15 @@ class TestParseResetsSegment:
         assert reading.reset_count == 1
         assert reading.reset_expiry_seconds == 2 * 86400
 
+    def test_zai_numbered_wallet_name_parses(self):
+        reading = parse_channel_name(
+            "zai", f"z.ai 1: 70% {BULLET} 7d left {BULLET} 1 reset in 2d"
+        )
+        assert reading is not None
+        assert reading.pct == 70
+        assert reading.reset_count == 1
+        assert reading.reset_expiry_seconds == 2 * 86400
+
     def test_garbage_resets_segment_is_rejected(self):
         assert (
             parse_channel_name("grok", f"Grok: 46% {BULLET} 3d left {BULLET} resets")
