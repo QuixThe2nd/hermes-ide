@@ -121,26 +121,60 @@ class TestCredentialFingerprint:
 
 class TestProfileMessageHandler:
     @pytest.mark.asyncio
-    async def test_stamps_profile_on_unstamped_source(self):
+    async def test_unrouted_source_falls_back_to_owner_profile(self, monkeypatch, tmp_path):
+        """No profile_routes configured → an unstamped source keeps the owner.
+
+        The secondary handler now resolves routes before stamping, so the
+        no-route case must still land exactly on the owning secondary profile
+        (session namespace and runtime scope), never on the active profile.
+        """
+        from contextlib import asynccontextmanager
+
+        from gateway.session import SessionSource
+
+        homes = {
+            "coder": tmp_path / "profiles" / "coder",
+        }
+        homes["coder"].mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda name: homes.get(name, tmp_path / "profiles" / name),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profile_exists",
+            lambda name: name in homes,
+        )
+
         runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
         seen = {}
+        scoped_homes = []
 
         async def _fake_handle(event):
             seen["profile"] = event.source.profile
             return "ok"
 
         runner._handle_message = _fake_handle
+
+        @asynccontextmanager
+        async def fake_scope(home):
+            scoped_homes.append(Path(home))
+            yield
+
+        monkeypatch.setattr(gateway_run, "_async_profile_runtime_scope", fake_scope)
         handler = runner._make_profile_message_handler("coder")
 
-        class _Src:
-            profile = None
-
-        class _Evt:
-            source = _Src()
-
-        result = await handler(_Evt())
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="500",
+            chat_type="group",
+            user_id="u1",
+            guild_id="500",
+        )
+        result = await handler(types.SimpleNamespace(source=source))
         assert result == "ok"
         assert seen["profile"] == "coder"
+        assert scoped_homes == [homes["coder"]]
 
 
 class TestProfileRuntimeStatus:

@@ -87,6 +87,124 @@ class TestParseProfileRoutes:
         assert sum("can never match" in rec.message for rec in caplog.records) == 2
 
 
+class TestInvalidProfileTargets:
+    """An explicitly configured invalid target must fail CLOSED, not open.
+
+    Dropping the route at parse time would turn matching traffic into owner
+    fallback (fail-open). The parser therefore retains the route so it can
+    still match, and the served-profile check in
+    ``GatewayRunner._profile_name_for_source`` rejects it with
+    ``ProfileRouteRejected``. The invalid name is an opaque string on the
+    route — never normalized into validity, never resolved as a path.
+    """
+
+    def test_invalid_target_retained_as_matching_route(self, caplog):
+        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {"name": "bad", "platform": "discord", "guild_id": "9001",
+                 "profile": "../escape"},
+            ])
+        assert len(routes) == 1
+        assert routes[0].profile == "../escape"
+        # The route still matches its configured scope...
+        assert routes[0].matches("discord", guild_id="9001")
+        assert match_profile_route(routes, "discord", guild_id="9001") is routes[0]
+        # ...and the misconfiguration is logged safely (repr-quoted).
+        assert sum(
+            "invalid profile name" in rec.message and "'../escape'" in rec.message
+            for rec in caplog.records
+        ) == 1
+
+    def test_valid_names_still_normalized_and_validated(self):
+        routes = parse_profile_routes([
+            {"name": "ok", "platform": "discord", "guild_id": "1",
+             "profile": "  Reviews  "},
+        ])
+        assert [r.profile for r in routes] == ["reviews"]
+
+    def test_missing_platform_or_profile_still_skipped(self):
+        assert parse_profile_routes([
+            {"name": "no-platform", "profile": "x"},
+            {"name": "no-profile", "platform": "discord"},
+        ]) == []
+
+    def test_disabled_invalid_route_stays_inactive(self):
+        routes = parse_profile_routes([
+            {"name": "bad", "platform": "discord", "guild_id": "9001",
+             "profile": "../escape", "enabled": False},
+        ])
+        assert len(routes) == 1
+        assert not routes[0].matches("discord", guild_id="9001")
+        assert match_profile_route(routes, "discord", guild_id="9001") is None
+
+
+class TestGatewayConfigInvalidTargetIntegration:
+    """End-to-end: an invalid target loaded through ``GatewayConfig.from_dict``
+    is retained by the parser and then rejected by the canonical resolver —
+    without the invalid name ever reaching a filesystem-path resolution."""
+
+    def test_from_dict_invalid_target_rejected_fail_closed(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_cli.profiles as profiles_mod
+        from gateway.config import GatewayConfig, Platform
+        from gateway.profile_routing import ProfileRouteRejected
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        served = [("default", tmp_path), ("research", tmp_path / "profiles" / "research")]
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: served,
+        )
+        path_resolutions = []
+        real_get_profile_dir = profiles_mod.get_profile_dir
+
+        def _recording_get_profile_dir(name):
+            path_resolutions.append(name)
+            return real_get_profile_dir(name)
+
+        monkeypatch.setattr(
+            profiles_mod, "get_profile_dir", _recording_get_profile_dir
+        )
+
+        config = GatewayConfig.from_dict({
+            "multiplex_profiles": True,
+            "profile_routes": [
+                {"name": "bad", "platform": "discord", "guild_id": "9001",
+                 "profile": "../escape"},
+            ],
+        })
+        # Retained by the parser (fail-closed), not silently dropped.
+        assert len(config.profile_routes) == 1
+        assert config.profile_routes[0].profile == "../escape"
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = config
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="9101",
+            chat_type="group",
+            user_id="u1",
+            guild_id="9001",
+        )
+        with pytest.raises(ProfileRouteRejected):
+            runner._profile_name_for_source(source)
+        # The canonical resolver never resolved the invalid name as a path.
+        assert "../escape" not in path_resolutions
+
+        # Unmatched traffic is unaffected by the retained invalid route.
+        other = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="9199",
+            chat_type="group",
+            user_id="u1",
+            guild_id="9002",
+        )
+        assert runner._profile_name_for_source(other) is None
+
+
 class TestMatchProfileRoute:
 
 

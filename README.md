@@ -88,6 +88,8 @@ The default SOUL gives fresh profiles a credential preflight before asking you f
 
 Research and sandbox profiles often need to read files without being allowed to rewrite the machine. `hermes profile create NAME --read-only` creates a profile with the `file_readonly` toolset: `read_file` and `search_files`, without `write_file` or `patch`. On an existing profile, `hermes tools enable file_readonly` swaps out the normal `file` toolset the same way on every platform.
 
+Secondary bots on a multiplexed gateway follow the same `gateway.profile_routes` as the primary bot. A guild, channel, or thread routed to another profile runs with that profile's persona, tools, memory, and session namespace no matter which bot admitted the message, while authorization and the reply itself stay with the receiving bot. Routed profiles can stay headless — they need no platform token or allowlist of their own. Chats with no matching route — including DMs without a matching chat route — stay with the owning profile, and a route that names a profile the gateway does not serve fails closed instead of borrowing the owner's runtime.
+
 ## WhatsApp missions
 
 WhatsApp chats can be given a job instead of being left as permanent open conversations. Assistant chats expose the mission-aware `end_session` tool or the one-way `escalate_task` tool.

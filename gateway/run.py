@@ -12455,7 +12455,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # creating a session.  The busy path must enforce the same check;
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
-        if not self._is_user_authorized(event.source):
+        # _is_user_authorized_for_source so a multiplexed source authorizes
+        # under its transport (adapter-owning) profile's scope — the busy
+        # handler stamps that home before dispatching here, matching the
+        # split the cold path applies.
+        if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s",
@@ -19641,46 +19645,172 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Reconnect is scoped to the profile's own config and secret mapping;
         # never rebuild a secondary adapter with the default profile's credentials.
 
-    def _make_profile_message_handler(self, profile_name: str):
-        """Return a message handler that stamps source.profile then delegates.
+    def _apply_route_or_owner_profile(
+        self,
+        source: SessionSource,
+        transport_profile: Optional[str],
+        transport_home: Optional["Path"],
+    ) -> None:
+        """Stamp transport ownership + route-or-owner execution on one source.
 
-        Auth runs inside ``_handle_message`` *before* the agent-turn scope is
-        installed. For secondary profiles under multiplex, wrap the whole
-        handler in ``_profile_runtime_scope`` so allowlists/tokens from that
-        profile's ``.env`` are visible to ``get_secret`` / authz.
+        One shared seam for every multiplex ingress handler — the secondary
+        message/busy-session/platform-event handlers and the adapter auth
+        check, plus the primary (default-profile) handlers. Two decisions,
+        deliberately kept independent:
+
+        1. **Transport/auth ownership** — ``_authorization_profile_home`` is
+           pinned to the profile whose adapter actually received the event
+           (the launch home for a primary adapter, the owning profile's home
+           for a secondary one). The auth gate reads allowlists/tokens from
+           THAT scope only, so a routed runtime needs no platform credential
+           or allowlist of its own to serve a chat.
+        2. **Execution selection** — resolve ``gateway.profile_routes`` via
+           the canonical resolver (``_profile_name_for_source``): a match
+           selects the routed profile for persona, tools, memory, session
+           lookup, and runtime scope; no match falls back exactly to the
+           transport-owning profile; an explicit route to an unserved
+           profile sets ``profile_route_rejected`` so ``_handle_message``'s
+           ingress gate drops the event fail-closed (existing
+           ``ProfileRouteRejected`` semantics).
+
+        In-process only: SessionSource serialization ignores these dynamic
+        attributes. Sources already stamped by ``build_source`` keep their
+        route; this helper only fills in the unstamped case.
+        """
+        if source is None:
+            return
+        if transport_home is not None:
+            source._authorization_profile_home = Path(transport_home)
+        if getattr(source, "profile_route_rejected", False) is True:
+            return
+        if getattr(source, "profile", None):
+            return
+        from gateway.profile_routing import ProfileRouteRejected
+
+        try:
+            routed = self._profile_name_for_source(source)
+        except ProfileRouteRejected:
+            # NOT write-only: ``_handle_message``'s ingress gate reads this
+            # exact marker and drops the message fail-closed ("explicit
+            # profile route targets an unserved profile"). Setting it also
+            # stops that gate from re-running routing for the same source.
+            source.profile_route_rejected = True
+            logger.debug(
+                "Profile route rejected for %s source (transport profile %r)",
+                getattr(getattr(source, "platform", None), "value", None),
+                transport_profile,
+            )
+            return
+        selected = routed or transport_profile
+        if selected:
+            source.profile = selected
+        if routed and routed != transport_profile:
+            logger.debug(
+                "Profile route selected %r for %s source (transport profile %r)",
+                routed,
+                getattr(getattr(source, "platform", None), "value", None),
+                transport_profile,
+            )
+
+    def _make_profile_message_handler(self, profile_name: str):
+        """Return a message handler that routes the turn, then delegates.
+
+        Transport/auth ownership stays with this secondary profile (its
+        credential admitted the message); execution follows
+        ``gateway.profile_routes`` exactly like the primary handler: a match
+        selects the routed profile's home for persona, tools, memory, and
+        session lookup before ``_handle_message`` runs, no match falls back
+        to the owning profile, and a route to an unserved profile fails
+        closed. Replies still go out through this ingress adapter (the
+        transport provenance ``build_source`` recorded is untouched).
         """
         from hermes_cli.profiles import get_profile_dir
 
         try:
-            profile_home = get_profile_dir(profile_name)
+            owner_home = get_profile_dir(profile_name)
         except Exception:
-            profile_home = None
+            owner_home = None
 
         async def _handler(event):
+            source = getattr(event, "source", None)
             try:
-                if getattr(event, "source", None) is not None and not event.source.profile:
-                    event.source.profile = profile_name
+                self._apply_route_or_owner_profile(
+                    source, profile_name, owner_home
+                )
             except Exception:
-                pass
-            if profile_home is not None:
-                async with _async_profile_runtime_scope(profile_home):
-                    return await self._handle_message(event)
-            return await self._handle_message(event)
+                logger.debug(
+                    "Secondary route-or-owner resolution failed (profile %r)",
+                    profile_name,
+                    exc_info=True,
+                )
+            selected_home = owner_home
+            if source is not None and getattr(source, "profile", None):
+                selected_home = self._resolve_profile_home_for_source(source)
+            if selected_home is None:
+                return await self._handle_message(event)
+            async with _async_profile_runtime_scope(selected_home):
+                return await self._handle_message(event)
 
         return _handler
 
     def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile before resolving busy policy."""
+        """Route a busy-session message before resolving its key and policy.
+
+        The busy guard keys on the session the routed turn actually runs in:
+        stamp the route-or-owner profile first so the recomputed key and the
+        per-profile busy policy (``_busy_*_modes_by_profile``) agree with the
+        message handler that started the run. The busy handler itself runs
+        under the SAME selected execution home as the message handler — its
+        inner path makes profile-sensitive reads (busy policy snapshots, STT
+        prep, ``_load_gateway_config()``) that must see the routed runtime,
+        not the launch/default home. Authorization keeps reading the owning
+        profile's scope via the transport home stamped on the source.
+        """
+        from hermes_cli.profiles import get_profile_dir
+
+        try:
+            owner_home = get_profile_dir(profile_name)
+        except Exception:
+            owner_home = None
+
         async def _handler(event, _session_key):
+            source = getattr(event, "source", None)
             try:
-                if getattr(event, "source", None) is not None and not event.source.profile:
-                    event.source.profile = profile_name
+                self._apply_route_or_owner_profile(
+                    source, profile_name, owner_home
+                )
             except Exception:
-                pass
-            routed_session_key = self._session_key_for_source(event.source)
-            return await self._handle_active_session_busy_message(
-                event, routed_session_key
-            )
+                logger.debug(
+                    "Secondary busy-session route-or-owner resolution failed "
+                    "(profile %r)",
+                    profile_name,
+                    exc_info=True,
+                )
+            if getattr(source, "profile_route_rejected", False) is True:
+                # Same fail-closed outcome as ``_handle_message``'s ingress
+                # gate: a route to an unserved profile never starts a turn,
+                # so its follow-ups must not piggyback on another lane's
+                # busy session either.
+                logger.warning(
+                    "Dropping busy-session message because its explicit "
+                    "profile route targets an unserved profile"
+                )
+                return True
+            if source is not None:
+                routed_session_key = self._session_key_for_source(source)
+            else:
+                routed_session_key = _session_key
+            selected_home = owner_home
+            if source is not None and getattr(source, "profile", None):
+                selected_home = self._resolve_profile_home_for_source(source)
+            if selected_home is None:
+                return await self._handle_active_session_busy_message(
+                    event, routed_session_key
+                )
+            async with _async_profile_runtime_scope(selected_home):
+                return await self._handle_active_session_busy_message(
+                    event, routed_session_key
+                )
 
         return _handler
 
@@ -19702,25 +19832,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _handler(event):
             source = event.source
-            # In-process only (SessionSource serialization ignores dynamic attrs).
-            # The route selects agent/session state, not which bot admitted the
-            # message. Keep those two trust domains separate.
-            source._authorization_profile_home = default_home
-            if (
-                not getattr(source, "profile", None)
-                and getattr(source, "profile_route_rejected", False) is not True
-            ):
-                from gateway.profile_routing import ProfileRouteRejected
-
-                try:
-                    source.profile = self._profile_name_for_source(source)
-                except ProfileRouteRejected:
-                    # NOT write-only: ``_handle_message``'s ingress gate reads
-                    # this exact marker and drops the message fail-closed
-                    # ("explicit profile route targets an unserved profile").
-                    # Setting it here also stops that gate from re-running
-                    # routing for the same source.
-                    source.profile_route_rejected = True
+            # Route-or-owner with no secondary owner: the launch profile IS
+            # the transport profile, and no route means the launch home.
+            self._apply_route_or_owner_profile(source, None, default_home)
 
             profile_home = (
                 self._resolve_profile_home_for_source(source)
@@ -19753,21 +19867,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("gateway_platform_event hook dispatch failed", exc_info=True)
 
     def _make_profile_platform_event_handler(self, profile_name: str):
-        """Bind platform-event auth and hook dispatch to one multiplex profile."""
+        """Bind platform-event auth and hook dispatch to the routed profile.
+
+        Same route-or-owner split as the message handler: the event
+        authorizes against the owning secondary profile's scope, while hook
+        dispatch runs under the routed profile's home so observers see the
+        runtime that serves the chat.
+        """
         from hermes_cli.profiles import get_profile_dir
 
         try:
-            profile_home = get_profile_dir(profile_name)
+            owner_home = get_profile_dir(profile_name)
         except Exception:
-            profile_home = None
+            owner_home = None
 
         async def _handler(event, source):
-            if getattr(source, "profile", None) is None:
-                source.profile = profile_name
-            if profile_home is not None:
-                with _profile_runtime_scope(profile_home):
-                    return await self._handle_gateway_platform_event(event, source)
-            return await self._handle_gateway_platform_event(event, source)
+            try:
+                self._apply_route_or_owner_profile(
+                    source, profile_name, owner_home
+                )
+            except Exception:
+                logger.debug(
+                    "Secondary platform-event route-or-owner resolution "
+                    "failed (profile %r)",
+                    profile_name,
+                    exc_info=True,
+                )
+            if getattr(source, "profile_route_rejected", False) is True:
+                # Same fail-closed outcome as ``_handle_message``'s ingress
+                # gate: a route to an unserved profile must not reach
+                # authorization or hook dispatch, and never falls back to
+                # the owner.
+                logger.warning(
+                    "Dropping platform event because its explicit profile "
+                    "route targets an unserved profile"
+                )
+                return
+            selected_home = owner_home
+            if source is not None and getattr(source, "profile", None):
+                selected_home = self._resolve_profile_home_for_source(source)
+            if selected_home is None:
+                return await self._handle_gateway_platform_event(event, source)
+            with _profile_runtime_scope(selected_home):
+                return await self._handle_gateway_platform_event(event, source)
 
         return _handler
 
@@ -19776,7 +19918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
-            source._authorization_profile_home = default_home
+            self._apply_route_or_owner_profile(source, None, default_home)
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._handle_gateway_platform_event(event, source)
 
@@ -20065,21 +20207,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         multiplex profile, so its ``SessionSource`` resolves that profile's
         secret scope instead of falling back to the active profile.
 
-        For the shared primary adapter under ``multiplex_profiles``
-        (``profile_name`` is None) the callback mirrors the inbound message
-        path exactly: the chat's ``profile_routes`` match is stamped on the
-        source so the routed profile's pairing store is consulted, while the
-        allowlist/gate reads stay under the transport (launch) home via
-        ``_is_user_authorized_for_source`` — the same split
-        ``_make_default_profile_message_handler`` applies. Without this an
+        Under ``multiplex_profiles`` the callback mirrors the inbound message
+        path exactly — for the shared primary adapter (``profile_name`` is
+        None) and for a secondary one alike: the chat's ``profile_routes``
+        match is stamped on the source so the routed profile's pairing store
+        is consulted, while the allowlist/gate reads stay under the transport
+        home (the launch home for a primary adapter, the owning profile's
+        home for a secondary one) via ``_is_user_authorized_for_source`` —
+        the same split ``_make_default_profile_message_handler`` and
+        ``_make_profile_message_handler`` apply. Without this an
         inline-button caller approved only in the routed profile's pairing
         store was denied (#86296), because the adapter's callback source was
         never route-stamped.
         """
         multiplex = bool(getattr(self.config, "multiplex_profiles", False))
-        transport_home = (
-            Path(get_hermes_home()) if multiplex and profile_name is None else None
-        )
+        transport_home = None
+        if multiplex:
+            if profile_name is None:
+                transport_home = Path(get_hermes_home())
+            else:
+                from hermes_cli.profiles import get_profile_dir
+
+                try:
+                    transport_home = get_profile_dir(profile_name)
+                except Exception:
+                    transport_home = None
 
         def check(
             user_id: str,
@@ -20098,7 +20250,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id=user_id,
                 thread_id=thread_id,
                 is_bot=bool(is_bot),
-                profile=profile_name,
+                # Left unset under multiplex so the shared route-or-owner
+                # seam below can stamp the routed profile; pre-stamping the
+                # owner here would bypass profile_routes entirely.
+                profile=None if transport_home is not None else profile_name,
             )
             # Same in-process transport provenance ``build_source`` retains, so
             # adapter-level policy reads (config.yaml group_allowed_chats,
@@ -20114,12 +20269,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
                 return self._is_user_authorized(source)
-            source._authorization_profile_home = transport_home
-            from gateway.profile_routing import ProfileRouteRejected
-
-            try:
-                source.profile = self._profile_name_for_source(source)
-            except ProfileRouteRejected:
+            self._apply_route_or_owner_profile(
+                source, profile_name, transport_home
+            )
+            if getattr(source, "profile_route_rejected", False) is True:
                 # Same fail-closed outcome as the ingress gate in
                 # ``_handle_message`` for a route to an unserved profile.
                 return False

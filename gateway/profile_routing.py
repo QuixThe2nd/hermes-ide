@@ -186,6 +186,16 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
     """Parse profile_routes from config.yaml into ProfileRoute objects.
 
     Returns routes sorted by specificity (most specific first).
+
+    Entries missing ``platform`` or ``profile`` are skipped. An entry whose
+    ``profile`` fails profile-name validation is KEPT (with a load-time
+    warning) so that traffic matching it fails closed: the route can match,
+    but the served-profile check in
+    ``GatewayRunner._profile_name_for_source`` rejects it with
+    ``ProfileRouteRejected`` rather than silently falling back to the
+    transport owner's runtime. The invalid name is carried as an opaque
+    string and is never resolved as a filesystem path. Disabled routes stay
+    inactive regardless.
     """
     if not raw:
         return []
@@ -211,9 +221,24 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             )
             profile = normalize_profile_name(profile)
             validate_profile_name(profile)
-        except (ValueError, ImportError):
+        except ImportError:
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
+        except ValueError:
+            # Fail closed, NOT fail open: keep the explicitly configured
+            # (invalid) target on the route so matching traffic is REJECTED
+            # by the served-profile check in
+            # ``GatewayRunner._profile_name_for_source``
+            # (``ProfileRouteRejected``) instead of silently degrading to the
+            # transport owner's runtime. The raw name is retained for
+            # matching/diagnostics only — it is never normalized into a valid
+            # shape here and must never be resolved as a filesystem path.
+            logger.warning(
+                "Profile route %s targets invalid profile name %r; keeping "
+                "the route so matching traffic fails closed instead of "
+                "falling back to the default profile",
+                name, profile,
+            )
         routes.append(
             ProfileRoute(
                 name=name,
