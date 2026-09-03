@@ -2871,9 +2871,16 @@ def test_owner_loop_duplicate_handoff_failed_close_stays_tracked(
 
         assert len(_GatedHindsightClient.constructed) == 1
         loser = _GatedHindsightClient.constructed[0]
-        assert untracked_tasks == [], (
-            "duplicate handoff used untracked create_task(_aclose_client)"
-        )
+        # Tracked close is launched via launch_retry with one attempt per
+        # exact generation (not a raw untracked create_task(_aclose_client)).
+        assert len(untracked_tasks) == 1
+        captured = untracked_tasks[0]
+        qualname = getattr(
+            getattr(captured, "cr_code", None), "co_qualname", ""
+        ) or getattr(captured, "__qualname__", "")
+        assert "_reconciliation_close_coro" in qualname
+        assert "_close_and_record" in qualname
+        assert "_aclose_client" not in qualname
 
         setups = [
             s
