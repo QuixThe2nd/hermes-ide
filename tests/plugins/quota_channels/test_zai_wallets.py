@@ -829,3 +829,201 @@ class TestWalletReconcileRegressions:
         saved = json.loads(state_path().read_text(encoding="utf-8"))
         assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
         assert saved["readings"] == prior["readings"]
+
+    def _run_non_destructive_grok_tick(self, wallet_env, monkeypatch, pool_entries):
+        prior = {
+            "last_quota_success": 777,
+            "readings": {
+                wallet_reading_key("w1"): {"pct": 40, "reset_seconds": DAY, "label": "z.ai 1"},
+                wallet_reading_key("w2"): {"pct": 60, "reset_seconds": DAY, "label": "z.ai 2"},
+                "zai": {"pct": 60, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        (wallet_env / "auth.json").write_text(
+            json.dumps({"credential_pool": {"zai": pool_entries}}),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+                {"id": "c5", "position": 14},
+            ],
+            existing={"c3", "extra", "c5"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3", "grok": "c5"},
+                "enabled_providers": ["zai", "grok"],
+            }
+        )
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {"grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY)},
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        blob = json.dumps(result)
+        assert "sk-secret" not in blob
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        assert saved["readings"][wallet_reading_key("w1")] == prior["readings"][wallet_reading_key("w1")]
+        assert saved["readings"][wallet_reading_key("w2")] == prior["readings"][wallet_reading_key("w2")]
+        assert saved["readings"]["zai"] == prior["readings"]["zai"]
+        return discord, saved
+
+    def test_mapping_shaped_garbage_pool_non_destructive(self, wallet_env, monkeypatch):
+        self._run_non_destructive_grok_tick(
+            wallet_env, monkeypatch, [{}, {"foo": 1}]
+        )
+
+    def test_id_only_pool_row_non_destructive(self, wallet_env, monkeypatch):
+        self._run_non_destructive_grok_tick(
+            wallet_env, monkeypatch, [{"id": "w1"}]
+        )
+
+    def _run_non_destructive_grok_tick(self, wallet_env, monkeypatch, pool_entries):
+        prior = {
+            "last_quota_success": 777,
+            "readings": {
+                wallet_reading_key("w1"): {"pct": 40, "reset_seconds": DAY, "label": "z.ai 1"},
+                wallet_reading_key("w2"): {"pct": 60, "reset_seconds": DAY, "label": "z.ai 2"},
+                "zai": {"pct": 60, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        (wallet_env / "auth.json").write_text(
+            json.dumps({"credential_pool": {"zai": pool_entries}}),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+                {"id": "c5", "position": 14},
+            ],
+            existing={"c3", "extra", "c5"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3", "grok": "c5"},
+                "enabled_providers": ["zai", "grok"],
+            }
+        )
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {"grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY)},
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        blob = json.dumps(result)
+        assert "sk-secret" not in blob
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        assert saved["readings"][wallet_reading_key("w1")] == prior["readings"][wallet_reading_key("w1")]
+        assert saved["readings"][wallet_reading_key("w2")] == prior["readings"][wallet_reading_key("w2")]
+        assert saved["readings"]["zai"] == prior["readings"]["zai"]
+        return discord, saved
+
+    def test_mapping_shaped_garbage_pool_non_destructive(self, wallet_env, monkeypatch):
+        self._run_non_destructive_grok_tick(
+            wallet_env, monkeypatch, [{}, {"foo": 1}]
+        )
+
+    def test_id_only_pool_row_non_destructive(self, wallet_env, monkeypatch):
+        self._run_non_destructive_grok_tick(
+            wallet_env, monkeypatch, [{"id": "w1"}]
+        )
+
+    def _run_non_destructive_grok_tick(self, wallet_env, monkeypatch, pool_entries):
+        prior = {
+            "last_quota_success": 777,
+            "readings": {
+                wallet_reading_key("w1"): {"pct": 40, "reset_seconds": DAY, "label": "z.ai 1"},
+                wallet_reading_key("w2"): {"pct": 60, "reset_seconds": DAY, "label": "z.ai 2"},
+                "zai": {"pct": 60, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "extra"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        (wallet_env / "auth.json").write_text(
+            json.dumps({"credential_pool": {"zai": pool_entries}}),
+            encoding="utf-8",
+        )
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "extra", "position": 13},
+                {"id": "c5", "position": 14},
+            ],
+            existing={"c3", "extra", "c5"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3", "grok": "c5"},
+                "enabled_providers": ["zai", "grok"],
+            }
+        )
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {"grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY)},
+        )
+        result = run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        blob = json.dumps(result)
+        assert "sk-secret" not in blob
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        assert saved["readings"][wallet_reading_key("w1")] == prior["readings"][wallet_reading_key("w1")]
+        assert saved["readings"][wallet_reading_key("w2")] == prior["readings"][wallet_reading_key("w2")]
+        assert saved["readings"]["zai"] == prior["readings"]["zai"]
+        return discord, saved
+
+    def test_mapping_shaped_garbage_pool_non_destructive(self, wallet_env, monkeypatch):
+        self._run_non_destructive_grok_tick(
+            wallet_env, monkeypatch, [{}, {"foo": 1}]
+        )
+
+    def test_id_only_pool_row_non_destructive(self, wallet_env, monkeypatch):
+        self._run_non_destructive_grok_tick(
+            wallet_env, monkeypatch, [{"id": "w1"}]
+        )

@@ -138,6 +138,13 @@ def enumerate_zai_wallets(hermes_home) -> Tuple[List[ZaiWallet], bool]:
                 )
             )
 
+    if (
+        not pool_unreadable
+        and pool_entries
+        and not wallets
+    ):
+        pool_unreadable = True
+
     if not wallets:
         env_path = hermes_home / "secrets" / "zai.env"
         env_key = _read_env_key(env_path, "ZAI_API_KEY")
