@@ -280,11 +280,9 @@ import json
 import os
 import re
 import secrets
-import shutil
 import signal
 import socket
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
@@ -529,12 +527,15 @@ def _archive_epoch(db_path):
     with _archive_epoch_lock:
         return _archive_epochs.get(db_path, 0)
 
-# ---- clarify bridge --------------------------------------------------
-# The pending-clarify card lives in the core API (a native-gateway
-# prompt or a /v1/runs agent paused on a clarify); this server reads it
-# for the transcript page and proxies answers back, and nothing else —
-# the reply/new execution paths are untouched. The only configuration
-# is the base URL (the repo's own API server on loopback by default,
+# ---- core API bridge (clarify card + run transport) ------------------
+# Two things live in the core API server: the pending-clarify card (a
+# /v1/runs agent paused on a question) and the runs themselves. This
+# server proxies clarify answers back and — for composer turns — admits
+# runs through POST /v1/runs instead of spawning the oneshot CLI: the
+# run's agent gets the gateway clarify callback, so a question the
+# composer's turn asks actually pauses for the card instead of being
+# auto-answered by the headless -q default. The only configuration is
+# the base URL (the repo's own API server on loopback by default,
 # overridable through the deployment's HERMES_API_SERVER_URL); the
 # per-profile API key is read fresh from the .env beside the profile's
 # DB (the default profile's from the .env beside the main DB, a named
@@ -547,6 +548,18 @@ CLARIFY_API_BASE = (os.environ.get("HERMES_API_SERVER_URL")
 # Short on purpose: the card rides the feed poll, so a wedged core must
 # never pin a client's poll for long, and the card body is tiny.
 CLARIFY_TIMEOUT_SECONDS = 4.0
+# Run admission has to stay well under a browser-friendly request
+# budget while still allowing the core its (prompt) 202 path; status
+# and stop calls answer fast and keep the same bound.
+RUNS_TIMEOUT_SECONDS = 10.0
+# How often a live job polls its run's status while holding the busy
+# lease. Sub-second so a finished turn releases the session promptly.
+RUN_POLL_SECONDS = 0.5
+# Pollable /v1/runs statuses that end a job's watch. "waiting_for_*"
+# are deliberately absent: a paused question or approval must keep the
+# lease held (the session is busy mid-turn, the card is answerable).
+RUN_TERMINAL_STATES = ("completed", "failed", "cancelled", "interrupted")
+RUN_FAILED_STATES = ("failed", "cancelled", "interrupted")
 CLARIFY_MAX_BODY_BYTES = 64 * 1024
 # Presentation bounds mirrored from the core card contract (the core
 # already enforces them; these re-bound whatever actually arrives so a
@@ -559,43 +572,11 @@ CLARIFY_ID_MAX_CHARS = 128
 # plus its Other; anything larger is refused before ever proxying.
 CLARIFY_MAX_RESPONSE_ITEMS = 16
 
-# ---- composer / hermes plumbing --------------------------------------
-# The binary is invoked by absolute path with a list argv (never a
-# shell), so message text can never be shell-interpreted. Hermes output
-# is captured for parsing only — exit codes and the session-id line —
-# and is never written to logs or responses (nothing that could carry a
-# secret ever leaves the process). HERMES_BIN is a test seam: set it to
-# a stub executable path; None (the default) resolves the real CLI via
-# resolve_hermes_bin() below.
-HERMES_BIN = None
-NEW_SESSION_SOURCE = "mission-control"
-
-
-def resolve_hermes_bin():
-    """Return the hermes CLI executable to spawn, or None.
-
-    Resolution order: an explicit HERMES_BIN override (tests), a
-    PATH-installed ``hermes`` shim, then the console-script that lives
-    beside the running interpreter (venv/pipx layouts). The final
-    bare-name fallback lets the OS resolve ``hermes`` at spawn time.
-    Never an env var — callers pin behavior through the module or CLI.
-    """
-    if HERMES_BIN:
-        return HERMES_BIN
-    which = shutil.which("hermes")
-    if which:
-        return which
-    exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-    if exe_dir:
-        shim = "hermes.exe" if sys.platform == "win32" else "hermes"
-        candidate = os.path.join(exe_dir, shim)
-        if os.path.isfile(candidate):
-            return candidate
-    return "hermes"
-
-# A oneshot turn can legitimately run minutes with tools in the loop;
-# the cap only exists so a wedged child can't hold a session "busy"
-# forever. On timeout the child is killed and the job reports failure.
+# ---- composer / run plumbing ------------------------------------------
+# A composer turn can legitimately run minutes with tools in the loop;
+# the cap only exists so a wedged run can't hold a session "busy"
+# forever. On the deadline the job stops the run best-effort and
+# reports failure.
 HERMES_TIMEOUT_SECONDS = 900
 
 # Composer payloads: anything bigger than this is refused before it is
@@ -644,31 +625,22 @@ def csrf_meta_tag():
 # reply is in flight so the answer lands promptly.
 FEED_POLL_MS = 2000
 
-# One in-flight reply per session: (profile, session_id) -> {"started":
-# ts} — started being the turn's acceptance time, the floor that
-# scopes the live strip's first-output detection to the accepted turn
-# (a historical answer predating it can never satisfy the new turn).
-# _job_notes holds a short failure note per session for the feed
-# to deliver once (it never contains hermes output, just exit codes).
+# One in-flight composer turn per session: (profile, session_id) ->
+# {"started": ts} — started being the turn's acceptance time, the floor
+# that scopes the live strip's first-output detection to the accepted
+# turn (a historical answer predating it can never satisfy the new
+# turn). _job_notes holds a short failure note per session for the feed
+# to deliver once (it never contains core output, just a canned line).
 _jobs = {}
 _job_notes = {}
 _jobs_lock = threading.Lock()
 
-# New-session launches serialize (one live run at a time): the CLI
-# takes no caller-supplied session id, so a launch is correlated by
-# diffing the mission-control rows around its own run — only
-# serialization keeps that diff unambiguous when calls overlap. The
-# HTTP handler never waits on this lock; the background worker holds it
-# for its whole run and a concurrent POST is answered 409 instead.
+# New-session launches serialize (one live run at a time): the HTTP
+# handler never waits on this lock; the background worker holds it for
+# its whole run and a concurrent POST is answered 409 instead. That
+# one-at-a-time rule is what makes a double-submitted /s/new fail
+# closed instead of admitting a second (duplicate) run.
 _new_session_lock = threading.Lock()
-
-# How often the launch watcher polls the main DB for the correlated
-# fresh mission-control row while the oneshot child runs.
-NEW_JOB_WATCH_SECONDS = 0.5
-
-# Every live hermes child, so shutdown can terminate strays.
-_children = set()
-_children_lock = threading.Lock()
 
 # Transcript participants: the user side is the person at the keyboard;
 # the assistant side renders as the owning profile's identity. Every
@@ -1011,14 +983,6 @@ SELECT session_id, preview FROM (
 # Belt-and-braces over the SQL substr: the Python clamp keeps any one
 # row's markup small no matter where the label came from.
 SUBAGENT_LABEL_CHARS = 200
-
-# mission-control sessions, newest first — /s/new resolves the session
-# it just created by diffing this list around its own oneshot run.
-MISSION_CONTROL_IDS_SQL = """
-SELECT id FROM sessions
-WHERE source = ?
-ORDER BY started_at DESC, id DESC
-"""
 
 # ---- canonical-chain variants ----------------------------------------
 # A conversation is the whole compression lineage Hermes core resolves
@@ -1433,16 +1397,20 @@ def load_sessions(now):
 
     The listing itself is core-owned: every discovered DB is read
     through SessionDB.list_sessions_rich(open_first=True,
-    order_by_last_active=True, include_archived=True), so compression-tip
-    projection, pinned back-fill, branch/reset visibility and hidden and
-    delegate filtering all follow the one definition Hermes core owns —
-    the surfaced row for a compressed conversation is its live tip,
-    never the always-ended root. This function attaches only the
-    presentation envelope: last-line/last-tool enrichment, lease/job
-    Active marking and the Completed/Incomplete judgment, batched per
-    DB exactly as before (never N+1), each degrading to a weaker
-    classification plus at most one note when a table/column is
-    missing.
+    order_by_last_active=True, include_archived=True,
+    compact_rows=True), so compression-tip projection, pinned
+    back-fill, branch/reset visibility and hidden and delegate
+    filtering all follow the one definition Hermes core owns — the
+    surfaced row for a compressed conversation is its live tip, never
+    the always-ended root. The refresh is metadata-only, so the compact
+    projection is requested: the large system_prompt and
+    git_metadata_generation blobs this page never renders stay in the
+    DB instead of crossing a million-row refresh. This function
+    attaches only the presentation envelope: last-line/last-tool
+    enrichment, lease/job Active marking and the Completed/Incomplete
+    judgment, batched per DB exactly as before (never N+1), each
+    degrading to a weaker classification plus at most one note when a
+    table/column is missing.
 
     Rows merge across DBs with one deterministic global key: every
     open conversation before every closed one, canonical last-active
@@ -1465,7 +1433,7 @@ def load_sessions(now):
                 rich = sdb.list_sessions_rich(
                     limit=LIST_ALL_LIMIT, order_by_last_active=True,
                     open_first=True, include_archived=True,
-                    exclude_sources=("subagent",),
+                    exclude_sources=("subagent",), compact_rows=True,
                 )
             finally:
                 sdb.close()
@@ -2867,9 +2835,9 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
 
 def load_session_cwd(profile, session_id, dbs):
     """(exists, cwd, archived) for one session in its own profile DB;
-    cwd may be None. The reply route resumes the session with this
-    directory as the child's working directory when it still exists,
-    and refuses new turns while archived is set."""
+    cwd may be None. The reply route refuses new turns while archived
+    is set (and the page renders the working directory the session
+    was rooted in)."""
     con = _connect_db(dbs[profile])
     try:
         row = con.execute(SESSION_CWD_SQL, (session_id,)).fetchone()
@@ -2877,22 +2845,6 @@ def load_session_cwd(profile, session_id, dbs):
         con.close()
     return (row is not None, row[0] if row is not None else None,
             bool(row[1]) if row is not None else False)
-
-
-def mission_control_ids():
-    """mission-control session ids from the main DB, newest first.
-
-    Bound by the same rule as discovery: a main DB symlinked outside
-    the configured home is not read at all."""
-    try:
-        con = _connect_db(MAIN_DB)
-    except sqlite3.Error:
-        return []
-    try:
-        return [r[0] for r in con.execute(
-            MISSION_CONTROL_IDS_SQL, (NEW_SESSION_SOURCE,))]
-    finally:
-        con.close()
 
 
 # ---- Discord API plumbing -------------------------------------------
@@ -2951,23 +2903,25 @@ def clarify_api_key(profile, dbs):
     return load_env_value(env_path, "API_SERVER_KEY")
 
 
-def clarify_request(method, profile, session_id, dbs, payload=None):
-    """One authenticated core clarify call -> (status, obj, err).
+def core_api_request(method, path, profile, dbs, payload=None,
+                     timeout=None):
+    """One authenticated core API call -> (status, obj, err).
 
-    err is None only on a 2xx whose body parsed (or was empty);
-    otherwise it is a bounded safe string carrying the HTTP status or
-    the failure class alone — never the key, never the upstream body
-    (exception text is reduced to its class name so a URL can never
-    leak either). The body read is capped at CLARIFY_MAX_BODY_BYTES +
-    1; larger is an error. The key appears only in the Authorization
-    header of this one request object.
+    path is the route after the profile prefix (the caller quotes any
+    ids it embeds): "/v1/runs", "/v1/runs/<run_id>",
+    "/api/sessions/<sid>/clarify". err is None only on a 2xx whose body
+    parsed (or was empty); otherwise it is a bounded safe string
+    carrying the HTTP status or the failure class alone — never the
+    key, never the upstream body (exception text is reduced to its
+    class name so a URL can never leak either). The body read is capped
+    at CLARIFY_MAX_BODY_BYTES + 1; larger is an error. The key appears
+    only in the Authorization header of this one request object.
     """
     key = clarify_api_key(profile, dbs)
     if not key:
         return 0, None, "no API key configured"
     url = (CLARIFY_API_BASE.rstrip("/") + "/p/"
-           + quote(profile, safe="") + "/api/sessions/"
-           + quote(session_id, safe="") + "/clarify")
+           + quote(profile, safe="") + path)
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -2979,7 +2933,9 @@ def clarify_request(method, profile, session_id, dbs, payload=None):
     raw = b""
     try:
         with urllib.request.urlopen(
-                req, timeout=CLARIFY_TIMEOUT_SECONDS) as resp:
+                req,
+                timeout=CLARIFY_TIMEOUT_SECONDS if timeout is None
+                else timeout) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
             raw = resp.read(CLARIFY_MAX_BODY_BYTES + 1)
     except urllib.error.HTTPError as exc:
@@ -3007,6 +2963,18 @@ def clarify_request(method, profile, session_id, dbs, payload=None):
     if raw and obj is None:
         return status, None, "unparseable response body"
     return status, obj, None
+
+
+def clarify_request(method, profile, session_id, dbs, payload=None):
+    """One authenticated core clarify call -> (status, obj, err).
+
+    Thin path builder over core_api_request; same contract, same
+    bounds, same fail-closed error strings.
+    """
+    return core_api_request(
+        method,
+        "/api/sessions/" + quote(session_id, safe="") + "/clarify",
+        profile, dbs, payload)
 
 
 def clarify_fetch_card(profile, session_id, dbs):
@@ -3487,149 +3455,176 @@ def set_session_archived(profile, session_id, dbs, desired):
     return 200, {"ok": True, "affected": affected, **base}
 
 
-# ---- hermes subprocess plumbing -------------------------------------
-# Output lines the oneshot paths print the session id in: the machine-
-# readable "session_id:" line on stderr (quiet mode) and the human exit
-# summary's "Session:" / "--resume" hints on stdout. Anything that
-# matches the session-id character class is a candidate; the caller
-# verifies it against the DB before trusting it.
-SESSION_ID_LINE_RE = re.compile(
-    r"(?:^|\n)\s*(?:session_id:|Session:|--resume\s+)\s*"
-    r"([A-Za-z0-9_.-]+)")
+# ---- composer turn transport (core API runs) -------------------------
+# Every composer turn — a reply on an existing session or a fresh
+# launch from /new — runs as a /v1/runs run on the core API server,
+# never as an oneshot CLI subprocess. Two things make that the only
+# path: the run's agent carries the gateway clarify callback, so a
+# mid-turn question registers in tools.clarify_gateway under the exact
+# canonical session id and becomes the card this server can serve and
+# answer (the CLI's -q callback auto-answers instead — the bug the
+# review flagged), and the admission 202 names the session id
+# deterministically, so navigation needs no DB-row correlation.
+#
+# Nothing about a turn ever touches argv: the prompt goes only into
+# the body of the one admission request and the per-profile key only
+# into its Authorization header (see core_api_request). Admission is
+# synchronous with the POST that accepted the turn — an unavailable
+# core surfaces as an explicit failed send with the text restored,
+# never a silent fallback and never a duplicate run — while a
+# background poller holds the session's busy lease until the run
+# settles.
 
 
-def run_hermes(args, cwd=None, home=None):
-    """Run one hermes invocation to completion; (exit_code, stdout,
-    stderr). Output is captured here and never leaves this function's
-    callers — it is parsed for the session id / exit code only, never
-    logged or served. A child that outruns HERMES_TIMEOUT_SECONDS is
-    killed and reported as exit code 124. Children are registered for
-    shutdown cleanup while they live.
+def session_row_exists(db_path, session_id):
+    """True when the sessions table already has this row.
 
-    home is the trusted HERMES_HOME for this run (profile_home()'s
-    answer). With it the child runs against exactly the profile whose
-    DB the request was validated against — without it the child would
-    inherit this server's own HERMES_HOME and silently write the
-    default profile. argv is a list, never shell=True; the env is a
-    plain copy with one variable pinned."""
-    env = None
-    if home:
-        env = dict(os.environ)
-        env["HERMES_HOME"] = home
+    Admission names the id deterministically, but the core writes the
+    row when the agent starts executing, so a client that navigates
+    the instant it sees the id would otherwise race a page the DB
+    cannot serve yet. Bound by the same discovery rule as every other
+    read: a DB symlinked outside the configured home is not opened."""
     try:
-        proc = subprocess.Popen(
-            [resolve_hermes_bin()] + args, cwd=cwd, env=env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace")
-    except OSError as exc:
-        # Never include the exception string: it could carry environment
-        # details. The class name is enough for the note.
-        return (-1, "", "%s" % type(exc).__name__)
-    with _children_lock:
-        _children.add(proc)
+        con = _connect_db(db_path)
+    except sqlite3.Error:
+        return False
     try:
-        try:
-            out, err = proc.communicate(timeout=HERMES_TIMEOUT_SECONDS)
-            return (proc.returncode, out or "", err or "")
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.communicate(timeout=10)
-            except Exception:
-                pass
-            return (124, "", "")
+        row = con.execute(
+            "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+            (session_id,)).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
     finally:
-        with _children_lock:
-            _children.discard(proc)
+        con.close()
 
 
-def terminate_children():
-    """Best-effort: stop every hermes child still running (shutdown and
-    atexit path) so the server never leaves strays behind."""
-    with _children_lock:
-        procs = list(_children)
-    for proc in procs:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-    for proc in procs:
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+def admit_run(profile, dbs, session_id, text):
+    """Admit exactly one core API run for a composer turn.
+
+    (run_id, session_id, None) on a clean 202 — the session id being
+    the one asked for, or when session_id is empty the fresh
+    deterministic id the core assigned and echoed — and (None, None,
+    reason) otherwise, reason a bounded safe word for the failure
+    class ("unavailable", "refused", "malformed", "mismatch"). The
+    prompt appears only inside this one request's JSON body; the reply
+    statuses keep no trace of it."""
+    payload = {"input": text}
+    if session_id:
+        payload["session_id"] = session_id
+    status, obj, err = core_api_request(
+        "POST", "/v1/runs", profile, dbs, payload,
+        timeout=RUNS_TIMEOUT_SECONDS)
+    if err is not None:
+        return None, None, "unavailable"
+    if status != 202 or not isinstance(obj, dict):
+        return None, None, "refused"
+    run_id = obj.get("run_id")
+    sid = obj.get("session_id")
+    if not isinstance(run_id, str) or not run_id.strip() \
+            or not isinstance(sid, str) or not sid.strip():
+        return None, None, "malformed"
+    if session_id and sid != session_id:
+        # The core must run the exact session the composer addressed;
+        # anything else would silently fork the conversation.
+        return None, None, "mismatch"
+    return run_id, sid, None
 
 
-def parse_session_id(stdout, stderr):
-    """First plausible session id printed by a oneshot run, or None.
-    Both the quiet stderr line and the exit-summary stdout lines are
-    accepted; ids are validated against SESSION_ID_RE."""
-    for text in (stderr, stdout):
-        m = SESSION_ID_LINE_RE.search(text)
-        if m and SESSION_ID_RE.fullmatch(m.group(1)):
-            return m.group(1)
-    return None
+def run_state(profile, dbs, run_id):
+    """(state_word, err) for one admitted run.
+
+    The state word is the pollable status verb alone ("running",
+    "waiting_for_clarify", "completed", ...) — never a field that
+    could carry prompt, transcript, or card content."""
+    status, obj, err = core_api_request(
+        "GET", "/v1/runs/" + quote(run_id, safe=""), profile, dbs,
+        timeout=RUNS_TIMEOUT_SECONDS)
+    if err is not None or not isinstance(obj, dict):
+        return "", err or "unavailable"
+    state = obj.get("status")
+    return (state.strip() if isinstance(state, str) else ""), None
 
 
-def resolve_new_session_id(parsed, pre_ids):
-    """Pick the session /s/new just created.
-
-    Order: an id parsed from the output that really is a fresh
-    mission-control row; else the newest mission-control row that
-    appeared during the run; else (first ever run) the newest row at
-    all. None when nothing checks out."""
-    post_ids = mission_control_ids()
-    fresh = [sid for sid in post_ids if sid not in pre_ids]
-    if parsed is not None and (parsed in post_ids or parsed in fresh):
-        return parsed
-    if fresh:
-        return fresh[0]  # newest first
-    if post_ids and not pre_ids and parsed is None:
-        return post_ids[0]
-    return None
+def stop_run(profile, dbs, run_id):
+    """Best-effort stop of one run whose deadline was reached."""
+    core_api_request(
+        "POST", "/v1/runs/" + quote(run_id, safe="") + "/stop",
+        profile, dbs, {}, timeout=RUNS_TIMEOUT_SECONDS)
 
 
-def reply_worker(profile, session_id, cwd, text):
-    """Background job behind POST .../reply: run the resumed oneshot,
-    then release the session. The child runs with the trusted home of
-    the profile the POST was validated against (a profile that has
-    since vanished resolves to no home and the job just fails — code
-    -1, same note). A non-zero exit leaves a short note (exit code
-    only — never hermes output) for the feed to deliver once."""
+def wait_run_settled(profile, dbs, run_id, on_session_row=None):
+    """Poll one admitted run until it settles.
+
+    Returns the settling word: "completed", "failed" (the run reported
+    a terminal failure), or "timeout" (the deadline below was reached
+    and the run was stopped best-effort — the same bound the oneshot
+    CLI cap had, so a wedged run can never hold a session busy
+    forever). on_session_row(), when given, is called every pass until
+    it returns True; the fresh-launch worker uses it to publish the
+    session id exactly when the row becomes servable. Never raises."""
+    deadline = time.monotonic() + HERMES_TIMEOUT_SECONDS
+    notified = False
+    try:
+        while True:
+            state, _err = run_state(profile, dbs, run_id)
+            if state in RUN_TERMINAL_STATES:
+                return "completed" if state == "completed" else "failed"
+            if on_session_row is not None and not notified \
+                    and on_session_row():
+                notified = True
+            if time.monotonic() >= deadline:
+                stop_run(profile, dbs, run_id)
+                return "timeout"
+            time.sleep(RUN_POLL_SECONDS)
+    except Exception:
+        return "failed"
+
+
+def reply_worker(profile, session_id, run_id, dbs):
+    """Hold the session's busy lease while the admitted run executes.
+
+    Admission already happened synchronously in start_reply; this
+    thread only watches the run to its terminal state (so the busy and
+    typing semantics match the oneshot era, including a question that
+    legitimately pauses the run mid-turn), releases the lease exactly
+    once, and leaves the feed a one-shot canned note when the turn did
+    not complete. Never retries, never admits a second run."""
     key = (profile, session_id)
-    code = -1
-    try:
-        home = profile_home(profile)
-        if home is not None:
-            code, _out, _err = run_hermes(
-                ["--resume", session_id, "chat", "--oneshot", "-q", text],
-                cwd if cwd and os.path.isdir(cwd) else None, home=home)
-    finally:
-        with _jobs_lock:
-            _jobs.pop(key, None)
-            if code != 0:
-                _job_notes[key] = ("The reply run failed"
-                                   + (" (timed out)" if code == 124 else
-                                      " (exit code %d)" % code)
-                                   + "; nothing was added to the session.")
+    outcome = wait_run_settled(profile, dbs, run_id)
+    with _jobs_lock:
+        _jobs.pop(key, None)
+        if outcome != "completed":
+            _job_notes[key] = ("The reply run failed"
+                               + (" (timed out)"
+                                  if outcome == "timeout" else "")
+                               + "; nothing was added to the session.")
 
 
-def start_reply(profile, session_id, cwd, text):
-    """Try to start one reply job. Returns True when started, False when
-    a reply is already running for the session."""
+def start_reply(profile, session_id, text, dbs):
+    """Accept one composer reply: admit the core run, then hand the
+    lease to the poller.
+
+    Returns "started" (answer 202), "busy" (409 — a turn is already
+    running for the session) or "unavailable" (the core API could not
+    admit the run; nothing was created, so the client must surface a
+    failed send and restore the text). The lease is taken before
+    admission so a double submission cannot admit twice, and released
+    here when admission fails — no state outlives a refused turn."""
     key = (profile, session_id)
     with _jobs_lock:
         if key in _jobs:
-            return False
+            return "busy"
         _jobs[key] = {"started": time.time()}
-    threading.Thread(target=reply_worker,
-                     args=(profile, session_id, cwd, text),
-                     daemon=True).start()
-    return True
+    run_id, _sid, reason = admit_run(profile, dbs, session_id, text)
+    if run_id is None:
+        with _jobs_lock:
+            _jobs.pop(key, None)
+        return "unavailable"
+    threading.Thread(
+        target=reply_worker, args=(profile, session_id, run_id, dbs),
+        daemon=True).start()
+    return "started"
 
 
 def session_job_started(profile, session_id):
@@ -3662,13 +3657,13 @@ def session_job_state(profile, session_id):
 # exactly one background launch and answers 202 with an opaque job id;
 # the run's progress is served by GET /s/new/<job>. The registry below
 # is bounded and thread-safe and holds only opaque state — job id,
-# state word, session id, a canned error string, timestamps — never the
-# prompt (that goes only into the child's argv) and never hermes output
-# (parsed for the session id / exit code, then dropped).
-NEW_JOB_STARTING = "starting"   # accepted; worker not yet under the lock
-NEW_JOB_RUNNING = "running"     # the oneshot child is live
-NEW_JOB_DONE = "done"           # exited 0 with the session id resolved
-NEW_JOB_FAILED = "failed"       # exited non-zero, or nothing resolved
+# state word, session id, a canned error string, timestamps — never
+# the prompt (that goes only into the admission request's body) and
+# never core output (parsed for status words only, then dropped).
+NEW_JOB_STARTING = "starting"   # accepted; admission not yet complete
+NEW_JOB_RUNNING = "running"     # admitted; the run is executing
+NEW_JOB_DONE = "done"           # the run completed
+NEW_JOB_FAILED = "failed"       # admission failed, or the run failed
 NEW_JOB_LIVE_STATES = (NEW_JOB_STARTING, NEW_JOB_RUNNING)
 # Terminal jobs are pruned oldest-first past the cap and dropped once
 # they have been finished this long; a live job is never dropped (and
@@ -3679,16 +3674,14 @@ _new_jobs = {}
 _new_jobs_lock = threading.Lock()
 
 
-def _new_job_error(code, resolved):
-    """Canned failure line for a launch job: exit code or reason only —
-    never hermes output, never the prompt, nothing secret-shaped."""
-    if code == 124:
+def _new_job_error(reason):
+    """Canned failure line for a launch job: reason word only — never
+    core output, never the prompt, nothing secret-shaped."""
+    if reason == "timeout":
         return "the launch timed out"
-    if code < 0:
-        return "the launch could not start"
-    if code != 0:
-        return "the launch failed (exit code %d)" % code
-    return "the new session id could not be resolved"
+    if reason == "unavailable":
+        return "the agent gateway could not be reached"
+    return "the launch failed"
 
 
 def _prune_new_jobs_locked(now):
@@ -3739,122 +3732,92 @@ def new_job_payload(job_id):
         }
 
 
-def _watch_new_session(job_id, pre_ids, stop_event):
-    """Discover the correlated session row while the launch runs.
+def new_session_worker(job_id, text):
+    """One background launch behind POST /s/new.
 
-    Polls the main DB for the first mission-control row that was not
-    there when the child started (newest-first scan, so the first
-    fresh row is this launch's session — launches are serialized, no
-    other launch can add one mid-run). The moment it appears the job
-    records it — that is what lets the status route send the client to
-    /s/default/<id> before the oneshot finishes — and the session is
-    registered in the reply-jobs table, the same signal a composer
-    reply sets (stamped with the launch's own acceptance time, the
-    turn floor below), so the fresh page, its feed and the inbox all
-    truthfully show the turn as live while the launch still runs.
-    Stops at the event or once a row was found; never raises."""
-    pre = set(pre_ids)
-    try:
-        while not stop_event.is_set():
+    Under the launch lock (one at a time, so a duplicate POST can never
+    admit a second run): admit a fresh core run with no session id —
+    the core assigns the deterministic one and the 202 echoes it —
+    publish that id to the job the moment the session's row exists in
+    the main DB (the status route can then send the client to
+    /s/default/<id> before the run finishes, exactly when the page can
+    actually be served), register the busy lease for the fresh session
+    with the launch's own acceptance time as the turn floor, then
+    settle the job exactly once — done when the run completed, failed
+    otherwise. Never retries."""
+    reason = "unavailable"
+    sid = None
+    with _new_session_lock:
+        with _new_jobs_lock:
+            job = _new_jobs.get(job_id)
+            if job is None or job["state"] != NEW_JOB_STARTING:
+                return  # pruned or unknown: run nothing
+            job["state"] = NEW_JOB_RUNNING
+        dbs = {name: db_path for db_path, name in discover_dbs()}
+        run_id, sid, why = admit_run("default", dbs, "", text)
+        if run_id is None:
             sid = None
-            for cand in mission_control_ids():
-                if cand not in pre:
-                    sid = cand
-                    break
-            if sid is not None:
+            reason = why or "unavailable"
+        else:
+            with _new_jobs_lock:
+                job = _new_jobs.get(job_id)
+                created = (job or {}).get("created") or time.time()
+
+            def _publish_when_row_exists():
+                if not session_row_exists(MAIN_DB, sid):
+                    return False
                 with _new_jobs_lock:
                     job = _new_jobs.get(job_id)
                     if job is not None and not job.get("session_id"):
                         job["session_id"] = sid
-                    # The busy registration carries the job's acceptance
-                    # time, not this discovery moment: that stamp is the
-                    # floor that scopes first-output detection to the
-                    # launched turn, and rows written between acceptance
-                    # and discovery are that turn's own.
-                    started = (job or {}).get("created") or time.time()
+                # The busy registration carries the job's acceptance
+                # time, not this discovery moment: that stamp is the
+                # floor that scopes first-output detection to the
+                # launched turn, and rows written between acceptance
+                # and discovery are that turn's own.
                 with _jobs_lock:
                     if ("default", sid) not in _jobs:
-                        _jobs[("default", sid)] = {"started": started,
+                        _jobs[("default", sid)] = {"started": created,
                                                    "launch": job_id}
-                return
-            stop_event.wait(NEW_JOB_WATCH_SECONDS)
-    except Exception:
-        pass
+                return True
 
-
-def new_session_worker(job_id, text):
-    """One background launch behind POST /s/new.
-
-    Under the launch lock (one at a time, keeping the fresh-row
-    correlation unambiguous): snapshot the mission-control rows, start
-    the watcher that publishes the correlated session id while the
-    child runs, run the oneshot to completion (with the trusted home
-    of the main DB pinned in the child's environment, so the fresh
-    session lands in the profile this server actually lists as
-    "default"), then settle the job
-    exactly once — done when the child exited 0 and an id resolved,
-    failed otherwise. Never retries. A failure after the session row
-    already appeared also leaves the feed a one-shot note (exit code
-    only) for a client that navigated to the session page."""
-    key = None
-    code = -1
-    out = err = ""
-    try:
-        with _new_session_lock:
-            with _new_jobs_lock:
-                job = _new_jobs.get(job_id)
-                if job is None or job["state"] != NEW_JOB_STARTING:
-                    return  # pruned or unknown: run nothing
-                job["state"] = NEW_JOB_RUNNING
-            pre_ids = mission_control_ids()
-            stop = threading.Event()
-            watcher = threading.Thread(
-                target=_watch_new_session, args=(job_id, pre_ids, stop),
-                daemon=True)
-            watcher.start()
-            try:
-                code, out, err = run_hermes(
-                    ["chat", "--oneshot", "--source", NEW_SESSION_SOURCE,
-                     "-q", text], home=profile_home("default"))
-                parsed = parse_session_id(out, err)
-            finally:
-                stop.set()
-                watcher.join(timeout=5)
-            # Settle the correlated id: the watcher's in-run discovery
-            # wins (the client may already be on that page); the
-            # end-of-run diff is the fallback for a row the watcher
-            # never saw appear.
-            resolved = resolve_new_session_id(parsed, pre_ids)
-            with _new_jobs_lock:
-                job = _new_jobs.get(job_id)
-                if job is not None:
-                    job["session_id"] = job.get("session_id") or resolved
-    finally:
-        with _new_jobs_lock:
-            job = _new_jobs.get(job_id)
-            sid = (job or {}).get("session_id")
+            outcome = wait_run_settled(
+                "default", dbs, run_id,
+                on_session_row=_publish_when_row_exists)
+            reason = None if outcome == "completed" else outcome
+    with _new_jobs_lock:
+        job = _new_jobs.get(job_id)
+        resolved = (job or {}).get("session_id")
+        if resolved is None and sid and session_row_exists(MAIN_DB, sid):
+            # A run that settled before a poll ever observed the row (a
+            # fast failure after the agent already wrote it) still owns
+            # that row: publish it so a client can navigate and read the
+            # failure note — the end-of-run diff the oneshot era used.
+            resolved = sid
             if job is not None:
-                job["finished"] = time.time()
-                if code == 0 and sid:
-                    job["state"] = NEW_JOB_DONE
-                    job["error"] = ""
-                else:
-                    job["state"] = NEW_JOB_FAILED
-                    job["error"] = _new_job_error(code, bool(sid))
-                _prune_new_jobs_locked(time.time())
-        if sid:
-            # Release the busy registration the watcher made (a plain
-            # reply could not have taken the key meanwhile — it would
-            # have been refused 409), and on failure leave the session
-            # page a one-shot note, exactly like a failed reply run.
-            key = ("default", sid)
-            with _jobs_lock:
-                _jobs.pop(key, None)
-                if code != 0:
-                    _job_notes[key] = ("The new-session run failed"
-                                       + (" (timed out)" if code == 124 else
-                                          " (exit code %d)" % code)
-                                       + "; the session may be incomplete.")
+                job["session_id"] = sid
+        if job is not None:
+            job["finished"] = time.time()
+            if reason is None and resolved:
+                job["state"] = NEW_JOB_DONE
+                job["error"] = ""
+            else:
+                job["state"] = NEW_JOB_FAILED
+                job["error"] = _new_job_error(reason or "failed")
+            _prune_new_jobs_locked(time.time())
+    if resolved:
+        # Release the busy registration the publisher made (a plain
+        # reply could not have taken the key meanwhile — it would have
+        # been refused 409), and on failure leave the session page a
+        # one-shot note, exactly like a failed reply run.
+        key = ("default", resolved)
+        with _jobs_lock:
+            _jobs.pop(key, None)
+            if reason is not None:
+                _job_notes[key] = ("The new-session run failed"
+                                   + (" (timed out)"
+                                      if reason == "timeout" else "")
+                                   + "; the session may be incomplete.")
 
 
 def start_new_session(text):
@@ -3862,9 +3825,9 @@ def start_new_session(text):
 
     Registers an opaque job and starts exactly one background worker.
     While any launch is still live a second call is refused — one at a
-    time is what keeps the fresh-row correlation honest, so a duplicate
-    POST can never spawn a second run. The prompt text goes only to the
-    worker (and from there into the child's argv), never into the
+    time is what fails a double-submitted composer closed instead of
+    admitting a duplicate run. The prompt text goes only to the worker
+    (and from there into the admission request's body), never into the
     registry or any response."""
     with _new_jobs_lock:
         for job in _new_jobs.values():
@@ -5508,6 +5471,9 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
 
   function setTickState(rec, state) {
     if (rec.state === state) return;
+    // a failed send is terminal: no later feed echo, busy poll or job
+    // event may promote a rejected row back up the ladder
+    if (rec.state === "failed") return;
     // the delivery path only ever moves forward
     if (rec.state in TICK_ORDER && state in TICK_ORDER &&
         TICK_ORDER[state] < TICK_ORDER[rec.state]) return;
@@ -5521,7 +5487,10 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
 
   function findOutgoing(text) {
     for (var i = 0; i < outgoing.length; i++) {
-      if (!outgoing[i].adopted && outgoing[i].text === text) {
+      // A failed send was never stored, so its row can never be the
+      // twin of a server echo — the retry that lands is its own rec.
+      if (!outgoing[i].adopted && outgoing[i].state !== "failed" &&
+          outgoing[i].text === text) {
         return outgoing[i];
       }
     }
@@ -5627,7 +5596,19 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
     holding = false;
     setWaiting();
     setSending(false);  // both modes: the composer comes back
-    if (box) { box.value = text; autosize(); }
+    if (box) {
+      // Restore the submitted text without clobbering anything typed
+      // after the send: keep both, failed text first so a retry is
+      // one press away, newer edit below it — deterministic order,
+      // nothing lost either way.
+      var current = box.value;
+      if (!current || current === text) {
+        box.value = text;
+      } else {
+        box.value = text + "\\n" + current;
+      }
+      autosize();
+    }
     showFlash(msg, 9000);
   }
 
@@ -6100,10 +6081,12 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
         return;
       }
       if (resp.status === 409) {
-        // Someone else's reply is already running: the message stays
-        // where it is and the composer comes back — no grey box.
-        showFlash("A reply is already running here; waiting for it to finish.");
-        if (rec) setTickState(rec, "sent");
+        // The turn was refused — another reply already running, or the
+        // session closed. The text never reached the session, so the
+        // optimistic row must fail (never Sent/Read) and the composer
+        // must come back with the exact text restored for retry.
+        failSend(rec, text, "A reply is already running here; your " +
+          "message was not sent and is back in the composer.");
         return;
       }
       if (resp.status === 404) {
@@ -7437,17 +7420,24 @@ class Handler(BaseHTTPRequestHandler):
     def _origin_allowed(self, value):
         """True when an Origin/Referer URL names exactly this server.
 
-        The scheme must be http (this server never serves https, and no
-        proxy is trusted to terminate one for it), the host must be in
-        the trusted set, and the port — when the URL carries one — must
-        be the port this server actually bound; an absent port means
-        the scheme default 80, which this server is not."""
+        Two accepted shapes, both requiring the URL's host to be in the
+        trusted Host set (see --trusted-host): the direct-access shape
+        — scheme http and the exact port this server bound (an absent
+        port means the scheme default 80) — and the trusted-proxy
+        shape — scheme https on the default public port (443 or
+        absent), for a deployment whose TLS terminator forwards to this
+        HTTP socket under a host the operator explicitly trusted.
+        Anything else — another scheme, a non-default https port, an
+        untrusted host, a malformed or credential-bearing URL — is
+        refused. Forwarded / X-Forwarded-* headers are never consulted
+        to make this decision: without an explicitly trusted proxy
+        those headers are client-controlled."""
         try:
             parts = urlsplit(value)
             port = parts.port  # None when absent; ValueError on garbage
         except ValueError:
             return False
-        if parts.scheme != "http":
+        if parts.scheme not in ("http", "https"):
             return False
         host = _normalize_host(parts.netloc)
         if host is None or \
@@ -7457,6 +7447,11 @@ class Handler(BaseHTTPRequestHandler):
             bound = self.server.server_address[1]
         except (AttributeError, IndexError):
             bound = None
+        if parts.scheme == "https":
+            # Trusted reverse proxy: the browser's public origin is the
+            # TLS terminator's (host the operator listed), never this
+            # backend socket's address or port.
+            return port in (443, None)
         return port == bound if bound is not None else port in (80, None)
 
     def do_GET(self):
@@ -7709,9 +7704,13 @@ class Handler(BaseHTTPRequestHandler):
           the attacker used to sail through an origin==host
           comparison). Untrusted Host -> 421.
         - Origin (when the client sends one) must name exactly this
-          server — trusted host, http scheme, and the port this server
-          actually bound — never merely echo the request's own Host. A
-          Referer, when Origin is absent but Referer rides along, is
+          server — trusted host, and either the direct-access shape
+          (http scheme plus the port this server actually bound) or the
+          trusted-proxy shape (https scheme on the default public
+          port, for a TLS terminator the operator listed with
+          --trusted-host) — never merely echo the request's own Host,
+          and never anything a Forwarded / X-Forwarded-* header claims.
+          A Referer, when Origin is absent but Referer rides along, is
           held to the same rule.
         - The content type must be application/json exactly. An HTML
           form can only send the "simple" types, so this alone stops
@@ -7806,10 +7805,13 @@ class Handler(BaseHTTPRequestHandler):
     def _post_reply(self, profile, session_id):
         """POST /s/<profile>/<id>/reply — accept one composer turn.
 
-        202 {ok: true} once the background resume has started; 409 while
+        202 {ok: true} once the core API has admitted the run; 409 while
         one is already running or the session is closed, 400/413 for
-        empty or oversize text, 404 for an unknown profile/session.
-        Hermes output never reaches the response — only these statuses do.
+        empty or oversize text, 404 for an unknown profile/session, and
+        503 when the core API could not admit the turn — which is an
+        explicit failed send (the client restores the text), never a
+        silent fallback to a CLI run. Core output never reaches the
+        response — only these statuses do.
         """
         dbs = {name: db_path for db_path, name in discover_dbs()}
         if profile not in dbs or not SESSION_ID_RE.fullmatch(session_id):
@@ -7822,8 +7824,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(err, {"ok": False, "error": "bad request body"})
             return
         try:
-            exists, cwd, archived = load_session_cwd(profile, session_id,
-                                                     dbs)
+            exists, _cwd, archived = load_session_cwd(profile, session_id,
+                                                      dbs)
         except sqlite3.Error:
             self._send_json(500, {"ok": False, "error": "database error"})
             return
@@ -7836,9 +7838,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(409, {"ok": False,
                                   "error": "the session is closed"})
             return
-        if not start_reply(profile, session_id, cwd, text):
+        outcome = start_reply(profile, session_id, text, dbs)
+        if outcome == "busy":
             self._send_json(409, {"ok": False,
                                   "error": "a reply is already running"})
+            return
+        if outcome != "started":
+            # Admission failed synchronously: nothing ran, nothing was
+            # written, and the client must show a failed send with the
+            # text restored — there is no auto-answer fallback path.
+            self._send_json(503, {"ok": False,
+                                  "error": "agent gateway unavailable"})
             return
         self._send_json(202, {"ok": True})
 
@@ -7848,12 +7858,11 @@ class Handler(BaseHTTPRequestHandler):
         Validation is synchronous (411/413/400 for a bad body).
         Acceptance registers exactly one bounded background job and
         returns the opaque job id plus its status URL; 409 while
-        another launch is still live (one at a time keeps the
-        fresh-row correlation honest — a duplicate POST can never spawn
-        a second run). The session id, once the correlated row appears
-        mid-run, is served by GET /s/new/<job>; only these opaque
-        fields ever reach the client, never the prompt or hermes
-        output.
+        another launch is still live (one at a time fails a duplicate
+        POST closed instead of admitting a second run). The session id
+        — assigned deterministically by the core admission and served
+        by GET /s/new/<job> once the row exists — is the only thing the
+        client ever learns; never the prompt, never core output.
         """
         err, text = self._composer_text()
         if err is not None:
@@ -7976,12 +7985,13 @@ class Handler(BaseHTTPRequestHandler):
 
         {ok, job, status: starting|running|done|failed, session_id?,
         url?, error} and nothing else: the registry never held the
-        prompt or any hermes output, so there is nothing secret to
-        leak. session_id is published as soon as the correlated row
-        appears — while status is still running — so the client can
-        navigate to /s/default/<id> without waiting for the oneshot.
-        404 for an unknown or pruned job id; the client treats that as
-        terminal and never retries the launch."""
+        prompt or any core output, so there is nothing secret to
+        leak. session_id is published as soon as the session's row
+        exists in the main DB — while status is still running — so the
+        client can navigate to /s/default/<id> the moment that page is
+        servable, without waiting for the run. 404 for an unknown or
+        pruned job id; the client treats that as terminal and never
+        retries the launch."""
         payload = new_job_payload(job_id)
         if payload is None:
             self._send_json(404, {"ok": False, "error": "unknown job"})
@@ -8178,13 +8188,12 @@ def main(argv=None):
                     help="disable the background Discord archive sync "
                          "(for proof servers against synthetic data)")
     args = ap.parse_args(argv)
-    atexit.register(terminate_children)
     # Backstop for the sync thread too: any exit path sets its stop
     # event (the finally below joins it).
     atexit.register(_discord_sync_stop.set)
 
     # SIGTERM stops the loop the same way Ctrl-C does, so the finally
-    # block (and atexit backstop) can reap any in-flight hermes child.
+    # block (and atexit backstop) can shut the sync thread down.
     # Windows has no deliverable SIGTERM; Ctrl-C still stops the loop.
     if hasattr(signal, "SIGTERM"):
         def _stop(signum, frame):
@@ -8251,7 +8260,6 @@ def main(argv=None):
             sync_thread.join(timeout=DISCORD_TIMEOUT_SECONDS + 2)
         if httpd is not None:
             httpd.server_close()
-        terminate_children()
 
 
 if __name__ == "__main__":

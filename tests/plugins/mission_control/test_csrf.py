@@ -32,6 +32,7 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
+import http.client
 from http.server import ThreadingHTTPServer
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
@@ -51,15 +52,6 @@ from hermes_state_common import SCHEMA_SQL  # noqa: E402
 
 SESSION_SCHEMA = SCHEMA_SQL
 
-# A stub hermes that only records that it ran (never its arguments):
-# the forgery tests assert it is never launched at all.
-STUB = '''#!/usr/bin/env python3
-import os, sys
-with open(os.path.join(%(dir)r, "calls"), "a") as fh:
-    fh.write("CALL\\n")
-sys.exit(0)
-'''
-
 
 def load_server(tmp, db_path):
     """One isolated server.py module instance per test."""
@@ -74,8 +66,9 @@ def load_server(tmp, db_path):
 
 class ForgeryCase(unittest.TestCase):
     """A real ThreadingHTTPServer on an ephemeral port over a synthetic
-    state.db, with the hermes binary stubbed and Discord patched to a
-    recorder that fails the test if the server ever calls it."""
+    state.db, with the core API client patched to a recorder that
+    answers like the real gateway and fails the test if a forged
+    request ever reaches it. Discord is patched to a recorder too."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="csrf-test-")
@@ -101,11 +94,11 @@ class ForgeryCase(unittest.TestCase):
         con.close()
         self.mod = load_server(self.tmp, self.db)
 
-        stub = os.path.join(self.tmp, "hermes-stub")
-        with open(stub, "w", encoding="utf-8") as fh:
-            fh.write(STUB % {"dir": self.tmp})
-        os.chmod(stub, 0o755)
-        self.mod.HERMES_BIN = stub
+        self.core_calls = []
+        self._core = unittest.mock.patch.object(
+            self.mod, "core_api_request", side_effect=self._record_core)
+        self._core.start()
+        self.addCleanup(self._core.stop)
 
         self.discord_calls = []
         self._discord = unittest.mock.patch.object(
@@ -127,7 +120,21 @@ class ForgeryCase(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.addCleanup(self.mod.terminate_children)
+
+    def _record_core(self, method, path, profile, dbs, payload=None,
+                     timeout=None):
+        """The fake core gateway: records the call (method and path
+        only — never a payload that could carry the prompt) and answers
+        the shapes the transport expects."""
+        self.core_calls.append((method, path))
+        if method == "POST" and path == "/v1/runs":
+            sid = (payload or {}).get("session_id") or "run_fake0x"
+            return 202, {"run_id": "run_fake0x", "status": "started",
+                         "session_id": sid, "replayed": False}, None
+        if method == "GET" and path.startswith("/v1/runs/"):
+            return 200, {"run_id": "run_fake0x", "status": "completed",
+                         "session_id": "run_fake0x"}, None
+        return 200, {"pending_clarify": None}, None
 
     def _record_discord(self, method, path, token, payload=None):
         self.discord_calls.append((method, path))
@@ -136,11 +143,7 @@ class ForgeryCase(unittest.TestCase):
     # ---- fixture helpers -------------------------------------------
 
     def call_count(self):
-        try:
-            with open(os.path.join(self.tmp, "calls")) as fh:
-                return len([ln for ln in fh if ln.startswith("CALL")])
-        except OSError:
-            return 0
+        return len(self.core_calls)
 
     def db_snapshot(self):
         """Full ordered dump of both tables — the no-SQLite-write
@@ -273,8 +276,9 @@ class TestForgeryRejected(ForgeryCase):
 
     def test_real_ui_requests_still_succeed(self):
         """The same routes accept the real UI shape: same-origin JSON
-        with the mined token (the stub answers instantly; the local
-        close/reopen flip is real)."""
+        with the mined token. A composer turn admits exactly one core
+        run — never a duplicate — and the local close/reopen flip is
+        real."""
         token = self.csrf_token()
         status, _ = self.post("/s/default/sess_local/close", "{}",
                               "application/json", token=token)
@@ -290,12 +294,23 @@ class TestForgeryRejected(ForgeryCase):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and self.call_count() < 1:
             time.sleep(0.05)
-        self.assertEqual(self.call_count(), 1)
+        # exactly one admission for the launch (status polls aside)
+        self.assertEqual(
+            self.core_calls.count(("POST", "/v1/runs")), 1,
+            self.core_calls)
+        # sess_local was closed above; reopen it so the reply is judged
+        # on its own merits (a closed session would 409 before any
+        # admission, which is a different assertion).
+        status, _ = self.post("/s/default/sess_local/reopen", "{}",
+                              "application/json", token=token)
+        self.assertEqual(status, 200)
         status, _ = self.post("/s/default/sess_local/reply",
                               '{"text": "%s"}' % PROMPT,
                               "application/json", token=token)
         self.assertIn(status, (202, 409))
-        self.assertGreaterEqual(self.call_count(), 1)
+        self.assertEqual(
+            self.core_calls.count(("POST", "/v1/runs")), 2,
+            self.core_calls)
 
     def test_refusals_never_log_the_token(self):
         """log_message writes the request line only; the token is not a
@@ -310,6 +325,126 @@ class TestForgeryRejected(ForgeryCase):
     def test_token_is_per_server_process(self):
         other = load_server(self.tmp, self.db)
         self.assertNotEqual(self.csrf_token(), other.csrf_token())
+
+
+class TrustedProxyCase(ForgeryCase):
+    """Origin validation behind an operator-trusted HTTPS reverse proxy.
+
+    The server below is plain HTTP on an ephemeral loopback port, with
+    one extra trusted host standing in for the proxy's public name. A
+    browser loaded from the proxy sends Origin https://<that host> (no
+    port — the TLS default); the direct-access rule would refuse it
+    because the scheme is not http and 443 is not the bound port. The
+    trusted-proxy shape must accept exactly that pairing and refuse
+    every neighbouring shape an attacker can actually produce.
+    """
+
+    PROXY_HOST = "mission-control.internal"
+
+    def setUp(self):
+        super().setUp()
+        # The operator listed the proxy's public host with
+        # --trusted-host; pin the same set onto the test server.
+        self.httpd.trusted_hosts = (
+            set(self.mod._default_trusted_hosts("127.0.0.1"))
+            | {self.PROXY_HOST})
+
+    def gate_post(self, host, origin=None, referer=None, extra=None):
+        """One POST /s/new with full header control -> status.
+
+        Token and content type are always the genuine UI shape, so the
+        only thing under test is the Host/Origin/Referer decision: a
+        403 or 421 answer means the gate refused, anything else means
+        the request reached the route (which then answers on its own
+        merits)."""
+        headers = {"Content-Type": "application/json",
+                   "X-CSRF-Token": self.csrf_token()}
+        if host is not None:
+            headers["Host"] = host
+        if origin is not None:
+            headers["Origin"] = origin
+        if referer is not None:
+            headers["Referer"] = referer
+        for key, value in (extra or {}).items():
+            headers[key] = value
+        conn = http.client.HTTPConnection("127.0.0.1", self.port,
+                                          timeout=10)
+        try:
+            conn.request("POST", "/s/new",
+                         body=json.dumps({"text": "proxy-probe"}),
+                         headers=headers)
+            resp = conn.getresponse()
+            return resp.status, resp.read().decode("utf-8")
+        finally:
+            conn.close()
+
+    def test_trusted_https_public_origin_passes(self):
+        for origin in ("https://%s" % self.PROXY_HOST,
+                       "https://%s:443" % self.PROXY_HOST):
+            status, body = self.gate_post(self.PROXY_HOST, origin=origin)
+            self.assertNotIn(status, (403, 415, 421),
+                             "%s -> %d %r" % (origin, status, body))
+
+    def test_trusted_https_referer_passes(self):
+        status, body = self.gate_post(
+            self.PROXY_HOST, referer="https://%s/s/default/abc" %
+            self.PROXY_HOST)
+        self.assertNotIn(status, (403, 415, 421),
+                         "referer -> %d %r" % (status, body))
+
+    def test_non_default_https_port_is_refused(self):
+        status, _ = self.gate_post(self.PROXY_HOST,
+                                   origin="https://%s:8443" %
+                                   self.PROXY_HOST)
+        self.assertEqual(status, 403)
+
+    def test_http_origin_on_proxy_host_is_refused(self):
+        # The direct-access shape needs the bound port; a plain-http
+        # origin under the proxy's name is not that shape and not the
+        # trusted-proxy shape either.
+        for origin in ("http://%s" % self.PROXY_HOST,
+                       "http://%s:80" % self.PROXY_HOST):
+            status, _ = self.gate_post(self.PROXY_HOST, origin=origin)
+            self.assertEqual(status, 403, origin)
+
+    def test_mismatched_and_unknown_hosts_are_refused(self):
+        # Origin names some other host than the (trusted) Host.
+        status, _ = self.gate_post(self.PROXY_HOST,
+                                   origin="https://evil.example")
+        self.assertEqual(status, 403)
+        # Host itself untrusted: refused before Origin is even read,
+        # whatever the Origin and whatever a forwarded header claims.
+        status, _ = self.gate_post("evil.example",
+                                   origin="https://evil.example",
+                                   extra={"X-Forwarded-Host":
+                                          self.PROXY_HOST})
+        self.assertEqual(status, 421)
+        status, _ = self.gate_post("evil.example",
+                                   origin="https://%s" % self.PROXY_HOST,
+                                   extra={"X-Forwarded-Proto": "https",
+                                          "Forwarded":
+                                          "host=%s;proto=https" %
+                                          self.PROXY_HOST})
+        self.assertEqual(status, 421)
+
+    def test_forwarded_headers_cannot_smuggle_an_origin_through(self):
+        # A request that arrives with the backend's own http origin but
+        # claims to be forwarded for the proxy must not be upgraded by
+        # that claim alone: the Origin itself decides, and an https
+        # origin for an unlisted host stays refused.
+        status, _ = self.gate_post(
+            self.PROXY_HOST, origin="https://other.internal",
+            extra={"X-Forwarded-Proto": "https"})
+        self.assertEqual(status, 403)
+
+    def test_malformed_and_credential_bearing_origins_are_refused(self):
+        for origin in ("https://user:pass@%s" % self.PROXY_HOST,
+                       "ftp://%s" % self.PROXY_HOST,
+                       "https://%s:port" % self.PROXY_HOST,
+                       "https://",
+                       "javascript://test"):
+            status, _ = self.gate_post(self.PROXY_HOST, origin=origin)
+            self.assertEqual(status, 403, origin)
 
 
 class TestBindClassification(unittest.TestCase):

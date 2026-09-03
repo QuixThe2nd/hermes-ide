@@ -483,6 +483,37 @@ def has_pending(session_key: str) -> bool:
         return any(_entries.get(cid) is not None for cid in ids)
 
 
+def pending_entries_for_session(session_key: str) -> List[_ClarifyEntry]:
+    """Every still-pending entry for one session key, oldest first.
+
+    Read-only snapshot for surfaces that must inspect the whole queue,
+    not just the oldest text-interceptable prompt (e.g. the API server's
+    per-session clarify route, which exposes only the entries its own
+    runs registered). Resolved-but-not-yet-reaped entries are skipped:
+    their answer is already decided.
+    """
+    with _lock:
+        return [
+            _entries[cid]
+            for cid in (_session_index.get(session_key) or [])
+            if cid in _entries and not _entries[cid].event.is_set()
+        ]
+
+
+def get_pending_entry(clarify_id: str) -> Optional[_ClarifyEntry]:
+    """The still-pending entry for *clarify_id*, or None.
+
+    None covers every settled shape — resolved by a callback, expired
+    by timeout, cancelled by session cleanup, or never registered — so
+    callers can fail closed on a single lookup.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.event.is_set():
+            return None
+        return entry
+
+
 def clear_session(session_key: str) -> int:
     """Resolve and drop every pending clarify for a session.
 

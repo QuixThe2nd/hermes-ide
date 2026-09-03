@@ -8,11 +8,15 @@ used, every instance starts with empty registries, and caches are
 reset between scenarios. The sentinel here is a decoy "live" home —
 HERMES_HOME actually points at it while the instance's globals point
 at the fixture — and the full set of exercised read/write paths (inbox,
-page, feed, lineage, archive sync, user close, subprocess spawn, real
-HTTP GET) runs against the fixture. Afterwards the decoy DB is
-byte-identical, its home grew no files, and its sentinel row never
-surfaced in any response: it could not be read, and it could not be
-changed.
+page, feed, lineage, archive sync, user close, a composer turn
+admitted on the core API, real HTTP GET) runs against the fixture.
+Afterwards the decoy DB is byte-identical, its home grew no files, and
+its sentinel row never surfaced in any response: it could not be read,
+and it could not be changed. The composer turn proves the routing
+discipline survived the transport change: the admission names the
+profile the fixture's own discovery resolved — never the decoy the
+ambient HERMES_HOME points at — and no CLI child is ever spawned to
+inherit that environment.
 """
 
 import hashlib
@@ -23,6 +27,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -58,22 +63,6 @@ SESSION_SCHEMA = SCHEMA_SQL
 # imported hermes_state long before the plugin loads, so this mirrors
 # production exactly.
 import hermes_state  # noqa: E402,F401  (import side effect is the point)
-
-STUB = '''#!/usr/bin/env python3
-import os, sqlite3, sys, time
-home = os.environ.get("HERMES_HOME", "")
-with open(os.path.join(home, "spawned.txt"), "w") as fh:
-    fh.write(home + "\\n")
-db = os.path.join(home, "state.db")
-if db:
-    con = sqlite3.connect(db, timeout=10)
-    con.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp)"
-        " VALUES ('spawn-marker','tool','routed',?)", (time.time(),))
-    con.commit()
-    con.close()
-sys.exit(0)
-'''
 
 
 def load_server(tmp, main_db, profile_glob):
@@ -134,11 +123,37 @@ class IsolationCase(unittest.TestCase):
         self.mod = load_server(
             self.fixture, self.fixture_db,
             os.path.join(self.fixture, "profiles", "*", "state.db"))
-        stub = os.path.join(self.fixture, "hermes-stub")
-        with open(stub, "w", encoding="utf-8") as fh:
-            fh.write(STUB)
-        os.chmod(stub, 0o755)
-        self.mod.HERMES_BIN = stub
+
+        # The faked core API: records (method, path, profile) — never a
+        # payload that could carry a prompt — and answers the 202
+        # admission plus terminal statuses the transport expects.
+        self.core_calls = []
+        self._core_lock = threading.Lock()
+
+        def _fake_core(method, path, profile, dbs, payload=None,
+                       timeout=None):
+            with self._core_lock:
+                self.core_calls.append((method, path, profile))
+            if method == "POST" and path == "/v1/runs":
+                sid = (payload or {}).get("session_id") or "iso_run_1"
+                return 202, {"run_id": "run_iso_1", "status": "started",
+                             "session_id": sid, "replayed": False}, None
+            return 200, {"run_id": "run_iso_1", "status": "completed",
+                         "session_id": "iso_run_1"}, None
+
+        self._core = unittest.mock.patch.object(
+            self.mod, "core_api_request", side_effect=_fake_core)
+        self._core.start()
+        self.addCleanup(self._core.stop)
+        # No composer turn may fall back to a CLI child (which would
+        # inherit the ambient HERMES_HOME — the decoy).
+        self._spawns = []
+        for name in ("Popen", "run"):
+            patcher = unittest.mock.patch.object(
+                subprocess, name,
+                side_effect=lambda *a, **k: self._spawns.append((name, a)))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
         self._tok = unittest.mock.patch.object(
             self.mod, "load_discord_token", return_value="")
@@ -169,6 +184,13 @@ class TestLiveHomeUntouchable(IsolationCase):
     """Every exercised path stays on the fixture paths."""
 
     def test_exercised_paths_never_read_or_write_the_live_home(self):
+        # Warm core's schema-columns memo under the decoy home first: a
+        # cold-start SessionDB materializes cache/schema_columns.json
+        # under the ambient HERMES_HOME, and a real deployment's home
+        # already has it from prior startups. Priming keeps the
+        # file-set assertion below about the plugin's own writes, not
+        # core's one-time cache materialization.
+        hermes_state.SessionDB._parse_schema_columns(SCHEMA_SQL)
         digest_before = self.decoy_digest()
         files_before = self.decoy_files()
 
@@ -192,31 +214,58 @@ class TestLiveHomeUntouchable(IsolationCase):
             self.mod.lineage_index(time.time())["child_keys"])))
         # 4. archive sync pass (Discord patched)
         self.mod.discord_sync_once(time.time())
-        # 5. a user close on the fixture session
+        # 5. a user close on the fixture session (reopened below so
+        # the composer turn is judged on its own merits — a closed
+        # session would 409 before any admission)
         status, _payload = self.mod.set_session_archived(
             "default", "sess_fix", dbs, True)
         self.assertEqual(status, 200)
-        # 6. a real subprocess routed through the discovered home
-        code, _out, _err = self.mod.run_hermes(
-            ["chat", "--oneshot", "-q", "probe"], home=self.mod.
-            profile_home("default"))
-        self.assertEqual(code, 0)
-        # 7. the same surfaces over real HTTP
+        # 6/7. the same surfaces over real HTTP
+        reopen_status, _payload = self.mod.set_session_archived(
+            "default", "sess_fix", dbs, False)
+        self.assertEqual(reopen_status, 200)
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.mod.Handler)
         threading.Thread(target=httpd.serve_forever,
                          daemon=True).start()
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
         try:
-            with urllib.request.urlopen(
-                    "http://127.0.0.1:%d/" % httpd.server_address[1],
-                    timeout=10) as resp:
+            with urllib.request.urlopen(base + "/", timeout=10) as resp:
                 note(resp.read().decode("utf-8"))
-            with urllib.request.urlopen(
-                    "http://127.0.0.1:%d/s/default/sess_fix"
-                    % httpd.server_address[1], timeout=10) as resp:
-                note(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(base + "/s/default/sess_fix",
+                                        timeout=10) as resp:
+                chat_page = resp.read().decode("utf-8")
+            note(chat_page)
+            # 8. a composer turn, admitted on the core API under the
+            # profile the fixture's own discovery resolved
+            m = re.search(
+                r'<meta name="mission-control-csrf" content="([^"]*)"',
+                chat_page)
+            self.assertIsNotNone(m)
+            req = urllib.request.Request(
+                base + "/s/default/sess_fix/reply",
+                data=json.dumps({"text": "isolation probe"}).encode(
+                    "utf-8"),
+                headers={"Content-Type": "application/json",
+                         "Origin": base,
+                         "X-CSRF-Token": m.group(1)},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                self.assertEqual(resp.status, 202)
+            # the turn settled: the worker released the lease
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                with self.mod._jobs_lock:
+                    if ("default", "sess_fix") not in self.mod._jobs:
+                        break
+                time.sleep(0.05)
         finally:
             httpd.shutdown()
             httpd.server_close()
+        # 9. re-archive now that the composer turn is done (it needed
+        # the session open): the durable write lands in the fixture
+        status, _payload = self.mod.set_session_archived(
+            "default", "sess_fix", dbs, True)
+        self.assertEqual(status, 200)
 
         # The decoy was never read: its sentinel row appears nowhere.
         for text in seen:
@@ -232,13 +281,15 @@ class TestLiveHomeUntouchable(IsolationCase):
             self.assertEqual(con.execute(
                 "SELECT archived FROM sessions WHERE id = 'sess_fix'"
             ).fetchone()[0], 1)
-            self.assertEqual(con.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id ="
-                " 'spawn-marker'").fetchone()[0], 1)
         finally:
             con.close()
-        self.assertFalse(os.path.exists(
-            os.path.join(self.decoy, "spawned.txt")))
+        # The composer turn was routed by the fixture's own discovery:
+        # one admission, on the default profile it resolved — and it
+        # never spawned a CLI child that could inherit the decoy home.
+        admissions = [c for c in self.core_calls
+                      if c[:2] == ("POST", "/v1/runs")]
+        self.assertEqual(admissions, [("POST", "/v1/runs", "default")])
+        self.assertEqual(self._spawns, [])
 
 
 class TestDiscoveryStaysInsideHome(IsolationCase):
@@ -376,7 +427,8 @@ class TestDiscoveryStaysInsideHome(IsolationCase):
             names = self.discovered_names()
             self.assertNotIn("default", names)
             self.assertIn("real", names)
-            self.assertEqual(self.mod.mission_control_ids(), [])
+            self.assertFalse(self.mod.session_row_exists(
+                link, "SENTINEL-outside-row"))
             rows, _notes = self.mod.load_sessions(time.time())
             self.assertNotIn("SENTINEL-outside-row",
                              [r["id"] for r in rows])
@@ -422,8 +474,8 @@ class TestDiscoveryStaysInsideHome(IsolationCase):
 
 class TestModuleStateResets(IsolationCase):
     """A fresh module instance shares nothing with a used one: jobs,
-    notes, children, epochs and the lineage cache all start empty —
-    the between-tests reset the suite relies on."""
+    notes, epochs and the lineage cache all start empty — the
+    between-tests reset the suite relies on."""
 
     def test_fresh_instance_starts_empty_and_separate(self):
         # dirty the first instance the ways tests do
@@ -449,8 +501,6 @@ class TestModuleStateResets(IsolationCase):
         self.assertEqual(other._archive_epochs, {})
         self.assertIsNone(other._lineage_cache["index"])
         self.assertEqual(other._lineage_cache["at"], 0.0)
-        with other._children_lock:
-            self.assertEqual(other._children, set())
         # truly distinct registries, not views of shared state
         self.assertIsNot(other._jobs, self.mod._jobs)
         self.assertIsNot(other._jobs_lock, self.mod._jobs_lock)

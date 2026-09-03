@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
 """Focused tests for truthful send progress in the Mission Control UI.
 
-Covers the send-progress contract end to end at the HTTP layer: the
-/s/new launch is accepted with a fast 202 while a stubbed hermes run is
-still blocked, the correlated session row is published on the status
-route BEFORE the run completes, a terminal failure is safe and never
-retried, a duplicate launch can never spawn a second run, the shipped
-client source carries the distinct transport/waiting transitions, and
-first-response detection is scoped after the newly accepted turn (a
-historical assistant row never satisfies a new one), and the live
-sidebar transition (a send moves the conversation row to Active and
-back to Open · completed without any page reload — the server keeps
-rendering the sections for the very same URL, and the shipped client
-re-renders #rows from it after the 202 and on busy-state transitions
-only, with last-request-wins protection against stale responses).
+Covers the send-progress contract end to end at the HTTP layer, with
+the composer transport the repair installed: every turn is a run on
+the core API server (never a oneshot CLI child), so the core is faked
+in-process at the module's core_api_request seam. The /s/new launch is
+accepted with a fast 202 while the faked run is still executing, the
+deterministic session id from the admission is published on the status
+route BEFORE the run completes (and, for a run that fails fast, still
+published once its row exists), a terminal failure is safe and never
+retried, a duplicate launch can never admit a second run, a rejected
+reply (409 busy, core unavailable) is an explicit failed send rather
+than a silently delivered one, and first-response detection is scoped
+after the newly accepted turn (a historical assistant row never
+satisfies a new one), plus the live sidebar transition (a send moves
+the conversation row to Active and back to Open · completed without
+any page reload).
 
-The hermes binary is replaced per test by a small Python stub whose
-behavior is baked into the file (never into argv or env), so nothing
-here talks to a real Hermes. The prompt text uses a recognizable
-marker on purpose: every status/registry surface is asserted not to
-contain it (the transcript itself legitimately does).
+The fake core records method and path (and, for admissions, the exact
+payload it was given — asserted, never logged) and simulates the run
+lifecycle the real /v1/runs serves, including writing the
+session/message rows the pages read, so nothing here talks to a real
+Hermes or spawns any child. The prompt text uses a recognizable marker
+on purpose: every status/registry surface is asserted not to contain
+it (the transcript itself legitimately does).
 """
 
 import importlib.util
@@ -30,11 +34,13 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -60,90 +66,11 @@ from hermes_state_common import SCHEMA_SQL  # noqa: E402
 
 SESSION_SCHEMA = SCHEMA_SQL
 
-# The stub hermes: behavior, the main DB path and its control dir are
-# baked into the file at write time (nothing rides argv or the
-# environment), so a stub never sees another test's control files. The
-# calls log records ONLY the first argv token — never the prompt.
-STUB_TEMPLATE = '''#!/usr/bin/env python3
-import os, sqlite3, sys, time
-
-DB = %(db)r
-DIR = %(dir)r
-BEHAVIOR = %(behavior)r
-
-argv = sys.argv[1:]
-with open(os.path.join(DIR, "calls"), "a") as fh:
-    fh.write("CALL " + (argv[0] if argv else "?") + "\\n")
-
-
-def prompt():
-    for i, a in enumerate(argv):
-        if a == "-q" and i + 1 < len(argv):
-            return argv[i + 1]
-    return ""
-
-
-def session_id():
-    try:
-        with open(os.path.join(DIR, "session-id")) as fh:
-            return fh.read().strip()
-    except OSError:
-        return "20260902_stub_default"
-
-
-def add_message(sid, role, content, tool_name=None):
-    con = sqlite3.connect(DB, timeout=10)
-    con.execute(
-        "INSERT INTO messages (session_id, role, content, tool_name,"
-        " timestamp) VALUES (?,?,?,?,?)",
-        (sid, role, content, tool_name, time.time()))
-    con.commit()
-    con.close()
-
-
-if BEHAVIOR in ("new-block", "new-fail-after-create"):
-    sid = session_id()
-    con = sqlite3.connect(DB, timeout=10)
-    now = time.time()
-    con.execute(
-        "INSERT OR REPLACE INTO sessions (id, source, title, started_at,"
-        " last_activity_at, archived, hidden) VALUES (?,?,?,?,?,0,0)",
-        (sid, "mission-control", "stub session", now, now))
-    con.commit()
-    con.close()
-    add_message(sid, "user", prompt())
-    sys.stderr.write("session_id: " + sid + "\\n")
-    sys.stderr.flush()
-    if BEHAVIOR == "new-block":
-        rel = os.path.join(DIR, "release")
-        for _ in range(2400):
-            if os.path.exists(rel):
-                break
-            time.sleep(0.05)
-    sys.exit(3 if BEHAVIOR == "new-fail-after-create" else 0)
-
-if BEHAVIOR == "new-fail":
-    sys.exit(3)
-
-if BEHAVIOR == "reply-block":
-    sid = argv[1] if len(argv) > 1 and argv[0] == "--resume" else None
-    rel = os.path.join(DIR, "release")
-    for _ in range(2400):
-        if os.path.exists(rel):
-            break
-        time.sleep(0.05)
-    if sid:
-        add_message(sid, "assistant", "stub answer: done")
-    sys.exit(0)
-
-sys.exit(0)
-'''
-
 
 def load_server(tmp, db_path):
     """One isolated server.py module instance per test: its MAIN_DB and
-    profile glob point at the test fixture, its hermes binary at a
-    stub, and its in-memory job registries start empty."""
+    profile glob point at the test fixture, its core API client at the
+    in-process fake, and its in-memory job registries start empty."""
     spec = importlib.util.spec_from_file_location(
         "mc_server_under_test_%d" % _MODULE_SEQ.__next__(), SERVER_PY)
     mod = importlib.util.module_from_spec(spec)
@@ -153,9 +80,127 @@ def load_server(tmp, db_path):
     return mod
 
 
+class FakeCore:
+    """In-process stand-in for the core API server the composer talks to.
+
+    Installed over the module's core_api_request seam. Behaviors bake
+    the run lifecycle in (never argv or env): admissions answer the
+    202 contract — run_id plus the canonical session_id — and, like the
+    real admitted agent, write the session/message rows the pages read,
+    so navigation and feed states exercise the real SQL. The calls list
+    records method and path; admissions also remember the exact payload
+    they were handed (asserted by the tests, never logged).
+    """
+
+    def __init__(self, db, tmp):
+        self.db = db
+        self.tmp = tmp
+        self.lock = threading.Lock()
+        self.calls = []
+        self.admissions = []       # payloads of every POST /v1/runs
+        self.behavior = None       # None: every call errors (no core)
+        self.runs = {}             # run_id -> {"sid":…, "kind":…}
+
+    # -- lifecycle control -------------------------------------------
+
+    def set_behavior(self, behavior):
+        self.behavior = behavior
+
+    def session_id(self):
+        try:
+            with open(os.path.join(self.tmp, "session-id")) as fh:
+                return fh.read().strip()
+        except OSError:
+            return "20260902_stub_default"
+
+    def released(self):
+        return os.path.exists(os.path.join(self.tmp, "release"))
+
+    # -- the seam ------------------------------------------------------
+
+    def __call__(self, method, path, profile, dbs, payload=None,
+                 timeout=None):
+        with self.lock:
+            self.calls.append((method, path))
+        if self.behavior is None:
+            return 0, None, "unreachable"
+        if method == "POST" and path == "/v1/runs":
+            return self._admit(payload)
+        if method == "GET" and path.startswith("/v1/runs/"):
+            return self._status(path.rsplit("/", 1)[-1])
+        return 200, {"pending_clarify": None}, None
+
+    def _admit(self, payload):
+        with self.lock:
+            self.admissions.append(dict(payload or {}))
+        if self.behavior == "new-fail":
+            # the core itself unreachable: transport error, no body
+            return 0, None, "unavailable"
+        run_id = "run_fake_%d" % (len(self.admissions))
+        if self.behavior in ("new-block", "new-fail-after-create"):
+            sid = self.session_id()
+            self._create_session_row(sid)
+            self._add_message(sid, "user", PROMPT)
+            kind = self.behavior
+        else:  # reply behaviors run the session the composer named
+            sid = (payload or {}).get("session_id") or ""
+            kind = self.behavior
+        with self.lock:
+            self.runs[run_id] = {"sid": sid, "kind": kind}
+        return 202, {"run_id": run_id, "status": "started",
+                     "session_id": sid, "replayed": False}, None
+
+    def _status(self, run_id):
+        with self.lock:
+            run = self.runs.get(run_id)
+        if run is None:
+            return 404, {"error": "not found"}, None
+        if run["kind"] in ("new-block", "reply-block"):
+            if not self.released():
+                return 200, {"run_id": run_id, "status": "running",
+                             "session_id": run["sid"]}, None
+            if run["kind"] == "reply-block":
+                self._add_message(run["sid"], "assistant",
+                                  "stub answer: done")
+            return 200, {"run_id": run_id, "status": "completed",
+                         "session_id": run["sid"]}, None
+        if run["kind"] == "new-fail-after-create":
+            return 200, {"run_id": run_id, "status": "failed",
+                         "session_id": run["sid"]}, None
+        return 200, {"run_id": run_id, "status": "completed",
+                     "session_id": run["sid"]}, None
+
+    # -- the rows the real agent would persist ------------------------
+
+    def _create_session_row(self, sid):
+        con = sqlite3.connect(self.db, timeout=10)
+        now = time.time()
+        con.execute(
+            "INSERT OR REPLACE INTO sessions (id, source, title, started_at,"
+            " last_activity_at, archived, hidden) VALUES (?,?,?,?,?,0,0)",
+            (sid, "mission-control", "stub session", now, now))
+        con.commit()
+        con.close()
+
+    def _add_message(self, sid, role, content):
+        con = sqlite3.connect(self.db, timeout=10)
+        con.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp)"
+            " VALUES (?,?,?,?)", (sid, role, content, time.time()))
+        con.commit()
+        con.close()
+
+    # -- assertions ---------------------------------------------------
+
+    def admission_count(self):
+        with self.lock:
+            return len(self.admissions)
+
+
 class ServerCase(unittest.TestCase):
     """A real ThreadingHTTPServer on an ephemeral port over a synthetic
-    state.db, plus the stub-hermes writer."""
+    state.db, with the core API faked in-process — and a tripwire that
+    fails the test if anything ever tries to spawn a CLI child."""
 
     # seconds a poll helper will wait for a condition before failing
     POLL_TIMEOUT = 15.0
@@ -168,21 +213,35 @@ class ServerCase(unittest.TestCase):
         con.commit()
         con.close()
         self.mod = load_server(self.tmp, self.db)
+        self.core = FakeCore(self.db, self.tmp)
+        self._core_patch = unittest.mock.patch.object(
+            self.mod, "core_api_request", side_effect=self.core)
+        self._core_patch.start()
+        self.addCleanup(self._core_patch.stop)
+        # The transport contract under test: a composer turn may talk
+        # to the core API, but it may never fall back to a child.
+        self._spawns = []
+        for name in ("Popen", "run"):
+            patcher = unittest.mock.patch.object(
+                subprocess, name,
+                side_effect=lambda *a, **k: self._spawns.append((name, a)))
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self._csrf = None
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0),
                                          self.mod.Handler)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever,
                          daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+        self.addCleanup(self.drain_jobs)
+        self.addCleanup(self.assert_no_children)
 
-    def tearDown(self):
-        # Unblock every stub, then wait for this module's jobs to drain
-        # so nothing writes into a torn-down tmp dir.
-        try:
-            with open(os.path.join(self.tmp, "release"), "w") as fh:
-                fh.write("go")
-        except OSError:
-            pass
+    def drain_jobs(self):
+        # Unblock every faked run, then wait for this module's jobs to
+        # drain so nothing writes into a torn-down tmp dir.
+        self.release()
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
             with self.mod._new_jobs_lock:
@@ -191,23 +250,19 @@ class ServerCase(unittest.TestCase):
             with self.mod._jobs_lock:
                 live_reply = len(self.mod._jobs)
             if not live_new and not live_reply:
-                break
+                return
             time.sleep(0.05)
-        self.mod.terminate_children()
-        self.httpd.shutdown()
-        self.httpd.server_close()
-        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def assert_no_children(self):
+        self.assertEqual(self._spawns, [],
+                         "a composer turn spawned a CLI child")
 
     # ---- fixture helpers -------------------------------------------
 
     def write_stub(self, behavior):
-        """Install the behavior's stub as the module's hermes binary."""
-        path = os.path.join(self.tmp, "hermes-stub")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(STUB_TEMPLATE % {
-                "db": self.db, "dir": self.tmp, "behavior": behavior})
-        os.chmod(path, 0o755)
-        self.mod.HERMES_BIN = path
+        """Point the faked core at one run behavior (name kept from the
+        oneshot era so the scenarios read the same)."""
+        self.core.set_behavior(behavior)
 
     def set_stub_session(self, sid):
         with open(os.path.join(self.tmp, "session-id"), "w") as fh:
@@ -224,23 +279,19 @@ class ServerCase(unittest.TestCase):
             pass
 
     def call_count(self):
-        """How many stub invocations happened (never counts text)."""
-        try:
-            with open(os.path.join(self.tmp, "calls")) as fh:
-                return len([ln for ln in fh if ln.startswith("CALL")])
-        except OSError:
-            return 0
+        """How many runs were admitted (never counts text)."""
+        return self.core.admission_count()
 
     def wait_calls(self, n):
-        """Block until the stub has demonstrably started n runs — the
-        202 can beat the child's first write by a few milliseconds,
-        which is the very behavior under test."""
+        """Block until n admissions demonstrably happened — the 202 can
+        beat the worker's first poll by a few milliseconds, which is
+        the very behavior under test."""
         deadline = time.monotonic() + self.POLL_TIMEOUT
         while time.monotonic() < deadline:
             if self.call_count() >= n:
                 return
             time.sleep(0.05)
-        self.fail("stub was invoked %d times, expected at least %d"
+        self.fail("core admitted %d runs, expected at least %d"
                   % (self.call_count(), n))
 
     def add_session(self, sid, source="mission-control", title="fixture"):
@@ -338,14 +389,14 @@ class TestNewSessionAsync(ServerCase):
                                          {"text": PROMPT})
         elapsed = time.monotonic() - t0
         self.assertEqual(status, 202)
-        # acceptance is prompt while the stubbed run stays blocked
+        # acceptance is prompt while the faked run stays live
         self.assertLess(elapsed, 2.0)
         job = body["job"]
         self.assertRegex(job, r"^[A-Za-z0-9_-]{8,}$")
         self.assertEqual(body["status_url"], "/s/new/" + job)
-        self.wait_calls(1)  # the one background run really started
+        self.wait_calls(1)  # the one background run really was admitted
 
-        # the correlated session row is published WHILE the run is live
+        # the deterministic session id is published WHILE the run is live
         st = self.poll_status(body["status_url"],
                               lambda p: bool(p.get("session_id")))
         self.assertIn(st["status"], ("starting", "running"))
@@ -361,7 +412,7 @@ class TestNewSessionAsync(ServerCase):
         self.assertIn("Waiting for first response", page)
         self.assertIn('id="live-activity"', page)
 
-        # releasing the run settles the job as done, same session
+        # settling the run settles the job as done, same session
         self.release()
         done = self.poll_status(body["status_url"],
                                 lambda p: p.get("status") == "done")
@@ -369,6 +420,9 @@ class TestNewSessionAsync(ServerCase):
         self.assertEqual(self.call_count(), 1)
 
     def test_status_route_is_safe_and_terminal_on_failure(self):
+        # The run wrote its session row, then failed fast — before any
+        # status poll could observe it — and the job still publishes
+        # the row it owns, then settles failed.
         self.write_stub("new-fail-after-create")
         self.set_stub_session("20260902_newjob_f1")
         status, body = self.request_json("POST", "/s/new",
@@ -376,8 +430,9 @@ class TestNewSessionAsync(ServerCase):
         self.assertEqual(status, 202)
         failed = self.poll_status(body["status_url"],
                                   lambda p: p.get("status") == "failed")
-        # safe canned reason, no prompt, no stub output
-        self.assertIn("exit code 3", failed["error"])
+        self.assertEqual(failed["session_id"], "20260902_newjob_f1")
+        # safe canned reason, no prompt, no core output
+        self.assertEqual(failed["error"], "the launch failed")
         self.assertNotIn(PROMPT, json.dumps(failed))
         # terminal: repeated polls keep the same verdict
         for _ in range(3):
@@ -399,6 +454,7 @@ class TestNewSessionAsync(ServerCase):
         self.assertFalse(second["busy"])
 
     def test_failed_launch_without_session_is_terminal(self):
+        # No core reachable: admission fails, nothing ran, no session.
         self.write_stub("new-fail")
         status, body = self.request_json("POST", "/s/new",
                                          {"text": PROMPT})
@@ -406,7 +462,8 @@ class TestNewSessionAsync(ServerCase):
         failed = self.poll_status(body["status_url"],
                                   lambda p: p.get("status") == "failed")
         self.assertFalse(failed["session_id"])
-        self.assertEqual(failed["error"], "the launch failed (exit code 3)")
+        self.assertEqual(failed["error"],
+                         "the agent gateway could not be reached")
         self.assertNotIn(PROMPT, json.dumps(failed))
         self.assertEqual(self.call_count(), 1)
 
@@ -418,7 +475,7 @@ class TestNewSessionAsync(ServerCase):
 
 class TestDuplicateLaunch(ServerCase):
     """Contract 2: exactly one live launch — a concurrent POST can never
-    spawn a second run, and the gate reopens once the run settles."""
+    admit a second run, and the gate reopens once the run settles."""
 
     def test_second_post_while_live_is_refused(self):
         self.write_stub("new-block")
@@ -443,9 +500,9 @@ class TestDuplicateLaunch(ServerCase):
         status3, third = self.request_json("POST", "/s/new",
                                            {"text": PROMPT})
         self.assertEqual(status3, 202)
-        # The third run starts genuinely blocked (unrelease above), so
-        # it lives its full lifecycle: releasing lets the stub exit, and
-        # only that genuine exit may settle the job done.
+        # The third run starts genuinely live (unrelease above), so it
+        # lives its full lifecycle: only its genuine completion may
+        # settle the job done.
         self.release()
         self.poll_status(third["status_url"],
                          lambda p: p.get("status") == "done")
@@ -473,6 +530,10 @@ class TestReplyProgress(ServerCase):
         self.assertEqual(status, 202)
         self.assertLess(elapsed, 2.0)
         self.wait_calls(1)
+        # the admission named the exact session and carried the prompt
+        # only inside its JSON body — never argv, never a URL
+        self.assertEqual(self.core.admissions, [
+            {"input": PROMPT, "session_id": "s_reply_1"}])
 
         # one in-flight reply per session: a second send is refused
         # while the first is still running (no duplicate run)
@@ -493,10 +554,10 @@ class TestReplyProgress(ServerCase):
 
         # the answer lands: busy clears, the strip goes away. The row
         # commit and the job settle are distinct events milliseconds
-        # apart (the child writes its answer, then exits, then the job
-        # releases the busy key), so the poll waits for the settled
-        # end state — answer present AND busy gone — not merely the
-        # first row.
+        # apart (the core writes its answer, then the poller observes
+        # the terminal state and releases the busy key), so the poll
+        # waits for the settled end state — answer present AND busy
+        # gone — not merely the first row.
         self.release()
         answered = self.poll_status(
             "/s/default/s_reply_1/feed?after=0",
@@ -506,6 +567,104 @@ class TestReplyProgress(ServerCase):
         self.assertFalse(answered["busy"])
         self.assertEqual(answered["activity"]["html"], "")
         self.assertEqual(self.call_count(), 1)
+
+    def test_unavailable_core_is_an_explicit_failed_send(self):
+        # No core reachable: the turn is refused 503 synchronously —
+        # never a silent fallback, never a duplicate run — and the
+        # session's lease is released so a retry is possible at once.
+        self.write_stub("new-fail")
+        status, body = self.request_json(
+            "POST", "/s/default/s_reply_1/reply", {"text": PROMPT})
+        self.assertEqual(status, 503)
+        self.assertFalse(body["ok"])
+        self.assertEqual(self.call_count(), 1)
+        with self.mod._jobs_lock:
+            self.assertNotIn(("default", "s_reply_1"), self.mod._jobs)
+        # the retry (core back) is accepted immediately
+        self.write_stub("reply-block")
+        status2, _body = self.request_json(
+            "POST", "/s/default/s_reply_1/reply", {"text": PROMPT})
+        self.assertEqual(status2, 202)
+        self.release()
+
+    def test_session_id_mismatch_fails_closed(self):
+        # The core must run the exact session the composer addressed;
+        # an echo that names any other session is a refusal, not a
+        # silent conversation fork.
+        self.write_stub("reply-block")
+        original = self.core._admit
+
+        def _mismatched(payload):
+            _status, obj, err = original(payload)
+            if isinstance(obj, dict) and obj.get("run_id"):
+                obj = dict(obj, session_id="s_somebody_else")
+            return _status, obj, err
+
+        with unittest.mock.patch.object(self.core, "_admit",
+                                        side_effect=_mismatched):
+            status, body = self.request_json(
+                "POST", "/s/default/s_reply_1/reply", {"text": PROMPT})
+        self.assertEqual(status, 503)
+        with self.mod._jobs_lock:
+            self.assertNotIn(("default", "s_reply_1"), self.mod._jobs)
+
+
+class TestRejectedSendClientContract(ServerCase):
+    """The shipped client's busy-recovery contract (review finding 3):
+    a reply POST that is not accepted — 409 busy above all — marks the
+    optimistic row failed (never Sent/Read), restores the exact
+    submitted text without clobbering a newer edit, and no later feed
+    echo or busy poll can promote a rejected row back up the ladder."""
+
+    def chat_page(self):
+        self.add_session("s_reject_1", source="cli", title="reject")
+        self.add_message("s_reject_1", "user", "hello")
+        status, page = self.request("GET", "/s/default/s_reject_1")
+        self.assertEqual(status, 200)
+        return page
+
+    def test_409_branch_fails_the_send_and_restores_text(self):
+        page = self.chat_page()
+        first202 = page.index("resp.status === 202")
+        chat202 = page.index("resp.status === 202", first202 + 1)
+        next409 = page.index("resp.status === 409", chat202)
+        next404 = page.index("resp.status === 404", next409)
+        branch = page[next409:next404]
+        # the reply-mode 409 routes to failSend — the row fails and
+        # the text returns — and never marks the row sent
+        self.assertIn("failSend(rec, text,", branch)
+        self.assertNotIn('setTickState(rec, "sent")', branch)
+        self.assertIn("was not sent and is back in the composer", branch)
+
+    def test_other_rejections_share_the_failure_path(self):
+        page = self.chat_page()
+        # 404 and 400/413 are failures too, and anything else (503,
+        # network) lands in the catch — all through failSend
+        for needle in ('failSend(rec, text, "This session can no longer',
+                       'failSend(rec, text, "That message was refused'):
+            self.assertIn(needle, page)
+        chat404 = page.index('failSend(rec, text, "This session can no')
+        catch_at = page.index("}).catch(function () {", chat404)
+        catch_block = page[catch_at:catch_at + 400]
+        self.assertIn("failSend(rec, text,", catch_block)
+
+    def test_failed_state_is_terminal_for_every_promoter(self):
+        page = self.chat_page()
+        # setTickState: a failed row never moves again
+        guard = page.index("function setTickState(rec, state)")
+        block = page[guard:page.index("function ", guard + 10)]
+        self.assertIn('if (rec.state === "failed") return;', block)
+        # findOutgoing: a failed row is never the twin of a server echo
+        finder = page.index("function findOutgoing(text)")
+        fblock = page[finder:page.index("function ", finder + 10)]
+        self.assertIn('outgoing[i].state !== "failed"', fblock)
+
+    def test_restore_keeps_both_inputs_in_a_deterministic_order(self):
+        page = self.chat_page()
+        failer = page.index("function failSend(rec, text, msg)")
+        block = page[failer:page.index("showFlash(msg", failer)]
+        self.assertIn("var current = box.value;", block)
+        self.assertIn('box.value = text + "\\n" + current;', block)
 
 
 class TestClientSourceTransitions(ServerCase):
@@ -594,7 +753,7 @@ class TestLiveSidebarRefresh(ServerCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.selected_section(page), "completed")
 
-        # the send is accepted fast while the stubbed reply is blocked
+        # the send is accepted fast while the faked reply is still live
         status, _body = self.request_json(
             "POST", "/s/default/s_sb_move/reply", {"text": PROMPT})
         self.assertEqual(status, 202)

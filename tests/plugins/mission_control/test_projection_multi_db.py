@@ -574,6 +574,51 @@ class TestChains(ProjectionCase):
                         self.archived_flags(self.main_db, tip)[tip], 0)
 
 
+class TestCoreProjectionContract(ProjectionCase):
+    """The refresh's exact contract with core's projection.
+
+    The listing read is metadata-only, so it must ask
+    list_sessions_rich for compact rows — the flag that keeps the
+    refresh from dragging full row payloads out of every discovered
+    DB — while still taking core's open/closed split and canonical
+    ordering, not re-deriving either.
+    """
+
+    def test_refresh_asks_core_for_compact_rows_and_keeps_the_order(self):
+        base = self.now - 1000
+        self.seed(self.main_db, "d-open", started=base + 30)
+        self.seed(self.main_db, "d-closed", started=base + 50,
+                  ended=base + 55, reason="done", archived=1)
+        self.seed(self.work_db, "w-closed-newest", started=base + 100,
+                  ended=base + 105, reason="done", archived=1)
+
+        calls = []
+        real = self.mod.SessionDB
+
+        class RecordingDB(real):
+            def list_sessions_rich(self, **kwargs):
+                calls.append(kwargs)
+                return super().list_sessions_rich(**kwargs)
+
+        with unittest.mock.patch.object(self.mod, "SessionDB", RecordingDB):
+            rows, _notes = self.mod.load_sessions(time.time())
+
+        # one projection read per discovered DB, each compact
+        self.assertEqual(len(calls), 2)
+        for kwargs in calls:
+            self.assertIs(kwargs.get("compact_rows"), True)
+            self.assertIs(kwargs.get("open_first"), True)
+            self.assertIs(kwargs.get("order_by_last_active"), True)
+            self.assertIs(kwargs.get("include_archived"), True)
+            self.assertEqual(kwargs.get("exclude_sources"),
+                             ("subagent",))
+        # and the flags are not decorative: the merged listing still
+        # carries core's split and order — open before closed, newest
+        # closed row first inside the partition.
+        self.assertEqual([r["id"] for r in rows],
+                         ["d-open", "w-closed-newest", "d-closed"])
+
+
 class TestChainArchiveAndReopen(ProjectionCase):
     """Close/reopen act on the canonical chain and nothing else."""
 
