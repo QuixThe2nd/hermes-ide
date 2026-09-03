@@ -2184,7 +2184,7 @@ def run_tick(
                 wallets = zai_wallets.wallets_from_state_when_unreadable(
                     state, hermes_home
                 )
-            if wallets and not pool_unreadable:
+            if not pool_unreadable:
                 (
                     wallet_channels,
                     wallet_ordinals,

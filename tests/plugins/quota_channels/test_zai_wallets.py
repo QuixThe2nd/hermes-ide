@@ -173,10 +173,10 @@ class TestWalletTick:
             [
                 {"id": "c1", "position": 10},
                 {"id": "c2", "position": 11},
-                {"id": "c3", "position": 12},
+                {"id": "c3", "position": 15},
                 {"id": "c4", "position": 13},
                 {"id": "c5", "position": 14},
-                {"id": "new901", "position": 15},
+                {"id": "new901", "position": 12},
             ],
             existing={"c3", "new901"},
         )
@@ -195,6 +195,14 @@ class TestWalletTick:
         assert wallet_reading_key("w1") in state["readings"]
         assert wallet_reading_key("w2") in state["readings"]
         assert state["readings"]["zai"]["pct"] == 80
+        w1_cid = state["zai_wallet_channels"]["w1"]
+        w2_cid = state["zai_wallet_channels"]["w2"]
+        assert discord.position_patch is not None
+        patch_ids = {move["id"] for move in discord.position_patch}
+        assert w1_cid in patch_ids
+        assert w2_cid in patch_ids
+        positions = {move["id"]: move["position"] for move in discord.position_patch}
+        assert positions[w1_cid] < positions[w2_cid]
 
     def test_legacy_migration_binds_first_wallet_and_creates_second(self, wallet_env):
         _write_pool(
@@ -305,7 +313,7 @@ class TestWalletTick:
                 "guild_id": "guild",
                 "category_id": "cat",
                 "channel_ids": {"zai": "c3", "grok": "c5"},
-                "enabled_providers": ["grok"],
+                "enabled_providers": ["zai", "grok"],
             }
         )
         monkeypatch.setattr(
@@ -323,6 +331,7 @@ class TestWalletTick:
         assert discord.deletes == []
         saved = json.loads(state_path().read_text(encoding="utf-8"))
         assert saved["zai_wallet_channels"] == state["zai_wallet_channels"]
+        assert saved["zai_wallet_ordinals"] == state["zai_wallet_ordinals"]
 
     def test_one_wallet_fetch_failure_isolates_sibling(self, wallet_env, monkeypatch):
         _write_pool(
@@ -332,13 +341,34 @@ class TestWalletTick:
                 {"id": "w2", "access_token": "sk-secret-wallet-bbb"},
             ],
         )
+        prior_state = {
+            "last_quota_success": 999,
+            "readings": {
+                wallet_reading_key("w1"): {
+                    "pct": 10,
+                    "reset_seconds": DAY,
+                    "label": "z.ai 1",
+                },
+                wallet_reading_key("w2"): {
+                    "pct": 55,
+                    "reset_seconds": DAY,
+                    "label": "z.ai 2",
+                },
+                "zai": {"pct": 55, "reset_seconds": DAY, "label": "z.ai"},
+            },
+            "zai_wallet_channels": {"w1": "c3", "w2": "new901"},
+            "zai_wallet_ordinals": {"w1": 1, "w2": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior_state), encoding="utf-8")
 
         real = core._zai_quota_metrics
 
         def flaky(http_fn=None, now_fn=None, api_key=None):
             if api_key == "sk-secret-wallet-bbb":
                 raise core.QuotaChannelsError(
-                    f"z.ai usage endpoint returned 500: sk-secret-wallet-bbb"
+                    "z.ai usage endpoint returned 500: sk-secret-wallet-bbb"
                 )
             return real(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
 
@@ -362,11 +392,20 @@ class TestWalletTick:
             http_fn=discord,
             sleep_fn=lambda _: None,
         )
-        assert "sk-secret-wallet-bbb" not in json.dumps(result)
+        blob = json.dumps(result)
+        assert "sk-secret-wallet-aaa" not in blob
+        assert "sk-secret-wallet-bbb" not in blob
         assert result["providers"]["z.ai 2"]["error"]
         assert result["providers"]["z.ai 1"]["remaining"] == 80
+        assert discord.deletes == []
         state = json.loads(state_path().read_text(encoding="utf-8"))
         assert state["readings"][wallet_reading_key("w1")]["pct"] == 80
+        assert state["readings"][wallet_reading_key("w2")]["pct"] == 55
+        renames = {cid: body["name"] for cid, body in discord.renames}
+        assert "sk-secret-wallet-aaa" not in json.dumps(renames)
+        assert "sk-secret-wallet-bbb" not in json.dumps(renames)
+        assert "sk-secret-wallet-aaa" not in json.dumps(state)
+        assert "sk-secret-wallet-bbb" not in json.dumps(state)
 
     def test_missing_channel_recreated(self, wallet_env):
         _write_pool(wallet_env, [{"id": "w1", "access_token": "k1"}])

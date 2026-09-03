@@ -153,7 +153,10 @@ def assign_wallet_ordinals(
     wallets: Sequence[ZaiWallet],
     state: Mapping[str, Any],
 ) -> Tuple[Dict[str, int], int]:
-    """Bind stable display numbers; never reclaim removed ordinals."""
+    """Bind stable display numbers; never reclaim removed ordinals.
+
+    Persists current entry ids plus high-water; retired numbers are not reused.
+    """
     existing = dict(state.get("zai_wallet_ordinals") or {})
     high_water = int(state.get("zai_wallet_ordinal_high_water") or 0)
     if not high_water and existing:
