@@ -186,34 +186,45 @@ Interactive layer (all same-origin, relative URLs, stdlib only):
   feed reports busy === true, never on /new, never merely because a
   send is waiting, and never beside the waiting row or the strip.
 - POST /s/<profile>/<id>/reply — body application/json {"text": ...};
-  validates the session exists in that profile DB (404)
-  and rejects empty text (400). Replies 202 immediately and runs
-  `hermes --resume <id> chat --oneshot -q <text>` (cwd from the session
-  row when present) in a background thread — one in-flight reply per
-  session, 409 while busy. Hermes stdout/stderr is inspected for the
-  exit status only and is never echoed anywhere.
+  validates the session exists in that profile DB (404), rejects
+  empty text (400) and oversize bodies (413), and refuses a closed
+  session (409). The turn itself is admitted synchronously as one run
+  on the profile-scoped core API surface (POST /v1/runs, authorized
+  with that profile's own API key): 202 only once the core has
+  admitted the run — one in-flight turn per session, 409 while one is
+  already running — and 503 when the core could not admit, which is
+  an explicit failed send with the text restored, never a silent
+  fallback, and nothing was created. The prompt travels only inside
+  that one admission request's JSON body; a background poller then
+  holds the session's busy lease until the run settles (a wedged run
+  is stopped best-effort at a hard deadline, so it can never hold a
+  session busy forever) and leaves the feed a one-shot canned note
+  when the turn did not complete. The run's agent carries the gateway
+  clarify callback, so a mid-turn question pauses as the clarify card
+  below instead of being auto-answered. Core output never reaches any
+  response — only these statuses do.
 - POST /s/new — body {"text": ...}; validates the same way, then
-  starts exactly one background
-  `hermes chat --oneshot --source mission-control -q <text>` launch
-  and answers 202 promptly with an opaque job id and its status URL —
-  the oneshot never blocks the response. A second POST while a launch
-  is live gets 409: one at a time keeps the fresh-row correlation
-  unambiguous, so duplicates can never spawn two runs. GET
-  /s/new/<job> serves {status: starting|running|done|failed,
-  session_id?, url?, error} from a bounded, thread-safe in-memory
-  registry that holds only opaque state — never the prompt, never
-  hermes output — and prunes old terminal jobs (cap + age). The CLI
-  takes no caller-supplied session id, so the worker correlates its
-  launch with the first mission-control row that appears while the
-  child runs and publishes that id on the status route mid-run; the
-  client navigates to /s/default/<id> the moment it appears, without
-  waiting for the oneshot to finish (the discovered session is also
-  registered busy, so the fresh page truthfully shows the live turn).
-  A failed launch is terminal — never auto-retried — and reports only
-  a canned exit-code reason; a failure after the session row appeared
-  additionally leaves the session's feed a one-shot note. On /new the
-  composer stays locked after 202 (the waiting row showing) while the
-  client polls the job with a hard bound; a terminal failure fails the
+  registers exactly one bounded background launch job and answers 202
+  promptly with an opaque job id and its status URL — admission never
+  blocks the response. A second POST while a launch is live gets 409:
+  one at a time fails a double-submitted composer closed instead of
+  admitting a duplicate run. GET /s/new/<job> serves {ok, job,
+  status: starting|running|done|failed, session_id?, url?, error}
+  from a bounded, thread-safe in-memory registry that holds only
+  opaque state — never the prompt, never core output (parsed for the
+  status word only, then dropped) — and prunes old terminal jobs
+  (cap + age). The worker admits a fresh core run with no session id
+  of its own: the core assigns the deterministic one, the admission
+  202 echoes it, and the id is published on the status route the
+  moment the session's row exists in the main DB; the client
+  navigates to /s/default/<id> the moment it appears, without
+  waiting for the run to finish (the fresh session is also registered
+  busy, so the fresh page truthfully shows the live turn). A failed
+  launch is terminal — never auto-retried — and reports only a canned
+  reason word; a failure after the session row appeared additionally
+  leaves the session's feed a one-shot note. On /new the composer
+  stays locked after 202 (the waiting row showing) while the client
+  polls the job with a hard bound; a terminal failure fails the
   optimistic message and restores the composer. GET /new serves the
   same dark chat chrome as a blank composer whose first send goes
   through /s/new.
@@ -267,8 +278,6 @@ snapshot as a structured "activity" object {active, state,
 pending_count, names, html} whose html is the exact server-rendered
 strip, which the client swaps in (or removes) on every poll while
 the feed cursor keeps its existing behavior.
-
-In-flight hermes processes are tracked and terminated on shutdown.
 """
 
 import argparse
@@ -5962,7 +5971,7 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
   // The launch runs server-side after a fast 202; the client only
   // watches GET <status_url> and leaves for the session page the
   // moment the correlated session id is published — long before the
-  // oneshot finishes. Polling is bounded (the server kills the run at
+  // run finishes. Polling is bounded (the server kills the run at
   // its own 900 s timeout; JOB_MAX_MS leaves that headroom); a
   // terminal failure or an unknown job never retries the launch, it
   // fails the send instead.
@@ -5991,7 +6000,7 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
           }
           if (st && st.session_id) {
             // the correlated session row exists — go to it now,
-            // without waiting for the oneshot to finish
+            // without waiting for the run to finish
             if (rec) setTickState(rec, "delivered");
             stopJobPoll();
             locked = true;  // the browser is off to the new transcript
@@ -7185,7 +7194,7 @@ def render_new(inbox_rows=None, inbox_notes=None):
     render — the inline script sends the first message to POST /s/new,
     gets its fast 202, shows the waiting row while it polls the launch
     job's status, and navigates to /s/default/<id> the moment the
-    correlated session id is published (without waiting for the oneshot
+    correlated session id is published (without waiting for the run
     to finish); a terminal job failure fails the optimistic message and
     restores the composer. The typing row and the live activity strip
     are deliberately absent (markup, CSS and selector alike): a blank

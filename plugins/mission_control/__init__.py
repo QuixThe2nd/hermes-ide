@@ -27,7 +27,9 @@ def register(ctx) -> None:
             "databases, with search, live updates, full transcripts, "
             "collapsed tool-call groups, sub-agent and cross-profile "
             "lineage, and a composer that starts new sessions or replies "
-            "through the Hermes CLI. Binds loopback by default; a "
+            "as authenticated runs on the core API server (POST "
+            "/v1/runs), with clarify cards answering mid-turn questions. "
+            "Binds loopback by default; a "
             "non-loopback bind is explicit and still unauthenticated."
         ),
     )
