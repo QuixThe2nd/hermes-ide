@@ -1610,3 +1610,382 @@ def test_retry_slot_release_and_outcome_recording_check_attempt_identity():
     assert setup.settled.is_set()
     assert setup.tracked_client() is None
     assert setup.wait_reconcilable(timeout=0.2) == "settled"
+
+
+# ---------------------------------------------------------------------------
+# Regression: the owner-loop _get_client() must not build or install while a
+# first-setup offer/claim/install handoff is still in flight.
+#
+# Fresh probe interleaving on the unfixed provider: a caller thread owns
+# _client_lock and starts the first setup; the setup produces client A and
+# its Future becomes ready, but the caller has NOT yet assigned self._client;
+# the owner-loop branch sees _client is None and no abandoned generation,
+# builds and installs client B; the caller resumes and unconditionally
+# assigns A over B — B stays live, uninstalled, and unclosed. The handoff
+# must stay observably in flight until the install lands, and the owner loop
+# must fail closed promptly (no blocking lock/wait, no B construction).
+# ---------------------------------------------------------------------------
+
+
+def test_owner_loop_fails_closed_during_ready_but_uninstalled_handoff(
+    tmp_path, monkeypatch
+):
+    """Future-ready-before-install: owner loop fails closed, builds nothing.
+
+    Pauses the REAL caller path after setup client A is ready (its Future
+    completed) but BEFORE installation, then invokes the REAL owner-loop
+    _get_client(). The loop call must complete promptly with a fail-closed
+    error, construct zero clients, and overwrite nothing; the loop stays
+    responsive; the resumed caller then installs exactly one client (A).
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    _reset_gated_client(blocked=False)  # construction runs immediately
+
+    a_ready = threading.Event()
+    release_caller = threading.Event()
+    real_await = provider._await_client_setup
+
+    def _pause_before_install():
+        # Inside _get_client under _client_lock: the setup Future has
+        # completed with client A, but the caller has not installed it yet.
+        client = real_await()
+        a_ready.set()
+        assert release_caller.wait(timeout=_GATE_WAIT_S), (
+            "test harness never released the paused caller"
+        )
+        return client
+
+    monkeypatch.setattr(provider, "_await_client_setup", _pause_before_install)
+
+    caller = _ClientCallThread(provider).start()
+    try:
+        assert a_ready.wait(timeout=_GATE_WAIT_S), (
+            "caller never reached the ready-but-uninstalled window"
+        )
+        client_a = _GatedHindsightClient.constructed[0]
+        assert provider._client is None
+        assert _GatedHindsightClient.constructed == [client_a]
+
+        # The REAL owner-loop _get_client() during the handoff window.
+        loop_outcome: dict = {}
+        loop_done = threading.Event()
+
+        async def _get_client_on_loop():
+            try:
+                loop_outcome["value"] = provider._get_client()
+            except BaseException as exc:
+                loop_outcome["error"] = exc
+            finally:
+                loop_done.set()
+
+        probe = safe_schedule_threadsafe(
+            _get_client_on_loop(), hindsight_mod._get_loop()
+        )
+        assert probe is not None, "could not schedule the owner-loop probe"
+        # Prompt completion without waiting on the caller-held _client_lock.
+        assert loop_done.wait(timeout=2.0), (
+            "owner-loop _get_client() blocked during the install handoff"
+        )
+        probe.result(timeout=5.0)
+        assert "value" not in loop_outcome, loop_outcome
+        error = loop_outcome.get("error")
+        assert type(error).__name__ == "RuntimeError", error
+        assert "fail-closed" in str(error), error
+
+        # No second client was built, nothing was installed over the window.
+        assert _GatedHindsightClient.constructed == [client_a]
+        assert provider._client is None
+
+        # The owning loop stayed responsive throughout.
+        async def _loop_probe():
+            await asyncio.sleep(0)
+            return "alive"
+
+        responsiveness = safe_schedule_threadsafe(
+            _loop_probe(), hindsight_mod._get_loop()
+        )
+        assert responsiveness is not None
+        assert responsiveness.result(timeout=5.0) == "alive"
+    finally:
+        release_caller.set()
+
+    # The resumed caller installs exactly the client its setup built.
+    outcome = caller.join()
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["value"] is client_a
+    assert provider._client is client_a
+    assert _GatedHindsightClient.constructed == [client_a]
+
+    # The installed client serves traffic from the owning loop.
+    result = json.loads(provider.handle_tool_call(
+        "hindsight_recall", {"query": "what does the user like?"}
+    ))
+    assert result == {"result": "1. memory one\n2. memory two"}
+
+    provider.shutdown()
+    assert client_a.close_threads == ["hindsight-loop"]
+
+
+def test_owner_loop_build_losing_install_race_closes_on_owning_loop(
+    tmp_path, monkeypatch
+):
+    """The inverse race: a loop-side build that loses the slot is closed.
+
+    The loop branch's build can START before any handoff is registered (its
+    pre-build checks pass while a caller thread is still on its way into the
+    locked setup). The install must then be atomic against the caller's
+    handoff: the caller's setup wins the slot, and the loop-built loser is
+    closed ON the owner loop — never installed, never overwritten, never
+    orphaned. The owner-loop call fails closed rather than handing back a
+    client whose slot it lost.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    _started, _gate, closed = _reset_gated_client(blocked=False)
+
+    caller_parked = threading.Event()
+    release_caller = threading.Event()
+    real_await = provider._await_client_setup
+
+    def _parked_before_setup_registration():
+        # The caller holds _client_lock but has not registered (or even
+        # started) its setup yet: the loop branch's pre-build checks all
+        # pass in this window on every provider version.
+        caller_parked.set()
+        assert release_caller.wait(timeout=_GATE_WAIT_S), (
+            "test harness never released the paused caller"
+        )
+        return real_await()
+
+    monkeypatch.setattr(
+        provider, "_await_client_setup", _parked_before_setup_registration
+    )
+
+    caller = _ClientCallThread(provider).start()
+    try:
+        assert caller_parked.wait(timeout=_GATE_WAIT_S), (
+            "caller never reached the pre-setup window"
+        )
+
+        loop_outcome: dict = {}
+        loop_done = threading.Event()
+
+        async def _get_client_on_loop():
+            try:
+                loop_outcome["value"] = provider._get_client()
+            except BaseException as exc:
+                loop_outcome["error"] = exc
+            finally:
+                loop_done.set()
+
+        probe = safe_schedule_threadsafe(
+            _get_client_on_loop(), hindsight_mod._get_loop()
+        )
+        assert probe is not None, "could not schedule the owner-loop probe"
+        assert loop_done.wait(timeout=2.0), (
+            "owner-loop _get_client() blocked behind the caller's lock"
+        )
+        probe.result(timeout=5.0)
+        # The loop-side build lost the slot to the caller's handoff: a
+        # fail-closed error, not a client.
+        assert "value" not in loop_outcome, loop_outcome
+        error = loop_outcome.get("error")
+        assert type(error).__name__ == "RuntimeError", error
+        assert "fail-closed" in str(error), error
+
+        # The losing client was constructed (its build legitimately started
+        # before the handoff) but must already be on its way to a confirmed
+        # close ON THE OWNER LOOP before the race can be declared over.
+        assert len(_GatedHindsightClient.constructed) == 1
+        loser = _GatedHindsightClient.constructed[0]
+        assert closed.wait(timeout=_GATE_WAIT_S), (
+            "the loop-built loser of the install race was never closed"
+        )
+        assert loser.close_threads == ["hindsight-loop"]
+        assert provider._client is None
+    finally:
+        release_caller.set()
+
+    # The caller's setup proceeds and installs exactly one live client.
+    outcome = caller.join()
+    assert "error" not in outcome, outcome.get("error")
+    winner = outcome["value"]
+    assert provider._client is winner
+    assert _GatedHindsightClient.constructed == [loser, winner]
+    assert winner.close_threads == []
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", loser)) < events.index(
+        ("constructed", winner)
+    )
+
+    provider.shutdown()
+    assert winner.close_threads == ["hindsight-loop"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: cancelling a reconciliation Future AFTER its close coroutine
+# started must not free the retry slot before the coroutine's
+# cancellation/finalization completes.
+#
+# Fresh probe on the unfixed provider: the reconciliation Future was
+# cancelled after _aclose_client had started; the Future went terminal
+# immediately and its done-callback freed the slot while the loop coroutine
+# was still in cancellation/finalization — so a later caller launched a
+# SECOND close for the same client, overlapping the first attempt.
+# ---------------------------------------------------------------------------
+
+
+def test_mid_close_cancellation_holds_slot_until_finalization(
+    tmp_path, monkeypatch
+):
+    """A started close keeps its slot through cancellation cleanup.
+
+    Drives a real reconciliation attempt whose _aclose_client signals it
+    started, then cancels the real reconciliation Future while the
+    coroutine's cancellation cleanup is parked behind a test gate. While
+    parked: the slot stays held (the terminal Future is NOT proof the close
+    stopped), a concurrent caller and shutdown() both fail bounded without
+    scheduling another close, and the loop stays responsive. After
+    finalization is released, the SAME generation becomes retryable,
+    exactly one later close succeeds on the owning loop, and exactly one
+    replacement is built only after that close confirms.
+    """
+    provider, late, setup = _abandon_setup_with_failed_late_close(
+        tmp_path, monkeypatch, fail_closes=1
+    )
+
+    close_started = threading.Event()
+    cleanup_entered = threading.Event()
+    cleanup_gate = threading.Event()
+    aclose_calls: list = []
+    real_aclose_client = provider._aclose_client
+    calls = {"count": 0}
+
+    def _parking_aclose(client):
+        # Counted at SCHEDULE time (the provider wraps the returned
+        # coroutine), so a merely-scheduled duplicate is visible.
+        aclose_calls.append(client)
+        calls["count"] += 1
+        if calls["count"] > 1:
+            return real_aclose_client(client)
+
+        async def _parked():
+            close_started.set()
+            try:
+                await asyncio.sleep(30)  # mid-close; only cancellation ends this
+            finally:
+                # Cancellation/finalization phase: parked behind a gate the
+                # test holds, via the executor so the LOOP stays responsive.
+                cleanup_entered.set()
+                await asyncio.get_running_loop().run_in_executor(
+                    None, cleanup_gate.wait, _GATE_WAIT_S
+                )
+
+        return _parked()
+
+    monkeypatch.setattr(provider, "_aclose_client", _parking_aclose)
+
+    second = _ClientCallThread(provider).start()
+    assert close_started.wait(timeout=_GATE_WAIT_S), (
+        "reconciliation close never started on the owning loop"
+    )
+    future = setup.retry_future()
+    assert future is not None, "reconciliation attempt was never recorded"
+
+    # Cancel AFTER the close coroutine started. The Future goes terminal
+    # immediately; the loop-side cleanup keeps running behind the gate.
+    future.cancel()
+    assert future.cancelled()
+    assert setup.retry_future() is future, (
+        "a mid-close cancellation freed the retry slot while the close "
+        "coroutine's cancellation cleanup was still in flight"
+    )
+    assert cleanup_entered.wait(timeout=_GATE_WAIT_S), (
+        "cancellation cleanup never began on the owning loop"
+    )
+
+    # The cancelling caller still gets a bounded fail-closed error.
+    outcome2 = second.join()
+    assert "value" not in outcome2, outcome2
+    assert type(outcome2["error"]).__name__ == "TimeoutError", outcome2["error"]
+
+    # While cleanup is parked: the exact attempt stays in flight, the
+    # client stays tracked, nothing settles, and no replacement is built.
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+    assert provider._abandoned_setup is setup
+    assert provider._client is None
+    assert _GatedHindsightClient.constructed == [late]
+
+    # A concurrent caller must fail bounded WITHOUT scheduling another
+    # close while the cancelled cleanup can still touch the client.
+    third = _ClientCallThread(provider).start()
+    outcome3 = third.join()
+    assert "value" not in outcome3, outcome3
+    assert type(outcome3["error"]).__name__ == "TimeoutError", outcome3["error"]
+    assert len(aclose_calls) == 1, (
+        "a second close was scheduled while the cancelled attempt's "
+        "cleanup was still in flight"
+    )
+    assert late.close_attempts == ["hindsight-loop"]
+
+    # shutdown() likewise: bounded, no overlapping close, generation kept.
+    provider.shutdown()
+    assert len(aclose_calls) == 1
+    assert provider._abandoned_setup is setup
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+
+    # The owning loop stayed responsive through all of the above (the
+    # parked cleanup must not block it).
+    from agent.async_utils import safe_schedule_threadsafe
+
+    async def _loop_probe():
+        await asyncio.sleep(0)
+        return "alive"
+
+    probe = safe_schedule_threadsafe(_loop_probe(), hindsight_mod._get_loop())
+    assert probe is not None
+    assert probe.result(timeout=5.0) == "alive"
+
+    # Release finalization: the cancelled attempt's wrapper records its
+    # outcome (close NOT confirmed), freeing the SAME generation back to
+    # the retryable fail-closed state.
+    cleanup_gate.set()
+    deadline = time.monotonic() + _GATE_WAIT_S
+    while setup.retry_future() is not None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert setup.retry_future() is None, (
+        "the cancelled attempt kept its slot after finalization completed"
+    )
+    assert setup.wait_reconcilable(timeout=1.0) == "retry"
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+
+    # Exactly one later close succeeds, on the owning loop; the SAME
+    # generation settles only then, and exactly one replacement follows.
+    fourth = _ClientCallThread(provider).start()
+    outcome4 = fourth.join()
+    assert "error" not in outcome4, outcome4.get("error")
+    assert len(aclose_calls) == 2
+    assert late.close_attempts == ["hindsight-loop", "hindsight-loop"]
+    assert late.close_threads == ["hindsight-loop"]
+    assert setup.settled.is_set()
+    assert setup.tracked_client() is None
+    assert provider._abandoned_setup is None
+    assert _GatedHindsightClient.constructed == [late, outcome4["value"]]
+    assert provider._client is outcome4["value"]
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", late)) < events.index(
+        ("constructed", outcome4["value"])
+    )
+
+    provider.shutdown()
+    assert outcome4["value"].close_threads == ["hindsight-loop"]
