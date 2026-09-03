@@ -1265,6 +1265,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # is already occupied. The primary slot (_abandoned_setup) is never
         # overwritten while a generation there is still unsettled.
         self._extra_abandoned_setups: list[_ClientSetup] = []
+        # Owner-loop pending registrations queued without blocking on
+        # _publish_lock contention; drained into the official lists
+        # whenever _publish_lock is held.
+        self._pending_abandoned_setups: list[_ClientSetup] = []
         # The first-setup generation currently in its offer/claim/install
         # handoff: set by _await_client_setup() (under _client_lock, before
         # the build is scheduled) and cleared only after the caller has
@@ -1790,8 +1794,31 @@ class HindsightMemoryProvider(MemoryProvider):
         self._apply_bank_defaults()
         return self._client
 
+    def _drain_pending_abandoned_setups_unlocked(self) -> None:
+        """Merge owner-loop pending registrations; caller holds publish lock."""
+        pending = self._pending_abandoned_setups
+        if not pending:
+            return
+        for setup in pending:
+            self._register_abandoned_setup_unlocked(setup)
+            tracked = setup.tracked_client() or setup.owned_client()
+            identity = self._client_identity(tracked)
+            if identity is not None:
+                self._shutdown_claimed_client_ids.add(identity)
+        self._pending_abandoned_setups = []
+
+    def _generation_from_pending(self, client) -> _ClientSetup | None:
+        """Lock-free scan of owner-loop pending registrations."""
+        if client is None:
+            return None
+        for setup in list(self._pending_abandoned_setups):
+            if setup.owned_client() is client or setup.tracked_client() is client:
+                return setup
+        return None
+
     def _abandoned_setup_snapshot_unlocked(self) -> list:
         """Return a consistent copy; caller must hold ``_publish_lock``."""
+        self._drain_pending_abandoned_setups_unlocked()
         items: list = []
         if self._abandoned_setup is not None:
             items.append(self._abandoned_setup)
@@ -1838,6 +1865,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _clear_abandoned_setup_unlocked(self, setup: _ClientSetup) -> None:
         """Drop a safely settled generation; caller must hold ``_publish_lock``."""
+        if setup in self._pending_abandoned_setups:
+            self._pending_abandoned_setups.remove(setup)
         if self._abandoned_setup is setup:
             self._abandoned_setup = None
         elif setup in self._extra_abandoned_setups:
@@ -1878,8 +1907,42 @@ class HindsightMemoryProvider(MemoryProvider):
         return None
 
     def _generation_for_client(self, client) -> _ClientSetup | None:
+        found = self._generation_from_pending(client)
+        if found is not None:
+            return found
         with self._publish_lock:
+            self._drain_pending_abandoned_setups_unlocked()
             return self._generation_for_client_unlocked(client)
+
+    def _claim_client_for_close_on_owning_loop(
+        self, client
+    ) -> tuple[_ClientSetup | None, bool]:
+        """Claim or register a close generation without blocking the owning loop.
+
+        Returns ``(setup, publish_lock_was_contended)``. *setup* is None when
+        the client is already shutdown-settled (checked only after a
+        successful try-acquire). On spin exhaustion the client is tracked via
+        the lock-free pending list instead of blocking on _publish_lock.
+        """
+        _SPIN_MAX = 64
+        for _ in range(_SPIN_MAX):
+            if self._publish_lock.acquire(blocking=False):
+                try:
+                    identity = self._client_identity(client)
+                    if (
+                        identity is not None
+                        and identity in self._shutdown_settled_client_ids
+                    ):
+                        return None, False
+                    setup = self._claim_client_for_close_unlocked(client)
+                    return setup, False
+                finally:
+                    self._publish_lock.release()
+            time.sleep(0)
+        setup = _ClientSetup()
+        setup.hand_back(client)
+        self._pending_abandoned_setups.append(setup)
+        return setup, True
 
     def _claim_client_for_close_unlocked(self, client) -> _ClientSetup:
         """Return or create the single generation that owns *client*'s close."""
@@ -2070,18 +2133,18 @@ class HindsightMemoryProvider(MemoryProvider):
         # is tracked on a generation and scheduled without blocking the
         # loop. If NO client is installed now, fail closed rather than hand
         # back None.
-        if self._publish_lock.acquire(blocking=False):
-            try:
-                setup = self._claim_client_for_close_unlocked(client)
-            finally:
-                self._publish_lock.release()
-        else:
+        setup, contended = self._claim_client_for_close_on_owning_loop(client)
+        if contended:
+            if setup is not None:
+                self._launch_tracked_close(setup, client)
             raise RuntimeError(
                 "Hindsight client slot is owned by an in-flight "
                 "setup/install handoff on a caller thread (provider "
                 "fail-closed: could not record duplicate build for "
                 "tracked release on the owning loop)"
             )
+        if setup is None:
+            return
         if not self._launch_tracked_close(setup, client):
             raise RuntimeError(
                 "Hindsight client slot is owned by an in-flight "
@@ -2111,14 +2174,8 @@ class HindsightMemoryProvider(MemoryProvider):
         never awaited: the loop must not block on anything, least of all
         its own close.
         """
-        if self._is_client_shutdown_settled(client):
-            return
-        if self._publish_lock.acquire(blocking=False):
-            try:
-                setup = self._claim_client_for_close_unlocked(client)
-            finally:
-                self._publish_lock.release()
-        else:
+        setup, _contended = self._claim_client_for_close_on_owning_loop(client)
+        if setup is None:
             return
         self._launch_tracked_close(setup, client)
 

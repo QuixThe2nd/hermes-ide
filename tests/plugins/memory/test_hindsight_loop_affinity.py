@@ -3114,3 +3114,187 @@ def test_register_abandoned_setup_concurrent_identity_idempotent(
     assert provider._abandoned_setup is primary
     assert provider._extra_abandoned_setups.count(raced) == 1
     assert list(provider._iter_abandoned_setups()).count(raced) == 1
+
+
+def test_owner_loop_duplicate_handoff_publish_lock_contended_stays_tracked(
+    tmp_path, monkeypatch
+):
+    """Duplicate handoff under publish-lock contention still tracks the loser."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    started, gate, closed = _reset_gated_client(blocked=True)
+
+    caller_parked = threading.Event()
+    release_caller = threading.Event()
+    real_await = provider._await_client_setup
+
+    def _parked_before_setup_registration():
+        caller_parked.set()
+        assert release_caller.wait(timeout=_GATE_WAIT_S), (
+            "test harness never released the paused caller"
+        )
+        return real_await()
+
+    monkeypatch.setattr(
+        provider, "_await_client_setup", _parked_before_setup_registration
+    )
+
+    loop_outcome: dict = {}
+    loop_done = threading.Event()
+
+    async def _probe():
+        try:
+            loop_outcome["value"] = provider._get_client()
+        except BaseException as exc:
+            loop_outcome["error"] = exc
+        finally:
+            loop_done.set()
+
+    caller = _ClientCallThread(provider).start()
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    try:
+        assert caller_parked.wait(timeout=_GATE_WAIT_S), (
+            "caller never reached the pre-setup window"
+        )
+
+        probe = safe_schedule_threadsafe(_probe(), hindsight_mod._get_loop())
+        assert probe is not None
+        assert started.wait(timeout=_GATE_WAIT_S), "loop-side build never started"
+
+        def _hold_publish_lock():
+            provider._publish_lock.acquire()
+            try:
+                lock_held.set()
+                assert release_lock.wait(timeout=_GATE_WAIT_S), (
+                    "lock holder never released"
+                )
+            finally:
+                provider._publish_lock.release()
+
+        holder = threading.Thread(target=_hold_publish_lock, daemon=True)
+        holder.start()
+        try:
+            assert lock_held.wait(timeout=_GATE_WAIT_S)
+
+            gate.set()
+            assert loop_done.wait(timeout=2.0), (
+                "owner-loop _get_client() hung under publish-lock contention"
+            )
+            probe.result(timeout=5.0)
+            assert "value" not in loop_outcome, loop_outcome
+            error = loop_outcome.get("error")
+            assert type(error).__name__ == "RuntimeError", error
+            assert "could not record duplicate build" in str(error), error
+            assert "fail-closed" in str(error), error
+            assert "tracked release" in str(error), error
+
+            assert len(_GatedHindsightClient.constructed) == 1
+            loser = _GatedHindsightClient.constructed[0]
+            setup = provider._generation_for_client(loser)
+            assert setup is not None, (
+                "loser not discoverable while publish lock is contended"
+            )
+            assert setup.owned_client() is loser or setup.tracked_client() is loser
+            assert not setup.settled.is_set()
+        finally:
+            release_lock.set()
+            holder.join(timeout=_GATE_WAIT_S)
+            assert not holder.is_alive(), "publish-lock holder hung"
+
+        if closed.is_set():
+            assert loser.close_attempts == ["hindsight-loop"]
+            assert loser.close_threads == ["hindsight-loop"]
+        else:
+            settled = provider._reconcile_close_attempt(setup)
+            assert settled
+            assert loser.close_attempts == ["hindsight-loop"]
+            assert loser.close_threads == ["hindsight-loop"]
+    finally:
+        release_caller.set()
+    caller.join()
+
+
+def test_release_fenced_client_publish_lock_contended_stays_tracked(
+    tmp_path, monkeypatch
+):
+    """Fenced release under publish-lock contention still tracks the client."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    provider._timeout = 0.25
+    started, gate, closed = _reset_gated_client(blocked=True)
+
+    loop_outcome: dict = {}
+    loop_done = threading.Event()
+
+    async def _get_client_on_loop():
+        try:
+            loop_outcome["value"] = provider._get_client()
+        except BaseException as exc:
+            loop_outcome["error"] = exc
+        finally:
+            loop_done.set()
+
+    probe = safe_schedule_threadsafe(
+        _get_client_on_loop(), hindsight_mod._get_loop()
+    )
+    assert probe is not None
+    assert started.wait(timeout=_GATE_WAIT_S), "loop-side build never started"
+
+    provider.shutdown()
+    assert provider._client is None
+    assert provider._shutting_down.is_set()
+
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def _hold_publish_lock():
+        provider._publish_lock.acquire()
+        try:
+            lock_held.set()
+            assert release_lock.wait(timeout=_GATE_WAIT_S), (
+                "lock holder never released"
+            )
+        finally:
+            provider._publish_lock.release()
+
+    holder = threading.Thread(target=_hold_publish_lock, daemon=True)
+    holder.start()
+    try:
+        assert lock_held.wait(timeout=_GATE_WAIT_S)
+
+        gate.set()
+        assert loop_done.wait(timeout=_GATE_WAIT_S), (
+            "owner-loop _get_client() hung under publish-lock contention"
+        )
+        probe.result(timeout=5.0)
+        assert "value" not in loop_outcome, loop_outcome
+        error = loop_outcome.get("error")
+        assert type(error).__name__ == "RuntimeError", error
+        assert "fail-closed" in str(error), error
+
+        loser = _GatedHindsightClient.constructed[0]
+        setup = provider._generation_for_client(loser)
+        assert setup is not None, (
+            "fenced client silently dropped while publish lock is contended"
+        )
+        assert setup.owned_client() is loser or setup.tracked_client() is loser
+        assert not setup.settled.is_set()
+    finally:
+        release_lock.set()
+        holder.join(timeout=_GATE_WAIT_S)
+        assert not holder.is_alive(), "publish-lock holder hung"
+
+    if closed.is_set():
+        assert loser.close_attempts == ["hindsight-loop"]
+        assert loser.close_threads == ["hindsight-loop"]
+    else:
+        settled = provider._reconcile_close_attempt(setup)
+        assert settled
+        assert loser.close_attempts == ["hindsight-loop"]
+        assert loser.close_threads == ["hindsight-loop"]
+    assert provider._client is None
+    assert _GatedHindsightClient.constructed == [loser]
