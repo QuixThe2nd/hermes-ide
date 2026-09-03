@@ -25,6 +25,7 @@ Hindsight loop no matter which thread triggers the call.
 
 import asyncio
 import builtins
+import concurrent.futures
 import gc
 import json
 import logging
@@ -1327,3 +1328,285 @@ def test_in_flight_reconciliation_close_is_never_duplicated(tmp_path, monkeypatc
 
     provider.shutdown()
     assert outcome4["value"].close_threads == ["hindsight-loop"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: the owner-loop _get_client() path must never wait and must
+# never bypass an unsafe abandoned generation.
+#
+# The owner-loop branch exists so an operation lambda running ON the shared
+# loop can get the first client without going through _run_sync (which would
+# deadlock the loop on a future only it can run). But it previously entered
+# _client_lock BEFORE checking _on_hindsight_loop_thread() — a caller thread
+# holding that lock through its bounded setup/reconciliation wait parked the
+# loop thread for the whole wait — and once released it called _build_client()
+# directly, installing a replacement while the exact abandoned generation was
+# still unsettled with its client tracked.
+# ---------------------------------------------------------------------------
+
+
+def test_owner_loop_get_client_never_waits_and_fails_closed(
+    tmp_path, monkeypatch
+):
+    """Owner-loop _get_client(): no lock wait, no replacement, fail closed.
+
+    With a caller thread owning _client_lock and an unsettled abandoned
+    generation tracking its late client, the REAL owner-loop _get_client()
+    must complete promptly (without waiting for the lock release), raise a
+    fail-closed error, construct zero replacements, and leave the exact
+    generation/client tracked — after which a normal caller-thread caller
+    performs the bounded reconciliation and builds exactly one replacement.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider, late, setup = _abandon_setup_with_failed_late_close(
+        tmp_path, monkeypatch, fail_closes=1
+    )
+    assert provider._client is None
+
+    # A caller thread owns _client_lock for the whole probe window: the
+    # owner-loop call must not even try to wait on it.
+    assert provider._client_lock.acquire(timeout=5.0)
+    loop_outcome: dict = {}
+    loop_done = threading.Event()
+
+    async def _get_client_on_loop():
+        # The REAL _get_client(), invoked on the owning loop thread — not
+        # a no-op coroutine standing in for it.
+        try:
+            loop_outcome["value"] = provider._get_client()
+        except BaseException as exc:
+            loop_outcome["error"] = exc
+        finally:
+            loop_done.set()
+
+    probe = safe_schedule_threadsafe(
+        _get_client_on_loop(), hindsight_mod._get_loop()
+    )
+    assert probe is not None, "could not schedule the owner-loop _get_client probe"
+    # On the unfixed provider the loop thread is parked on _client_lock, so
+    # this wait expires (the lock is then released to keep the suite moving,
+    # and the prompt-completion assertion below fails on the behavior).
+    completed_promptly = loop_done.wait(timeout=2.0)
+    provider._client_lock.release()
+    probe.result(timeout=5.0)
+
+    assert completed_promptly, (
+        "owner-loop _get_client() blocked behind _client_lock instead of "
+        "completing promptly"
+    )
+    assert "value" not in loop_outcome, loop_outcome
+    error = loop_outcome.get("error")
+    assert type(error).__name__ == "RuntimeError", error
+    assert "fail-closed" in str(error), error
+
+    # Zero replacement construction; the exact generation and its tracked
+    # client are unchanged, still unsettled.
+    assert _GatedHindsightClient.constructed == [late]
+    assert provider._client is None
+    assert provider._abandoned_setup is setup
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+
+    # The owning loop stayed responsive the whole time.
+    async def _loop_probe():
+        await asyncio.sleep(0)
+        return "alive"
+
+    responsiveness = safe_schedule_threadsafe(
+        _loop_probe(), hindsight_mod._get_loop()
+    )
+    assert responsiveness is not None
+    assert responsiveness.result(timeout=5.0) == "alive"
+
+    # A later non-loop caller performs the bounded reconciliation and only
+    # then builds exactly one replacement.
+    outcome = _ClientCallThread(provider).start().join()
+    assert "error" not in outcome, outcome.get("error")
+    assert _GatedHindsightClient.constructed == [late, outcome["value"]]
+    assert provider._client is outcome["value"]
+    assert late.close_threads == ["hindsight-loop"]
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", late)) < events.index(
+        ("constructed", outcome["value"])
+    )
+
+    provider.shutdown()
+    assert outcome["value"].close_threads == ["hindsight-loop"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: a reconciliation Future that goes terminal before its wrapper
+# records an outcome must release the generation's single retry slot.
+#
+# launch_retry() records _retry_future and the loop coroutine's
+# note_retry_outcome() clears it — but a Future CANCELLED before its
+# coroutine starts never runs that wrapper, so the dead Future owned the
+# slot forever: wait_reconcilable() kept reporting "in-flight" and no later
+# caller or shutdown could ever retry the close.
+# ---------------------------------------------------------------------------
+
+
+def test_canceled_reconciliation_future_releases_retry_slot(
+    tmp_path, monkeypatch
+):
+    """A pre-start cancellation must not wedge the retry slot in-flight.
+
+    The first reconciliation attempt's Future is cancelled BEFORE its
+    coroutine starts (the loop-teardown window). The caller must still get
+    a bounded fail-closed error; the same generation/client must stay
+    tracked and unsettled; the slot must become retryable again; and a
+    later caller must launch exactly one replacement retry, close the
+    tracked client on the owning loop, settle the SAME generation, and only
+    then build one replacement — with no duplicate close scheduled.
+    """
+    import agent.async_utils as async_utils
+
+    provider, late, setup = _abandon_setup_with_failed_late_close(
+        tmp_path, monkeypatch, fail_closes=1
+    )
+
+    real_schedule = async_utils.safe_schedule_threadsafe
+    cancel_once = {"armed": True}
+    cancelled_futures: list = []
+
+    def _schedule_cancel_first(coro, loop):
+        if cancel_once["armed"]:
+            cancel_once["armed"] = False
+            # Terminal BEFORE the coroutine ever runs: the wrapper can
+            # never record an outcome for this attempt.
+            future: concurrent.futures.Future = concurrent.futures.Future()
+            future.cancel()
+            coro.close()  # never started; close it so nothing is leaked
+            cancelled_futures.append(future)
+            return future
+        return real_schedule(coro, loop)
+
+    monkeypatch.setattr(
+        async_utils, "safe_schedule_threadsafe", _schedule_cancel_first
+    )
+
+    # Caller 2's reconciliation attempt is cancelled pre-start: bounded
+    # fail-closed error, and the dead slot must be released — the exact
+    # generation stays tracked and retryable, never settled.
+    second = _ClientCallThread(provider).start()
+    outcome2 = second.join()
+    assert "value" not in outcome2, outcome2
+    assert type(outcome2["error"]).__name__ == "TimeoutError", outcome2["error"]
+    assert len(cancelled_futures) == 1 and cancelled_futures[0].cancelled()
+    assert setup.retry_future() is None, (
+        "a reconciliation Future cancelled before its coroutine started "
+        "kept the generation's retry slot forever"
+    )
+    assert setup.wait_reconcilable(timeout=1.0) == "retry", (
+        "the dead attempt left the generation wedged in-flight"
+    )
+    assert setup.tracked_client() is late
+    assert not setup.settled.is_set()
+    assert provider._abandoned_setup is setup
+    assert _GatedHindsightClient.constructed == [late]
+
+    # A later caller launches exactly one replacement retry: the tracked
+    # client is closed on the owning loop, the SAME generation settles only
+    # after that close succeeds, and exactly one replacement is built. The
+    # cancelled attempt never ran, so exactly one subsequent close exists.
+    third = _ClientCallThread(provider).start()
+    outcome3 = third.join()
+    assert "error" not in outcome3, outcome3.get("error")
+    assert late.close_attempts == ["hindsight-loop", "hindsight-loop"], (
+        "expected exactly one subsequent close (the cancelled attempt must "
+        "not run, and no duplicate may be scheduled)"
+    )
+    assert late.close_threads == ["hindsight-loop"]
+    assert setup.settled.is_set()
+    assert setup.tracked_client() is None
+    assert provider._abandoned_setup is None
+    assert _GatedHindsightClient.constructed == [late, outcome3["value"]]
+    assert provider._client is outcome3["value"]
+    with _GatedHindsightClient._order_lock:
+        events = list(_GatedHindsightClient.events)
+    assert events.index(("closed", late)) < events.index(
+        ("constructed", outcome3["value"])
+    )
+
+    provider.shutdown()
+    assert outcome3["value"].close_threads == ["hindsight-loop"]
+
+
+def test_retry_slot_release_and_outcome_recording_check_attempt_identity():
+    """_ClientSetup frees dead-attempt slots and ignores stale reports.
+
+    A Future terminal without a wrapper outcome frees the slot back to the
+    retryable fail-closed state (client tracked, settled clear); a LATE
+    callback or wrapper report from a dead attempt never clears a newer
+    in-flight attempt; and only a recorded wrapper outcome for the LIVE
+    attempt settles the generation.
+    """
+    _ClientSetup = hindsight_mod._ClientSetup
+
+    setup = _ClientSetup()
+    client = object()
+    assert setup.abandon() is True
+    assert setup.offer(client) is False
+    setup.close_failed()
+    assert setup.tracked_client() is client
+    assert setup.wait_reconcilable(timeout=0.2) == "retry"
+
+    attempts: list = []
+
+    def _schedule(future):
+        # Signature-agnostic: the attempt token is an implementation detail
+        # of the fixed provider; what matters here is slot bookkeeping.
+        def _do(*args):
+            attempts.append(args[0] if args else None)
+            return future
+
+        return _do
+
+    # Attempt A is cancelled before its wrapper records anything: its
+    # done-callback frees the slot, restoring the retryable fail-closed
+    # state with the exact client still tracked.
+    cancelled = concurrent.futures.Future()
+    assert setup.launch_retry(_schedule(cancelled))
+    assert setup.retry_future() is cancelled
+    cancelled.cancel()
+    assert setup.retry_future() is None, (
+        "a cancelled-before-start attempt kept the retry slot forever"
+    )
+    assert setup.wait_reconcilable(timeout=0.2) == "retry"
+    assert setup.tracked_client() is client
+    assert not setup.settled.is_set()
+    # A stale wrapper report from the dead attempt settles nothing.
+    setup.note_retry_outcome(attempts[0], True)
+    assert not setup.settled.is_set()
+    assert setup.tracked_client() is client
+
+    # Attempt B takes the freed slot; a LATE done-callback from attempt
+    # A's Future must not clear it, and neither does a stale report.
+    live = concurrent.futures.Future()
+    assert setup.launch_retry(_schedule(live))
+    assert setup.retry_future() is live
+    setup._release_dead_retry_slot(cancelled)
+    assert setup.retry_future() is live
+    setup.note_retry_outcome(attempts[0], False)
+    assert setup.retry_future() is live
+
+    # Attempt B's Future completes WITHOUT a wrapper outcome (loop torn
+    # down mid-run): the slot is freed, but nothing is settled — no close
+    # was confirmed.
+    live.set_result(None)
+    assert setup.retry_future() is None
+    assert setup.wait_reconcilable(timeout=0.2) == "retry"
+    assert setup.tracked_client() is client
+    assert not setup.settled.is_set()
+
+    # Attempt C's wrapper records a successful close for the LIVE attempt:
+    # only now does the generation settle, with the client confirmed
+    # released.
+    done = concurrent.futures.Future()
+    assert setup.launch_retry(_schedule(done))
+    setup.note_retry_outcome(attempts[2], True)
+    assert setup.settled.is_set()
+    assert setup.tracked_client() is None
+    assert setup.wait_reconcilable(timeout=0.2) == "settled"

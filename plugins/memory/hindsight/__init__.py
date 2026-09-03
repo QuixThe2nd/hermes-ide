@@ -420,7 +420,7 @@ class _ClientSetup:
     ``settled`` means a SAFE terminal disposition, not mere coroutine
     completion: the build failed before producing a client (``fail()``),
     or an abandoned client was actually closed (``closed()``, or
-    ``note_retry_outcome(True)`` after a reconciliation close). A close
+    ``note_retry_outcome(attempt, True)`` after a reconciliation close). A close
     that raised leaves ``settled`` clear with the exact client still
     tracked (``close_failed()``), so no replacement may be treated as
     installed while the displaced client may still be live — the join
@@ -438,7 +438,14 @@ class _ClientSetup:
     single slot to exactly one caller, and the attempt's wrapper reports
     through ``note_retry_outcome()`` even when the launching caller's own
     bounded wait has already expired — a completed result is recorded on
-    the generation, never lost with the abandoned Future.
+    the generation, never lost with the abandoned Future. An attempt whose
+    Future goes terminal WITHOUT that report (cancelled before its
+    coroutine started, loop torn down mid-run) is released by a
+    done-callback instead: the slot returns to the retryable fail-closed
+    state with the exact client still tracked, rather than wedging the
+    generation "in-flight" forever. Both release paths are keyed on the
+    attempt's identity, so a late callback or stale wrapper report from a
+    dead attempt can never clear or overwrite a NEWER in-flight attempt.
     """
 
     def __init__(self) -> None:
@@ -459,10 +466,16 @@ class _ClientSetup:
         self.settled = threading.Event()
         # The single in-flight reconciliation close (the Future returned by
         # safe_schedule_threadsafe). Recorded by launch_retry() before
-        # anyone waits, cleared by note_retry_outcome() together with the
-        # outcome — so "in flight" always means the outcome is genuinely
-        # still pending, never merely unreported.
+        # anyone waits, cleared together with the outcome — so "in flight"
+        # always means the outcome is genuinely still pending, never merely
+        # unreported. Two release paths keep that invariant:
+        # note_retry_outcome() when the wrapper records an outcome, and a
+        # done-callback (_release_dead_retry_slot) when the Future goes
+        # terminal without one. Both check the attempt identity
+        # (_retry_attempt), so a stale release can never free the slot a
+        # newer attempt owns.
         self._retry_future: "concurrent.futures.Future | None" = None
+        self._retry_attempt: Any = None
 
     def offer(self, client) -> bool:
         """Loop side: present the finished client.
@@ -567,18 +580,25 @@ class _ClientSetup:
                 return "retry"
             return ""
 
-    def launch_retry(self, schedule: Callable[[], "concurrent.futures.Future | None"]) -> bool:
+    def launch_retry(self, schedule: Callable[[Any], "concurrent.futures.Future | None"]) -> bool:
         """Caller side: take the single reconciliation-close slot.
 
-        Invokes *schedule()* (which must run one short close attempt on
-        the owning loop and report through ``note_retry_outcome()`` when
-        it finishes) only when the slot is genuinely free: the generation
-        is not settled, no attempt is in flight, and a close-failed client
-        is tracked. The returned Future is recorded BEFORE the caller
-        starts waiting on it, so a caller whose bounded wait later expires
-        leaves the exact attempt tracked for the next reconciler. Returns
-        False — scheduling nothing — in every refused case, so two
-        reconcilers can never issue concurrent closes for one client.
+        Generates a unique attempt token and invokes *schedule(token)*
+        (which must run one short close attempt on the owning loop and
+        report through ``note_retry_outcome(token, ...)`` when it finishes)
+        only when the slot is genuinely free: the generation is not
+        settled, no attempt is in flight, and a close-failed client is
+        tracked. The returned Future is recorded BEFORE the caller starts
+        waiting on it, so a caller whose bounded wait later expires leaves
+        the exact attempt tracked for the next reconciler. A done-callback
+        on the Future releases the slot if the attempt ever goes terminal
+        without its wrapper recording an outcome (cancelled before the
+        coroutine started, loop torn down mid-run) — the generation then
+        returns to the retryable fail-closed state with the exact client
+        still tracked instead of being wedged "in-flight" by a dead
+        Future. Returns False — scheduling nothing — in every refused
+        case, so two reconcilers can never issue concurrent closes for one
+        client.
         """
         with self._cond:
             if (
@@ -588,10 +608,17 @@ class _ClientSetup:
                 or self._client is None
             ):
                 return False
-            future = schedule()
+            attempt = object()
+            future = schedule(attempt)
             if future is None:
                 return False
+            self._retry_attempt = attempt
             self._retry_future = future
+            # Attached AFTER the attempt is recorded: if the Future is
+            # already terminal (cancelled inside schedule()), the callback
+            # fires synchronously here — re-acquiring this Condition's
+            # RLock from the same thread — and frees the slot at once.
+            future.add_done_callback(self._release_dead_retry_slot)
             self._cond.notify_all()
             return True
 
@@ -600,7 +627,7 @@ class _ClientSetup:
         with self._cond:
             return self._retry_future
 
-    def note_retry_outcome(self, released: bool) -> None:
+    def note_retry_outcome(self, attempt: Any, released: bool) -> None:
         """Loop side (reconciliation wrapper): record the attempt's outcome
         and free the single retry slot, atomically.
 
@@ -610,9 +637,19 @@ class _ClientSetup:
         cleared), failure re-records the close failure (client still
         tracked, a later reconciler may retry). The completed result lands
         on the generation instead of dying with the abandoned Future.
+
+        Keyed on the attempt token handed out by launch_retry(): a STALE
+        wrapper report — from an attempt whose slot was already released
+        (its Future cancelled before the coroutine started, or a newer
+        attempt owns the slot now) — is ignored, so it can never clear or
+        overwrite a live attempt or settle a generation its own close did
+        not confirm.
         """
         with self._cond:
+            if self._retry_attempt is not attempt:
+                return
             self._retry_future = None
+            self._retry_attempt = None
             if self._outcome == "close-failed":
                 if released:
                     self._client = None
@@ -620,6 +657,28 @@ class _ClientSetup:
                     self.settled.set()
                 # else: stays "close-failed" with the client tracked.
             self._cond.notify_all()
+
+    def _release_dead_retry_slot(self, future: "concurrent.futures.Future") -> None:
+        """Done-callback: free the retry slot if the attempt died unrecorded.
+
+        Fires when the recorded reconciliation Future goes terminal for ANY
+        reason. When the wrapper ran, it already reported through
+        note_retry_outcome() — which cleared the slot first — so finding
+        THIS Future still recorded means the attempt went terminal without
+        ever recording an outcome: cancelled before its coroutine started,
+        or the loop torn down mid-run. Leaving that dead Future in place
+        would wedge the generation "in-flight" forever: no later caller or
+        shutdown could retry the close. The slot returns to the retryable
+        fail-closed state instead — ``settled`` stays clear (nothing was
+        confirmed closed) and the exact client stays tracked. The identity
+        check makes a late callback from an old attempt harmless: it can
+        never free the slot a NEWER in-flight attempt owns.
+        """
+        with self._cond:
+            if self._retry_future is not None and self._retry_future is future:
+                self._retry_future = None
+                self._retry_attempt = None
+                self._cond.notify_all()
 
 
 # ---------------------------------------------------------------------------
@@ -1544,15 +1603,13 @@ class HindsightMemoryProvider(MemoryProvider):
         (foreground tool, prefetch, writer, bank defaults, session switch).
         """
         if self._client is None:
-            with self._client_lock:
-                if self._client is None:
-                    if _on_hindsight_loop_thread():
-                        # Already on the owning loop (e.g. an operation lambda
-                        # that itself needs a client): build in place. Going
-                        # through _run_sync here would deadlock — the loop
-                        # thread would block on a future only it can run.
-                        self._client = self._build_client()
-                    else:
+            if _on_hindsight_loop_thread():
+                # Checked BEFORE any lock: nothing on the owning loop thread
+                # may wait — see _get_client_on_owning_loop.
+                self._get_client_on_owning_loop()
+            else:
+                with self._client_lock:
+                    if self._client is None:
                         # run_coroutine_threadsafe snapshots the submitter's
                         # contextvars context (profile secret scope under
                         # multiplex_profiles), so get_secret() inside
@@ -1564,6 +1621,57 @@ class HindsightMemoryProvider(MemoryProvider):
         # later call via the _bank_defaults_applied flag.
         self._apply_bank_defaults()
         return self._client
+
+    def _get_client_on_owning_loop(self) -> None:
+        """Loop-thread twin of the first-use branch: never waits, fails closed.
+
+        Runs ON the shared Hindsight loop thread (e.g. an operation lambda
+        that itself needs the first client), so it must not execute ANY
+        blocking wait: no _client_lock acquire (a caller thread may hold it
+        through its bounded setup/join/reconciliation wait — parking the
+        loop behind it stalls every scheduled operation for the whole
+        wait), no Event/Condition wait, no Future.result, and no _run_sync
+        (the loop would deadlock on a future only it can run; building in
+        place is exactly the no-recursion path this branch exists for).
+
+        Reconciling an abandoned first-use generation is caller-thread work
+        (_join_abandoned_client_setup waits there, bounded, off the loop),
+        so while one exists without a SAFE terminal disposition this branch
+        must NOT build or install a replacement beside it — the displaced
+        client may still be live. It fails CLOSED instead: promptly (no
+        lock, no wait), leaving the exact generation, tracked client, and
+        any in-flight close attempt recorded for a later caller-thread
+        caller, which performs the bounded reconciliation and only then
+        builds the replacement.
+        """
+        if self._client is not None:
+            return
+        setup = self._abandoned_setup
+        if setup is not None:
+            if not setup.settled.is_set():
+                raise RuntimeError(
+                    "Hindsight client cannot be built from the owning loop "
+                    "while an abandoned client setup is still unsettled "
+                    "(provider fail-closed: cleanup pending; the exact "
+                    "generation, tracked client, and any in-flight close "
+                    "attempt stay recorded for a caller-thread "
+                    "reconciliation — no replacement built)"
+                )
+            # Safe-terminal generation: its client is confirmed released,
+            # so the record can go. Caller-thread joins clear the same
+            # reference; both clearing paths only drop a settled generation.
+            self._abandoned_setup = None
+        client = self._build_client()
+        if self._client is None:
+            self._client = client
+            return
+        # A caller thread installed a client while this in-place build ran
+        # (the loop side takes no lock, so the check above cannot be
+        # atomic): the caller's client wins the slot, and this duplicate is
+        # released on the owning loop — never stored over the winner, never
+        # orphaned. create_task from the loop thread schedules the close
+        # without any blocking wait.
+        asyncio.get_running_loop().create_task(self._aclose_client(client))
 
     def _client_setup_timeout(self) -> float:
         """Wait budget for first-client construction — NOT the request timeout.
@@ -1699,21 +1807,25 @@ class HindsightMemoryProvider(MemoryProvider):
             ) from None
         self._abandoned_setup = None
 
-    def _reconciliation_close_coro(self, setup: _ClientSetup, client):
+    def _reconciliation_close_coro(self, setup: _ClientSetup, client, attempt):
         """Return the coroutine for one reconciliation close attempt.
 
         Runs ON the owning loop and reports the attempt's outcome through
-        setup.note_retry_outcome() no matter how the launching caller's own
-        wait ended — a close that outlives its caller still settles (or
-        re-records) the generation, so the completed result is never lost
-        and no later reconciler can mistake the attempt for pending.
+        setup.note_retry_outcome(attempt, ...) no matter how the launching
+        caller's own wait ended — a close that outlives its caller still
+        settles (or re-records) the generation, so the completed result is
+        never lost and no later reconciler can mistake the attempt for
+        pending. The token keys the report to THIS attempt: if the slot was
+        already released (the attempt's Future cancelled before this
+        coroutine started, a newer attempt in flight), the report is
+        ignored rather than clobbering the live state.
         """
         async def _close_and_record():
             try:
                 released = await self._aclose_client(client)
             except BaseException:
                 released = False
-            setup.note_retry_outcome(released)
+            setup.note_retry_outcome(attempt, released)
 
         return _close_and_record()
 
@@ -1742,8 +1854,8 @@ class HindsightMemoryProvider(MemoryProvider):
         client = setup.tracked_client()
         if client is not None:
             setup.launch_retry(
-                lambda: safe_schedule_threadsafe(
-                    self._reconciliation_close_coro(setup, client),
+                lambda attempt: safe_schedule_threadsafe(
+                    self._reconciliation_close_coro(setup, client, attempt),
                     _get_loop(),
                 )
             )
@@ -1751,13 +1863,20 @@ class HindsightMemoryProvider(MemoryProvider):
         if future is None:
             # The attempt already finished between the state check and
             # here (settled above covers the safe case), or the close
-            # could not be scheduled onto the loop — either way, nothing
-            # to wait on.
+            # could not be scheduled onto the loop, or a dead attempt's
+            # done-callback already released the slot — either way,
+            # nothing to wait on.
             return setup.settled.is_set()
         try:
             future.result(timeout=float(self._timeout or _DEFAULT_TIMEOUT))
         except concurrent.futures.TimeoutError:
             return False  # attempt still in flight; it stays tracked
+        except concurrent.futures.CancelledError:
+            # The attempt went terminal before its wrapper could record an
+            # outcome (cancelled pre-start, loop torn down): its
+            # done-callback releases the retry slot, so the generation is
+            # retryable again — not settled, and never wedged in-flight.
+            return setup.settled.is_set()
         except Exception:
             # The wrapper died without recording (loop torn down mid-run).
             return setup.settled.is_set()
