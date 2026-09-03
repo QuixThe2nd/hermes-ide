@@ -516,15 +516,15 @@ def test_stale_daemon_retry_defers_to_concurrently_installed_client(
     newer_inner = _LoopBoundHindsightClient()
     newer = _LoopBoundEmbeddedClient(newer_inner)  # built + cached by caller B
 
-    real_close = provider._close_client
+    real_aclose = provider._aclose_client
 
-    def _close_while_b_installs(client):
+    async def _close_while_b_installs(client):
         # Caller B's rebuild lands in the slot while A is still closing the
         # client that failed.
         provider._client = newer
-        real_close(client)
+        return await real_aclose(client)
 
-    monkeypatch.setattr(provider, "_close_client", _close_while_b_installs)
+    monkeypatch.setattr(provider, "_aclose_client", _close_while_b_installs)
     # The retry must reuse B's client, not build a third one.
     monkeypatch.setattr(
         provider, "_build_client",
@@ -2494,3 +2494,173 @@ def test_release_fenced_client_launch_retry_false_stays_fail_closed(
     assert setup.settled.is_set()
     assert client.close_threads == ["hindsight-loop"]
     assert aclose_calls == 1
+
+
+def _unresolved_generations(provider):
+    """Collect every setup/generation the provider is still tracking."""
+    found = []
+    for name in (
+        "_abandoned_setup",
+        "_active_setup",
+        "_extra_abandoned_setups",
+        "_abandoned_setups",
+        "_unresolved_setups",
+        "_tracked_generations",
+    ):
+        val = getattr(provider, name, None)
+        if val is None:
+            continue
+        items = val if isinstance(val, (list, tuple, set)) else [val]
+        for item in items:
+            if item is not None and item not in found:
+                found.append(item)
+    return found
+
+
+def test_install_client_shutdown_fence_preserves_prior_unresolved_generation(
+    tmp_path, monkeypatch
+):
+    """A second shutdown-fenced publish must not overwrite an occupied
+    _abandoned_setup — both exact unresolved generations stay tracked."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    provider = _make_provider(tmp_path, monkeypatch, client_cls=_GatedHindsightClient)
+    _reset_gated_client(blocked=False)
+    _GatedHindsightClient.fail_closes = 2
+
+    prior_client = _GatedHindsightClient()
+    prior_setup = hindsight_mod._ClientSetup()
+    prior_setup.hand_back(prior_client)
+    provider._abandoned_setup = prior_setup
+    prior_setup.launch_retry(
+        lambda attempt: safe_schedule_threadsafe(
+            provider._reconciliation_close_coro(prior_setup, prior_client, attempt),
+            hindsight_mod._get_loop(),
+        )
+    )
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "prior generation's first close never attempted"
+    )
+    assert prior_client.close_attempts == ["hindsight-loop"]
+    assert not prior_setup.settled.is_set()
+    prior_close_count = len(prior_client.close_attempts)
+
+    new_client = _GatedHindsightClient()
+    close_client_calls = []
+
+    def _fail_close_client(client):
+        close_client_calls.append(client)
+        raise AssertionError(
+            "_close_client must not be used for shutdown-fenced publish"
+        )
+
+    monkeypatch.setattr(provider, "_close_client", _fail_close_client)
+
+    provider._client = None
+    provider._shutting_down.set()
+    _GatedHindsightClient.close_failed.clear()
+    result = provider._install_client(new_client)
+
+    assert result is None
+    assert provider._client is None
+    assert provider._abandoned_setup is prior_setup
+    assert prior_setup.tracked_client() is prior_client
+
+    unresolved = _unresolved_generations(provider)
+    assert len(unresolved) >= 2, unresolved
+    setups_with_new = [
+        s
+        for s in unresolved
+        if isinstance(s, hindsight_mod._ClientSetup)
+        and s.tracked_client() is new_client
+    ]
+    assert len(setups_with_new) == 1, unresolved
+    new_setup = setups_with_new[0]
+    assert new_setup is not prior_setup
+
+    assert _GatedHindsightClient.close_failed.wait(timeout=_GATE_WAIT_S), (
+        "new generation's first close never attempted"
+    )
+    assert len(prior_client.close_attempts) == prior_close_count, (
+        "prior client received an overlapping close"
+    )
+    assert new_client.close_attempts == ["hindsight-loop"]
+    assert not prior_setup.settled.is_set()
+    assert not new_setup.settled.is_set()
+    assert prior_setup.tracked_client() is prior_client
+    assert new_setup.tracked_client() is new_client
+    assert close_client_calls == []
+
+
+def test_recreate_client_fails_closed_when_stale_close_fails(
+    tmp_path, monkeypatch
+):
+    """A stale-client retry must not build or publish a replacement until the
+    exact stale generation is confirmed closed — close failure is fail-closed."""
+    provider, stale, stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
+
+    replacement_inner = _LoopBoundHindsightClient()
+    replacement = _LoopBoundEmbeddedClient(replacement_inner)
+
+    constructions = {"count": 0}
+
+    def _counting_build():
+        constructions["count"] += 1
+        return replacement
+
+    monkeypatch.setattr(provider, "_build_client", _counting_build)
+
+    real_aclose = provider._aclose_client
+
+    async def _fail_stale_close(client):
+        if client is stale:
+            return False
+        return await real_aclose(client)
+
+    monkeypatch.setattr(provider, "_aclose_client", _fail_stale_close)
+
+    try:
+        _call_in_thread(provider._recreate_client, stale)
+    except RuntimeError:
+        pass
+
+    assert constructions["count"] == 0, (
+        "a replacement client was constructed after stale close failed"
+    )
+    assert provider._client is not replacement
+    assert provider._client is None
+    assert stale in [
+        s.tracked_client()
+        for s in _unresolved_generations(provider)
+        if isinstance(s, hindsight_mod._ClientSetup)
+    ]
+
+
+def test_recreate_client_does_not_overlap_shutdown_owned_close(
+    tmp_path, monkeypatch
+):
+    """Recreate must not start a second close when shutdown already swept the
+    published client and owns its release."""
+    provider, stale, _stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
+
+    aclose_targets = []
+
+    real_aclose = provider._aclose_client
+
+    async def _track_aclose(client):
+        aclose_targets.append(client)
+        return await real_aclose(client)
+
+    monkeypatch.setattr(provider, "_aclose_client", _track_aclose)
+
+    provider._shutting_down.set()
+    with provider._publish_lock:
+        provider._client = None
+
+    with pytest.raises(RuntimeError, match="fail-closed"):
+        provider._recreate_client(stale)
+
+    assert aclose_targets == [], (
+        "recreate started a close while shutdown already owns the stale client"
+    )
+    assert provider._client is None

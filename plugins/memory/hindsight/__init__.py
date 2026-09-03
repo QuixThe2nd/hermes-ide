@@ -1248,6 +1248,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # shutdown settles the generation safely; the reference is never
         # dropped while the outcome is unresolved.
         self._abandoned_setup: _ClientSetup | None = None
+        # Additional unresolved generations when the primary abandoned slot
+        # is already occupied. The primary slot (_abandoned_setup) is never
+        # overwritten while a generation there is still unsettled.
+        self._extra_abandoned_setups: list[_ClientSetup] = []
         # The first-setup generation currently in its offer/claim/install
         # handoff: set by _await_client_setup() (under _client_lock, before
         # the build is scheduled) and cleared only after the caller has
@@ -1773,6 +1777,33 @@ class HindsightMemoryProvider(MemoryProvider):
         self._apply_bank_defaults()
         return self._client
 
+    def _iter_abandoned_setups(self):
+        """Yield every abandoned generation the provider is tracking."""
+        if self._abandoned_setup is not None:
+            yield self._abandoned_setup
+        yield from self._extra_abandoned_setups
+
+    def _has_unsettled_abandoned_setup(self) -> bool:
+        """True while any tracked abandoned generation is not safely settled."""
+        for setup in self._iter_abandoned_setups():
+            if not setup.settled.is_set():
+                return True
+        return False
+
+    def _register_abandoned_setup(self, setup: _ClientSetup) -> None:
+        """Record an unresolved generation without displacing a prior one."""
+        if self._abandoned_setup is None:
+            self._abandoned_setup = setup
+        else:
+            self._extra_abandoned_setups.append(setup)
+
+    def _clear_abandoned_setup(self, setup: _ClientSetup) -> None:
+        """Drop a safely settled generation from provider tracking."""
+        if self._abandoned_setup is setup:
+            self._abandoned_setup = None
+        elif setup in self._extra_abandoned_setups:
+            self._extra_abandoned_setups.remove(setup)
+
     def _get_client_on_owning_loop(self) -> None:
         """Loop-thread twin of the first-use branch: never waits, fails closed.
 
@@ -1838,21 +1869,18 @@ class HindsightMemoryProvider(MemoryProvider):
                 "(provider fail-closed: the caller thread owns the slot "
                 "through installation — no replacement built)"
             )
-        setup = self._abandoned_setup
-        if setup is not None:
-            if not setup.settled.is_set():
-                raise RuntimeError(
-                    "Hindsight client cannot be built from the owning loop "
-                    "while an abandoned client setup is still unsettled "
-                    "(provider fail-closed: cleanup pending; the exact "
-                    "generation, tracked client, and any in-flight close "
-                    "attempt stay recorded for a caller-thread "
-                    "reconciliation — no replacement built)"
-                )
-            # Safe-terminal generation: its client is confirmed released,
-            # so the record can go. Caller-thread joins clear the same
-            # reference; both clearing paths only drop a settled generation.
-            self._abandoned_setup = None
+        if self._has_unsettled_abandoned_setup():
+            raise RuntimeError(
+                "Hindsight client cannot be built from the owning loop "
+                "while an abandoned client setup is still unsettled "
+                "(provider fail-closed: cleanup pending; the exact "
+                "generation, tracked client, and any in-flight close "
+                "attempt stay recorded for a caller-thread "
+                "reconciliation — no replacement built)"
+            )
+        for setup in list(self._iter_abandoned_setups()):
+            if setup.settled.is_set():
+                self._clear_abandoned_setup(setup)
         client = self._build_client()
         installed = False
         if self._client_lock.acquire(blocking=False):
@@ -1860,10 +1888,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 if (
                     self._client is None
                     and self._active_setup is None
-                    and (
-                        self._abandoned_setup is None
-                        or self._abandoned_setup.settled.is_set()
-                    )
+                    and not self._has_unsettled_abandoned_setup()
                 ):
                     # The slot is still free and no handoff can conflict.
                     # (A settled generation that arrived during the build
@@ -1881,7 +1906,9 @@ class HindsightMemoryProvider(MemoryProvider):
                                 self._client is None
                                 and not self._shutting_down.is_set()
                             ):
-                                self._abandoned_setup = None
+                                for settled in list(self._iter_abandoned_setups()):
+                                    if settled.settled.is_set():
+                                        self._clear_abandoned_setup(settled)
                                 self._client = client
                                 installed = True
                         finally:
@@ -1939,7 +1966,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Safe against displacement: this branch is reachable only from
         # _get_client_on_owning_loop's install checks, which require no
         # unsettled abandoned generation to exist.
-        self._abandoned_setup = setup
+        self._register_abandoned_setup(setup)
         setup.launch_retry(
             lambda attempt: safe_schedule_threadsafe(
                 self._reconciliation_close_coro(setup, client, attempt),
@@ -2082,7 +2109,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         # becomes the abandoned generation BEFORE it is
                         # cleared, so the owner-loop branch never sees a
                         # window with the handoff recorded nowhere.
-                        self._abandoned_setup = setup
+                        self._register_abandoned_setup(setup)
                         raise TimeoutError(
                             f"Hindsight client setup did not complete within "
                             f"{wait:.0f}s; the client it completes with is "
@@ -2097,7 +2124,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     # The active registration becomes the abandoned generation
                     # BEFORE it is cleared, so the owner-loop branch never sees
                     # a window with the handoff recorded nowhere.
-                    self._abandoned_setup = setup
+                    self._register_abandoned_setup(setup)
                     raise TimeoutError(
                         f"Hindsight client setup did not complete within "
                         f"{wait:.0f}s; the client it completes with is "
@@ -2139,12 +2166,10 @@ class HindsightMemoryProvider(MemoryProvider):
         if client is not None:
             setup.hand_back(client)
         self._active_setup = None
-        if self._abandoned_setup is None:
-            self._abandoned_setup = setup
+        self._register_abandoned_setup(setup)
         settled = self._reconcile_close_attempt(setup)
         if settled:
-            if self._abandoned_setup is setup:
-                self._abandoned_setup = None
+            self._clear_abandoned_setup(setup)
         else:
             logger.warning(
                 "Hindsight: a client finished after shutdown began could "
@@ -2191,28 +2216,30 @@ class HindsightMemoryProvider(MemoryProvider):
         lock-held retry window is bounded by the request timeout — the
         same exposure _await_client_setup's own bounded wait already has.
         """
-        setup = self._abandoned_setup
-        if setup is None:
-            return
         wait = self._client_setup_timeout()
-        state = setup.wait_reconcilable(timeout=wait)
-        if state == "settled":
-            self._abandoned_setup = None
-            return
-        if state == "":
-            raise TimeoutError(
-                f"Hindsight abandoned client setup has not finished "
-                f"cleaning up within {wait:.0f}s; provider left "
-                "fail-closed (cleanup pending, no replacement built)"
-            ) from None
-        if not self._reconcile_close_attempt(setup):
-            raise TimeoutError(
-                f"Hindsight abandoned client setup did not reach a safe "
-                f"disposition within {wait:.0f}s; provider left "
-                "fail-closed (close failed or still in flight, client "
-                "tracked, no replacement built)"
-            ) from None
-        self._abandoned_setup = None
+        for setup in list(self._iter_abandoned_setups()):
+            if setup.settled.is_set():
+                self._clear_abandoned_setup(setup)
+                continue
+            state = setup.wait_reconcilable(timeout=wait)
+            if state == "settled":
+                self._clear_abandoned_setup(setup)
+                continue
+            if state == "":
+                raise TimeoutError(
+                    f"Hindsight abandoned client setup has not finished "
+                    f"cleaning up within {wait:.0f}s; provider left "
+                    "fail-closed (cleanup pending, no replacement built)"
+                ) from None
+            if not self._reconcile_close_attempt(setup):
+                raise TimeoutError(
+                    f"Hindsight abandoned client setup did not reach a safe "
+                    f"disposition within {wait:.0f}s; provider left "
+                    "fail-closed (close failed or still in flight, client "
+                    "tracked, no replacement built)"
+                ) from None
+            if setup.settled.is_set():
+                self._clear_abandoned_setup(setup)
 
     def _reconciliation_close_coro(self, setup: _ClientSetup, client, attempt):
         """Return the coroutine for one reconciliation close attempt.
@@ -2386,7 +2413,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 # HindsightEmbedded.close() delegates to its sync client.close().
                 # Close the embedded inner async client on the shared loop
                 # first, then let the wrapper clean up daemon/UI bookkeeping.
-                inner_client = getattr(client, "_client", None)
+                # Only when _client was explicitly set on the wrapper (skip
+                # MagicMock auto-attributes in unit tests that seed a plain
+                # mock as provider._client).
+                inner_client = client.__dict__.get("_client")
                 if inner_client is not None and hasattr(inner_client, "aclose"):
                     await inner_client.aclose()
                     try:
@@ -2460,8 +2490,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         shutdown_fenced = True
                         fenced_setup = _ClientSetup()
                         fenced_setup.hand_back(client)
-                        if self._abandoned_setup is None:
-                            self._abandoned_setup = fenced_setup
+                        self._register_abandoned_setup(fenced_setup)
         if shutdown_fenced:
             logger.debug(
                 "Hindsight: shutdown fenced client publish; tracking for "
@@ -2488,19 +2517,59 @@ class HindsightMemoryProvider(MemoryProvider):
         """Replace the cached client with a freshly built one and return it.
 
         Used by _run_hindsight_operation after a stale embedded-daemon
-        connection error. The client that failed is closed on the owning loop
-        before a replacement is built — dropping the reference alone leaked its
-        aiohttp session, and shutdown() then closed only the replacement. The
-        slot is cleared only while it still holds *stale*: when another
-        first-use caller (foreground tool, prefetch, writer) already installed
-        a fresh client in the window between this operation's failure and its
-        retry, that newer client wins and the retry reuses it rather than
-        clobbering it.
+        connection error. The client that failed must reach a tracked,
+        confirmed terminal settlement through the generation's single-slot
+        reconciliation protocol BEFORE any replacement is built or
+        published — a failed, pending, canceled, shutdown-racing, or
+        unconfirmable close leaves the provider fail-closed with the exact
+        stale generation still recorded. The slot clear is serialized
+        against shutdown()'s _publish_lock sweep (check-and-assign only,
+        never waiting while that lock is held). If another thread installed
+        a fresher client while the stale close was settling, that newer
+        client wins and is returned without clobbering it.
         """
+        if self._shutting_down.is_set():
+            raise RuntimeError(
+                "Hindsight is shutting down; stale client will not be "
+                "replaced (provider fail-closed: shutdown owns cleanup)"
+            )
+
         with self._client_lock:
-            if self._client is stale:
-                self._client = None
-        self._close_client(stale)
+            current = self._client
+            if current is not stale:
+                return current
+
+        with self._client_lock:
+            with self._publish_lock:
+                if self._shutting_down.is_set():
+                    raise RuntimeError(
+                        "Hindsight is shutting down; stale client will not be "
+                        "replaced (provider fail-closed: shutdown owns "
+                        "cleanup)"
+                    )
+                current = self._client
+                if current is not stale:
+                    return current
+                if current is stale:
+                    self._client = None
+
+        setup = _ClientSetup()
+        setup.hand_back(stale)
+        self._register_abandoned_setup(setup)
+        if not self._reconcile_close_attempt(setup):
+            raise RuntimeError(
+                "Hindsight stale client could not be confirmed released; "
+                "provider left fail-closed (close failed or still in flight, "
+                "client tracked, no replacement built)"
+            )
+        if setup.settled.is_set():
+            self._clear_abandoned_setup(setup)
+
+        with self._client_lock:
+            current = self._client
+            if current is not None:
+                return current
+
         return self._install_client(self._get_client())
 
     def _apply_bank_defaults(self) -> None:
@@ -3796,8 +3865,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # exists to prevent — and the unresolved fail-closed state is
         # logged. (An abandoned coroutine still mid-build is bounded-waited
         # on the same terms: it closes its own client when it completes.)
-        setup = self._abandoned_setup
-        if setup is not None:
+        for setup in list(self._iter_abandoned_setups()):
             state = setup.wait_reconcilable(
                 timeout=float(self._timeout or _DEFAULT_TIMEOUT)
             )
@@ -3805,7 +3873,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 state != "" and self._reconcile_close_attempt(setup)
             )
             if settled:
-                self._abandoned_setup = None
+                self._clear_abandoned_setup(setup)
             else:
                 logger.warning(
                     "Hindsight shutdown: an abandoned client setup remains "
