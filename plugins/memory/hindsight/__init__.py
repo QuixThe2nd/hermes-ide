@@ -1378,6 +1378,84 @@ class HindsightMemoryProvider(MemoryProvider):
         """Async wrapper so _build_client() executes on the owning loop."""
         return self._build_client()
 
+    def _close_client(self, client) -> None:
+        """Close a client this provider is done with, on the owning loop.
+
+        The client's aiohttp session is bound to the loop it was constructed on
+        (see _get_client), so it must be released there too — closing it from
+        any other thread raises "attached to a different loop" before aiohttp
+        frees the session, which later surfaces as "Unclosed client session".
+
+        Never raises. Callers MUST NOT hold _client_lock here: the close does
+        I/O on the shared loop, whose thread may itself need _client_lock to
+        build a client (see _get_client), so blocking on it while holding the
+        lock could deadlock.
+        """
+        if client is None:
+            return
+        try:
+            if self._mode == "local_embedded":
+                # HindsightEmbedded.close() delegates to its sync client.close().
+                # Close the embedded inner async client on the shared loop
+                # first, then let the wrapper clean up daemon/UI bookkeeping.
+                inner_client = getattr(client, "_client", None)
+                if inner_client is not None and hasattr(inner_client, "aclose"):
+                    self._run_sync(inner_client.aclose())
+                    try:
+                        client._client = None
+                    except Exception:
+                        pass
+                try:
+                    client.close()
+                except RuntimeError:
+                    pass
+            else:
+                aclose = getattr(client, "aclose", None)
+                if callable(aclose):
+                    self._run_sync(aclose())
+        except Exception:
+            logger.debug("Hindsight: closing a displaced client failed", exc_info=True)
+
+    def _install_client(self, client):
+        """Cache *client* unless a newer client was installed concurrently.
+
+        Returns the client now cached: *client* when the slot was still free,
+        otherwise the one another thread installed while *client* was being
+        built — the loser is closed instead of being stored over the winner
+        (which would orphan the winner's session and strand callers on a
+        client bound to a daemon the winner already replaced).
+        """
+        with self._client_lock:
+            current = self._client
+            if current is None:
+                self._client = client
+                return client
+            if current is client:
+                # Normal path: _get_client() cached this one itself.
+                return client
+        logger.debug("Hindsight: a newer client was installed concurrently; closing the duplicate")
+        self._close_client(client)
+        return current
+
+    def _recreate_client(self, stale):
+        """Replace the cached client with a freshly built one and return it.
+
+        Used by _run_hindsight_operation after a stale embedded-daemon
+        connection error. The client that failed is closed on the owning loop
+        before a replacement is built — dropping the reference alone leaked its
+        aiohttp session, and shutdown() then closed only the replacement. The
+        slot is cleared only while it still holds *stale*: when another
+        first-use caller (foreground tool, prefetch, writer) already installed
+        a fresh client in the window between this operation's failure and its
+        retry, that newer client wins and the retry reuses it rather than
+        clobbering it.
+        """
+        with self._client_lock:
+            if self._client is stale:
+                self._client = None
+        self._close_client(stale)
+        return self._install_client(self._get_client())
+
     def _apply_bank_defaults(self) -> None:
         """Apply bank missions and seed the default recall directives.
 
@@ -1753,14 +1831,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
                 exc,
             )
-            with self._client_lock:
-                self._client = None
-            client = self._get_client()
-            with self._client_lock:
-                # _get_client() normally caches this itself; the explicit
-                # store keeps the retried client cached even when _get_client
-                # is stubbed out (tests) or raced by another first-use thread.
-                self._client = client
+            client = self._recreate_client(client)
             return self._run_sync(_invoke(client))
 
     def _probe_url(self) -> str:
@@ -2652,31 +2723,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=5.0)
-        if self._client is not None:
-            try:
-                if self._mode == "local_embedded":
-                    # HindsightEmbedded.close() delegates to its sync client.close().
-                    # When Hermes created/used that client on the shared async loop,
-                    # closing it from this thread can raise "attached to a different
-                    # loop" before aiohttp releases the session. Close the embedded
-                    # inner async client on the shared loop first, then let the
-                    # wrapper clean up daemon/UI bookkeeping.
-                    inner_client = getattr(self._client, "_client", None)
-                    if inner_client is not None and hasattr(inner_client, "aclose"):
-                        _run_sync(inner_client.aclose())
-                        try:
-                            self._client._client = None
-                        except Exception:
-                            pass
-                    try:
-                        self._client.close()
-                    except RuntimeError:
-                        pass
-                else:
-                    self._run_sync(self._client.aclose())
-            except Exception:
-                pass
-            self._client = None
+        # Drop the reference first, then close: _close_client() releases the
+        # session on the shared owning loop (never from this thread), the same
+        # path a retry-displaced client already went through.
+        client = self._client
+        self._client = None
+        self._close_client(client)
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

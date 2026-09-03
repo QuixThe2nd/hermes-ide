@@ -379,3 +379,179 @@ def test_first_use_on_writer_thread_stays_on_owning_loop(tmp_path, monkeypatch, 
     assert client.retain_calls == 1
     assert "Hindsight loop unavailable" not in caplog.text
     assert "Timeout context manager should be used inside a task" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Regression: every client the provider displaces must be closed on the loop
+# it was built on — not just the one shutdown() happens to find cached.
+# ---------------------------------------------------------------------------
+
+
+class _LoopBoundEmbeddedClient:
+    """HindsightEmbedded stand-in: a sync wrapper around an inner async client.
+
+    The real wrapper delegates the async data plane to ``self._client`` and
+    ships only a sync ``close()`` of its own, which is why the provider has to
+    release the inner client on the owning loop before calling ``close()``.
+    """
+
+    def __init__(self, inner):
+        self._client = inner
+        self.close_calls = []
+
+    def __getattr__(self, name):
+        # arecall / aretain_batch / directives / ... live on the inner client.
+        return getattr(self._client, name)
+
+    def close(self):
+        self.close_calls.append(threading.current_thread().name)
+        self._client = None
+
+
+def _track_aclose(client):
+    """Record which thread runs client.aclose(), then do the real close."""
+    real_aclose = client.aclose
+    threads = []
+
+    async def _tracked_aclose():
+        threads.append(threading.current_thread().name)
+        await real_aclose()
+
+    client.aclose = _tracked_aclose
+    return threads
+
+
+def _stale_embedded_provider(tmp_path, monkeypatch):
+    """Provider whose cached client fails with a stale embedded-daemon error.
+
+    Returns (provider, stale_wrapper, stale_inner). The stale client's recall
+    creates its session (as in production) and then raises the connection
+    error _run_hindsight_operation retries on; the caller supplies whatever
+    replacement clients it wants _build_client to hand back.
+    """
+    provider = _make_provider(tmp_path, monkeypatch)
+    # Only the embedded daemon's failures are retried, so opt the provider in.
+    provider._mode = "local_embedded"
+    provider._bank_defaults_applied = True
+
+    stale_inner = _LoopBoundHindsightClient()
+
+    async def _stale_recall(**kwargs):
+        stale_inner._request("POST", "/recall")
+        raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+
+    stale_inner.arecall = _stale_recall
+    stale = _LoopBoundEmbeddedClient(stale_inner)
+    provider._client = stale
+    return provider, stale, stale_inner
+
+
+def test_stale_daemon_retry_closes_displaced_client_on_owning_loop(
+    tmp_path, monkeypatch, caplog
+):
+    """The client a retry displaces is closed on the shared loop, not leaked.
+
+    Production symptom: the retry blanked ``self._client`` and dropped the
+    stale SDK client without closing it, so its aiohttp session survived until
+    interpreter teardown — and shutdown() then closed only the replacement.
+    """
+    caplog.set_level(logging.DEBUG, logger="plugins.memory.hindsight")
+    provider, stale, stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
+
+    replacement_inner = _LoopBoundHindsightClient()
+    replacement = _LoopBoundEmbeddedClient(replacement_inner)
+    monkeypatch.setattr(provider, "_build_client", lambda: next(iter([replacement])))
+
+    result = json.loads(_call_in_thread(
+        provider.handle_tool_call, "hindsight_recall", {"query": "anything"}
+    ))
+
+    assert result == {"result": "1. memory one\n2. memory two"}
+    assert provider._client is replacement
+    # The displaced inner client was released ON the owning loop — the same
+    # loop its session was created on.
+    assert stale_inner._session.closed is True
+    assert stale_inner._session.closed_thread == "hindsight-loop"
+    assert len(stale.close_calls) == 1
+    # The retry was served by the replacement, on that same loop.
+    assert replacement_inner._session.loop is hindsight_mod._loop
+    assert {t for t, _m, _p in replacement_inner._session.requests} == {"hindsight-loop"}
+
+    # Shutdown stays correct: it closes only the surviving client.
+    provider.shutdown()
+    assert provider._client is None
+    assert replacement_inner._session.closed is True
+    assert replacement_inner._session.closed_thread == "hindsight-loop"
+    assert len(replacement.close_calls) == 1
+    assert "Unclosed client session" not in caplog.text
+
+
+def test_stale_daemon_retry_defers_to_concurrently_installed_client(
+    tmp_path, monkeypatch
+):
+    """A client installed while the retry recreates its own wins the slot.
+
+    The window is reachable in production: caller A's operation fails, A drops
+    the stale client from the slot and closes it, and in that gap caller B's
+    _get_client() builds and caches a fresh client. The retry then stored its
+    own replacement unconditionally — clobbering B's client and orphaning its
+    session.
+    """
+    provider, stale, stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
+
+    newer_inner = _LoopBoundHindsightClient()
+    newer = _LoopBoundEmbeddedClient(newer_inner)  # built + cached by caller B
+
+    real_close = provider._close_client
+
+    def _close_while_b_installs(client):
+        # Caller B's rebuild lands in the slot while A is still closing the
+        # client that failed.
+        provider._client = newer
+        real_close(client)
+
+    monkeypatch.setattr(provider, "_close_client", _close_while_b_installs)
+    # The retry must reuse B's client, not build a third one.
+    monkeypatch.setattr(
+        provider, "_build_client",
+        lambda: (_ for _ in ()).throw(AssertionError("retry built a duplicate client")),
+    )
+
+    result = json.loads(_call_in_thread(
+        provider.handle_tool_call, "hindsight_recall", {"query": "anything"}
+    ))
+
+    assert result == {"result": "1. memory one\n2. memory two"}
+    # Caller B's install survived — neither replaced nor closed.
+    assert provider._client is newer
+    assert len(newer.close_calls) == 0
+    assert newer_inner._session.loop is hindsight_mod._loop
+    assert {t for t, _m, _p in newer_inner._session.requests} == {"hindsight-loop"}
+    # The client that actually failed was still closed, on the owning loop.
+    assert stale_inner._session.closed is True
+    assert stale_inner._session.closed_thread == "hindsight-loop"
+
+
+def test_install_client_closes_the_losing_duplicate_on_owning_loop(
+    tmp_path, monkeypatch
+):
+    """_install_client keeps the installed client and closes only the loser.
+
+    Exercises the cloud-mode branch of the close path, which the retry can't
+    reach (its retriable errors are embedded-only) but a concurrent first-use
+    race can.
+    """
+    provider = _make_provider(tmp_path, monkeypatch)
+    winner = _LoopBoundHindsightClient()
+    winner_close_threads = _track_aclose(winner)
+    loser = _LoopBoundHindsightClient()
+    loser_close_threads = _track_aclose(loser)
+    provider._client = winner
+
+    assert provider._install_client(loser) is winner
+    assert provider._client is winner
+    assert loser_close_threads == ["hindsight-loop"]
+    # The winner is returned, never closed.
+    assert winner_close_threads == []
+    assert provider._install_client(winner) is winner
+    assert winner_close_threads == []
