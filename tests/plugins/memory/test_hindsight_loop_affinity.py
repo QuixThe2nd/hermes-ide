@@ -2675,7 +2675,12 @@ def test_recreate_client_does_not_overlap_shutdown_owned_close(
     gate = threading.Event()
     real_setup_init = hindsight_mod._ClientSetup.__init__
 
+    unblocked_setups = []
+
     def _gated_setup_init(self, *args, **kwargs):
+        if threading.current_thread().name != "recreate-worker":
+            unblocked_setups.append(self)
+            return real_setup_init(self, *args, **kwargs)
         entered.set()
         assert gate.wait(timeout=_GATE_WAIT_S), (
             "recreate _ClientSetup construction gate never released"
@@ -2723,6 +2728,9 @@ def test_recreate_client_does_not_overlap_shutdown_owned_close(
         f"expected exactly one owning-loop close of the stale client, got {aclose_threads!r}"
     )
     assert aclose_targets.count(stale) == 1, aclose_targets
+    assert unblocked_setups, (
+        "shutdown never constructed an unblocked _ClientSetup to track current-client close"
+    )
 
 
 def test_register_abandoned_setup_is_identity_idempotent(tmp_path, monkeypatch):
