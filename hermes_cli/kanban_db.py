@@ -10772,6 +10772,18 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
+    from tools.process_registry import _ensure_user_bus_env, _is_supervised_gateway_process
+
+    # A gateway running as a systemd *system* unit carries neither
+    # XDG_RUNTIME_DIR nor DBUS_SESSION_BUS_ADDRESS in its process env, yet
+    # the restart-safe scope wrap below execs `systemd-run --user` with the
+    # env snapshotted HERE — the heal inside _build_systemd_scope_argv runs
+    # after the copy, so the wrapper would inherit no user-bus coordinates
+    # and every dispatch would fail closed. Heal os.environ BEFORE the
+    # snapshot (same ordering as spawn_local in tools.process_registry) so
+    # the wrapper can actually reach the user bus.
+    if not _IS_WINDOWS and _is_supervised_gateway_process():
+        _ensure_user_bus_env()
 
     env = build_subprocess_env(
         scrub_secrets=is_multiplex_active(),

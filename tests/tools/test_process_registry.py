@@ -1903,6 +1903,7 @@ class TestSystemdCgroupIsolation:
         def fake_popen(argv, **kwargs):
             captured["argv"] = list(argv)
             captured["start_new_session"] = kwargs.get("start_new_session")
+            captured["env"] = kwargs.get("env")
             proc = MagicMock()
             proc.pid = 4321
             proc.stdout = iter([])
@@ -2526,6 +2527,222 @@ class TestSystemdCgroupIsolation:
 
         assert pr._systemd_run_user_scope_available() is False
         assert probe_runs == [], "non-Linux must not exec the probe"
+
+    # ------------------------------------------------------------------
+    # User-bus env self-heal (system-unit gateway dispatch)
+    # ------------------------------------------------------------------
+
+    def test_ensure_user_bus_env_defaults_missing_coordinates(self, monkeypatch):
+        """With both coordinates missing, XDG defaults to /run/user/<uid> and
+        DBUS is only derived when the bus socket actually exists — never
+        invented for an absent socket."""
+        import tools.process_registry as pr
+
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(os, "getuid", lambda: 424242)
+        monkeypatch.setattr(pr, "_user_bus_socket_exists", lambda runtime_dir: False)
+
+        pr._ensure_user_bus_env()
+        assert os.environ["XDG_RUNTIME_DIR"] == "/run/user/424242"
+        assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+        monkeypatch.setattr(
+            pr, "_user_bus_socket_exists", lambda runtime_dir: runtime_dir == "/run/user/424242"
+        )
+        pr._ensure_user_bus_env()
+        assert (
+            os.environ["DBUS_SESSION_BUS_ADDRESS"]
+            == "unix:path=/run/user/424242/bus"
+        )
+
+    def test_ensure_user_bus_env_derives_dbus_from_real_socket(
+        self, monkeypatch, tmp_path
+    ):
+        """DBUS derives from an already-set XDG_RUNTIME_DIR via the real
+        filesystem existence check."""
+        import tools.process_registry as pr
+
+        (tmp_path / "bus").write_bytes(b"")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+
+        pr._ensure_user_bus_env()
+
+        assert os.environ["XDG_RUNTIME_DIR"] == str(tmp_path)
+        assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={tmp_path / 'bus'}"
+
+    def test_ensure_user_bus_env_never_clobbers_existing_values(self, monkeypatch):
+        """Explicitly exported coordinates always win over our guess."""
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/custom/runtime")
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/custom/bus")
+
+        pr._ensure_user_bus_env()
+
+        assert os.environ["XDG_RUNTIME_DIR"] == "/custom/runtime"
+        assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/custom/bus"
+
+    def test_ensure_user_bus_env_noop_off_linux(self, monkeypatch):
+        """Off Linux the helper must not touch the environment at all."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+
+        pr._ensure_user_bus_env()
+
+        assert "XDG_RUNTIME_DIR" not in os.environ
+        assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+    def test_probe_self_heals_env_for_the_probe_child(self, monkeypatch, tmp_path):
+        """The availability probe provisions the user-bus coordinates before
+        exec-ing systemd-run, so a system-unit gateway (no XDG/DBUS in its
+        env) probes the real user bus instead of failing closed forever."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(os, "getuid", lambda: 424242)
+        monkeypatch.setattr(pr, "_user_bus_socket_exists", lambda runtime_dir: True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        capture_path = tmp_path / "probe-env.txt"
+        fake_systemd_run = bin_dir / "systemd-run"
+        fake_systemd_run.write_text(
+            "#!/bin/sh\n"
+            f"env > {shlex.quote(str(capture_path))}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_systemd_run.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+        )
+
+        assert pr._systemd_run_user_scope_available() is True
+
+        child_env = dict(
+            line.split("=", 1)
+            for line in capture_path.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        assert child_env["XDG_RUNTIME_DIR"] == "/run/user/424242"
+        assert child_env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/424242/bus"
+
+    def test_restart_safe_argv_heals_env_for_caller_snapshot(
+        self, monkeypatch, _gateway_identity
+    ):
+        """Managed-gateway shape: with a cached-available probe (no fresh
+        probe run), restart_safe_gateway_child_argv returns the scoped argv
+        AND leaves the self-healed coordinates in os.environ, so a caller
+        env snapshot taken after the wrap (cron's build_subprocess_env)
+        inherits them."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process", lambda: True
+        )
+        monkeypatch.setenv("INVOCATION_ID", "managed-service")
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(os, "getuid", lambda: 424242)
+        monkeypatch.setattr(pr, "_user_bus_socket_exists", lambda runtime_dir: True)
+
+        argv = pr.restart_safe_gateway_child_argv(
+            ["python", "worker.py"], unit_suffix="cron-job-1"
+        )
+
+        assert argv[0] == "/usr/bin/systemd-run"
+        assert "--user" in argv
+        assert "--scope" in argv
+        unit_idx = argv.index("--unit")
+        assert argv[unit_idx + 1] == "hermes-worker-cron-job-1"
+        assert os.environ["XDG_RUNTIME_DIR"] == "/run/user/424242"
+        assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/424242/bus"
+
+    def test_scoped_spawn_env_carries_user_bus_coordinates(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """The pipe-mode systemd-run wrapper runs with a child env snapshotted
+        AFTER the self-heal, so scoped local spawns reach the user bus even
+        when the gateway env lacks the coordinates."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(os, "getuid", lambda: 424242)
+        monkeypatch.setattr(
+            "tools.process_registry._user_bus_socket_exists", lambda runtime_dir: True
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"][0] == "/usr/bin/systemd-run"
+        child_env = captured["env"]
+        assert child_env["XDG_RUNTIME_DIR"] == "/run/user/424242"
+        assert child_env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/424242/bus"
+
+    def test_pty_scoped_spawn_env_carries_user_bus_coordinates(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """Same guarantee for the PTY path: pty_env is snapshotted after the
+        self-heal so the scoped interactive executor reaches the user bus."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock()
+        fake_pty.pid = 4321
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(os, "getuid", lambda: 424242)
+        monkeypatch.setattr(
+            "tools.process_registry._user_bus_socket_exists", lambda runtime_dir: True
+        )
+
+        with (
+            patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        argv = pty_spawn.call_args.args[0]
+        assert argv[0] == "/usr/bin/systemd-run"
+        pty_env = pty_spawn.call_args.kwargs["env"]
+        assert pty_env["XDG_RUNTIME_DIR"] == "/run/user/424242"
+        assert pty_env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/424242/bus"
 
 
 class TestNotificationRedaction:

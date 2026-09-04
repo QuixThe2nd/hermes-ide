@@ -181,6 +181,47 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
+def _user_bus_socket_exists(runtime_dir: str) -> bool:
+    """True when the standard per-user D-Bus socket exists under *runtime_dir*.
+
+    An unreadable path (a foreign runtime dir, ``EACCES``) counts as absent —
+    same posture as ``hermes_cli.gateway._path_exists_safe``.
+    """
+    try:
+        return (Path(runtime_dir) / "bus").exists()
+    except OSError:
+        return False
+
+
+def _ensure_user_bus_env() -> None:
+    """Provision the user-bus coordinates ``--user`` systemd tools need.
+
+    A gateway running as a systemd **system** unit starts with neither
+    ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS`` in its environment,
+    even when the user manager is healthy (linger on, socket present).  Every
+    ``systemd-run --user`` probe/spawn then fails with "Failed to connect to
+    user scope bus via local transport" and restart-safe dispatch fails
+    closed.  Default the two standard coordinates the same way
+    ``hermes_cli.gateway._ensure_user_systemd_env`` does for its ``systemctl
+    --user`` calls — only ever filling in blanks, never clobbering: an
+    explicitly exported value always wins over our guess, and DBUS is only
+    derived when the socket actually exists.
+
+    Mutates ``os.environ`` so the probe/spawn/stop subprocesses (and caller
+    env snapshots taken afterwards) inherit the coordinates.  No-op off
+    Linux, matching the ``_IS_LINUX`` gate on every scope path.
+    """
+    if not _IS_LINUX:
+        return
+    if not os.environ.get("XDG_RUNTIME_DIR"):
+        os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+        if runtime_dir and _user_bus_socket_exists(runtime_dir):
+            bus_path = Path(runtime_dir) / "bus"
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+
+
 def _systemd_run_user_scope_available() -> bool:
     """Return True if ``systemd-run --user --scope`` can create a cgroup.
 
@@ -225,6 +266,11 @@ def _systemd_run_user_scope_available() -> bool:
 
                 binary = shutil.which("systemd-run")
                 if binary:
+                    # The gateway process env may lack the user-bus
+                    # coordinates (system-unit deployment); provision them
+                    # before probing so the probe exercises the real user
+                    # bus instead of failing on a missing env forever.
+                    _ensure_user_bus_env()
                     # Probe: create a transient scope that immediately exits.
                     # A unique unit avoids collisions; timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -302,6 +348,10 @@ def _build_systemd_scope_argv(
         # Caller should have checked _systemd_run_user_scope_available();
         # guard anyway so we never pass None into Popen.
         return shell_argv
+    # The wrapper needs the user-bus coordinates to reach the user manager,
+    # and callers snapshot their child env AFTER this call (cron's
+    # build_subprocess_env) — heal os.environ now so both see them.
+    _ensure_user_bus_env()
     unit_name = f"hermes-worker-{unit_suffix}"
     memory_max = _worker_memory_max_bytes()
     return [
@@ -369,6 +419,9 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     binary = shutil.which("systemctl")
     if binary is None:
         return False
+    # ``systemctl --user`` resolves the same user bus as systemd-run — make
+    # sure the stop subprocess carries the coordinates too.
+    _ensure_user_bus_env()
     try:
         result = subprocess.run(
             [binary, "--user", "stop", unit_name],
@@ -1118,6 +1171,18 @@ class ProcessRegistry:
                 else:
                     from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
+                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
+                # Wrap the PTY command in a systemd scope so interactive
+                # executors get their own cgroup, same as pipe mode.
+                pty_in_supervised_gateway = (
+                    _IS_LINUX and _is_supervised_gateway_process()
+                )
+                if pty_in_supervised_gateway:
+                    # Self-heal the user-bus coordinates BEFORE the child env
+                    # is snapshotted below — pty_env is a copy, so healing
+                    # os.environ after the copy would be too late for the
+                    # systemd-run wrapper that has to reach the user bus.
+                    _ensure_user_bus_env()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 # PTY mode is a real TTY, so pager-happy tools (git log/diff,
@@ -1127,12 +1192,6 @@ class ProcessRegistry:
                 pty_env.setdefault("PAGER", "cat")
                 pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
 
-                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
-                # Wrap the PTY command in a systemd scope so interactive
-                # executors get their own cgroup, same as pipe mode.
-                pty_in_supervised_gateway = (
-                    _IS_LINUX and _is_supervised_gateway_process()
-                )
                 pty_use_systemd_scope = (
                     pty_in_supervised_gateway and _systemd_run_user_scope_available()
                 )
@@ -1195,12 +1254,6 @@ class ProcessRegistry:
         # Use the user's login shell for consistency with LocalEnvironment --
         # ensures rc files are sourced and user tools are available.
         user_shell = _find_shell()
-        # Force unbuffered output for Python scripts so progress is visible
-        # during background execution (libraries like tqdm/datasets buffer when
-        # stdout is a pipe, hiding output from process(action="poll")).
-        bg_env = _sanitize_subprocess_env(os.environ, env_vars)
-        bg_env["PYTHONUNBUFFERED"] = "1"
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         # Cgroup isolation (#70716): when running in the live, supervised
         # systemd gateway, wrap the worker in its own transient systemd
@@ -1208,8 +1261,21 @@ class ProcessRegistry:
         # kills only the worker instead of taking down the whole gateway
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
-        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
+        if in_supervised_gateway:
+            # Same self-heal as the PTY path: bg_env is a snapshot of
+            # os.environ, so the user-bus coordinates must land in
+            # os.environ before the copy is taken or the systemd-run
+            # wrapper cannot reach the user bus.
+            _ensure_user_bus_env()
+        # Force unbuffered output for Python scripts so progress is visible
+        # during background execution (libraries like tqdm/datasets buffer when
+        # stdout is a pipe, hiding output from process(action="poll")).
+        bg_env = _sanitize_subprocess_env(os.environ, env_vars)
+        bg_env["PYTHONUNBUFFERED"] = "1"
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
+        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()
         )
