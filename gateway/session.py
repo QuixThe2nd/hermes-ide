@@ -114,6 +114,23 @@ from agent.turn_context import extract_api_content_sidecar
 # leading Windows drive letter (``C:``). Legitimate session keys are
 # colon-delimited multi-segment ids (``agent:main:<platform>:...``) and
 # never contain these, so there are no false positives in practice.
+def _canonical_durable_field(value: Any) -> str:
+    """Stable comparison form for one transcript field across the DB boundary.
+
+    Checked persistence compares the row it attempted to write against the
+    row the store reads back.  Fields cross that boundary as strings (tool
+    content, names, dispositions) or structured values, so normalise both
+    sides through one canonical serialisation before comparing: identity
+    must not depend on incidental Python representation differences.
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
 def _is_path_unsafe(value: object) -> bool:
     """Return True if ``value`` could traverse outside the sessions dir."""
     if not value:
@@ -4011,6 +4028,184 @@ class SessionStore:
                 session_id = reroutes[session_id]
             self._append_to_transcript_serialized(session_id, message)
 
+    def append_to_transcript_checked(
+        self, session_id: str, message: Dict[str, Any]
+    ) -> bool:
+        """Synchronously append one transcript row and PROVE it is durable.
+
+        Forced-interruption recovery cannot use :meth:`append_to_transcript`:
+        that path silently returns when the session has no resolvable DB and
+        QUEUES the row for retry when the DB write fails — a queue
+        acknowledgement is not durability, and a recovery that reports a
+        repaired batch on top of a queued-or-dropped row re-opens side
+        effects on the next bounce.
+
+        This variant commits the row synchronously through
+        :meth:`_append_transcript_message` (same canonical column mapping,
+        one committed transaction) and reads the transcript tail back before
+        returning.  The read-back must verify the EXACT canonical row this
+        write attempted — role and pairing id alone are not acknowledgement:
+        a session whose tail still holds the STALE row for the same
+        ``tool_call_id`` (the interrupted marker this append was supposed to
+        replace, left behind by a silently no-op'd write) must read back as
+        a failure, never as success.  The return value is a real
+        disposition, never an inferred success:
+
+        * ``True``  — the row is committed and queryable at the tail, with
+          the content/disposition this caller attempted;
+        * ``False`` — no resolvable store for the session, the write
+          raised, or the read-back found a different row (or none). callers
+          that must not proceed on a half-persisted batch treat ``False``
+          as a blocking failure.
+        """
+        with self._get_transcript_drain_lock():
+            reroutes = getattr(self, "_transcript_reroutes", None)
+            if reroutes is None:
+                reroutes = {}
+                self._transcript_reroutes = reroutes
+            seen = set()
+            while session_id in reroutes and session_id not in seen:
+                seen.add(session_id)
+                session_id = reroutes[session_id]
+            db = self._db_for_session_id(session_id)
+            if db is None:
+                logger.warning(
+                    "Checked transcript append for %s: no owning session DB; "
+                    "row is NOT durable",
+                    session_id,
+                )
+                return False
+            try:
+                self._append_transcript_message(session_id, message)
+                rows = db.get_messages_as_conversation(session_id)
+            except Exception as exc:
+                logger.warning(
+                    "Checked transcript append failed for %s (role=%s): %s",
+                    session_id,
+                    message.get("role"),
+                    exc,
+                    exc_info=True,
+                )
+                return False
+        if not rows:
+            return False
+        tail = rows[-1]
+        if tail.get("role") != message.get("role"):
+            return False
+        if message.get("tool_call_id") is not None:
+            if tail.get("tool_call_id") != message.get("tool_call_id"):
+                return False
+            # Every identity-bearing field the canonical append persists —
+            # the tool run's content (its disposition of record) and name —
+            # must match the candidate.  A pre-existing row with the same
+            # pairing id is never acknowledgement of a DIFFERENT candidate.
+            if _canonical_durable_field(tail.get("content")) != (
+                _canonical_durable_field(message.get("content"))
+            ):
+                return False
+            if _canonical_durable_field(tail.get("tool_name")) != (
+                _canonical_durable_field(message.get("tool_name"))
+            ):
+                return False
+            if _canonical_durable_field(tail.get("effect_disposition")) != (
+                _canonical_durable_field(message.get("effect_disposition"))
+            ):
+                return False
+        elif isinstance(message.get("content"), str) and isinstance(
+            tail.get("content"), str
+        ):
+            if tail.get("content") != message.get("content"):
+                return False
+        return True
+
+    def replace_transcript_tool_results(
+        self,
+        session_id: str,
+        fresh_rows: List[Dict[str, Any]],
+        superseded_call_ids: List[str],
+    ) -> bool:
+        """Atomically supersede stale interrupted tool rows and PROVE the swap.
+
+        The durable half of a replayed tool result: archiving the stale
+        interrupted marker and landing the fresh row must be ONE transaction
+        (:meth:`SessionDB.supersede_tool_results`), or a crash between the
+        two leaves two active rows for one exact call id in persisted
+        history.  After the commit, the transcript is read back and the
+        canonical outcome verified: exactly ONE active tool row per
+        candidate ``tool_call_id``, carrying the candidate's content (and
+        tool name / effect disposition when the candidate has them).
+
+        ``True`` only when the swap is committed and provable.  ``False`` —
+        no resolvable store, the transaction raised, or the read-back shows
+        anything other than exactly one matching active row per id — is a
+        blocking failure for the recovery.
+        """
+        with self._get_transcript_drain_lock():
+            reroutes = getattr(self, "_transcript_reroutes", None)
+            if reroutes is None:
+                reroutes = {}
+                self._transcript_reroutes = reroutes
+            seen = set()
+            while session_id in reroutes and session_id not in seen:
+                seen.add(session_id)
+                session_id = reroutes[session_id]
+            db = self._db_for_session_id(session_id)
+            if db is None:
+                logger.warning(
+                    "Checked tool-result supersede for %s: no owning session "
+                    "DB; the swap is NOT durable",
+                    session_id,
+                )
+                return False
+            try:
+                db.supersede_tool_results(
+                    session_id, list(fresh_rows), list(superseded_call_ids)
+                )
+                rows = db.get_messages_as_conversation(session_id)
+            except Exception as exc:
+                logger.warning(
+                    "Checked tool-result supersede failed for %s: %s",
+                    session_id,
+                    exc,
+                    exc_info=True,
+                )
+                return False
+        active_by_id: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            if (
+                isinstance(row, dict)
+                and row.get("role") == "tool"
+                and row.get("tool_call_id")
+            ):
+                active_by_id.setdefault(str(row["tool_call_id"]), []).append(row)
+        for candidate in fresh_rows:
+            if not isinstance(candidate, dict) or not candidate.get("tool_call_id"):
+                continue
+            active = active_by_id.get(str(candidate["tool_call_id"]), [])
+            if len(active) != 1:
+                logger.warning(
+                    "Checked tool-result supersede for %s: read-back shows %d "
+                    "active rows for call id %r (expected exactly 1)",
+                    session_id,
+                    len(active),
+                    candidate.get("tool_call_id"),
+                )
+                return False
+            tail = active[0]
+            if _canonical_durable_field(tail.get("content")) != (
+                _canonical_durable_field(candidate.get("content"))
+            ):
+                return False
+            if _canonical_durable_field(tail.get("tool_name")) != (
+                _canonical_durable_field(candidate.get("tool_name"))
+            ):
+                return False
+            if _canonical_durable_field(tail.get("effect_disposition")) != (
+                _canonical_durable_field(candidate.get("effect_disposition"))
+            ):
+                return False
+        return True
+
     def _append_to_transcript_serialized(
         self, session_id: str, message: Dict[str, Any]
     ) -> None:
@@ -4313,6 +4508,11 @@ class SessionStore:
             platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
+            # Effect disposition (e.g. "deployed"/"interrupted") is part of
+            # the canonical identity of a replayed tool row; without it the
+            # checked append cannot distinguish a stale interrupted marker
+            # from its fresh replacement on read-back.
+            effect_disposition=message.get("effect_disposition"),
             # api_content sidecar: the exact bytes sent to the API for
             # this message (prompt-cache-stable replay). Must survive
             # any gateway-side persistence path or the next turn's

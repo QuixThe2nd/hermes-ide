@@ -2036,6 +2036,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    continue_interrupted_turn: bool = False,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -2051,6 +2052,14 @@ def run_conversation(
         persist_user_message: Optional clean user message to store in
             transcripts/history when user_message contains API-only
             synthetic prefixes.
+        continue_interrupted_turn: Transparent forced-interruption recovery
+            (``gateway.forced_resume_replay``).  Continue the turn that
+            already owns the tail of ``conversation_history`` — its answered
+            tool batch, or its unanswered user row — instead of starting a
+            new user turn.  No user message is appended, no per-input side
+            channels run, and ``user_message`` is ignored (callers pass
+            None), so the first provider request is observationally
+            equivalent to an ordinary uninterrupted tool loop's next call.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
         persist_user_display_kind: Optional presentation type for a
@@ -2129,6 +2138,7 @@ def run_conversation(
             # MoA turns append per-call aggregated context to the API copy of the
             # user message, so no byte-stable api_content sidecar can be stamped.
             moa_active=bool(moa_config),
+            continue_interrupted_turn=continue_interrupted_turn,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         # Turn-start fail-closed boundary (#98424): preflight compression hit

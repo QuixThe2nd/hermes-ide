@@ -590,12 +590,23 @@ def build_turn_context(
     set_current_write_origin,
     ra,
     moa_active: bool = False,
+    continue_interrupted_turn: bool = False,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
     The callables/helpers the original prologue referenced from the
     ``conversation_loop`` module are passed in explicitly to keep this module
     free of an import cycle with ``agent.conversation_loop``.
+
+    ``continue_interrupted_turn`` is the transparent-recovery seam
+    (``gateway.forced_resume_replay``): the turn being continued already owns
+    every row of ``conversation_history`` — the interrupted assistant tool
+    batch and its results sit at the tail (or the unanswered user row does,
+    when the model itself was interrupted). No new user message is appended
+    and none of the per-new-user-input side channels (memory prefetch, plugin
+    context, gateway notes, the api_content sidecar stamp) run, so the first
+    provider request is byte-equivalent to an ordinary in-loop
+    "continue after tool results" call: same messages list, same tail.
     """
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
@@ -778,34 +789,46 @@ def build_turn_context(
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
 
-    # The CLI may already have staged this input outside the history passed to
-    # ``run_conversation``. Reuse it only when its clean transcript text matches
-    # this turn; a stale handoff from a failed prior turn must not replace a
-    # later, different user input. Voice turns compare against their explicit
-    # clean persistence override rather than the API-only prefixed payload.
-    pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
-    expected_persist_content = (
-        persist_user_message if persist_user_message is not None else user_message
-    )
-    if (
-        isinstance(pending_cli_message, dict)
-        and pending_cli_message.get("content") == expected_persist_content
-    ):
-        user_msg = pending_cli_message
-        # The CLI-staged value is the clean transcript text. Restore the
-        # API-facing variant (for example, a voice-mode prefix) while retaining
-        # the same dict and any close-path durable marker.
-        user_msg["content"] = user_message
+    # Transparent continuation (see the docstring): there is no new user
+    # input to stage, so the interrupted turn's own rows — already the tail
+    # of ``messages`` — stay the last word and the loop's first API call
+    # continues straight from them, exactly like an ordinary post-tool-
+    # results iteration. Anchoring on the LAST user row keeps the
+    # persistence/injection trackers pointed at a real row while every
+    # user-message side channel below stays off.
+    if continue_interrupted_turn:
+        pending_cli_message = None
+        user_msg = None
+        current_turn_user_idx = reanchor_current_turn_user_idx(messages, None)
     else:
-        user_msg = stamp_message_timestamp(
-            {"role": "user", "content": user_message},
-            timestamp=persist_user_timestamp,
+        # The CLI may already have staged this input outside the history passed to
+        # ``run_conversation``. Reuse it only when its clean transcript text matches
+        # this turn; a stale handoff from a failed prior turn must not replace a
+        # later, different user input. Voice turns compare against their explicit
+        # clean persistence override rather than the API-only prefixed payload.
+        pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+        expected_persist_content = (
+            persist_user_message if persist_user_message is not None else user_message
         )
-        if isinstance(pending_cli_message, dict):
-            agent._pending_cli_user_message = None
-    # CLI input is stamped when staged. Gateway input may carry the platform
-    # event time. Preserve either value and cover any legacy unstamped handoff.
-    stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
+        if (
+            isinstance(pending_cli_message, dict)
+            and pending_cli_message.get("content") == expected_persist_content
+        ):
+            user_msg = pending_cli_message
+            # The CLI-staged value is the clean transcript text. Restore the
+            # API-facing variant (for example, a voice-mode prefix) while retaining
+            # the same dict and any close-path durable marker.
+            user_msg["content"] = user_message
+        else:
+            user_msg = stamp_message_timestamp(
+                {"role": "user", "content": user_message},
+                timestamp=persist_user_timestamp,
+            )
+            if isinstance(pending_cli_message, dict):
+                agent._pending_cli_user_message = None
+        # CLI input is stamped when staged. Gateway input may carry the platform
+        # event time. Preserve either value and cover any legacy unstamped handoff.
+        stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
@@ -832,7 +855,7 @@ def build_turn_context(
     # forever if the turn crashes — so the raw system note paints as a user
     # bubble. The model still receives role/content unchanged; the api_messages
     # build strips both fields from every outgoing copy.
-    if persist_user_display_kind:
+    if persist_user_display_kind and user_msg is not None:
         user_msg["display_kind"] = persist_user_display_kind
         if persist_user_display_metadata:
             user_msg["display_metadata"] = persist_user_display_metadata
@@ -842,17 +865,25 @@ def build_turn_context(
     # persist below (the turn-start flush).  Load-bearing for restart
     # drain-window recovery: a recovery pass dedups via
     # ``has_platform_message_id`` against this row.
-    if persist_user_platform_id is not None:
+    if persist_user_platform_id is not None and user_msg is not None:
         user_msg["platform_message_id"] = persist_user_platform_id
-    append_message(messages, user_msg)
-    current_turn_user_idx = len(messages) - 1
+    if user_msg is not None:
+        append_message(messages, user_msg)
+        current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
-    # Track user turns for memory flush and periodic nudge logic.
-    agent._user_turn_count += 1
-    # Copilot x-initiator: the first API call of this user turn is
-    # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
-    agent._is_user_initiated_turn = True
+    if continue_interrupted_turn:
+        # Same logical user turn as the one already persisted at the tail —
+        # no new user row, so the nudge/memory cadence does not advance, and
+        # the continuation's provider call is an agent-initiated follow-up
+        # exactly like any mid-loop tool-results continuation (#3040).
+        agent._is_user_initiated_turn = False
+    else:
+        # Track user turns for memory flush and periodic nudge logic.
+        agent._user_turn_count += 1
+        # Copilot x-initiator: the first API call of this user turn is
+        # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
+        agent._is_user_initiated_turn = True
 
     # Reset the streaming context scrubber at the top of each turn.
     scrubber = getattr(agent, "_stream_context_scrubber", None)
@@ -1479,22 +1510,28 @@ def build_turn_context(
         )
         agent._persist_user_message_idx = current_turn_user_idx
 
-    # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
+    # Plugin hook: pre_llm_call (context injected into user message, not
+    # system prompt).  Not invoked on a transparent continuation: the hook's
+    # only injection target is the NEW user message, and there is none.
     plugin_user_context = ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _pre_results = _invoke_hook(
-            "pre_llm_call",
-            session_id=agent.session_id,
-            task_id=effective_task_id,
-            turn_id=turn_id,
-            user_message=original_user_message,
-            conversation_history=list(messages),
-            is_first_turn=(not bool(conversation_history)),
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
-            sender_id=getattr(agent, "_user_id", None) or "",
+        _pre_results = (
+            []
+            if continue_interrupted_turn
+            else _invoke_hook(
+                "pre_llm_call",
+                session_id=agent.session_id,
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                user_message=original_user_message,
+                conversation_history=list(messages),
+                is_first_turn=(not bool(conversation_history)),
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+                parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+                sender_id=getattr(agent, "_user_id", None) or "",
+            )
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
@@ -1514,7 +1551,7 @@ def build_turn_context(
             if isinstance(r, dict) and r.get("context"):
                 _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
-                _piece = r
+                _piece = str(r)
             else:
                 continue
             if _spill_if_oversized is not None:
@@ -1542,8 +1579,15 @@ def build_turn_context(
     # plugin context so the ephemeral system prompt can stay byte-stable.
     # One-shot: staged by the gateway right before this turn, consumed here.
     # Multimodal (list) content can't take the string sidecar — append a
-    # durable text part instead of dropping the fact.
-    _gateway_notes = consume_gateway_turn_context_notes(agent)
+    # durable text part instead of dropping the fact.  A transparent
+    # continuation has no current user row to carry a note; leave any staged
+    # note pending for the next real user turn instead of splicing it into
+    # the interrupted turn's history.
+    _gateway_notes = (
+        ""
+        if continue_interrupted_turn
+        else consume_gateway_turn_context_notes(agent)
+    )
     if _gateway_notes:
         _gw_turn_content = (
             messages[current_turn_user_idx].get("content")
@@ -1597,8 +1641,11 @@ def build_turn_context(
     #
     # Skip prefetch on trivial prompts (greetings, acknowledgements) to
     # prevent memory-context injection on turns that carry no semantic signal.
+    # A transparent continuation has no new user text to query with, and its
+    # request must stay byte-equivalent to the ordinary in-loop continuation
+    # it stands in for — no prefetch injection.
     ext_prefetch_cache = ""
-    if agent._memory_manager:
+    if agent._memory_manager and not continue_interrupted_turn:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
@@ -1653,6 +1700,7 @@ def build_turn_context(
     _moa_turn = bool(moa_active or getattr(agent, "provider", None) == "moa")
     if (
         not _moa_turn
+        and not continue_interrupted_turn
         and getattr(agent, "api_mode", None) != "codex_app_server"
         and 0 <= current_turn_user_idx < len(messages)
         and messages[current_turn_user_idx].get("role") == "user"
@@ -1739,6 +1787,7 @@ def build_turn_context(
     _progress_callback = getattr(agent, "tool_progress_callback", None)
     if (
         not _moa_turn
+        and not continue_interrupted_turn
         and getattr(agent, "api_mode", None) != "codex_app_server"
         and callable(_progress_callback)
         and 0 <= current_turn_user_idx < len(messages)

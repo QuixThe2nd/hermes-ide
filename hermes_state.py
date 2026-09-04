@@ -5270,6 +5270,47 @@ def classify_session_status(
     return SESSION_STATUS_COMPLETE
 
 
+def forced_recovery_tail_digest(row: Optional[Dict[str, Any]]) -> str:
+    """Stable digest of a transcript row's tail identity for recovery fencing.
+
+    ``SessionDB.claim_forced_recovery_tail`` compares this digest of the
+    caller's planned tail (a gateway conversation row) against the same
+    digest of the database's current last active row, so the formula must
+    be invariant across both shapes: ``tool_calls`` may arrive as a list
+    (live rows) or a JSON string (the messages table column), and content
+    may be a string or any JSON-encodable value.  Only identity-bearing
+    fields participate — role, pairing id, content, and tool_calls — never
+    timestamps or presentation metadata.
+    """
+    if not isinstance(row, dict):
+        return "empty-transcript"
+
+    def _stable(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return repr(value)
+
+    tool_calls = row.get("tool_calls")
+    if isinstance(tool_calls, str):
+        try:
+            tool_calls = json.loads(tool_calls)
+        except (json.JSONDecodeError, TypeError):
+            pass  # keep the raw string — both sides digest it identically
+    h = hashlib.sha256()
+    for part in (
+        str(row.get("role") or ""),
+        str(row.get("tool_call_id") or ""),
+        _stable(row.get("content")),
+        _stable(tool_calls),
+    ):
+        h.update(part.encode("utf-8", errors="replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
 # Parent→child ``profile_name`` inheritance fence (#88381). ``agent:<ns>:...``
 # gateway keys encode the profile namespace; a keyless row (CLI / subagent
 # lineage) carries none and inherits freely. Two keyed rows must agree on
@@ -16543,6 +16584,218 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (escaped + "%",),
             ).fetchall()
         return [(row[0], row[1]) for row in rows]
+
+    # ── Forced-interruption recovery fencing ──
+    #
+    # Two cross-worker fences for the gateway's transparent replay of a
+    # forced-interruption victim (gateway/forced_resume_replay.py).  Both
+    # live in this database — the same file the transcript rows land in —
+    # so SQLite's write lock is the serialization boundary: independent
+    # gateway/worker processes sharing a home cannot both pass either
+    # fence, whatever their in-process locking does.
+
+    def reserve_replay_execution(self, key: str, value: str) -> Tuple[str, Optional[str]]:
+        """Atomically create-or-read a durable replay-execution reservation.
+
+        Write-ahead fence for re-running an interrupted tool call: the
+        recovery records ``value`` BEFORE dispatching the call, and a later
+        recovery that still cannot find a durable result for it sees the
+        reservation and refuses to execute again (the side effect may have
+        applied; at-least-once execution must not become twice-once).
+
+        One ``BEGIN IMMEDIATE`` transaction does the check and the insert,
+        so two workers racing the same key serialize: exactly one gets
+        ``("claimed", None)``; the other gets ``("held", <existing value>)``
+        and must fail the call closed.  Any store failure RAISES — silence
+        here would silently reopen the side effect.
+        """
+        if not key:
+            raise ValueError("reserve_replay_execution: empty key")
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?", (key,)
+            ).fetchone()
+            if row is not None:
+                existing = row["value"] if isinstance(row, sqlite3.Row) else row[0]
+                return ("held", existing)
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?)", (key, value)
+            )
+            return ("claimed", None)
+
+        return self._execute_write(_do)
+
+    def supersede_tool_results(
+        self,
+        session_id: str,
+        fresh_rows: List[Dict[str, Any]],
+        superseded_call_ids: List[str],
+    ) -> None:
+        """Atomically replace stale active tool-result rows with fresh ones.
+
+        Forced-interruption replay (gateway/forced_resume_replay.py) writes
+        the replacement result for an interrupted call.  Appending it while
+        leaving the stale interrupted marker active would leave TWO active
+        rows for one exact call id in persisted history, so the swap must be
+        ONE durable transaction:
+
+        * soft-archive (``active = 0``, same marking as rewind) every ACTIVE
+          ``role='tool'`` row whose ``tool_call_id`` is in
+          ``superseded_call_ids`` — the caller only superscribes ids it is
+          replacing, never ids that already carry a completed result;
+        * insert ``fresh_rows`` as new active rows (``_insert_message_rows``
+          column mapping, effect disposition included);
+        * reconcile the session's message/tool_call counters to the live set.
+
+        Archiving (not DELETE) keeps the replaced rows on disk and in FTS
+        reachability — same durability posture as rewind/edit rewrites
+        (#82756).  Raises on store failure: a silent no-op here would let a
+        recovery believe a swap landed that the transcript never held.
+        """
+        if not session_id:
+            raise ValueError("supersede_tool_results: empty session_id")
+
+        ids = [str(i) for i in superseded_call_ids if i]
+        rows = [dict(row) for row in fresh_rows]
+
+        def _do(conn):
+            session = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                session is not None
+                and session["ended_at"] is not None
+                and session["end_reason"] == "compression"
+            ):
+                raise CompressionSessionClosedError(session_id)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    "UPDATE messages SET active = 0 "
+                    f"WHERE session_id = ? AND active = 1 AND role = 'tool' "
+                    f"AND tool_call_id IN ({placeholders})",
+                    (session_id, *ids),
+                )
+            if rows:
+                self._insert_message_rows(conn, session_id, rows)
+            conn.execute(
+                "UPDATE sessions SET "
+                "message_count = (SELECT COUNT(*) FROM messages "
+                "WHERE session_id = ? AND active = 1), "
+                "tool_call_count = (SELECT COUNT(*) FROM messages "
+                "WHERE session_id = ? AND active = 1 "
+                "AND (role = 'tool' OR tool_calls IS NOT NULL)) "
+                "WHERE id = ?",
+                (session_id, session_id, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def release_replay_reservation(self, key: str) -> None:
+        """Drop a replay-execution reservation once its result is durable.
+
+        Raises on store failure: a silent no-op would leave the reservation
+        behind, fencing a later legitimate recovery that could otherwise
+        run safely — and the caller must not report a successful repair on
+        top of an unclear reservation state.
+        """
+        if not key:
+            raise ValueError("release_replay_reservation: empty key")
+
+        def _do(conn):
+            conn.execute("DELETE FROM state_meta WHERE key = ?", (key,))
+
+        self._execute_write(_do)
+
+    def claim_forced_recovery_tail(
+        self,
+        session_id: str,
+        expected_digest: str,
+        *,
+        ttl_seconds: float = 900.0,
+    ) -> str:
+        """Atomically claim ownership of one forced-interruption recovery.
+
+        Compare-and-swap on the session's transcript TAIL identity: the
+        caller passes ``expected_digest`` — ``forced_recovery_tail_digest``
+        of the last row of the history it planned the recovery against —
+        and this method, in ONE write transaction, re-reads the session's
+        current last active row and:
+
+        * ``"superseded"`` — the durable tail no longer matches the plan
+          (another worker already repaired/continued/deleted it): the
+          caller must reload and stand down, never execute its stale plan;
+        * ``"already_claimed"`` — a fresh claim (within ``ttl_seconds``)
+          exists: another worker owns this recovery; stand down;
+        * ``"claimed"`` — this call created the claim; the caller owns the
+          recovery (trim + replay + continuation) until the tail changes.
+
+        The claim row is deliberately NOT released on completion: the
+        recovered turn appends rows, so any later claim for this session
+        sees a different tail digest and takes over cleanly; the TTL only
+        bounds how long an abandoned (crashed) claim fences retries.
+        Raises on store failure — an unprovable claim must not default to
+        proceed.
+        """
+        if not session_id:
+            raise ValueError("claim_forced_recovery_tail: empty session_id")
+        now = time.time()
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            tail = conn.execute(
+                "SELECT role, content, tool_call_id, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            current_digest = forced_recovery_tail_digest(
+                dict(tail) if tail is not None else None
+            )
+            if current_digest != expected_digest:
+                return "superseded"
+            claim_key = f"forced_recovery_claim:{conversation_id}"
+            row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?", (claim_key,)
+            ).fetchone()
+            if row is not None:
+                existing = row["value"] if isinstance(row, sqlite3.Row) else row[0]
+                try:
+                    claim = json.loads(existing)
+                    claimed_at = float(claim.get("ts", 0.0))
+                    claimed_tail = claim.get("digest")
+                except (TypeError, ValueError):
+                    claimed_at = 0.0
+                    claimed_tail = None
+                if (
+                    claimed_tail == expected_digest
+                    and claimed_at > 0.0
+                    and (now - claimed_at) < max(0.1, ttl_seconds)
+                ):
+                    return "already_claimed"
+                # Stale (owner crashed), unparseable, or a DIFFERENT tail's
+                # claim: retake.  A fresh claim only fences while it names
+                # this exact tail — the current digest already matching
+                # ``expected`` proves a claim for any other digest refers to
+                # a tail the transcript has moved past, and honoring it
+                # would block the next legitimate recovery for the whole
+                # TTL.  The claim is an optimization fence, not a
+                # side-effect record (that is reserve_replay_execution's
+                # job); an unparseable claim has no provable age, so aging
+                # it out immediately keeps a corrupt row from fencing
+                # recovery forever.
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (
+                    claim_key,
+                    json.dumps({"digest": expected_digest, "ts": now}),
+                ),
+            )
+            return "claimed"
+
+        return self._execute_write(_do)
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
