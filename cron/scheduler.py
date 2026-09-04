@@ -5782,6 +5782,14 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     failures fail OPEN so a transient config hiccup never wedges delivery
     that would have worked.
 
+    ``thread:<parent>`` tokens are resolved through the SAME machinery real
+    delivery uses (``_resolve_thread_delivery_target``): the token's first
+    segment names the token, not a platform, so the derived/explicit parent
+    platform is what gets checked — the concrete thread id does not exist
+    yet (first delivery mints it and persists it back onto the job), so no
+    thread segment is required here. A token that resolves to nothing is
+    genuinely broken and still blocks.
+
     ``failure_deliver`` is checked with the same rules: a typo'd failure
     platform would otherwise only surface when a failure occurs — exactly
     when the notice must not be lost (NS-788 follow-up).
@@ -5803,6 +5811,36 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             # local chat subprocess. Unknown-profile failures surface per run in
             # last_delivery_error (and are validated at create time).
             if parse_bot_chat_deliver_token(part) is not None:
+                continue
+            # thread:<parent> — resolve through the same machinery real
+            # delivery uses (home-channel match for bare ids, explicit
+            # platform otherwise) and validate the PARENT chat target; the
+            # naive split below would read platform "thread" and block a
+            # perfectly runnable job. The thread id does not exist yet —
+            # first delivery creates it and persists the concrete target
+            # back onto the job — so no thread segment is required here. A
+            # token that resolves to nothing (missing parent id, unknown
+            # platform, no home-channel match) is genuinely broken and still
+            # blocks. Resolution validates only: it creates nothing and
+            # leaves the job untouched.
+            thread_parsed = _parse_thread_deliver_token(part)
+            if thread_parsed is not None:
+                resolved = _resolve_thread_delivery_target(
+                    job, part, thread_parsed
+                )
+                platform = (
+                    str(resolved.get("platform") or "").strip()
+                    if resolved
+                    else ""
+                )
+                if not platform:
+                    return (
+                        f"deliver target '{part}' does not resolve to a "
+                        "parent chat target (missing parent chat id, unknown "
+                        "platform, or no configured home-channel match). Fix "
+                        "the job's `deliver` value."
+                    )
+                platform_parts.append(platform)
                 continue
             platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:

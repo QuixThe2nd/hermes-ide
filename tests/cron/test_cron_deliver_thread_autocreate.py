@@ -18,6 +18,7 @@ channels; every adapter is a fake — no network.
 """
 
 import asyncio
+import copy
 import logging
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
@@ -27,10 +28,12 @@ import pytest
 from cron.scheduler import (
     _deliver_result,
     _parse_thread_deliver_token,
+    _preflight_check_delivery,
     _resolve_delivery_targets,
     _thread_autocreate_name,
 )
 from gateway.config import Platform, PlatformConfig
+from tools.cronjob_tools import _mode_guidance_notes
 
 # Fixture home channels — deliberately unlike any real platform id.
 DISCORD_HOME = "1549999999999999999"
@@ -390,3 +393,99 @@ class TestFailureLaneNeverAutoCreates:
         assert targets[0]["chat_id"] == DISCORD_HOME
         assert targets[0]["thread_id"] is None
         assert "_thread_auto" not in targets[0]
+
+
+# ---------------------------------------------------------------------------
+# Preflight: valid thread: tokens pass, garbage still blocks, nothing is touched
+# ---------------------------------------------------------------------------
+
+
+def _preflight(job, *, connected=(Platform.DISCORD, Platform.SLACK)):
+    """Run the pre-dispatch delivery check against a fake gateway config."""
+    config = MagicMock()
+    config.get_connected_platforms.return_value = list(connected)
+    with patch("gateway.config.load_gateway_config", return_value=config):
+        return _preflight_check_delivery(job)
+
+
+class TestPreflightDelivery:
+    def test_bare_id_with_home_channel_match_passes(self):
+        """The blocking defect: a runnable thread:<bare_id> job must sail
+        through preflight so first delivery can mint and persist the thread."""
+        assert _preflight(_job()) is None
+
+    def test_explicit_platform_parent_passes(self):
+        assert _preflight(_job(deliver=f"thread:slack:{SLACK_HOME}")) is None
+
+    def test_concrete_four_segment_token_passes(self):
+        """The already-concrete form names a real thread — a plain concrete
+        target as far as preflight is concerned."""
+        assert _preflight(_job(deliver=f"thread:discord:{DISCORD_HOME}:777")) is None
+
+    def test_combined_origin_and_thread_token_passes(self):
+        job = _job(deliver=f"origin,thread:{DISCORD_HOME}")
+        job["origin"] = {"platform": "discord", "chat_id": DISCORD_HOME}
+        assert _preflight(job) is None
+
+    def test_missing_parent_id_still_blocks(self):
+        reason = _preflight(_job(deliver="thread:"))
+        assert reason is not None
+        assert "'thread:'" in reason
+
+    def test_unknown_explicit_platform_still_blocks(self):
+        reason = _preflight(_job(deliver="thread:unknownplatform:123"))
+        assert reason is not None
+        assert "unknownplatform" in reason
+        assert "not a known cron delivery target" in reason
+
+    def test_bare_id_without_home_channel_match_still_blocks(self):
+        reason = _preflight(_job(deliver="thread:424242"))
+        assert reason is not None
+        assert "does not resolve" in reason
+
+    def test_preflight_never_mutates_the_job_or_creates_threads(self):
+        """The check validates only: the job dict comes back untouched and no
+        thread-creation or persistence seam is ever reached."""
+        job = _job()
+        before = copy.deepcopy(job)
+        with patch(
+            "gateway.platforms.base.BasePlatformAdapter.create_handoff_thread",
+            side_effect=AssertionError("preflight must not create threads"),
+        ), patch(
+            "cron.jobs.update_job",
+            side_effect=AssertionError("preflight must not persist"),
+        ):
+            assert _preflight(job) is None
+        assert job == before
+
+
+# ---------------------------------------------------------------------------
+# Create-time guidance: no bogus "no :thread_id segment" note for thread: tokens
+# ---------------------------------------------------------------------------
+
+
+class TestCreateGuidanceNotes:
+    def test_no_bogus_thread_note_for_bare_thread_token(self):
+        """The auto-created delivery thread IS the point of the token — the
+        two-segment warning must not fire for it."""
+        assert _mode_guidance_notes({}, f"thread:{DISCORD_HOME}") == []
+
+    def test_no_bogus_thread_note_inside_a_combined_deliver(self):
+        assert _mode_guidance_notes({}, f"origin,thread:{DISCORD_HOME}") == []
+
+    def test_platform_chat_token_still_gets_the_note(self):
+        """Existing behavior preserved: a plain platform:chat token with no
+        thread segment still draws the topic-targeting warning."""
+        notes = _mode_guidance_notes({}, f"discord:{DISCORD_HOME}")
+        assert len(notes) == 1
+        assert "no :thread_id segment" in notes[0]
+        assert f"discord:{DISCORD_HOME}" in notes[0]
+
+    def test_bot_chat_and_sms_exclusions_still_hold(self):
+        """The pre-existing exemptions keep their old behavior — no thread_id
+        note (bot-chat:other still draws its separate agent-turn-cost note)."""
+        assert not any(
+            "thread_id" in note
+            for note in _mode_guidance_notes({}, "bot-chat:other")
+        )
+        assert _mode_guidance_notes({}, "sms:+15550100") == []
