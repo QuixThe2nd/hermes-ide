@@ -3,7 +3,7 @@
 closed one, on every render.
 
 The inbox and every transcript page render their conversation rows in
-honest sections — Active, Open · completed, Open · unfinished, Closed
+honest sections — Active, Open · unfinished, Open · completed, Closed
 — and the load itself sorts every row globally newest-first by last
 activity. The contract under test is the partition that wins over that
 sort: a closed session NEVER precedes an open one, however much newer
@@ -275,15 +275,17 @@ class TestOpenBeforeClosed(OrderingCase):
 
     def test_rendered_section_names_and_positions(self):
         """The public section names render in the fixed order — Active,
-        Open · completed, Open · unfinished, then the Closed
+        Open · unfinished, Open · completed, then the Closed
         disclosure strictly last — and the Closed badge counts every
         closed row, ended or archived."""
         status, page = self.request("GET", "/")
         self.assertEqual(status, 200)
+        self.assertEqual(self.mod.SECTION_ORDER,
+                         ("active", "incomplete", "completed", "closed"))
         self.assertEqual(self.rendered_sections(page), [
             ("active", "Active"),
-            ("completed", "Open · completed"),
             ("incomplete", "Open · unfinished"),
+            ("completed", "Open · completed"),
             ("closed", "Closed")])
         count = re.search(
             r'data-section="closed".*?data-count="(\d+)"', page, re.S)
