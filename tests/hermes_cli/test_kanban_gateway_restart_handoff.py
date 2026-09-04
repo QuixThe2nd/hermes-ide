@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -87,6 +88,53 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_env["HERMES_KANBAN_TASK"] == task.id
     assert captured_env["HERMES_KANBAN_RUN_ID"] == "23"
     assert "ANTHROPIC_API_KEY" not in captured_env
+
+
+@pytest.mark.linux_only
+def test_managed_gateway_worker_env_carries_user_bus_coordinates(
+    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The systemd-run wrapper must inherit the user-bus coordinates.
+
+    A gateway running as a systemd system unit has neither
+    XDG_RUNTIME_DIR nor DBUS_SESSION_BUS_ADDRESS in its process env, and
+    _default_spawn snapshots the child env before the restart-safe scope
+    wrap — without the pre-snapshot self-heal the wrapper cannot reach the
+    user bus and every kanban dispatch fails closed (same bug class the
+    cron/process_registry fix closed).
+    """
+    workspace, task = worker_setup
+    captured_cmd: list[str] = []
+    captured_env: dict[str, str] = {}
+
+    class FakeProc:
+        pid = 4244
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd.extend(cmd)
+        captured_env.update(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(os, "getuid", lambda: 424242)
+    monkeypatch.setattr(
+        "tools.process_registry._user_bus_socket_exists", lambda runtime_dir: True
+    )
+    monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr("tools.process_registry._worker_memory_max_bytes", lambda: 536_870_912)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+    assert kb._default_spawn(task, str(workspace)) == 4244
+    # Sanity: the spawn really went through the scope wrapper, so the env
+    # below is the one systemd-run --user will be exec'd with.
+    assert captured_cmd[:4] == ["/usr/bin/systemd-run", "--user", "--scope", "--quiet"]
+    assert captured_env["XDG_RUNTIME_DIR"] == "/run/user/424242"
+    assert captured_env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/424242/bus"
 
 
 @pytest.mark.linux_only
