@@ -895,6 +895,9 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    # Per-turn gateway-restart control flag (armed by the restart tool's
+    # trusted terminal result; see agent/turn_control.py).
+    agent._turn_gateway_restart_queued = False
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False

@@ -53,6 +53,7 @@ from agent.turn_context import (
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.turn_control import is_gateway_restart_armed
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -8175,6 +8176,29 @@ def run_conversation(
                     _turn_exit_reason = "session_persistence_failed"
                     final_response = ""
                     failed = True
+                    break
+
+                if is_gateway_restart_armed(agent):
+                    # A successful restart committed the drain: this turn is
+                    # terminal. The assistant tool-call row and every tool
+                    # result (including skipped-sibling results) were already
+                    # flushed durably by the executors, so end the turn now —
+                    # zero further provider calls and no model-generated or
+                    # fabricated empty-response prose. The existing restart
+                    # confirmation/drain/comeback UI stays the only
+                    # user-facing lifecycle output.
+                    _turn_exit_reason = "gateway_restart_queued"
+                    final_response = ""
+                    # Close the tool tail with a persisted-only assistant row
+                    # so role alternation survives for the post-restart turn
+                    # (prompt caching reads the same transcript). This row is
+                    # transcript bookkeeping, not a delivered response — the
+                    # typed result bit suppresses gateway delivery.
+                    close_interrupted_tool_sequence(
+                        messages,
+                        "[Turn ended here: gateway restart was queued by the "
+                        "restart tool]",
+                    )
                     break
 
                 if agent._tool_guardrail_halt_decision is not None:

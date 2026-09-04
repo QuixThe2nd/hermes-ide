@@ -4437,6 +4437,12 @@ class AIAgent:
         if reason.startswith("text_response"):
             return ""
 
+        # A terminal gateway-restart control is contractually silent: the
+        # restart confirmation/drain/comeback UI is the only lifecycle output
+        # for that outcome. Never fabricate an "abnormal ending" message.
+        if reason == "gateway_restart_queued":
+            return ""
+
         prefix = "⚠️ No reply: "
         if reason == "empty_response_exhausted":
             return (

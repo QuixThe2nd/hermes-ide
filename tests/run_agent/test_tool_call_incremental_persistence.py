@@ -159,6 +159,16 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch.object(agent, "_execute_tool_calls", side_effect=_fake_execute),
+        # The fork's inbox_sparks plugin hooks pre_turn_end and (once per
+        # cooldown window, keyed to HERMES_HOME state — always "due" in a
+        # fresh hermetic test HOME) nudges the turn into one extra provider
+        # call. Neutralize the gate so the fixed side_effect list above is
+        # the only provider-call budget. Same isolation as the pre_turn_end
+        # loop tests.
+        patch(
+            "hermes_cli.plugins.get_pre_turn_end_continue_message",
+            return_value=None,
+        ),
     ):
         result = agent.run_conversation("search something")
 

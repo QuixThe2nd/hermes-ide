@@ -121,6 +121,31 @@ class TestPlanToolBatchSegments:
         assert _kinds(segments) == ["parallel", "sequential"]
         assert [tc.id for tc in segments[1][1]] == ["c1"]
 
+    def test_restart_tool_is_a_sequential_barrier(self):
+        """A committed restart ends the calling turn, so it must never start
+        concurrently with siblings — it rides the ordered (never-parallel)
+        path like every interactive tool."""
+        calls = [
+            _tc("web_search", call_id="r1"),
+            _tc("web_search", call_id="r2"),
+            _tc("restart", call_id="rst1"),
+        ]
+        segments = _plan_tool_batch_segments(calls)
+        assert _kinds(segments) == ["parallel", "sequential"]
+        assert [tc.id for tc in segments[1][1]] == ["rst1"]
+        # And it closes its run: a safe read AFTER the restart can never
+        # share a parallel segment with anything before it (solo runs may
+        # demote and merge into one ordered sequential segment — safe).
+        calls_after = [
+            _tc("web_search", call_id="r1"),
+            _tc("restart", call_id="rst1"),
+            _tc("web_search", call_id="r2"),
+        ]
+        segments_after = _plan_tool_batch_segments(calls_after)
+        assert _flatten_ids(segments_after) == ["r1", "rst1", "r2"]
+        for kind, seg_calls in segments_after:
+            assert not (kind == "parallel" and "rst1" in [tc.id for tc in seg_calls])
+
 
 
     def test_overlapping_paths_split_across_segments(self, tmp_path, monkeypatch):
