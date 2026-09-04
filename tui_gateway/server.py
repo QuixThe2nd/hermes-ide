@@ -5410,6 +5410,40 @@ def _ensure_skin_watcher() -> None:
     threading.Thread(target=_loop, name="hermes-change-watcher", daemon=True).start()
 
 
+def _has_explicit_model_config() -> bool:
+    """True when env or config names a model (not the silent-default path)."""
+    env = (
+        os.environ.get("HERMES_MODEL", "")
+        or os.environ.get("HERMES_INFERENCE_MODEL", "")
+    ).strip()
+    if env:
+        return True
+    m = _load_cfg().get("model", "")
+    if isinstance(m, dict):
+        return bool(str(m.get("default", "") or "").strip())
+    if isinstance(m, str) and m:
+        return True
+    return False
+
+
+def _apply_provider_scoped_silent_default(model: str, runtime: dict) -> str:
+    """Re-spell the silent default for the credential-resolved provider.
+
+    ``_resolve_model()`` returns the native xAI id before provider resolution.
+    After ``resolve_runtime_provider`` picks OpenRouter (or another aggregator),
+    the model must use that provider's vendor-prefixed spelling.
+    """
+    try:
+        from hermes_cli.models import get_preferred_silent_default_model
+
+        resolved_provider = str(runtime.get("provider") or "").strip()
+        if resolved_provider:
+            return get_preferred_silent_default_model(resolved_provider)
+    except Exception:
+        pass
+    return model
+
+
 def _resolve_model() -> str:
     env = (
         os.environ.get("HERMES_MODEL", "")
@@ -9319,7 +9353,10 @@ def _make_agent(
                 runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()
-        if isinstance(model_override, str) and model_override:
+        explicit_model_override = isinstance(model_override, str) and bool(
+            model_override
+        )
+        if explicit_model_override:
             model = model_override
         if provider_override:
             requested_provider = provider_override
@@ -9332,6 +9369,8 @@ def _make_agent(
             if not resolution.selected_model:
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
+        elif not _has_explicit_model_config() and not explicit_model_override:
+            model = _apply_provider_scoped_silent_default(model, runtime)
     _pr = _load_provider_routing()
     agent = AIAgent(
         model=model,
