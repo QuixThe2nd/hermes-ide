@@ -2,9 +2,10 @@
 """Build the Hermes Model Catalog — a centralized JSON manifest of curated models.
 
 This script reads the in-repo hardcoded curated lists (``OPENROUTER_MODELS``,
-``_PROVIDER_MODELS["nous"]``) and writes them to a JSON manifest that the
-Hermes CLI fetches at runtime. Publishing the catalog through the docs site
-lets maintainers update model lists without shipping a Hermes release.
+``_PROVIDER_MODELS["nous"]``, ``_PROVIDER_MODELS["xai-oauth"]``) and writes
+them to a JSON manifest that the Hermes CLI fetches at runtime. Publishing
+the catalog through the docs site lets maintainers update model lists without
+shipping a Hermes release.
 
 The runtime fetcher falls back to the same in-repo hardcoded lists if the
 manifest is unreachable, so this script is a convenience for keeping the
@@ -35,17 +36,24 @@ os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".her
 
 from hermes_cli.models import (  # noqa: E402
     OPENROUTER_MODELS,
-    PREFERRED_SILENT_DEFAULT_MODEL,
+    PREFERRED_SILENT_DEFAULT_MODEL_IDS,
     _PROVIDER_MODELS,
+    _XAI_STATIC_FALLBACK,
+    _xai_finalize_catalog,
 )
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
 CATALOG_VERSION = 1
 
 
+def _default_id_for(provider: str) -> str:
+    """This provider's spelling of the silent default, or "" when unset."""
+    return PREFERRED_SILENT_DEFAULT_MODEL_IDS.get(provider, "")
+
+
 def _openrouter_entry(mid: str, desc: str) -> dict:
     entry: dict = {"id": mid, "description": desc}
-    if mid == PREFERRED_SILENT_DEFAULT_MODEL:
+    if mid == _default_id_for("openrouter"):
         entry["description"] = desc or "default"
         entry["default"] = True
     return entry
@@ -53,7 +61,14 @@ def _openrouter_entry(mid: str, desc: str) -> dict:
 
 def _nous_entry(mid: str) -> dict:
     entry: dict = {"id": mid}
-    if mid == PREFERRED_SILENT_DEFAULT_MODEL:
+    if mid == _default_id_for("nous"):
+        entry["default"] = True
+    return entry
+
+
+def _xai_oauth_entry(mid: str) -> dict:
+    entry: dict = {"id": mid}
+    if mid == _default_id_for("xai-oauth"):
         entry["default"] = True
     return entry
 
@@ -74,7 +89,8 @@ def build_catalog() -> dict:
                         "Descriptions drive picker badges. Live /api/v1/models "
                         "filters curated ids by tool-calling support and free pricing. "
                         'The entry labeled "default": true is the model Hermes '
-                        "silently lands on when the user never picked one."
+                        "silently lands on when the user never picked one, spelled "
+                        "for this provider (see PREFERRED_SILENT_DEFAULT_MODEL_IDS)."
                     ),
                 },
                 "models": [
@@ -89,12 +105,34 @@ def build_catalog() -> dict:
                         "Free-tier gating is determined live via Portal pricing "
                         "(partition_nous_models_by_tier), not this manifest. "
                         'The entry labeled "default": true is the model Hermes '
-                        "silently lands on when the user never picked one."
+                        "silently lands on when the user never picked one, spelled "
+                        "for this provider (see PREFERRED_SILENT_DEFAULT_MODEL_IDS)."
                     ),
                 },
                 "models": [
                     _nous_entry(mid)
                     for mid in _PROVIDER_MODELS.get("nous", [])
+                ],
+            },
+            "xai-oauth": {
+                "metadata": {
+                    "display_name": "xAI Grok OAuth",
+                    "note": (
+                        "SuperGrok / Premium+ subscription models served through "
+                        "xAI OAuth. This block carries the silent default in its "
+                        "native spelling — the (provider, model) pair a no-override "
+                        'install lands on. The entry labeled "default": true is '
+                        "that model. Built from the static fallback so the "
+                        "manifest is reproducible on any machine (the runtime "
+                        "picker prefers the live models.dev listing)."
+                    ),
+                },
+                # NOT _PROVIDER_MODELS["xai-oauth"]: that list reads the
+                # local models.dev disk cache, so the manifest would differ
+                # per machine and fail the in-repo sync test.
+                "models": [
+                    _xai_oauth_entry(mid)
+                    for mid in _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
                 ],
             },
         },

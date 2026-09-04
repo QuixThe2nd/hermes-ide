@@ -253,22 +253,38 @@ class TestDefaultModelFromCache:
 
 
     def test_shipped_manifest_labels_preferred_default(self, isolated_home):
-        """Contract with the in-repo manifest: both provider blocks label the
-        same default entry the code constant points at."""
+        """Contract with the in-repo manifest: every provider that carries a
+        silent-default spelling labels exactly that entry ``"default": true``,
+        and the silent-default provider's block labels the canonical
+        constant (the no-override pair a fresh install lands on)."""
         import hermes_cli.model_catalog as model_catalog
-        from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
+        from hermes_cli.models import (
+            PREFERRED_SILENT_DEFAULT_MODEL,
+            PREFERRED_SILENT_DEFAULT_MODEL_IDS,
+            PREFERRED_SILENT_DEFAULT_PROVIDER,
+        )
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
         manifest = json.loads(
             (repo_root / "website" / "static" / "api" / "model-catalog.json").read_text()
         )
-        for provider in ("openrouter", "nous"):
-            block = manifest["providers"][provider]
-            labeled = [m["id"] for m in block["models"] if m.get("default")]
-            assert labeled == [PREFERRED_SILENT_DEFAULT_MODEL], (
-                f"{provider}: exactly one entry must be labeled default and it "
-                f"must match PREFERRED_SILENT_DEFAULT_MODEL"
+        for provider, expected in PREFERRED_SILENT_DEFAULT_MODEL_IDS.items():
+            block = manifest["providers"].get(provider)
+            assert block is not None, (
+                f"{provider}: manifest must carry a block — it has a "
+                f"silent-default spelling"
             )
+            labeled = [m["id"] for m in block["models"] if m.get("default")]
+            assert labeled == [expected], (
+                f"{provider}: exactly one entry must be labeled default and it "
+                f"must match the provider's PREFERRED_SILENT_DEFAULT_MODEL_IDS entry"
+            )
+        labeled = [
+            m["id"]
+            for m in manifest["providers"][PREFERRED_SILENT_DEFAULT_PROVIDER]["models"]
+            if m.get("default")
+        ]
+        assert labeled == [PREFERRED_SILENT_DEFAULT_MODEL]
 
 
 class TestProviderOverride:
