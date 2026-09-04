@@ -4,6 +4,7 @@ from __future__ import annotations
 from hermes_cli.cli_output import line_input
 
 import math
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -159,7 +160,24 @@ def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
         pass
 
 
-def _provider_base_url(provider: str) -> str:
+def _base_url_env_override(env_var: str) -> str:
+    """Load a provider base-URL override, preferring ``~/.hermes/.env``.
+
+    Same resolution order as env seeding (``agent/credential_pool.py``): a
+    deliberate ``.env`` edit wins over a value inherited from the parent
+    shell, so a manually added credential and an env-seeded one resolve the
+    same endpoint.
+    """
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    try:
+        value = get_env_value_prefer_dotenv(env_var) or ""
+    except Exception:
+        value = os.getenv(env_var, "")
+    return value.strip().rstrip("/")
+
+
+def _provider_base_url(provider: str, api_key: str = "") -> str:
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
@@ -173,7 +191,26 @@ def _provider_base_url(provider: str) -> str:
     if configured is not None:
         return str(configured.get("base_url") or "").strip()
     pconfig = PROVIDER_REGISTRY.get(provider)
-    return pconfig.inference_base_url if pconfig else ""
+    if not pconfig:
+        return ""
+    env_override = ""
+    if pconfig.base_url_env_var:
+        env_override = _base_url_env_override(pconfig.base_url_env_var)
+    # Apply the same provider-aware endpoint policy as env seeding
+    # (``agent/credential_pool.py::_seed_from_env``): an explicit base-URL
+    # env override wins, z.ai probes for the endpoint the key actually
+    # works at (cached in provider state), and ``sk-kimi-`` keys route to
+    # the Kimi Code endpoint.  Reuses the shared resolvers so there is no
+    # second probing implementation here.
+    if provider == "zai":
+        return auth_mod._resolve_zai_base_url(
+            api_key, pconfig.inference_base_url, env_override
+        )
+    if provider == "kimi-coding":
+        return auth_mod._resolve_kimi_base_url(
+            api_key, pconfig.inference_base_url, env_override
+        )
+    return env_override or pconfig.inference_base_url
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
@@ -302,7 +339,7 @@ def auth_add_command(args) -> None:
             priority=0,
             source=SOURCE_MANUAL,
             access_token=token,
-            base_url=_provider_base_url(provider),
+            base_url=_provider_base_url(provider, api_key=token),
         )
         pool.add_entry(entry)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
