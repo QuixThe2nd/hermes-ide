@@ -31,6 +31,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.turn_control import is_gateway_restart_armed
 
 
 def _assistant_row_missing_visible_text(msg: dict) -> bool:
@@ -765,6 +766,11 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    # Typed terminal control bit: the turn ended because a successful restart
+    # committed the drain. The gateway keys delivery silence on this bit —
+    # never on empty-response heuristics (which would fabricate prose).
+    if is_gateway_restart_armed(agent):
+        result["gateway_restart_queued"] = True
     # Persistence failures already set failed=True + an explanation in
     # final_response; also stamp `error` so gateway surfaces status="error"
     # (and desktop can toast the cause) instead of a quiet complete frame.

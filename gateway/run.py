@@ -4933,6 +4933,38 @@ def _is_forced_recovery_control_outcome(agent_result: Any) -> bool:
     )
 
 
+def _is_gateway_restart_control_outcome(agent_result: Any) -> bool:
+    """True for the typed terminal control outcome of a successful restart.
+
+    A restart result that committed the drain (status ``restarting`` or
+    ``already_in_progress``) ends its calling agent turn with
+    ``gateway_restart_queued`` and an intentionally empty ``final_response``.
+    That emptiness is contractual, not a failure: the restart
+    confirmation/drain/comeback UI is the only user-facing lifecycle output
+    for this outcome, so every boundary that would normalize, fabricate, or
+    deliver a response stands down for it instead.
+    """
+    return (
+        isinstance(agent_result, dict)
+        and agent_result.get("gateway_restart_queued") is True
+    )
+
+
+def _exempt_from_empty_response_normalization(agent_result: Any) -> bool:
+    """True for typed control outcomes whose silence is contractual.
+
+    The empty-response normalizer exists to keep silent failures from being
+    indistinguishable from crashes. Typed control outcomes (forced-recovery
+    victims, a committed gateway restart) are deliberately silent —
+    normalizing them would fabricate exactly the prose their contract
+    forbids.
+    """
+    return (
+        _is_forced_recovery_control_outcome(agent_result)
+        or _is_gateway_restart_control_outcome(agent_result)
+    )
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """Return True only when a gateway turn really completed successfully.
 
@@ -8831,12 +8863,17 @@ class TurnRunner:
             }
 
         if not final_response:
-            final_response = _normalize_empty_agent_response(
-                result, final_response or "", history_len=len(agent_history),
-            )
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
-            if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+            # A typed restart control outcome is intentionally silent — the
+            # restart lifecycle UI is its only user-facing output. Do not
+            # let the empty-response fabricator turn that silence into prose.
+            _restart_control_outcome = _is_gateway_restart_control_outcome(result)
+            if not _restart_control_outcome:
+                final_response = _normalize_empty_agent_response(
+                    result, final_response or "", history_len=len(agent_history),
+                )
+                final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+                if not final_response:
+                    final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             return {
                 "final_response": final_response,
                 "messages": result.get("messages", []),
@@ -8865,6 +8902,7 @@ class TurnRunner:
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "context_length": _context_length,
+                "gateway_restart_queued": _restart_control_outcome,
             }
 
         # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -8957,6 +8995,11 @@ class TurnRunner:
             # self-persisted (it didn't — see codex_runtime.py).  Default
             # True preserves the skip-db behaviour for the standard runtime.
             "agent_persisted": (ctx.result_holder[0].get("agent_persisted", True) if ctx.result_holder[0] else True),
+            # Typed terminal control: even when stream recovery recovered
+            # visible text, a committed gateway restart keeps delivery
+            # suppression keyed on this bit (streamed text already went out
+            # on the stream lane; nothing further is delivered).
+            "gateway_restart_queued": _is_gateway_restart_control_outcome(result),
         }
 
 
@@ -25948,8 +25991,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
             # A forced-recovery CONTROL outcome is exempt by contract: the
-            # failed recovery must surface NO prose to the forced victim.
-            if not _intentional_silence and not _is_forced_recovery_control_outcome(
+            # failed recovery must surface NO prose to the forced victim. So
+            # is a terminal gateway-restart control outcome: its silence is
+            # the contract, and the restart lifecycle UI is the only
+            # user-facing output for it.
+            if not _intentional_silence and not _exempt_from_empty_response_normalization(
                 agent_result
             ):
                 response = _normalize_empty_agent_response(
@@ -26452,6 +26498,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "for session %s (%s)",
                     session_key,
                     agent_result.get("error"),
+                )
+                response = ""
+
+            if _is_gateway_restart_control_outcome(agent_result):
+                # A committed gateway restart ended this turn: deliver
+                # NOTHING — no model-generated continuation, no fabricated
+                # empty-response prose. The restart confirmation/drain/
+                # comeback UI is the only user-facing lifecycle output, and
+                # the requester's comeback notice arrives after the bounce.
+                logger.info(
+                    "Suppressing delivery of gateway-restart control outcome "
+                    "for session %s",
+                    session_key,
                 )
                 response = ""
 

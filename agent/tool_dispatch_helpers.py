@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+# ``restart`` ends the calling turn on success, so it must be an ordered
+# barrier: earlier siblings may complete, later ones never start.
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "restart"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({

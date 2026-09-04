@@ -42,6 +42,10 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.turn_control import (
+    arm_gateway_restart_control,
+    is_gateway_restart_armed,
+)
 from tools.terminal_tool import (
     get_active_env,
 )
@@ -1899,6 +1903,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if blocked:
                 effect_disposition = "none"
 
+            # Trusted terminal control: a restart result that committed the
+            # drain arms the per-turn flag. The planner keeps restart on the
+            # sequential barrier path, so this is defense-in-depth for any
+            # future dispatch surface that lands a restart here.
+            arm_gateway_restart_control(agent, function_name, function_result)
+
             if not blocked:
                 function_result = agent._append_guardrail_observation(
                     function_name,
@@ -2067,6 +2077,54 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
         ))
 
 
+def _append_gateway_restart_skipped_tool_results(
+    agent,
+    messages: list,
+    tool_calls,
+    effective_task_id: str,
+) -> bool:
+    """Append a skipped/no-effect ``tool`` result for each unstarted sibling.
+
+    A successful ``restart`` ends the calling turn: later siblings in the same
+    model-emitted batch must never start once the drain is committed. Each one
+    still gets an explicit paired tool result (protocol pairing / role
+    alternation) marked ``effect_disposition="none"`` and a terminal
+    ``skipped`` hook event, flushed durably like any other tool result.
+
+    Returns False when the incremental flush failed and the batch must abort.
+    """
+    for skipped_tc in tool_calls:
+        skipped_name = getattr(getattr(skipped_tc, "function", None), "name", "") or "tool"
+        skipped_result = (
+            f"[Tool execution skipped — {skipped_name} was not started. "
+            "Gateway restart was queued; the turn ends here]"
+        )
+        messages.append(make_tool_result_message(
+            skipped_name,
+            skipped_result,
+            _pairing_tool_call_id(skipped_tc),
+            effect_disposition="none",
+        ))
+        _emit_terminal_post_tool_call(
+            agent,
+            function_name=skipped_name,
+            function_args={},
+            result=skipped_result,
+            effective_task_id=effective_task_id,
+            tool_call_id=getattr(skipped_tc, "id", "") or "",
+            status="skipped",
+            error_type="turn_terminated",
+            error_message="Tool not started: gateway restart ended the turn",
+        )
+        if not _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"skipped tool result {skipped_name}",
+        ):
+            return False
+    return True
+
+
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
@@ -2120,6 +2178,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent,
                     messages,
                     stage=f"cancelled tool result {skipped_name}",
+                ):
+                    return
+            break
+
+        # A successful restart earlier in this batch (or a prior segment of
+        # this turn) committed the drain: do NOT start any later tool — the
+        # turn is already terminal. Every unstarted call still gets an
+        # explicit paired skipped/no-effect result.
+        if is_gateway_restart_armed(agent):
+            remaining_calls = assistant_message.tool_calls[i-1:]
+            if remaining_calls:
+                agent._vprint(
+                    f"{agent.log_prefix}♻️ Gateway restart queued: skipping "
+                    f"{len(remaining_calls)} later tool call(s); the turn ends here",
+                    force=True,
+                )
+                if not _append_gateway_restart_skipped_tool_results(
+                    agent,
+                    messages,
+                    remaining_calls,
+                    effective_task_id,
                 ):
                     return
             break
@@ -2803,6 +2882,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _execution_timed_out = isinstance(
             function_result, (_ToolTimeoutResult, _ToolCancelledResult)
         )
+        # Trusted terminal control: a restart result that committed the drain
+        # arms the per-turn flag before any further transformation of the
+        # result. Cancelled/failed restarts carry no control field and the
+        # flag stays unarmed (the normal loop continues).
+        arm_gateway_restart_control(agent, function_name, function_result)
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -2983,6 +3067,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     return
             break
 
+        # A restart that just committed the drain is terminal for this turn:
+        # no later sibling in this batch may start. Each one still receives
+        # an explicit paired skipped/no-effect result.
+        if is_gateway_restart_armed(agent) and i < len(assistant_message.tool_calls):
+            remaining_calls = assistant_message.tool_calls[i:]
+            agent._vprint(
+                f"{agent.log_prefix}♻️ Gateway restart queued: skipping "
+                f"{len(remaining_calls)} remaining tool call(s); the turn ends here",
+                force=True,
+            )
+            if not _append_gateway_restart_skipped_tool_results(
+                agent,
+                messages,
+                remaining_calls,
+                effective_task_id,
+            ):
+                return
+            break
+
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     # Keep /steer pending until the final post-budget drain below.  The model
     # only receives this batch after all calls finish, and an early drain can
@@ -3021,7 +3124,8 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     ``agent._interrupt_requested`` up front and appends a cancelled/skipped
     result per call, so an interrupt during segment *k* drains segments
     *k+1..n* without executing them while preserving one result per
-    tool_call_id.
+    tool_call_id. A terminal gateway-restart result drains the remaining
+    segments the same way.
     """
     from types import SimpleNamespace
 
@@ -3030,9 +3134,29 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
+    _segments_processed = 0
     for kind, calls in segments:
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        # A restart in an earlier segment committed the drain: later segments
+        # must never start. Every remaining call still gets an explicit
+        # paired skipped/no-effect result.
+        if _segments_processed and is_gateway_restart_armed(agent):
+            remaining_calls = [c for _, later in segments[_segments_processed:] for c in later]
+            if remaining_calls:
+                agent._vprint(
+                    f"{agent.log_prefix}♻️ Gateway restart queued: skipping "
+                    f"{len(remaining_calls)} later tool call(s); the turn ends here",
+                    force=True,
+                )
+                if not _append_gateway_restart_skipped_tool_results(
+                    agent,
+                    messages,
+                    remaining_calls,
+                    effective_task_id,
+                ):
+                    return
+            break
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":
             execute_tool_calls_concurrent(
@@ -3044,6 +3168,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
+        _segments_processed += 1
 
         if getattr(agent, "_incremental_persistence_failed", False):
             return

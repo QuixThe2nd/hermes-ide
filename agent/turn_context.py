@@ -742,6 +742,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # A terminal gateway-restart control belongs to the turn that armed it;
+    # a fresh turn starts with the loop unconstrained.
+    agent._turn_gateway_restart_queued = False
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

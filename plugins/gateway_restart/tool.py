@@ -32,6 +32,8 @@ import logging
 import threading
 from typing import Any, Optional
 
+from agent.turn_control import turn_control_field_for
+
 logger = logging.getLogger(__name__)
 
 RESTART_SCHEMA = {
@@ -48,7 +50,10 @@ RESTART_SCHEMA = {
         "active session, there is no ping — the restart is queued outright "
         "and fires after this turn ends. In-flight turns (including this "
         "one) drain first, then the gateway stops and comes back online, "
-        "and the requesting chat gets a comeback notice. Use it to pick up "
+        "and the requesting chat gets a comeback notice. A successful "
+        "restart ends this turn immediately: do not plan further tool "
+        "calls or a closing summary after it — the user sees the restart "
+        "lifecycle notices instead. Use it to pick up "
         "config or code changes, or to recover a misbehaving gateway."
     ),
     "parameters": {
@@ -161,17 +166,22 @@ def _source_from_session_context() -> Optional[object]:
 
 
 def _result_json(runner: Any, status: dict) -> str:
-    return json.dumps(
-        {
-            "success": True,
-            "status": status.get("status"),
-            "draining": bool(getattr(runner, "_draining", False)),
-            "active_agents": status.get("active_agents", 0),
-            "via_service": status.get("via_service"),
-        },
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
+    payload = {
+        "success": True,
+        "status": status.get("status"),
+        "draining": bool(getattr(runner, "_draining", False)),
+        "active_agents": status.get("active_agents", 0),
+        "via_service": status.get("via_service"),
+    }
+    # Terminal control: statuses that mean the drain is committed or already
+    # active stamp the reserved exact field so the tool executor can arm the
+    # per-turn flag and end this turn (no further provider calls, no later
+    # sibling tools). Cancelled/failed results carry no control field and the
+    # normal provider/tool loop continues after them.
+    control_field = turn_control_field_for(status.get("status"))
+    if control_field:
+        payload.update(control_field)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
 def _error_json(message: str) -> str:
