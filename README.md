@@ -118,6 +118,8 @@ Lifecycle messages can go to a dedicated channel per platform with `/setnotify` 
 
 Cron jobs do not get to casually restart the gateway or rewrite the live checkout. A quote-aware lifecycle guard blocks cron-spawned commands that try either one.
 
+A cron job can claim its own scrollback with a `thread:` deliver token: `deliver: thread:<chat id>` (or `thread:<platform>:<chat id>` when the platform must be explicit) opens a fresh thread named after the job on first delivery. The concrete `platform:chat:thread` target is written back onto the job, so later runs — and restart-safe worker replays, which cannot create threads — reuse it instead of minting duplicates. When no live thread-capable adapter is available, the run still delivers flat on the parent chat and the job is left untouched. Failure notices on the `failure_deliver` lane never create threads.
+
 Config gains API retry backoff timing plus fallback chains for web search and web extract. `agent.tool_call_narration_guidance` is on by default and asks the model to briefly explain a tool call before it makes one. Parent agents run on a default 256-turn budget (`agent.max_turns`, the same default `run_agent.py`'s `main()` uses); set it higher or to `none`/`0` for no limit. Z.AI silently defaults to GLM-5.3, with GLM-5.3-Flash as its fallback. `security.allow_agent_config_writes` lets an operator opt out of the `write_file` and `patch` guard on the Hermes config file; it is off by default. `display.notify_on_complete` can send a native OS notification when a turn finishes, including over an SSH target, and is also off by default.
 
 `compression.tail_mode` defaults to `lean`, which clamps the verbatim tail to 10–25K. Set it to `legacy` to restore the old `0.20 × threshold` tail.

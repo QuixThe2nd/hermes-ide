@@ -1911,6 +1911,7 @@ def _open_continuable_cron_thread(
     adapter,
     chat_id: str,
     loop,
+    thread_name: Optional[str] = None,
 ) -> Optional[str]:
     """Open a dedicated thread for a continuable cron job (thread-preferred).
 
@@ -1919,12 +1920,14 @@ def _open_continuable_cron_thread(
     return is the caller's signal to fall back to the origin-DM mirror, the same
     open-thread-or-fallback shape as ``GatewayRunner._process_handoff``. Reuses
     the shipped ``adapter.create_handoff_thread``; no new adapter surface.
+    ``thread_name`` overrides the default ``Hermes — <job name>`` title (the
+    ``thread:`` deliver token names its threads after the job itself).
     """
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
     task_name = job.get("name") or job.get("id", "cron")
-    thread_name = f"Hermes — {task_name}"
+    thread_name = thread_name or f"Hermes — {task_name}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
 
@@ -2507,7 +2510,9 @@ def _origin_delivery_thread(origin: dict):
     return origin.get("thread_id")
 
 
-def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
+def _resolve_single_delivery_target(
+    job: dict, deliver_value: str, *, for_failure: bool = False
+) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
     origin = _resolve_origin(job)
@@ -2521,6 +2526,17 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     bot_chat_profile = parse_bot_chat_deliver_token(deliver_value)
     if bot_chat_profile is not None:
         return _resolve_bot_chat_target(job, bot_chat_profile)
+
+    # thread:<parent> / thread:<platform>:<parent> — the auto-created
+    # delivery-thread token, parsed before the generic platform:chat_id
+    # split below so the token's first segment is never misread as a
+    # platform name. The failure lane resolves it to the plain parent chat
+    # (never auto-creates); see _resolve_thread_delivery_target.
+    thread_token = _parse_thread_deliver_token(deliver_value)
+    if thread_token is not None:
+        return _resolve_thread_delivery_target(
+            job, deliver_value, thread_token, for_failure=for_failure,
+        )
 
     if deliver_value == "origin":
         if origin:
@@ -2802,6 +2818,144 @@ def parse_bot_chat_deliver_token(part: str) -> Optional[str]:
     return None
 
 
+# Deliver token for a job that wants its own platform thread:
+# ``thread:<bare_chat_id>`` (platform derived by matching the chat id against
+# configured home channels) or ``thread:<platform>:<parent_chat_id>`` (explicit
+# platform). Combinable with other tokens — ``origin,thread:<id>`` is valid;
+# only the ``thread:`` token's target auto-creates its thread.
+THREAD_DELIVER_TOKEN = "thread"
+
+# Thread-name length caps applied when the token auto-creates a delivery
+# thread. Discord documents a 100-character thread-name limit; unlisted
+# platforms share it as a safe generic cap (adapters still truncate their own
+# platform bounds defensively).
+_THREAD_NAME_LIMITS = {"discord": 100}
+_THREAD_NAME_DEFAULT_LIMIT = 100
+
+
+def _parse_thread_deliver_token(part: str):
+    """Parse a ``thread:`` deliver token into ``(platform, parent_chat_ref)``.
+
+    ``platform`` is ``None`` for the bare form (derived at resolve time from
+    configured home channels) and the named platform for the explicit form.
+    Returns ``None`` when ``part`` is not a ``thread:`` token at all, and
+    ``("", "")`` for a bare ``thread:`` with no parent chat id.
+    """
+    raw = (part or "").strip()
+    prefix = THREAD_DELIVER_TOKEN + ":"
+    if not raw.lower().startswith(prefix):
+        return None
+    rest = raw[len(prefix):].strip()
+    if not rest:
+        return ("", "")
+    if ":" in rest:
+        platform_name, parent_ref = rest.split(":", 1)
+        return (platform_name.strip(), parent_ref.strip())
+    return (None, rest)
+
+
+def _thread_autocreate_name(job: dict, platform_name: str) -> str:
+    """Thread title for a ``thread:`` token's auto-created delivery thread.
+
+    The job's own name, whitespace-collapsed and capped at the platform's
+    thread-name limit; the job id when the name sanitizes to empty, so a
+    nameless job still gets an identifiable thread.
+    """
+    limit = _THREAD_NAME_LIMITS.get(
+        str(platform_name).lower(), _THREAD_NAME_DEFAULT_LIMIT
+    )
+    candidate = " ".join(str(job.get("name") or "").split()).strip()
+    if not candidate:
+        candidate = str(job.get("id") or "").strip()
+    return (candidate or THREAD_DELIVER_TOKEN)[:limit]
+
+
+def _resolve_thread_delivery_target(
+    job: dict,
+    deliver_value: str,
+    parsed,
+    *,
+    for_failure: bool = False,
+) -> Optional[dict]:
+    """Resolve a ``thread:`` deliver token to its parent-chat target.
+
+    The delivery lane returns the parent chat with NO ``thread_id`` plus the
+    ``_thread_auto`` marker: ``_deliver_result`` opens a fresh platform thread
+    there on first delivery and rewrites the token on the job to the concrete
+    ``platform:parent_chat_id:new_thread_id`` (see
+    ``_persist_thread_delivery_token``), so later runs — and restart-safe
+    worker replays, which cannot create threads — resolve the concrete target
+    and never mint a second thread.
+
+    The failure lane (``for_failure``) never auto-creates: an unresolved
+    ``thread:`` token resolves to the plain parent chat, because a failure
+    notice must not mint threads on its own lane.
+    """
+    platform_arg, parent_ref = parsed
+    if not parent_ref:
+        logger.warning(
+            "Job '%s': thread: deliver token '%s' is missing its parent chat id",
+            job.get("name", job.get("id", "?")), deliver_value,
+        )
+        return None
+
+    def _thread_target(platform_name, chat_id, thread_id):
+        target = {
+            "platform": platform_name,
+            "chat_id": str(chat_id),
+            "thread_id": thread_id,
+            # The token names a real destination: same lane as an explicit
+            # platform:chat target (mirror-eligible only under the job's own
+            # attach_to_session opt-in — see _target_mirror_eligible).
+            "_resolved_from": "explicit",
+        }
+        if not for_failure and thread_id is None:
+            target["_thread_auto"] = True
+            # The verbatim token, used by the persistence rewrite.
+            target["_deliver_token"] = deliver_value
+        return target
+
+    if platform_arg:
+        from tools.send_message_tool import (
+            prepare_send_message_platforms,
+            resolve_send_target,
+        )
+
+        prepare_send_message_platforms()
+        # Same pass-through rationale as the generic platform:chat_id path:
+        # stored jobs have no model in the loop to react to a resolution
+        # error, and the adapter is the authority on native id syntax.
+        chat_id, thread_id, resolution_error = resolve_send_target(
+            platform_arg.lower(), parent_ref, pass_unresolved_references=True
+        )
+        if resolution_error or not chat_id:
+            logger.warning(
+                "Invalid cron delivery target '%s': %s",
+                deliver_value,
+                resolution_error or "no chat id resolved",
+            )
+            return None
+        # A thread_id here means the token already named a concrete thread
+        # (``thread:<platform>:<chat>:<thread>``) — no auto-create needed.
+        # Deliberately NO origin-thread inheritance (unlike the generic
+        # path): the token's whole point is a FRESH thread under the parent.
+        return _thread_target(platform_arg, chat_id, thread_id)
+
+    # Bare form: derive the platform by matching the parent chat id against
+    # configured home channels — the same home-target machinery the
+    # deliver=origin fallback uses, so the token adds no config surface.
+    for platform_name in _iter_home_target_platforms():
+        home_chat_id = _get_home_target_chat_id(platform_name)
+        if home_chat_id and str(home_chat_id) == parent_ref:
+            return _thread_target(platform_name, home_chat_id, None)
+    logger.warning(
+        "Job '%s': thread: deliver token '%s' matches no configured home "
+        "channel — skipping target",
+        job.get("name", job.get("id", "?")), deliver_value,
+    )
+    return None
+
+
 def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
     """Resolve a bot-chat deliver token to a concrete delivery target.
 
@@ -2900,7 +3054,7 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     seen = {}
     targets = []
     for part in parts:
-        target = _resolve_single_delivery_target(job, part)
+        target = _resolve_single_delivery_target(job, part, for_failure=for_failure)
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             if key not in seen:
@@ -2915,6 +3069,13 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
                 if _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0) > \
                         _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0):
                     kept["_resolved_from"] = target.get("_resolved_from")
+                # Same OR-merge for the thread: token's auto-create intent: it
+                # is the feature's opt-in, so "origin,thread:<id>" and
+                # "thread:<id>,origin" (same parent chat) must both resolve to
+                # one target that still auto-creates its thread.
+                if target.get("_thread_auto") and not kept.get("_thread_auto"):
+                    kept["_thread_auto"] = True
+                    kept["_deliver_token"] = target.get("_deliver_token")
     return targets
 
 
@@ -3154,6 +3315,59 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
         return delivery_cfg.get("notify", True) is not False
     except Exception:
         return True
+
+
+def _persist_thread_delivery_token(
+    job: dict,
+    deliver_token: Optional[str],
+    platform_name: str,
+    parent_chat_id: str,
+    thread_id: str,
+) -> bool:
+    """Rewrite a job's ``thread:`` deliver token to its concrete thread target.
+
+    Called the moment a ``thread:`` token's delivery thread was created, so
+    every later resolution — the next fire, a concurrent delivery pass, and
+    the restart-safe worker replay (whose queue replays the persisted
+    ``deliver`` and cannot create threads) — lands on the existing
+    ``platform:parent_chat_id:new_thread_id`` target instead of minting
+    another thread. Only the job's ``deliver`` lane is rewritten; the
+    ``failure_deliver`` override is untouched (that lane never auto-creates).
+    Returns True when the job was persisted.
+    """
+    token = (deliver_token or "").strip()
+    if not token:
+        return False
+    deliver_raw = _normalize_deliver_value(job.get("deliver", "local"))
+    if deliver_raw == "local":
+        return False
+    concrete = f"{platform_name}:{parent_chat_id}:{thread_id}"
+    parts = [p.strip() for p in deliver_raw.split(",") if p.strip()]
+    updated = [concrete if p == token else p for p in parts]
+    if updated == parts:
+        logger.debug(
+            "Job '%s': thread deliver token '%s' no longer present in "
+            "deliver='%s' — skipping persistence",
+            job.get("id", "?"), token, deliver_raw,
+        )
+        return False
+    new_deliver = ",".join(updated)
+    try:
+        from cron.jobs import update_job
+
+        update_job(job["id"], {"deliver": new_deliver})
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': could not persist concrete delivery thread '%s': %s",
+            job.get("id", "?"), concrete, exc,
+        )
+        return False
+    # Keep the in-memory copy in sync so a later delivery pass in the SAME
+    # run (e.g. the failure lane reading `deliver` when failure_deliver is
+    # unset) resolves the concrete target rather than re-resolving — and
+    # re-creating — the thread: token.
+    job["deliver"] = new_deliver
+    return True
 
 
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
@@ -3599,6 +3813,11 @@ def _deliver_result(
         if (
             mirror_this_target
             and not in_channel_surface
+            # A thread: token's target creates ONE persistent thread (persisted
+            # onto the job below) — the token's opt-in outranks this per-run
+            # open-a-fresh-thread surface, and both firing would mint two
+            # threads on the first delivery.
+            and not target.get("_thread_auto")
             and runtime_adapter is not None
             and loop is not None
             and not thread_id  # never override an explicit origin thread/topic
@@ -3614,6 +3833,51 @@ def _deliver_result(
                 # and (worse) suppresses the DM-fallback mirror via thread_seeded.
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
+
+        # thread: deliver token — this target came from the token and has no
+        # thread_id yet, so open the job's dedicated delivery thread NOW (first
+        # delivery only: persistence below rewrites the token to the concrete
+        # platform:parent:thread target, so no later run or worker replay can
+        # create a duplicate). Needs the live adapter and a running loop, the
+        # same gate as the send itself; when creation is impossible (no live
+        # adapter, platform without threads, permissions) deliver flat on the
+        # parent chat for this run — a missing thread must never fail the run.
+        if target.get("_thread_auto") and not thread_id:
+            new_thread_id = None
+            no_create_reason = "no live gateway adapter"
+            if live_adapter_ready:
+                new_thread_id = _open_continuable_cron_thread(
+                    job, runtime_adapter, chat_id, loop,
+                    thread_name=_thread_autocreate_name(job, platform_name),
+                )
+                if not new_thread_id:
+                    no_create_reason = (
+                        "thread creation returned nothing (unsupported "
+                        "platform or permissions)"
+                    )
+            if new_thread_id:
+                thread_id = new_thread_id
+                # Ride the same opened_thread_id path as the continuable open
+                # above so an enabled mirror seeds the NEW thread's session
+                # (a reply in the fresh thread sees the brief) instead of the
+                # parent chat's.
+                opened_thread_id = new_thread_id
+                if _persist_thread_delivery_token(
+                    job, target.get("_deliver_token"), platform_name,
+                    chat_id, new_thread_id,
+                ):
+                    logger.info(
+                        "Job '%s': created delivery thread %s:%s:%s for the "
+                        "thread: deliver token and persisted it on the job",
+                        job["id"], platform_name, chat_id, new_thread_id,
+                    )
+            else:
+                logger.warning(
+                    "Job '%s': thread: deliver token could not create a "
+                    "thread on %s:%s (%s) — delivering to the parent chat "
+                    "this run",
+                    job["id"], platform_name, chat_id, no_create_reason,
+                )
 
         if live_adapter_ready:
             # Telegram topic routing (#22773, regression fixed #52060): a
@@ -5518,6 +5782,14 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     failures fail OPEN so a transient config hiccup never wedges delivery
     that would have worked.
 
+    ``thread:<parent>`` tokens are resolved through the SAME machinery real
+    delivery uses (``_resolve_thread_delivery_target``): the token's first
+    segment names the token, not a platform, so the derived/explicit parent
+    platform is what gets checked — the concrete thread id does not exist
+    yet (first delivery mints it and persists it back onto the job), so no
+    thread segment is required here. A token that resolves to nothing is
+    genuinely broken and still blocks.
+
     ``failure_deliver`` is checked with the same rules: a typo'd failure
     platform would otherwise only surface when a failure occurs — exactly
     when the notice must not be lost (NS-788 follow-up).
@@ -5539,6 +5811,36 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             # local chat subprocess. Unknown-profile failures surface per run in
             # last_delivery_error (and are validated at create time).
             if parse_bot_chat_deliver_token(part) is not None:
+                continue
+            # thread:<parent> — resolve through the same machinery real
+            # delivery uses (home-channel match for bare ids, explicit
+            # platform otherwise) and validate the PARENT chat target; the
+            # naive split below would read platform "thread" and block a
+            # perfectly runnable job. The thread id does not exist yet —
+            # first delivery creates it and persists the concrete target
+            # back onto the job — so no thread segment is required here. A
+            # token that resolves to nothing (missing parent id, unknown
+            # platform, no home-channel match) is genuinely broken and still
+            # blocks. Resolution validates only: it creates nothing and
+            # leaves the job untouched.
+            thread_parsed = _parse_thread_deliver_token(part)
+            if thread_parsed is not None:
+                resolved = _resolve_thread_delivery_target(
+                    job, part, thread_parsed
+                )
+                platform = (
+                    str(resolved.get("platform") or "").strip()
+                    if resolved
+                    else ""
+                )
+                if not platform:
+                    return (
+                        f"deliver target '{part}' does not resolve to a "
+                        "parent chat target (missing parent chat id, unknown "
+                        "platform, or no configured home-channel match). Fix "
+                        "the job's `deliver` value."
+                    )
+                platform_parts.append(platform)
                 continue
             platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
