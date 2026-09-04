@@ -4159,6 +4159,8 @@ def _ensure_session_db_row(session: dict) -> bool:
     override = session.get("model_override")
     override = override if isinstance(override, dict) else {}
     row_model = str(override.get("model") or "").strip() or _resolve_model()
+    if not override.get("model") and not _has_explicit_model_config():
+        row_model = _provider_scoped_silent_default_for_persist(row_model)
     model_config: dict = {}
     for src_key, cfg_key in (
         ("model", "model"),
@@ -5426,6 +5428,33 @@ def _has_explicit_model_config() -> bool:
     return False
 
 
+def _native_silent_default_model() -> str:
+    """Native (xai-oauth) spelling of the cost-safe silent default."""
+    try:
+        from hermes_cli.models import get_preferred_silent_default_model
+
+        return get_preferred_silent_default_model()
+    except Exception:
+        return "grok-4.6"
+
+
+def _is_silent_default_persist_shape(model: str, model_config: dict) -> bool:
+    """True when a stored row reflects the no-override silent default, not a pick.
+
+    Rows written before provider-scoped persist carried native ``grok-4.6`` with
+    an empty ``model_config``. Composer ``/model`` picks and session.create
+    overrides always stamp provider and/or model into ``model_config``.
+    """
+    row_model = str(model or "").strip()
+    if not row_model or row_model != _native_silent_default_model():
+        return False
+    if str(model_config.get("provider") or "").strip():
+        return False
+    if str(model_config.get("model") or "").strip():
+        return False
+    return True
+
+
 def _apply_provider_scoped_silent_default(model: str, runtime: dict) -> str:
     """Re-spell the silent default for the credential-resolved provider.
 
@@ -5777,6 +5806,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     from hermes_cli.fallback_config import is_retired_ox_alpha_route
 
     if is_retired_ox_alpha_route(provider, model, base_url):
+        return {}
+
+    if _is_silent_default_persist_shape(model, model_config):
         return {}
 
     if model:
@@ -9225,6 +9257,28 @@ def _resolve_runtime_with_fallback(
             except Exception:
                 continue
         raise
+
+
+def _provider_scoped_silent_default_for_persist(row_model: str) -> str:
+    """Persist the provider-scoped silent default before the agent is built.
+
+    Only remaps when ``row_model`` is the native silent default and env/config
+    did not name an explicit model — the same gate ``_make_agent`` uses on
+    first construct.
+    """
+    if row_model != _native_silent_default_model() or _has_explicit_model_config():
+        return row_model
+    _, requested_provider = _resolve_startup_runtime()
+    try:
+        resolution = _resolve_runtime_with_fallback({
+            "requested": requested_provider,
+            "target_model": row_model or None,
+        })
+    except Exception:
+        return row_model
+    if resolution.used_fallback:
+        return row_model
+    return _apply_provider_scoped_silent_default(row_model, resolution.runtime)
 
 
 def _make_agent(
