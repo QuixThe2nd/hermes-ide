@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.request
 from dataclasses import dataclass
@@ -33,6 +34,8 @@ def _http_text(
 
 LEGACY_ENV_WALLET_ID = "legacy-env"
 ZAI_PROVIDER_SLUG = "zai"
+ENV_SOURCE_PREFIX = "env:"
+SECRET_FINGERPRINT_PREFIX = "sha256:"
 
 
 @dataclass(frozen=True)
@@ -61,14 +64,42 @@ def _read_env_key(path, key: str) -> Optional[str]:
     return None
 
 
-def _runtime_key_from_pool_entry(entry: Mapping[str, Any]) -> str:
+def _env_seeded_runtime_key(
+    entry: Mapping[str, Any],
+    hermes_home,
+) -> str:
+    """Resolve a borrowed ``env:<VAR>`` pool row from ``hermes_home/.env``.
+
+    Env-seeded rows keep no raw secret in auth.json — only a
+    ``secret_fingerprint``. The env value is trusted only when its digest
+    matches that fingerprint; a missing variable or mismatched fingerprint
+    leaves the row unresolved (caller marks the pool unreadable) instead of
+    raising.
+    """
+    source = str(entry.get("source") or "").strip()
+    if not source.startswith(ENV_SOURCE_PREFIX):
+        return ""
+    var_name = source[len(ENV_SOURCE_PREFIX):].strip()
+    fingerprint = str(entry.get("secret_fingerprint") or "").strip()
+    if not var_name or not fingerprint.startswith(SECRET_FINGERPRINT_PREFIX):
+        return ""
+    key = _read_env_key(hermes_home / ".env", var_name)
+    if not key:
+        return ""
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    if fingerprint != f"{SECRET_FINGERPRINT_PREFIX}{digest}":
+        return ""
+    return key
+
+
+def _runtime_key_from_pool_entry(entry: Mapping[str, Any], hermes_home) -> str:
     token = entry.get("access_token")
     if isinstance(token, str) and token.strip():
         return token.strip()
     agent_key = entry.get("agent_key")
     if isinstance(agent_key, str) and agent_key.strip():
         return agent_key.strip()
-    return ""
+    return _env_seeded_runtime_key(entry, hermes_home)
 
 
 def read_zai_pool_raw(hermes_home) -> Tuple[Optional[List[Mapping[str, Any]]], bool]:
@@ -116,7 +147,10 @@ def enumerate_zai_wallets(hermes_home) -> Tuple[List[ZaiWallet], bool]:
     """Enumerate unique Z.AI wallets in stable pool order.
 
     First-seen entry id wins when two pool rows share the exact same runtime
-    key (dedupe only; not malformed). Mapping rows missing id or runtime key
+    key (dedupe only; not malformed). Runtime keys prefer inline
+    ``access_token``/``agent_key`` fields; env-seeded rows (``source:
+    env:<VAR>``) resolve theirs from ``hermes_home/.env`` when the
+    ``secret_fingerprint`` matches. Mapping rows missing id or runtime key
     mark the snapshot unreadable for destructive reconcile. When the readable
     pool is empty, a single ``secrets/zai.env`` key becomes a synthetic
     ``legacy-env`` wallet.
@@ -131,7 +165,7 @@ def enumerate_zai_wallets(hermes_home) -> Tuple[List[ZaiWallet], bool]:
             if not entry_id:
                 pool_unreadable = True
                 continue
-            runtime_key = _runtime_key_from_pool_entry(entry)
+            runtime_key = _runtime_key_from_pool_entry(entry, hermes_home)
             if not runtime_key:
                 pool_unreadable = True
                 continue

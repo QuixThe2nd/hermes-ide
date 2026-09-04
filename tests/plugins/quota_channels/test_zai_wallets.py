@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.parse
 from datetime import datetime
@@ -42,6 +43,11 @@ def _five_id_section() -> dict:
 def _write_pool(tmp_path, entries):
     auth = {"credential_pool": {"zai": entries}}
     (tmp_path / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+
+
+def _fp(key: str) -> str:
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return f"sha256:{digest}"
 
 
 class _WalletDiscord:
@@ -164,6 +170,171 @@ class TestEnumerateAndOrdinals:
         )
         assert ordinals2 == {"w1": 1, "w2": 2}
         assert hw2 == 2
+
+
+class TestEnvSeededPoolEntries:
+    def test_env_seeded_entry_resolves_via_hermes_env(self, wallet_env):
+        (wallet_env / ".env").write_text('GLM_API_KEY="sk-env-alpha"\n', encoding="utf-8")
+        _write_pool(
+            wallet_env,
+            [
+                {
+                    "id": "e1",
+                    "label": "glm",
+                    "auth_type": "api_key",
+                    "source": "env:GLM_API_KEY",
+                    "api_key": "",
+                    "secret_fingerprint": _fp("sk-env-alpha"),
+                }
+            ],
+        )
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert not unreadable
+        assert len(wallets) == 1
+        assert wallets[0].entry_id == "e1"
+        assert wallets[0].runtime_api_key == "sk-env-alpha"
+        assert wallets[0].pool_label == "glm"
+
+    def test_env_seeded_fingerprint_mismatch_is_unreadable_and_blocks_deletes(
+        self, wallet_env, monkeypatch
+    ):
+        (wallet_env / ".env").write_text("GLM_API_KEY=sk-env-rotated\n", encoding="utf-8")
+        _write_pool(
+            wallet_env,
+            [
+                {
+                    "id": "e1",
+                    "auth_type": "api_key",
+                    "source": "env:GLM_API_KEY",
+                    "api_key": "",
+                    "secret_fingerprint": _fp("sk-env-original"),
+                }
+            ],
+        )
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert unreadable
+        assert wallets == []
+        prior = {
+            "last_quota_success": 777,
+            "readings": {
+                wallet_reading_key("e1"): {
+                    "pct": 40,
+                    "reset_seconds": DAY,
+                    "label": "z.ai 1",
+                },
+            },
+            "zai_wallet_channels": {"e1": "c3", "gone": "orphan"},
+            "zai_wallet_ordinals": {"e1": 1, "gone": 2},
+            "zai_wallet_ordinal_high_water": 2,
+        }
+        state_path().parent.mkdir(parents=True, exist_ok=True)
+        state_path().write_text(json.dumps(prior), encoding="utf-8")
+        discord = _WalletDiscord(
+            [
+                {"id": "c3", "position": 12},
+                {"id": "orphan", "position": 13},
+                {"id": "c5", "position": 14},
+            ],
+            existing={"c3", "orphan", "c5"},
+        )
+        config = validate_quota_config(
+            {
+                "guild_id": "guild",
+                "category_id": "cat",
+                "channel_ids": {"zai": "c3", "grok": "c5"},
+                "enabled_providers": ["zai", "grok"],
+            }
+        )
+        monkeypatch.setattr(
+            core,
+            "QUOTA_METRICS",
+            {"grok": lambda http_fn=None, now_fn=None: (81, 5 * DAY)},
+        )
+        run_tick(
+            config,
+            force=True,
+            now_fn=lambda: 1_000_000.0,
+            http_fn=discord,
+            sleep_fn=lambda _: None,
+        )
+        assert discord.deletes == []
+        saved = json.loads(state_path().read_text(encoding="utf-8"))
+        assert saved["zai_wallet_channels"] == prior["zai_wallet_channels"]
+        assert saved["zai_wallet_ordinals"] == prior["zai_wallet_ordinals"]
+
+    def test_env_seeded_variable_missing_from_hermes_env(self, wallet_env):
+        (wallet_env / ".env").write_text("OTHER_API_KEY=sk-unrelated\n", encoding="utf-8")
+        _write_pool(
+            wallet_env,
+            [
+                {
+                    "id": "e1",
+                    "auth_type": "api_key",
+                    "source": "env:GLM_API_KEY",
+                    "api_key": "",
+                    "secret_fingerprint": _fp("sk-env-alpha"),
+                }
+            ],
+        )
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert unreadable
+        assert wallets == []
+
+    def test_two_env_seeded_entries_yield_two_wallets_in_pool_order(self, wallet_env):
+        (wallet_env / ".env").write_text(
+            'GLM_API_KEY="sk-env-alpha"\nZAI_API_KEY=sk-env-beta\n',
+            encoding="utf-8",
+        )
+        _write_pool(
+            wallet_env,
+            [
+                {
+                    "id": "e1",
+                    "label": "glm",
+                    "auth_type": "api_key",
+                    "source": "env:GLM_API_KEY",
+                    "api_key": "",
+                    "secret_fingerprint": _fp("sk-env-alpha"),
+                },
+                {
+                    "id": "e2",
+                    "label": "zai",
+                    "auth_type": "api_key",
+                    "source": "env:ZAI_API_KEY",
+                    "api_key": "",
+                    "secret_fingerprint": _fp("sk-env-beta"),
+                },
+            ],
+        )
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert not unreadable
+        assert [(w.entry_id, w.runtime_api_key) for w in wallets] == [
+            ("e1", "sk-env-alpha"),
+            ("e2", "sk-env-beta"),
+        ]
+        ordinals, high_water = assign_wallet_ordinals(wallets, {})
+        assert ordinals == {"e1": 1, "e2": 2}
+        assert high_water == 2
+
+    def test_inline_access_token_wins_over_env_seed(self, wallet_env):
+        (wallet_env / ".env").write_text("GLM_API_KEY=sk-env-alpha\n", encoding="utf-8")
+        _write_pool(
+            wallet_env,
+            [
+                {
+                    "id": "e1",
+                    "auth_type": "api_key",
+                    "source": "env:GLM_API_KEY",
+                    "access_token": "sk-inline-key",
+                    "api_key": "",
+                    "secret_fingerprint": _fp("sk-not-the-env-value"),
+                }
+            ],
+        )
+        wallets, unreadable = enumerate_zai_wallets(wallet_env)
+        assert not unreadable
+        assert len(wallets) == 1
+        assert wallets[0].runtime_api_key == "sk-inline-key"
 
 
 class TestWalletTick:
