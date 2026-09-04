@@ -2254,15 +2254,26 @@ def create_pre_update_snapshots_all_profiles(
     return results
 
 
-# Config paths that the update flow must never change (#64160): the model
-# routing keys and the Mixture-of-Agents section are consumed machine-wide
+# Primary model routing and its fallback chain are ONE coupled bundle: a
+# promotion-style rewrite (e.g. the fallback_quota_reorder plugin) moves a
+# fallback entry into model.provider/model.default and the displaced primary
+# into fallback_providers in a single atomic save. Restoring only the
+# model.* half of that swap strands the promoted route in neither list, so
+# any bundle member changing triggers restoring the WHOLE bundle.
+_MODEL_ROUTE_BUNDLE_PATHS: Tuple[Tuple[str, ...], ...] = (
+    ("model", "provider"),
+    ("model", "default"),
+    ("model", "base_url"),
+    ("fallback_providers",),
+    ("fallback_model",),  # legacy single-model fallback (pre-chain spelling)
+)
+
+# Independently protected settings, restored per-key (#64160): the model
+# credential and the Mixture-of-Agents section are consumed machine-wide
 # (gateway, cron, desktop), so an update/repair cycle that rewrites them
 # silently redirects paid inference. Each entry is a dotted path into the raw
 # config.yaml document; a single-element tuple protects the whole section.
 _PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
-    ("model", "provider"),
-    ("model", "default"),
-    ("model", "base_url"),
     ("model", "api_key"),
     ("moa",),
 )
@@ -2302,6 +2313,61 @@ def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value:
     node[dotted[-1]] = value
 
 
+def _del_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> bool:
+    """Remove ``dotted`` from ``data`` if present. ``True`` when removed."""
+    node: Any = data
+    for key in dotted[:-1]:
+        if not isinstance(node, dict):
+            return False
+        node = node.get(key)
+    if isinstance(node, dict) and dotted[-1] in node:
+        del node[dotted[-1]]
+        return True
+    return False
+
+
+def _restore_model_route_bundle(
+    snap: Dict[str, Any], live: Dict[str, Any]
+) -> list[str]:
+    """Restore the coupled primary+fallback model route bundle from ``snap``.
+
+    The primary slot and the fallback list are halves of one routing
+    decision: a promotion swaps them together, so a restore that reconciles
+    only ``model.*`` leaves the promoted route in neither list (observed
+    when an unattended update's rewrite raced a fallback_quota_reorder
+    promotion). When any bundle member differs from the snapshot, the whole
+    bundle is restored from it — a route key the update introduced that the
+    snapshot did not have is dropped, not kept (missing-key semantics).
+
+    No-op when the snapshot shows no configured route bundle at all
+    (nothing of the user's was lost) or when every member already matches.
+    Returns the dotted paths actually changed.
+    """
+    if all(
+        _get_config_path_value(snap, dotted) in (None, "", {}, [])
+        for dotted in _MODEL_ROUTE_BUNDLE_PATHS
+    ):
+        return []  # user never configured routing — nothing to protect
+
+    changed: list[str] = []
+    for dotted in _MODEL_ROUTE_BUNDLE_PATHS:
+        snap_val = _get_config_path_value(snap, dotted)
+        live_val = _get_config_path_value(live, dotted)
+        if snap_val in (None, "", {}, []):
+            # Absent from the snapshot: must not survive merely because the
+            # post-update config introduced it.
+            if live_val not in (None, "", {}, []) and _del_config_path_value(
+                live, dotted
+            ):
+                changed.append(".".join(dotted))
+            continue
+        if live_val == snap_val:
+            continue
+        _set_config_path_value(live, dotted, snap_val)
+        changed.append(".".join(dotted))
+    return changed
+
+
 def restore_config_model_settings_if_rewritten(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -2314,6 +2380,11 @@ def restore_config_model_settings_if_rewritten(
     pinned ``model.default`` to a transient composer pick). These keys are
     consumed by the gateway and unattended cron jobs too, so a rewrite
     silently changes paid inference behavior machine-wide.
+
+    The primary model route and its fallback chain restore as ONE coupled
+    bundle (:func:`_restore_model_route_bundle`): a promotion-style rewrite
+    swaps them together, and restoring half the swap would strand the
+    promoted route in neither list.
 
     Mirrors :func:`restore_cron_jobs_if_emptied`: compare the *current*
     config against the pre-update snapshot taken minutes earlier by this
@@ -2349,6 +2420,7 @@ def restore_config_model_settings_if_rewritten(
         return None
 
     restored_keys: list[str] = []
+    restored_keys.extend(_restore_model_route_bundle(snap, live))
     for dotted in _PROTECTED_CONFIG_PATHS:
         snap_val = _get_config_path_value(snap, dotted)
         if snap_val in (None, "", {}, []):
