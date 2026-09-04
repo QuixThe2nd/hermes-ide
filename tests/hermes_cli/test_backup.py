@@ -2045,6 +2045,214 @@ class TestRestoreConfigModelSettingsIfRewritten:
         ) is None
 
 
+# ---------------------------------------------------------------------------
+# Model route bundle: primary + fallbacks restore as one coupled unit
+# (fallback_quota_reorder promotion racing the update safety net)
+# ---------------------------------------------------------------------------
+
+class TestModelRouteBundleRestore:
+    """The primary route and its fallback chain are ONE bundle.
+
+    The fallback_quota_reorder plugin atomically promotes a fallback entry
+    into model.provider/model.default and moves the displaced primary into
+    fallback_providers. The update safety net used to restore only the
+    model.* half of that swap, leaving the post-promotion fallback list —
+    so the promoted route ended up in NEITHER list. The restore must
+    reconcile the whole bundle from the pre-update snapshot."""
+
+    # The intact pre-promotion route (from the field report).
+    INTACT_CONFIG = (
+        "_config_version: 39\n"
+        "model:\n"
+        "  provider: openai-codex\n"
+        "  default: gpt-5.6-sol\n"
+        "fallback_providers:\n"
+        "  - xai-oauth/grok-4.6\n"
+        "  - kimi-coding/kimi-k3\n"
+        "  - zai/glm-5.3-flash\n"
+    )
+    INTACT_FALLBACKS = [
+        "xai-oauth/grok-4.6",
+        "kimi-coding/kimi-k3",
+        "zai/glm-5.3-flash",
+    ]
+
+    def _make_snapshot(self, hermes_home: Path, label="pre-update"):
+        from hermes_cli.backup import create_quick_snapshot
+        return create_quick_snapshot(label=label, hermes_home=hermes_home, keep=5)
+
+    def _seed(self, hermes_home: Path, text: str) -> Path:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text(text, encoding="utf-8")
+        return cfg
+
+    def test_promoted_route_not_stranded_by_half_restore(self, tmp_path):
+        """The observed failure: the update put Codex back as primary but
+        left the sorter's post-promotion fallback list, so the promoted Grok
+        route was in neither list. Restoring the whole bundle must put Grok
+        back and lose nothing."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home, self.INTACT_CONFIG)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # End state of the broken half-restore: primary already back on
+        # Codex, but the fallback list is still the post-promotion one
+        # (displaced Codex promoted in, Grok promoted out and gone).
+        cfg.write_text(
+            "_config_version: 39\n"
+            "model:\n"
+            "  provider: openai-codex\n"
+            "  default: gpt-5.6-sol\n"
+            "fallback_providers:\n"
+            "  - openai-codex/gpt-5.6-sol\n"
+            "  - kimi-coding/kimi-k3\n"
+            "  - zai/glm-5.3-flash\n",
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        assert "fallback_providers" in result["keys"]
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["model"]["provider"] == "openai-codex"
+        assert after["model"]["default"] == "gpt-5.6-sol"
+        # The promoted route is back in the fallback list — not lost.
+        assert after["fallback_providers"] == self.INTACT_FALLBACKS
+
+    def test_changed_fallback_list_alone_triggers_bundle_restore(self, tmp_path):
+        """Primary fields identical, only the fallback list rewritten — the
+        bundle must still restore (the fallback chain is not free-floating
+        config the update may rewrite)."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home, self.INTACT_CONFIG)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Update rewrote only the chain with a single default fallback.
+        cfg.write_text(
+            "_config_version: 39\n"
+            "model:\n"
+            "  provider: openai-codex\n"
+            "  default: gpt-5.6-sol\n"
+            "fallback_providers:\n"
+            "  - deepseek/deepseek-chat\n",
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        assert "fallback_providers" in result["keys"]
+        assert "model.provider" not in result["keys"]  # primary already matched
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["fallback_providers"] == self.INTACT_FALLBACKS
+
+    def test_legacy_fallback_model_introduced_after_snapshot_is_dropped(self, tmp_path):
+        """Missing-key semantics: a legacy fallback_model the snapshot did
+        not have must not survive merely because the update introduced it."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home, self.INTACT_CONFIG)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Post-update config adds the legacy single-model fallback spelling.
+        cfg.write_text(
+            self.INTACT_CONFIG + "fallback_model: deepseek/deepseek-chat\n",
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        assert "fallback_model" in result["keys"]
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert "fallback_model" not in after
+        # The rest of the route the user DID have is untouched.
+        assert after["model"]["default"] == "gpt-5.6-sol"
+        assert after["fallback_providers"] == self.INTACT_FALLBACKS
+
+    def test_unrelated_update_writes_survive_bundle_restore(self, tmp_path):
+        """A triggered bundle restore must not roll back the rest of the
+        config: version stamps and new sections the update legitimately
+        wrote stay."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home, self.INTACT_CONFIG)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        cfg.write_text(
+            "_config_version: 40\n"          # legitimate migration bump
+            "new_section:\n  added: true\n"  # legitimate new default
+            "model:\n"
+            "  provider: openai-codex\n"
+            "  default: gpt-5.6-sol\n"
+            "fallback_providers:\n"
+            "  - openai-codex/gpt-5.6-sol\n"
+            "  - kimi-coding/kimi-k3\n"
+            "  - zai/glm-5.3-flash\n",
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["fallback_providers"] == self.INTACT_FALLBACKS  # restored
+        assert after["_config_version"] == 40                        # kept
+        assert after["new_section"] == {"added": True}               # kept
+
+    def test_noop_no_write_when_route_bundle_unchanged(self, tmp_path):
+        """Identical route bundle + protected keys → no restore, no write:
+        unrelated-only post-update changes are left exactly as the update
+        wrote them (byte-for-byte)."""
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home, self.INTACT_CONFIG)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        rewritten = (
+            "_config_version: 40\n"
+            "new_section:\n  added: true\n"
+            "model:\n"
+            "  provider: openai-codex\n"
+            "  default: gpt-5.6-sol\n"
+            "fallback_providers:\n"
+            "  - xai-oauth/grok-4.6\n"
+            "  - kimi-coding/kimi-k3\n"
+            "  - zai/glm-5.3-flash\n"
+        )
+        cfg.write_text(rewritten, encoding="utf-8")
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+        assert cfg.read_text(encoding="utf-8") == rewritten
 
 
 
