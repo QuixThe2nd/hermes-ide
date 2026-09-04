@@ -2,7 +2,7 @@
 
 The hermetic conftest exports ``HERMES_TEST_ISOLATION`` to mark the whole
 process tree as a test run. The three detached launchers — the gateway's
-restart watcher (``GatewayRunner._launch_detached_restart_command``), the
+restart watcher (``GatewayRunner._launch_detached_restart_watcher``), the
 macOS launchd fallback (``hermes_cli.gateway._spawn_detached_gateway``), and
 the Windows hidden-console spawn (``hermes_cli.gateway_windows._spawn_detached``)
 — each leave behind a process that outlives their caller, so one that fires
@@ -74,20 +74,25 @@ async def test_gateway_runner_detached_restart_never_spawns_under_isolation(
 
     monkeypatch.setenv("HERMES_TEST_ISOLATION", "/tmp/pytest-isolation-root")
     popen = _no_spawn_popen(monkeypatch)
-    # _resolve_hermes_bin() is the first statement past the guard: recording
-    # it proves the refusal happens before any watcher argv is even built.
-    resolve_bin = MagicMock(name="_resolve_hermes_bin")
-    monkeypatch.setattr("gateway.run._resolve_hermes_bin", resolve_bin)
-
     runner, _adapter = make_restart_runner()
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
-        await runner._launch_detached_restart_command()
+    # Guard-order proof WITHOUT intercepting logging: ``os.getpid`` is off
+    # limits as an anchor because it lives on the SHARED os module — every
+    # LogRecord creation calls it, so the guard's own warning would falsify
+    # an assert_not_called on it. ``Path`` is a gateway.run module global the watcher
+    # launcher touches only past the guard, while building the project root for the
+    # watcher argv: recording it proves the refusal happens before any watcher argv is
+    # even built, and logging never touches ``gateway.run.Path``.
+    path_cls = MagicMock(name="gateway.run.Path")
+    monkeypatch.setattr("gateway.run.Path", path_cls)
 
-    resolve_bin.assert_not_called()
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        await runner._launch_detached_restart_watcher()
+
+    path_cls.assert_not_called()
     popen.assert_not_called()
     # The guard fires BEFORE the one-shot latch: this attempt was refused,
     # not consumed, so a later real attempt could still spawn.
-    assert runner._detached_restart_helper_started is False
+    assert runner._detached_restart_watcher_started is False
     assert _warned_about_isolation(caplog)
 
 

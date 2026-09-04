@@ -92,8 +92,17 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
 
     await runner._handle_restart_command(event)
 
+    # Every marker byte lands through atomic_json_write, and only ever into
+    # attempt-scoped staging files (".restart_notify.json.<token>.staging") —
+    # the authoritative names appear solely via the synchronous promote
+    # replace, never as worker write targets (Fix 1).
     names = [name for name, _payload, _kwargs in calls]
-    assert names == [".restart_notify.json", ".restart_last_processed.json"]
+    assert len(names) == 2
+    for name in names:
+        assert name.startswith(".restart_notify.json.") or name.startswith(
+            ".restart_last_processed.json."
+        )
+        assert name.endswith(".staging")
     assert calls[0][1]["chat_id"] == "42"
     assert calls[1][1]["platform"] == "telegram"
 

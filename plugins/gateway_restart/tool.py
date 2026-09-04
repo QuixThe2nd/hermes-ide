@@ -7,8 +7,8 @@ open-ended registration whose reply the gateway text-intercept eats instead of
 starting a new turn). As soon as the word lands it calls
 ``GatewayRunner.begin_user_restart``, the same shared entry point the
 ``/restart`` slash command uses, so the two cannot drift apart: the drain
-blocks new work, waits for in-flight sessions to finish naturally (then
-force-drains on the existing timeouts), and the gateway bounces and comes
+blocks new work, waits for in-flight sessions to finish naturally — with
+no cap, so live work is never forced — and the gateway bounces and comes
 back online — the tool never runs a wait of its own beside that drain. When
 this session is provably the only work in flight, the ping is skipped and the
 drain is queued outright — with no one else to time the bounce around, the
@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ RESTART_SCHEMA = {
         "with the exact word `restart` before anything happens; anything "
         "else cancels. Once the word lands, the restart queues on that "
         "shared drain, which waits for the other in-flight sessions to "
-        "finish naturally while blocking new work. When this is the only "
+        "finish naturally while blocking new work — however long they take, "
+        "the restart never forces them. When this is the only "
         "active session, there is no ping — the restart is queued outright "
         "and fires after this turn ends. In-flight turns (including this "
         "one) drain first, then the gateway stops and comes back online, "
@@ -59,8 +61,19 @@ RESTART_SCHEMA = {
 # Gateway-loop round trips (the confirm prompt send, then begin_user_restart)
 # are quick — begin_user_restart only writes two small marker files and
 # schedules the drain task. The bound exists so a wedged loop fails the tool
-# call instead of hanging the worker thread forever.
+# call instead of hanging the worker thread forever. A timeout cancels
+# begin_user_restart mid-setup, and that coroutine's rollback restores
+# admission and its provisional markers — the failed hand-off leaves the
+# gateway retryable and never reaches stop().
 _BEGIN_RESTART_TIMEOUT_S = 15.0
+
+# After the timeout path cancels begin_user_restart, how long to wait for the
+# cancelled coroutine to finish unwinding (the rollback runs synchronously
+# inside it, so its completion means admission is restored). Bounded so a
+# truly wedged loop still fails the tool call; if even this expires, the
+# rollback stays unconfirmed and a retry may transiently read
+# ``already_in_progress`` — the pre-fix behavior, not a new hang.
+_BEGIN_ROLLBACK_SETTLE_S = 5.0
 
 # The only reply that confirms a restart: this exact word, nothing else.
 _CONFIRM_WORD = "restart"
@@ -177,32 +190,44 @@ def _cancelled_json(message: str) -> str:
     )
 
 
-def _extra_background_work_in_flight(runner: Any) -> bool:
-    """Cron or API-server work that ``_running_agents`` cannot see.
+def _authoritative_work_beside_requester(
+    runner: Any, session_key: str
+) -> Optional[int]:
+    """Fail-closed count of in-flight work excluding only the requester.
 
-    Both counters already swallow their own lookup errors and report 0
-    (best-effort by design), so an error escaping one here means a runner too
-    odd to reason about — count that as work in flight rather than idle.
+    Reads the runner's AUTHORITATIVE accounting —
+    ``_authoritative_active_work_count()``, the same fail-closed total the
+    restart's stop() boundary consults: running agents + cron (strict) +
+    API-server (strict) + surviving executor workers + pending background
+    tasks — minus the calling session's own turn when that turn is present
+    in ``_running_agents``. The old check here saw only
+    ``_running_agents``/cron/API and missed ``/bg`` background tasks and
+    deferred executor workers, so a restart beside a backgrounded agent
+    turn skipped the confirmation the timing gate exists for (#77184).
+
+    Returns None when the accounting cannot be read (missing hook,
+    exception, unreadable state): unreadable is BUSY, never proof of being
+    alone — callers keep the confirm-then-bounce path on None.
     """
-    for counter in ("_active_cron_job_count", "_active_api_run_count"):
-        try:
-            if int(getattr(runner, counter)()) > 0:
-                return True
-        except Exception:
-            return True
-    return False
+    running = getattr(runner, "_running_agents", None)
+    try:
+        requester_active = bool(running) and session_key in running
+    except Exception:
+        return None
+    counter = getattr(runner, "_authoritative_active_work_count", None)
+    if not callable(counter):
+        return None
+    try:
+        return int(counter()) - (1 if requester_active else 0)
+    except Exception:
+        return None
 
 
 def _other_active_work_in_flight(runner: Any, session_key: str) -> bool:
     """True when any in-flight work exists besides the calling session."""
-    running = getattr(runner, "_running_agents", None)
-    try:
-        if running and any(key != session_key for key in running):
-            return True
-    except Exception:
-        # Unreadable state looks busy, not idle — same stance as below.
-        return True
-    return _extra_background_work_in_flight(runner)
+    beside = _authoritative_work_beside_requester(runner, session_key)
+    # None = the accounting could not be read: unreadable looks busy.
+    return True if beside is None else beside > 0
 
 
 def _session_is_only_active_work(runner: Any, session_key: str) -> bool:
@@ -213,7 +238,9 @@ def _session_is_only_active_work(runner: Any, session_key: str) -> bool:
     duck-typed. Fail closed: an empty mapping, a missing/blank session key,
     or state that cannot be read is NOT proof of being alone — those keep
     the confirm-then-bounce path. Skipping the confirmation requires the
-    session key to be present, alone, with no cron/API work beside it.
+    session key to be present, alone, and the authoritative count beside it
+    (every other class of work — other sessions, cron, API, deferred
+    executor workers, pending /bg background tasks) to be zero.
     """
     if not session_key:
         return False
@@ -225,7 +252,7 @@ def _session_is_only_active_work(runner: Any, session_key: str) -> bool:
             return False
     except Exception:
         return False
-    return not _extra_background_work_in_flight(runner)
+    return _authoritative_work_beside_requester(runner, session_key) == 0
 
 
 def _drop_pending_confirm(clarify_mod: Any, clarify_id: str) -> None:
@@ -585,8 +612,9 @@ def handle_restart(args: dict, **_: Any) -> str:
     6. After a successful confirm — other work in flight or not —
        ``begin_user_restart`` is queued immediately, exactly as on the skip
        path. The shared drain owns the wait for the other sessions: it
-       blocks new work, lets running turns finish naturally, then
-       force-drains on the existing timeouts. The requester's routing is
+       blocks new work and lets running turns finish naturally, with no
+       cap — a user-requested restart never forces them (#77184). The
+       requester's routing is
        persisted to ``.restart_notify.json`` for the comeback notice.
     7. On confirmation (or a skipped confirm), returns once the restart is
        queued — the bounce happens after this turn ends.
@@ -673,7 +701,22 @@ def handle_restart(args: dict, **_: Any) -> str:
 
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip() or None
     begin = runner.begin_user_restart(source=source, message_id=message_id)
-    future, submit_error = _submit_to_loop(begin, loop)
+    # Flag when the begin coroutine has fully unwound — success or exception.
+    # The timeout path below cancels it mid-setup; the rollback that restores
+    # admission runs synchronously inside the unwind, so waiting for this flag
+    # (bounded) means the tool only answers "failed" once the gateway is
+    # actually retryable. Without it, a retry landing in the gap between
+    # future.cancel() and the loop delivering the cancellation would read
+    # ``already_in_progress`` for a restart that is not going to happen.
+    begin_settled = threading.Event()
+
+    async def _begin_and_flag_settled() -> Any:
+        try:
+            return await begin
+        finally:
+            begin_settled.set()
+
+    future, submit_error = _submit_to_loop(_begin_and_flag_settled(), loop)
     if submit_error is not None:
         logger.warning(
             "restart tool: begin_user_restart could not be submitted: %s", submit_error
@@ -684,5 +727,11 @@ def handle_restart(args: dict, **_: Any) -> str:
     except Exception as exc:
         future.cancel()
         logger.warning("restart tool: begin_user_restart failed: %s", exc)
+        if not begin_settled.wait(timeout=_BEGIN_ROLLBACK_SETTLE_S):
+            logger.warning(
+                "restart tool: cancelled begin_user_restart did not settle within "
+                "%.1fs; admission rollback could not be confirmed",
+                _BEGIN_ROLLBACK_SETTLE_S,
+            )
         return _error_json(f"Failed to begin gateway restart: {exc}")
     return _result_json(runner, status)

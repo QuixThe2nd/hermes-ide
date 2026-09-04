@@ -2,8 +2,10 @@
 
 Since the opt-in change nothing here runs merely because a restart began —
 ``request_restart()`` drains and waits naturally. The park steer fires only
-when the requester explicitly opts in, and the snapshot is taken at that
-moment, not at restart-request time.
+when the requester explicitly opts in, at that moment — and only the
+sessions whose agent ACCEPTED the steer are persisted for startup
+continuation. A session that refused the steer finishes on its own; it must
+never land in the resume receipt as if it had parked.
 """
 
 from __future__ import annotations
@@ -124,7 +126,7 @@ async def test_request_restart_does_not_auto_steer_mark_or_write_allowlist(
     _patch_resume_home(monkeypatch, tmp_path)
     runner, _adapter = make_restart_runner()
     runner.stop = MagicMock()
-    runner._launch_detached_restart_command = MagicMock()
+    runner._launch_detached_restart_watcher = MagicMock()
     runner._restart_after_turn_timeout = 0.0
     requester = make_restart_source(chat_id="req")
     runner._restart_command_source = requester
@@ -147,6 +149,44 @@ async def test_request_restart_does_not_auto_steer_mark_or_write_allowlist(
         runner._restart_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await runner._restart_task
+
+
+@pytest.mark.asyncio
+async def test_no_pause_reaction_leaves_agents_running_with_admission_closed(
+    tmp_path, monkeypatch
+):
+    """Without a ⏸️ opt-in, live agents keep running normally (no steer, no
+    interrupt) while admission stays closed for new chats — and the legacy
+    ``restart_after_turn_timeout=0`` never forces the restart over them."""
+    _patch_resume_home(monkeypatch, tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 0.0
+    requester = make_restart_source(chat_id="req")
+    runner._restart_command_source = requester
+    requester_key = runner._session_key_for_source(requester)
+
+    other = MagicMock()
+    other.steer.return_value = True
+    runner._running_agents["agent:main:telegram:dm:other"] = other
+    runner._running_agents[requester_key] = MagicMock()
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    assert runner._draining is True
+
+    await asyncio.sleep(0.3)
+    # Active work keeps running: no steer, no interrupt, no stop().
+    other.steer.assert_not_called()
+    other.interrupt.assert_not_called()
+    runner.stop.assert_not_awaited()
+    assert "agent:main:telegram:dm:other" in runner._running_agents
+    # Admission stays closed the whole time — new chats cannot start.
+    assert runner._draining is True
+
+    # The work finishing is what unblocks the restart.
+    runner._running_agents.clear()
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+    runner.stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -271,7 +311,8 @@ def test_missing_allowlist_means_crash_path():
 def test_all_targets_finished_before_reaction_is_a_terminal_no_op(
     tmp_path, monkeypatch
 ):
-    """Nobody left to ask → no steer, no mark, and no empty allowlist."""
+    """Nobody left to ask → no steer, no mark; the empty accepted set is the
+    receipt ("resume nobody"), so an older cycle's keys cannot resurface."""
     from gateway.restart_wind_down import load_resume_allowlist
 
     _patch_resume_home(monkeypatch, tmp_path)
@@ -303,14 +344,21 @@ def test_all_targets_finished_before_reaction_is_a_terminal_no_op(
         "accepted_count": 0,
     }
     runner.session_store.mark_resume_pending.assert_not_called()
-    assert load_resume_allowlist() is None
+    assert load_resume_allowlist() == set()
     # Consumed: a later reaction on the same message can never re-run it.
     assert runner._restart_wind_down_offer is None
 
 
-def test_snapshot_includes_active_chats_even_when_steer_is_rejected(
+def test_rejected_steer_is_excluded_from_the_resume_receipt(
     tmp_path, monkeypatch
 ):
+    """A session whose steer() returned False must not be persisted.
+
+    It never parked — it will finish on its own before the restart — so
+    persisting it would make the next boot auto-continue a session that
+    was never asked-and-agreed. The attempted key is still recorded for
+    exactly-once steering.
+    """
     from gateway.restart_wind_down import load_resume_allowlist
 
     _patch_resume_home(monkeypatch, tmp_path)
@@ -321,8 +369,183 @@ def test_snapshot_includes_active_chats_even_when_steer_is_rejected(
 
     steered = runner._request_cooperative_restart_wind_down()
     assert steered == []
-    assert load_resume_allowlist() == {"agent:main:telegram:dm:live"}
+    assert load_resume_allowlist() == set()
+    runner.session_store.mark_resume_pending.assert_not_called()
     assert runner._cooperative_restart_sessions == ["agent:main:telegram:dm:live"]
+    assert runner._cooperative_restart_steered_sessions == []
+    # The receipt is authoritative: the refused session does not revive.
+    from gateway.restart_wind_down import should_auto_resume_session
+
+    assert (
+        should_auto_resume_session(
+            "agent:main:telegram:dm:live", load_resume_allowlist()
+        )
+        is False
+    )
+
+
+def test_opt_in_persists_exactly_the_accepted_subset_of_targets(
+    tmp_path, monkeypatch
+):
+    """One accepted + one rejected target → receipt and marks hold only the
+    accepted key, while the steer itself still reached both agents once."""
+    from gateway.restart_wind_down import load_resume_allowlist
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._begin_restart_cycle()
+    runner._restart_wind_down_offer = {
+        "generation": runner._restart_generation,
+        "nonce": runner._restart_wind_down_nonce,
+        "message_id": "m-1",
+        "channel_id": "req",
+        "requester_user_id": "u1",
+    }
+
+    cooperative = MagicMock()
+    cooperative.steer.return_value = True
+    stubborn = MagicMock()
+    stubborn.steer.return_value = False
+    runner._running_agents["agent:main:telegram:dm:cooperative"] = cooperative
+    runner._running_agents["agent:main:telegram:dm:stubborn"] = stubborn
+    runner.session_store.mark_resume_pending.return_value = True
+
+    result = asyncio.run(
+        runner.accept_restart_wind_down_opt_in(
+            message_id="m-1",
+            channel_id="req",
+            requester_user_id="u1",
+            emoji="⏸️",
+            generation=runner._restart_generation,
+            nonce=runner._restart_wind_down_nonce,
+        )
+    )
+
+    assert result == {
+        "accepted": True,
+        "accepted_count": 1,
+        "steered": ["agent:main:telegram:dm:cooperative"],
+    }
+    cooperative.steer.assert_called_once_with(COOPERATIVE_RESTART_STEER)
+    stubborn.steer.assert_called_once_with(COOPERATIVE_RESTART_STEER)
+    assert load_resume_allowlist() == {"agent:main:telegram:dm:cooperative"}
+    runner.session_store.mark_resume_pending.assert_called_once_with(
+        "agent:main:telegram:dm:cooperative", COOPERATIVE_RESTART_REASON
+    )
+    assert runner._cooperative_restart_steered_sessions == [
+        "agent:main:telegram:dm:cooperative"
+    ]
+    # Both attempts are recorded: a duplicate opt-in re-steers neither.
+    assert sorted(runner._cooperative_restart_sessions) == [
+        "agent:main:telegram:dm:cooperative",
+        "agent:main:telegram:dm:stubborn",
+    ]
+
+
+def test_duplicate_reaction_persists_the_accepted_receipt_once(
+    tmp_path, monkeypatch
+):
+    """A second valid ⏸️ is already_accepted: no second steer, and the
+    receipt on disk stays exactly the first accepted set."""
+    from gateway.restart_wind_down import load_resume_allowlist
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._begin_restart_cycle()
+    runner._restart_wind_down_offer = {
+        "generation": runner._restart_generation,
+        "nonce": runner._restart_wind_down_nonce,
+        "message_id": "m-1",
+        "channel_id": "req",
+        "requester_user_id": "u1",
+    }
+
+    agent = MagicMock()
+    agent.steer.return_value = True
+    runner._running_agents["agent:main:telegram:dm:live"] = agent
+    runner.session_store.mark_resume_pending.return_value = True
+
+    kwargs = dict(
+        message_id="m-1",
+        channel_id="req",
+        requester_user_id="u1",
+        emoji="⏸️",
+        generation=runner._restart_generation,
+        nonce=runner._restart_wind_down_nonce,
+    )
+    first = asyncio.run(runner.accept_restart_wind_down_opt_in(**kwargs))
+    second = asyncio.run(runner.accept_restart_wind_down_opt_in(**kwargs))
+
+    assert first["accepted"] is True and first["accepted_count"] == 1
+    assert second == {"accepted": False, "reason": "already_accepted"}
+    agent.steer.assert_called_once_with(COOPERATIVE_RESTART_STEER)
+    runner.session_store.mark_resume_pending.assert_called_once_with(
+        "agent:main:telegram:dm:live", COOPERATIVE_RESTART_REASON
+    )
+    assert load_resume_allowlist() == {"agent:main:telegram:dm:live"}
+
+
+def test_failed_receipt_write_invalidates_a_stale_receipt_and_keeps_the_latch_unset(
+    tmp_path, monkeypatch
+):
+    """Atomic-write failure over a pre-existing stale receipt.
+
+    The old cycle's file must stop being authoritative the moment the new
+    accepted set fails to replace it: the stale keys are invalidated, the
+    ``written`` latch stays unset (so cycle-finalize clears again), and the
+    genuinely accepted session keeps its resume_pending mark — a missing
+    receipt falls back to the pending scan, which still revives it.
+    """
+    import gateway.restart_wind_down as wind_down
+
+    _patch_resume_home(monkeypatch, tmp_path)
+    stale_key = "agent:main:discord:thread:old"
+    accepted_key = "agent:main:telegram:dm:new"
+    assert wind_down.write_resume_allowlist([stale_key]) is True
+    assert load_resume_allowlist() == {stale_key}
+
+    def _failing_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(wind_down, "atomic_json_write", _failing_write)
+
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._begin_restart_cycle()
+    runner._restart_wind_down_offer = {
+        "generation": runner._restart_generation,
+        "nonce": runner._restart_wind_down_nonce,
+        "message_id": "m-1",
+        "channel_id": "req",
+        "requester_user_id": "u1",
+    }
+    agent = MagicMock()
+    agent.steer.return_value = True
+    runner._running_agents[accepted_key] = agent
+    runner.session_store.mark_resume_pending.return_value = True
+
+    result = asyncio.run(
+        runner.accept_restart_wind_down_opt_in(
+            message_id="m-1",
+            channel_id="req",
+            requester_user_id="u1",
+            emoji="⏸️",
+            generation=runner._restart_generation,
+            nonce=runner._restart_wind_down_nonce,
+        )
+    )
+
+    assert result == {"accepted": True, "accepted_count": 1, "steered": [accepted_key]}
+    # The stale receipt was invalidated, not left standing in for this cycle.
+    assert load_resume_allowlist() is None
+    assert runner._restart_wind_down_allowlist_written is False
+    # The accepted session still parked and is still marked for revival.
+    runner.session_store.mark_resume_pending.assert_called_once_with(
+        accepted_key, COOPERATIVE_RESTART_REASON
+    )
+    assert runner._cooperative_restart_steered_sessions == [accepted_key]
 
 
 @pytest.mark.asyncio
@@ -722,7 +945,7 @@ async def test_no_offer_restart_still_clears_a_stale_receipt(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_after_turn_wait_finalizes_the_prompt_on_drain_and_on_cap(
+async def test_after_turn_wait_finalizes_the_prompt_only_on_real_drain(
     tmp_path, monkeypatch
 ):
     from gateway.restart import DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
@@ -750,7 +973,10 @@ async def test_after_turn_wait_finalizes_the_prompt_on_drain_and_on_cap(
     )
     adapter.finalize_restart_wind_down_offer.assert_awaited_once()
 
-    # Safety cap: the cap elapses with work still active.
+    # Legacy 0 cap: work stays active past any budget the old value would
+    # have authorised. The wait keeps going — no "cap reached" terminal, no
+    # "restart proceeding" claim while work remains (#77184) — and the
+    # drained terminal fires only once the work truly finishes.
     runner2, adapter2, _s2 = _discord_runner(tmp_path, monkeypatch)
     runner2._restart_after_turn_timeout = 0.0
     runner2._restart_wind_down_offer = {
@@ -762,12 +988,19 @@ async def test_after_turn_wait_finalizes_the_prompt_on_drain_and_on_cap(
     }
     runner2._running_agents["agent:main:discord:thread:other"] = MagicMock()
 
-    await runner2._await_active_work_before_restart()
+    async def _clear_after_outliving_any_zero_cap():
+        await asyncio.sleep(0.3)
+        runner2._running_agents.clear()
+
+    await asyncio.gather(
+        runner2._await_active_work_before_restart(),
+        _clear_after_outliving_any_zero_cap(),
+    )
 
     adapter2.finalize_restart_wind_down_offer.assert_awaited_once()
     assert (
         adapter2.finalize_restart_wind_down_offer.await_args.kwargs["spec"]["title"]
-        == "⏳ Restart proceeding"
+        == "✅ Active sessions finished"
     )
 
 
@@ -978,9 +1211,26 @@ def test_terminal_specs_name_session_counts_without_internal_keys():
         WIND_DOWN_TERMINAL_OPTED_IN,
         WIND_DOWN_TERMINAL_DRAINED,
         "closed",
-        "safety_cap",
         "no_targets",
     ):
         spec = restart_wind_down_terminal_spec(kind, accepted=3)
         assert "agent:" not in spec["description"] + spec["title"]
         assert COOPERATIVE_RESTART_STEER not in spec["description"]
+
+
+def test_no_terminal_spec_claims_a_cap_or_proceeds_over_active_work():
+    """No terminal copy may say a safety cap was reached or that the restart
+    is proceeding while active work remains (#77184) — the "safety cap"
+    terminal no longer exists at all."""
+    import gateway.restart_wind_down as rwd
+
+    assert not hasattr(rwd, "WIND_DOWN_TERMINAL_SAFETY_CAP")
+    for kind in (rwd.WIND_DOWN_TERMINAL_OPTED_IN, rwd.WIND_DOWN_TERMINAL_DRAINED,
+                 rwd.WIND_DOWN_TERMINAL_NO_TARGETS, rwd.WIND_DOWN_TERMINAL_CLOSED):
+        spec = restart_wind_down_terminal_spec(kind, accepted=3)
+        text = spec["title"] + spec["description"]
+        assert "safety cap" not in text.lower()
+        # "proceeding" is allowed ONLY where it states work already finished
+        # (drained / no_targets); opted_in and closed never claim it.
+        if kind in (rwd.WIND_DOWN_TERMINAL_OPTED_IN, rwd.WIND_DOWN_TERMINAL_CLOSED):
+            assert "proceeding" not in text.lower()

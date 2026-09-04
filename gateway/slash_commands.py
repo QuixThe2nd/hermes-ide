@@ -24,7 +24,9 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -67,6 +69,39 @@ HISTORY_UNREADABLE = (
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+
+
+class _RestartMarkerAttempt:
+    """Attempt-scoped identity for one begin's authoritative marker writes.
+
+    Cancelling ``begin_user_restart`` cannot stop an ``asyncio.to_thread``
+    worker, so a worker whose coroutine was cancelled may still be mid-write
+    when the abort rollback runs — and a direct authoritative write would let
+    it re-create a marker the rollback just removed. Every marker write in
+    one begin attempt is therefore bound to one of these: the off-loop
+    worker only ever writes an attempt-scoped staging file, promotion to the
+    authoritative path is a synchronous rename performed by the live
+    coroutine after its await returns, and a worker that finishes after its
+    attempt was abandoned removes its own staging residue (the ``finally``
+    re-check closes the rollback-ran-mid-write window).
+
+    ``abandoned`` is a ``threading.Event`` so the worker thread and the
+    event-loop rollback agree without sharing a loop; the path registries
+    are touched only on the loop thread.
+    """
+
+    __slots__ = ("token", "abandoned", "staging_paths", "promoted_paths")
+
+    def __init__(self) -> None:
+        self.token = uuid.uuid4().hex
+        self.abandoned = threading.Event()
+        self.staging_paths: list[Path] = []
+        self.promoted_paths: list[Path] = []
+
+    def staging_path_for(self, authoritative_path: Path) -> Path:
+        return authoritative_path.with_name(
+            f"{authoritative_path.name}.{self.token}.staging"
+        )
 
 
 def _clean_str(value: Any) -> str:
@@ -1615,6 +1650,69 @@ class GatewaySlashCommandsMixin:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
+    async def _stage_and_promote_restart_marker(
+        self,
+        authoritative_path: Path,
+        payload: dict,
+        attempt: "_RestartMarkerAttempt",
+    ) -> None:
+        """Write *payload* off-loop to staging; promote only while still live.
+
+        The off-loop worker may write ONLY the attempt-scoped staging file.
+        Promotion to ``authoritative_path`` is a synchronous ``os.replace``
+        performed here, on the event loop, after the await returns — so a
+        cancelled or failed begin attempt can never publish (or re-publish)
+        authoritative bytes, no matter what its worker does afterward. The
+        staged bytes are already fsynced by ``atomic_json_write``; the final
+        rename is atomic metadata-only, and a crash between staging and
+        promotion simply leaves no marker (best-effort, like any write
+        error).
+        """
+        staging_path = attempt.staging_path_for(authoritative_path)
+        attempt.staging_paths.append(staging_path)
+
+        def _write_staged() -> None:
+            if attempt.abandoned.is_set():
+                # The attempt was rolled back before this worker started:
+                # nothing to stage, and nothing to publish later.
+                return
+            try:
+                atomic_json_write(staging_path, payload, indent=None)
+            finally:
+                if attempt.abandoned.is_set():
+                    # Rolled back mid-write: the rollback's synchronous
+                    # unlink may already have run, so remove whatever landed
+                    # after it. This worker never promotes.
+                    try:
+                        staging_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.debug(
+                            "restart marker rollback: could not remove "
+                            "staging file %s",
+                            staging_path.name,
+                        )
+
+        await asyncio.to_thread(_write_staged)
+        # The await returned without cancellation or error, so this attempt
+        # is still live: only it may promote the completed staged bytes.
+        try:
+            os.replace(staging_path, authoritative_path)
+        except BaseException:
+            # Ordinary write error (or a teardown-time failure) promoting:
+            # drop the staged bytes too — best-effort, no marker, like any
+            # failed write — and re-raise for the caller's own handling.
+            try:
+                staging_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug(
+                    "restart marker staging cleanup failed: %s",
+                    staging_path.name,
+                )
+            raise
+        finally:
+            attempt.staging_paths.remove(staging_path)
+        attempt.promoted_paths.append(authoritative_path)
+
     async def begin_user_restart(
         self,
         source: Optional[SessionSource] = None,
@@ -1628,8 +1726,10 @@ class GatewaySlashCommandsMixin:
         the agent-callable ``restart`` tool (``plugins/gateway_restart``) come
         through here, so the two can never drift apart. This method owns the
         requester's comeback routing (``.restart_notify.json`` +
-        ``_restart_command_source``), the opt-in Discord wind-down offer,
-        the supervisor/container restart branch,
+        ``_restart_command_source``), the immediate admission close
+        (``_draining`` is set synchronously before the first await — once
+        the requester has confirmed, no new chat may start), the opt-in
+        Discord wind-down offer, the supervisor/container restart branch,
         and the ``request_restart(...)`` call itself. Telegram redelivery dedup
         *detection* (``_is_stale_restart_redelivery``) deliberately stays in
         the slash handler — it is a property of the Telegram *update*, and the
@@ -1645,6 +1745,14 @@ class GatewaySlashCommandsMixin:
         drain task with ``asyncio.create_task``. The tool handler therefore
         hops here via ``asyncio.run_coroutine_threadsafe`` from its worker
         thread.
+
+        The begin operation owns everything it stages until that drain task
+        exists: if any awaited setup stage is cancelled or raises before
+        ``request_restart()`` establishes the task (the tool's bounded
+        hand-off guard cancelling a wedged loop is one such caller), the
+        provisional admission close and markers are rolled back so the
+        gateway stays retryable — cancellation or failure never strands
+        ``_draining=True`` with no restart, and never reaches ``stop()``.
 
         Returns a status dict:
 
@@ -1665,103 +1773,195 @@ class GatewaySlashCommandsMixin:
                 "via_service": None,
             }
 
-        # Save the requester's routing info so the new gateway process can
-        # notify them once it comes back online.
-        try:
-            notify_data = {
-                "platform": source.platform.value if source is not None and source.platform else None,
-                "chat_id": source.chat_id if source is not None else None,
-                "chat_type": source.chat_type if source is not None else None,
-            }
-            if source is not None:
-                if source.delivered_via_upstream_relay is True:
-                    notify_data["delivered_via_upstream_relay"] = True
-                    if source.user_id:
-                        notify_data["user_id"] = source.user_id
-                    if source.scope_id:
-                        notify_data["scope_id"] = source.scope_id
-                if source.thread_id:
-                    notify_data["thread_id"] = source.thread_id
-            if message_id:
-                notify_data["message_id"] = message_id
-            if source is not None:
-                try:
-                    self._restart_command_source = dataclasses.replace(
-                        source,
-                        message_id=str(message_id)
-                        if message_id is not None
-                        else source.message_id,
-                    )
-                except Exception:
-                    self._restart_command_source = source
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_notify.json",
-                notify_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart notify file: %s", e)
+        # Close admission synchronously, BEFORE the first await below: the
+        # requester has confirmed (or is provably the only work in flight),
+        # so no new chat may start while the notify write and the wind-down
+        # embed send yield the event loop. ``request_restart()`` re-asserts
+        # the same flag when it opens the drain task; setting it here closes
+        # the gap between confirmation and that call — the same upstream
+        # drain/admission behavior, just engaged at the moment the
+        # confirmation lands instead of a few round trips later.
+        self._draining = True
 
-        # Record the triggering platform + update_id in a dedicated dedup
-        # marker.  Unlike .restart_notify.json (which gets unlinked once the
-        # new gateway sends the "gateway restarted" notification), this
-        # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from Telegram.  Overwritten on every /restart.
-        # Written here — BEFORE request_restart() below — because the drain
-        # task request_restart creates can enter stop() as soon as this
-        # coroutine awaits, killing the process before a caller-side write
-        # lands and re-opening the redelivery restart loop.
-        if write_redelivery_marker:
+        # Attempt identity for every authoritative marker this begin stages:
+        # cancellation cannot stop an in-flight off-loop worker, so each
+        # worker writes only attempt-scoped staging bytes and only this
+        # coroutine — alive at its await — may promote them
+        # (``_stage_and_promote_restart_marker``).
+        marker_attempt = _RestartMarkerAttempt()
+
+        # From here until ``request_restart()`` establishes the real drain
+        # task, THIS attempt owns the provisional admission close above and
+        # every marker staged below. If any awaited setup stage is cancelled
+        # or raises before the task exists, roll that provisional state back
+        # via ``_rollback_aborted_user_restart`` — leaving ``_draining`` set
+        # with no restart task would answer every retry
+        # ``already_in_progress`` and close admission forever. Once
+        # ``_restart_task_started`` is set the rollback never runs: a
+        # genuinely established restart must not be undone out from under
+        # its drain task.
+        try:
+            # Save the requester's routing info so the new gateway process can
+            # notify them once it comes back online.
             try:
-                dedup_data = {
-                    "platform": source.platform.value
-                    if source is not None and source.platform
-                    else None,
-                    "requested_at": time.time(),
+                notify_data = {
+                    "platform": source.platform.value if source is not None and source.platform else None,
+                    "chat_id": source.chat_id if source is not None else None,
+                    "chat_type": source.chat_type if source is not None else None,
                 }
-                if platform_update_id is not None:
-                    dedup_data["update_id"] = platform_update_id
-                await asyncio.to_thread(
-                    atomic_json_write,
-                    _hermes_home / ".restart_last_processed.json",
-                    dedup_data,
-                    indent=None,
+                if source is not None:
+                    if source.delivered_via_upstream_relay is True:
+                        notify_data["delivered_via_upstream_relay"] = True
+                        if source.user_id:
+                            notify_data["user_id"] = source.user_id
+                        if source.scope_id:
+                            notify_data["scope_id"] = source.scope_id
+                    if source.thread_id:
+                        notify_data["thread_id"] = source.thread_id
+                if message_id:
+                    notify_data["message_id"] = message_id
+                if source is not None:
+                    try:
+                        self._restart_command_source = dataclasses.replace(
+                            source,
+                            message_id=str(message_id)
+                            if message_id is not None
+                            else source.message_id,
+                        )
+                    except Exception:
+                        self._restart_command_source = source
+                await self._stage_and_promote_restart_marker(
+                    _hermes_home / ".restart_notify.json", notify_data, marker_attempt
                 )
             except Exception as e:
-                logger.debug("Failed to write restart dedup marker: %s", e)
+                logger.debug("Failed to write restart notify file: %s", e)
 
-        active_agents = self._running_agent_count()
-        # Opt-in cooperative wind-down: for a native-Discord requester with at
-        # least one other live chat, offer the ⏸️ pause embed *before*
-        # request_restart() opens the drain task. The embed is the only thing
-        # that can trigger a park steer — without it the restart simply waits
-        # for the live sessions to finish on their own. Sent here rather than
-        # inside request_restart() so signal/update/API/cron restarts, which
-        # never pass a Discord source, can never see an offer.
-        try:
-            await self._send_restart_wind_down_prompt(source)
-        except Exception as e:
-            logger.debug("Restart wind-down offer skipped: %s", e)
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        # Native supervisor markers cover direct systemd/launchd starts. The
-        # explicit marker covers wrappers such as ``sudo env -i`` that strip
-        # those markers before execing the foreground gateway.
-        via_service = user_restart_via_service()
-        if via_service:
-            self.request_restart(detached=False, via_service=True)
-        else:
-            self.request_restart(detached=True, via_service=False)
+            # Record the triggering platform + update_id in a dedicated dedup
+            # marker.  Unlike .restart_notify.json (which gets unlinked once the
+            # new gateway sends the "gateway restarted" notification), this
+            # marker persists so the new gateway can still detect a delayed
+            # /restart redelivery from Telegram.  Overwritten on every /restart.
+            # Written here — BEFORE request_restart() below — because the drain
+            # task request_restart creates can enter stop() as soon as this
+            # coroutine awaits, killing the process before a caller-side write
+            # lands and re-opening the redelivery restart loop.
+            if write_redelivery_marker:
+                try:
+                    dedup_data = {
+                        "platform": source.platform.value
+                        if source is not None and source.platform
+                        else None,
+                        "requested_at": time.time(),
+                    }
+                    if platform_update_id is not None:
+                        dedup_data["update_id"] = platform_update_id
+                    await self._stage_and_promote_restart_marker(
+                        _hermes_home / ".restart_last_processed.json",
+                        dedup_data,
+                        marker_attempt,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to write restart dedup marker: %s", e)
+
+            active_agents = self._running_agent_count()
+            # Opt-in cooperative wind-down: for a native-Discord requester with at
+            # least one other live chat, offer the ⏸️ pause embed *before*
+            # request_restart() opens the drain task. The embed is the only thing
+            # that can trigger a park steer — without it the restart simply waits
+            # for the live sessions to finish on their own. Sent here rather than
+            # inside request_restart() so signal/update/API/cron restarts, which
+            # never pass a Discord source, can never see an offer.
+            try:
+                await self._send_restart_wind_down_prompt(source)
+            except Exception as e:
+                logger.debug("Restart wind-down offer skipped: %s", e)
+            # When running under a service manager (systemd/launchd) or inside a
+            # Docker/Podman container, use the service restart path: exit with
+            # code 75 so the service manager / container restart policy restarts
+            # us.  The detached subprocess approach (setsid + bash) doesn't work
+            # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
+            # exits when the gateway dies, taking the detached helper with it).
+            # Native supervisor markers cover direct systemd/launchd starts. The
+            # explicit marker covers wrappers such as ``sudo env -i`` that strip
+            # those markers before execing the foreground gateway.
+            via_service = user_restart_via_service()
+            if via_service:
+                self.request_restart(detached=False, via_service=True)
+            else:
+                self.request_restart(detached=True, via_service=False)
+        except BaseException:
+            if not getattr(self, "_restart_task_started", False):
+                self._rollback_aborted_user_restart(attempt=marker_attempt)
+            raise
         return {
             "status": "restarting",
             "active_agents": active_agents,
             "via_service": via_service,
         }
+
+    def _rollback_aborted_user_restart(
+        self, *, attempt: "_RestartMarkerAttempt"
+    ) -> None:
+        """Undo a :meth:`begin_user_restart` that never established a drain task.
+
+        Runs only from the abort path of the begin operation, after
+        cancellation or an exception proved ``request_restart()`` never
+        created the restart task. The begin attempt owns the provisional
+        admission close and every marker it staged; handing them back is
+        what keeps the gateway retryable — with ``_draining`` left set and
+        no restart task, every later request answers ``already_in_progress``
+        while admission stays closed forever.
+
+        Never runs once a restart task exists (the caller gates on
+        ``_restart_task_started``), so an established restart is never
+        rolled back out from under its drain task. Everything here is
+        synchronous and best-effort: this runs inside a cancelled
+        coroutine, which must not await.
+        """
+        # Marker writes first: declare the attempt abandoned so a worker
+        # still mid-write confines itself to staging bytes it then removes
+        # on its own, and remove exactly the artifacts THIS attempt created
+        # — the paths it promoted plus any staging not yet promoted. One
+        # attempt must never unlink a newer concurrent attempt's marker, so
+        # cleanup is bound to the attempt's registries, not blind filenames.
+        attempt.abandoned.set()
+        for path in [*attempt.staging_paths, *attempt.promoted_paths]:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                logger.debug(
+                    "restart begin rollback: could not remove %s", path.name
+                )
+        # Admission next: while ``_draining`` is held, every retry is
+        # rejected and no new chat may start. A concurrent teardown raises
+        # the same flag right after ``_running`` drops — only clear what
+        # this attempt closed, never a flag stop() now owns.
+        if getattr(self, "_running", True):
+            self._draining = False
+        # Requester routing staged by this attempt: the comeback-notice
+        # payload. A source that survives a rolled-back attempt would
+        # misroute the next genuine restart's notify.
+        self._restart_command_source = None
+        # Wind-down cycle this attempt opened: retire the registration so a
+        # late ⏸️ reaction can only be answered ``no_offer`` /
+        # ``not_restarting``, release any reaction still waiting on an
+        # in-flight embed send, and close the cycle so a retry mints a fresh
+        # generation and nonce instead of reusing the aborted one. The
+        # adapter-side embed, if one landed, has nothing actionable behind
+        # it anymore.
+        self._restart_wind_down_offer = None
+        record = getattr(self, "_restart_wind_down_send_in_flight", None)
+        if isinstance(record, dict):
+            record["abandoned"] = True
+            done = record.get("done")
+            if done is not None and not done.is_set():
+                done.set()
+        self._restart_wind_down_send_in_flight = None
+        self._restart_cycle_open = False
+        logger.info(
+            "Restart begin aborted before the drain task was established; "
+            "admission restored — a retry can request the restart again"
+        )
 
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""

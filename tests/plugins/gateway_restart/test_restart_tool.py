@@ -17,6 +17,7 @@ import logging
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -579,8 +580,9 @@ def test_handler_survives_runner_without_a_loop(monkeypatch):
 # cron/API work that ``_running_agents`` cannot see — are in flight, the
 # exact-word confirm stays, and once the word lands the drain is queued
 # immediately while that other work is still running: the shared drain in
-# begin_user_restart owns the wait for it (blocking new work, force-draining
-# on its own timeouts) — the tool never polls on its own beside that. Fail
+# begin_user_restart owns the wait for it (blocking new work, waiting
+# unbounded — a user-requested restart never forces it, #77184) — the tool
+# never polls on its own beside that. Fail
 # closed: a runner whose ``_running_agents`` does not show the calling
 # session keeps the confirm path — an empty map is not proof of being alone.
 
@@ -1715,6 +1717,610 @@ async def test_shared_begin_user_restart_writes_redelivery_marker_before_request
     runner.request_restart.assert_called_once()
     # Notify write still precedes the marker: both land before the drain.
     assert (tmp_path / ".restart_notify.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_shared_begin_user_restart_closes_admission_before_the_wind_down_wait(
+    tmp_path, monkeypatch
+):
+    """Admission (_draining) closes the moment the confirmation lands.
+
+    The notify write and the Discord wind-down embed send both await, and
+    every await can admit a new chat. ``_draining`` must already be True
+    when the FIRST of those awaits runs, and stay True through
+    ``request_restart()`` — once the requester confirms, no new chat may
+    start before the wind-down wait opens (#77184).
+    """
+    import gateway.slash_commands as slash_commands
+    from gateway.config import Platform
+
+    adapter = MagicMock()
+    adapter.send_restart_wind_down_offer = AsyncMock(return_value="m-1")
+    runner, _tg = make_restart_runner(adapter=adapter, platform=Platform.DISCORD)
+
+    observed_notify: list[bool] = []
+    real_write = slash_commands.atomic_json_write
+
+    def _write_spy(path, *args, **kwargs):
+        # Fix 1: the off-loop worker writes only attempt-scoped staging
+        # files (".restart_notify.json.<token>.staging"), so the spy keys on
+        # the authoritative prefix, not the exact name.
+        if Path(path).name.startswith(".restart_notify.json"):
+            observed_notify.append(runner._draining)
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(slash_commands, "atomic_json_write", _write_spy)
+
+    observed_send: list[bool] = []
+    real_send = adapter.send_restart_wind_down_offer
+
+    async def _send_spy(**kwargs):
+        observed_send.append(runner._draining)
+        return await real_send(**kwargs)
+
+    adapter.send_restart_wind_down_offer = _send_spy
+
+    # A native-Discord requester with a live peer chat makes the offer
+    # eligible, so the embed-send await really runs inside this call.
+    source = make_restart_source(
+        chat_id="9001",
+        chat_type="thread",
+        thread_id="9001",
+        platform=Platform.DISCORD,
+        user_id="111222333444555666",
+    )
+    runner._restart_command_source = source
+    runner._running_agents["agent:main:discord:thread:other"] = MagicMock()
+    runner.request_restart = MagicMock(return_value=True)
+
+    status = await runner.begin_user_restart(source=source, message_id="m1")
+
+    assert status["status"] == "restarting"
+    # Closed before the notify write (the first await) and before the
+    # wind-down embed send — and it stays closed through request_restart().
+    assert observed_notify == [True]
+    assert observed_send == [True]
+    assert runner._draining is True
+    # Exactly one embed send ran inside this call (the spy recorded it).
+    assert len(observed_send) == 1
+    runner.request_restart.assert_called_once()
+
+
+# ── a failed begin rolls its provisional state back ─────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage",
+    ["notify_write", "redelivery_marker", "wind_down_send"],
+)
+async def test_cancelled_begin_rolls_admission_back_at_every_setup_stage(
+    stage, monkeypatch
+):
+    """Cancellation at any awaited setup stage leaves the gateway retryable.
+
+    ``begin_user_restart`` closes admission synchronously before its first
+    await; every await after that (the notify write, the redelivery marker,
+    the Discord wind-down embed send) is a cancellation window. A cancel
+    there must roll the provisional close and markers back — otherwise
+    ``_draining`` stays set with no restart task, every retry answers
+    ``already_in_progress``, and admission is closed forever.
+    """
+    import gateway.slash_commands as slash_commands
+
+    real_write = slash_commands.atomic_json_write
+    release = threading.Event()
+    blocked = threading.Event()
+    worker_returned = threading.Event()
+
+    def _maybe_blocked_write(path, *args, **kwargs):
+        name = Path(path).name
+        # Staging names carry the attempt token: match the authoritative
+        # marker they belong to by prefix (Fix 1).
+        if (stage == "notify_write" and name.startswith(".restart_notify.json")) or (
+            stage == "redelivery_marker"
+            and name.startswith(".restart_last_processed.json")
+        ):
+            blocked.set()
+            release.wait(timeout=10)
+            # When released, complete the write FOR REAL: the delayed worker
+            # must genuinely land its staged bytes so the post-release
+            # observation below proves the abandoned attempt cleans them up.
+            try:
+                return real_write(path, *args, **kwargs)
+            finally:
+                worker_returned.set()
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(slash_commands, "atomic_json_write", _maybe_blocked_write)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="7")
+    kwargs = dict(
+        source=source,
+        message_id="m1",
+        platform_update_id=4242,
+        write_redelivery_marker=True,
+    )
+
+    send_started = None
+    if stage == "wind_down_send":
+        from gateway.config import Platform
+
+        adapter = MagicMock()
+        send_started = asyncio.Event()
+
+        async def _hanging_send(**_kwargs):
+            send_started.set()
+            await asyncio.Event().wait()
+
+        adapter.send_restart_wind_down_offer = _hanging_send
+        runner, _tg = make_restart_runner(adapter=adapter, platform=Platform.DISCORD)
+        runner.request_restart = MagicMock(return_value=True)
+        source = make_restart_source(
+            chat_id="9001",
+            chat_type="thread",
+            thread_id="9001",
+            platform=Platform.DISCORD,
+            user_id="111222333444555666",
+        )
+        # A live peer chat makes the wind-down offer eligible, so the embed
+        # send really runs (and really hangs) inside this begin.
+        runner._running_agents["agent:main:discord:thread:other"] = MagicMock()
+        kwargs = dict(
+            source=source,
+            message_id="m1",
+            platform_update_id=4242,
+            write_redelivery_marker=True,
+        )
+
+    begin_task = asyncio.create_task(runner.begin_user_restart(**kwargs))
+    if stage == "wind_down_send":
+        await send_started.wait()
+    else:
+        # Poll asynchronously — blocking the loop thread here would keep
+        # begin_task from ever reaching the write.
+        deadline = time.monotonic() + 5.0
+        while not blocked.is_set():
+            if time.monotonic() > deadline:
+                pytest.fail("begin never reached the blocked stage")
+            await asyncio.sleep(0.01)
+
+    begin_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await begin_task
+
+    # Rolled back: admission open, no restart task, staged markers gone.
+    assert runner._draining is False
+    assert runner._restart_requested is False
+    assert runner._restart_task_started is False
+    runner.request_restart.assert_not_called()
+    hermes_home = Path(gateway_run._hermes_home)
+    assert not (hermes_home / ".restart_notify.json").exists()
+    assert not (hermes_home / ".restart_last_processed.json").exists()
+    if stage == "wind_down_send":
+        assert runner._restart_cycle_open is False
+        assert runner._restart_wind_down_offer is None
+
+    # THE DELAYED WORKER (Fix 1): cancelling ``asyncio.to_thread`` does not
+    # stop its worker thread. Release the blocked write now and wait for the
+    # worker to run itself out — the abandoned attempt must leave NO
+    # authoritative marker behind and clean its own staging residue.
+    release.set()
+    if stage != "wind_down_send":
+        # Wait until the worker has landed its staged bytes (the write
+        # returned), then until its abandoned-attempt cleanup removed them.
+        worker_returned.wait(timeout=5.0)
+        deadline = time.monotonic() + 5.0
+        staging_left: list[Path] = []
+        while time.monotonic() < deadline:
+            staging_left = [
+                p for p in hermes_home.iterdir() if p.name.endswith(".staging")
+            ]
+            if not staging_left:
+                break
+            await asyncio.sleep(0.01)
+        assert not staging_left, (
+            f"staging residue survived the delayed worker: {staging_left}"
+        )
+    assert not (hermes_home / ".restart_notify.json").exists()
+    assert not (hermes_home / ".restart_last_processed.json").exists()
+
+    # The retry is admitted — never ``already_in_progress``.
+    if stage == "wind_down_send":
+
+        async def _fast_send(**_kwargs):
+            return "m-fast"
+
+        adapter.send_restart_wind_down_offer = _fast_send
+    status = await runner.begin_user_restart(**kwargs)
+    assert status["status"] == "restarting"
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_abandoned_attempt_cannot_remove_a_newer_attempt_marker(monkeypatch):
+    """Attempt-identity isolation (Fix 1): rollback binds cleanup to the
+    attempt's own staging/promoted paths, never to blind filenames.
+
+    Attempt A's notify worker is blocked and A is cancelled; the retry
+    (attempt B) stages and promotes its OWN marker. Only then is A's delayed
+    worker released: it may write and clean its own staging bytes, but it
+    must not touch — create OR remove — B's authoritative marker.
+    """
+    import gateway.slash_commands as slash_commands
+
+    real_write = slash_commands.atomic_json_write
+    release = threading.Event()
+    blocked = threading.Event()
+    worker_returned = threading.Event()
+    matching_writes = {"n": 0}
+
+    def _first_notify_write_blocked(path, *args, **kwargs):
+        name = Path(path).name
+        if name.startswith(".restart_notify.json"):
+            matching_writes["n"] += 1
+            if matching_writes["n"] == 1:
+                blocked.set()
+                release.wait(timeout=10)
+                try:
+                    return real_write(path, *args, **kwargs)
+                finally:
+                    worker_returned.set()
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(slash_commands, "atomic_json_write", _first_notify_write_blocked)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source_a = make_restart_source(chat_id="7")
+    begin_a = asyncio.create_task(
+        runner.begin_user_restart(
+            source=source_a, message_id="m-a", write_redelivery_marker=True
+        )
+    )
+    deadline = time.monotonic() + 5.0
+    while not blocked.is_set():
+        if time.monotonic() > deadline:
+            pytest.fail("attempt A never reached the blocked notify write")
+        await asyncio.sleep(0.01)
+    begin_a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await begin_a
+    assert runner._draining is False
+
+    # The retry is a NEW attempt: it stages and promotes its own marker.
+    source_b = make_restart_source(chat_id="8")
+    status = await runner.begin_user_restart(
+        source=source_b, message_id="m-b", write_redelivery_marker=True
+    )
+    assert status["status"] == "restarting"
+    hermes_home = Path(gateway_run._hermes_home)
+    notify_path = hermes_home / ".restart_notify.json"
+    assert notify_path.exists()
+    before = notify_path.read_bytes()
+
+    # A's delayed worker completes now: its finally-unlink targets A's
+    # staging path only. B's marker must survive byte-for-byte.
+    release.set()
+    worker_returned.wait(timeout=5.0)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not list(hermes_home.glob("*.staging")):
+            break
+        await asyncio.sleep(0.01)
+    assert not list(hermes_home.glob("*.staging"))
+    assert notify_path.exists()
+    assert notify_path.read_bytes() == before
+    data = json.loads(notify_path.read_text(encoding="utf-8"))
+    assert data["chat_id"] == "8"  # B's payload, not A's resurrection
+
+
+@pytest.mark.asyncio
+async def test_begin_setup_exception_rolls_admission_back():
+    """An ordinary setup exception (the request_restart hand-off failing)
+    must restore admission too — rollback is not cancellation-specific."""
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(side_effect=RuntimeError("loop closed"))
+
+    with pytest.raises(RuntimeError, match="loop closed"):
+        await runner.begin_user_restart(source=make_restart_source(chat_id="7"))
+
+    assert runner._draining is False
+    assert runner._restart_requested is False
+    assert runner._restart_task_started is False
+    assert not (Path(gateway_run._hermes_home) / ".restart_notify.json").exists()
+
+    runner.request_restart = MagicMock(return_value=True)
+    status = await runner.begin_user_restart(source=make_restart_source(chat_id="7"))
+    assert status["status"] == "restarting"
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_request_restart_setup_failure_triggers_begin_rollback_once():
+    """Fix 2 at the begin level: ``request_restart``'s setup transaction
+    fails inside ``_begin_restart_cycle``; request-level rollback restores
+    the started latch first, so the begin-level marker/requester/wind-down
+    rollback runs EXACTLY ONCE — and the gateway stays retryable."""
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    real_cycle = gateway_run.GatewayRunner._begin_restart_cycle.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    real_rollback = runner._rollback_aborted_user_restart
+    rollbacks = {"n": 0}
+
+    def _counting_rollback(*, attempt):
+        rollbacks["n"] += 1
+        return real_rollback(attempt=attempt)
+
+    runner._rollback_aborted_user_restart = _counting_rollback
+
+    def _exploding_cycle():
+        raise RuntimeError("cycle setter wedged")
+
+    runner._begin_restart_cycle = _exploding_cycle
+    source = make_restart_source(chat_id="7")
+
+    with pytest.raises(RuntimeError, match="cycle setter wedged"):
+        await runner.begin_user_restart(source=source, message_id="m1")
+
+    assert rollbacks["n"] == 1
+    assert runner._draining is False
+    assert runner._restart_task_started is False
+    assert runner._restart_requested is False
+    assert runner._restart_command_source is None
+    hermes_home = Path(gateway_run._hermes_home)
+    assert not (hermes_home / ".restart_notify.json").exists()
+    assert not list(hermes_home.glob("*.staging"))
+
+    # Retry with a healthy cycle: admitted, marker written, drain running.
+    runner._begin_restart_cycle = real_cycle
+    status = await runner.begin_user_restart(source=source, message_id="m2")
+    assert status["status"] == "restarting"
+    assert rollbacks["n"] == 1  # the established restart was never rolled back
+    assert (hermes_home / ".restart_notify.json").exists()
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=True, service_restart=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_task_establishment_never_rolls_back():
+    """Once request_restart() genuinely established the drain task, a
+    cancellation landing right after it must not undo admission: the drain
+    owns the state, finishes its wait, and stop() runs exactly once."""
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_watcher = MagicMock()
+    real_request_restart = runner.request_restart
+
+    def _establish_then_cancel(**kwargs):
+        assert real_request_restart(**kwargs) is True
+        raise asyncio.CancelledError()
+
+    runner.request_restart = _establish_then_cancel
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.begin_user_restart(source=make_restart_source(chat_id="7"))
+
+    assert runner._draining is True
+    assert runner._restart_task_started is True
+    assert runner._restart_task is not None
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=True, service_restart=False
+    )
+
+
+def test_plugin_to_stop_route_spawns_exactly_one_direct_watcher(
+    gateway_loop, monkeypatch
+):
+    """The fresh-review Fix 3 probe over the real route: handle_restart →
+    begin_user_restart → request_restart(detached=True) → _run_restart →
+    stop(). stop() is the watcher's sole owner — the drain loop launches
+    nothing before it — so exactly ONE watcher process spawns even when a
+    duplicate stop-side launch fires, and its argv is the direct
+    ``gateway.run`` bootstrap, never the legacy CLI."""
+    import shutil
+    import subprocess
+
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop, _running_agents={})
+    # The REAL request_restart: this is the production route under test.
+    runner.request_restart = gateway_run.GatewayRunner.request_restart.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+
+    real_launch = runner._launch_detached_restart_watcher
+    launches = {"before_stop": 0, "calls": 0}
+    order: list[str] = []
+
+    async def _recording_launch():
+        launches["calls"] += 1
+        if "stop" not in order:
+            launches["before_stop"] += 1
+        await real_launch()
+
+    runner._launch_detached_restart_watcher = _recording_launch
+
+    stop_completed = threading.Event()
+
+    async def _stop(**_kwargs):
+        order.append("stop")
+        # The real _stop_impl gate: only a detached restart spawns a watcher,
+        # and a duplicate stop into the same teardown must stay idempotent —
+        # the latch inside the launcher enforces exactly-one.
+        if runner._restart_requested and runner._restart_detached:
+            await runner._launch_detached_restart_watcher()
+            await runner._launch_detached_restart_watcher()
+        # Set only after BOTH awaited launches finished: the main thread
+        # synchronizes on this event, never on the "stop" marker that was
+        # appended before the awaits (polling it raced the second launch).
+        stop_completed.set()
+
+    runner.stop = _stop
+
+    popen_calls = []
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda cmd, **kw: popen_calls.append(cmd)
+    )
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
+
+    register, wait = _mock_confirm(monkeypatch, "restart")
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "restarting"
+
+    # The drain runs on the gateway loop after the tool returned; wait for
+    # stop() to have COMPLETED — both watcher-launch awaits included — on the
+    # event _stop sets at its end (bounded — a hang here is a failure, not a
+    # wait). Polling only for the "stop" marker raced the second launch.
+    assert stop_completed.wait(timeout=5.0), "the drain never reached stop()"
+    assert "stop" in order
+
+    # One watcher contract: nothing launched before stop(), and the duplicate
+    # stop-side launch collapsed into the same single spawn.
+    assert launches["before_stop"] == 0
+    assert launches["calls"] == 2
+    assert len(popen_calls) == 1
+    argv = popen_calls[0]
+    project_root = str(
+        Path(gateway_run.__file__).resolve().parent.parent
+    )
+    assert argv[0] == gateway_run.sys.executable
+    assert argv[1] == "-c"
+    assert "run_detached_restart_watcher" in argv[2]
+    assert argv[-2:] == ["321", project_root]
+    # No legacy CLI / service-manager surface anywhere in the spawn.
+    joined = " ".join(argv)
+    assert "gateway restart" not in joined
+    assert "--replace" not in argv
+    assert "systemctl" not in joined and "launchctl" not in joined
+
+
+def test_plugin_to_stop_route_supervised_spawns_no_watcher(
+    gateway_loop, monkeypatch
+):
+    """The same real route under a supervisor: via_service=True keeps the
+    exit-75 service-owned path and starts ZERO watchers."""
+    import shutil
+    import subprocess
+
+    from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
+    from plugins.gateway_restart.tool import handle_restart
+
+    monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "1")
+
+    runner = _live_runner(monkeypatch, gateway_loop, _running_agents={})
+    runner.request_restart = gateway_run.GatewayRunner.request_restart.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+
+    launches = {"n": 0}
+
+    async def _counting_launch():
+        launches["n"] += 1
+        raise AssertionError("supervised restart must not launch a watcher")
+
+    runner._launch_detached_restart_watcher = _counting_launch
+
+    async def _stop(**_kwargs):
+        # Same gate as the unsupervised route test: it reads the REAL flags
+        # request_restart set, which must say "service-owned, not detached".
+        if runner._restart_requested and runner._restart_detached:
+            await runner._launch_detached_restart_watcher()
+
+    runner.stop = _stop
+
+    popen = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    register, wait = _mock_confirm(monkeypatch, "restart")
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "restarting"
+    assert result["via_service"] is True
+    assert runner._restart_via_service is True
+    assert runner._restart_detached is False
+
+    # Let the drain run to its stop() on the gateway loop, then verify.
+    deadline = time.monotonic() + 5.0
+    while runner._restart_task and not runner._restart_task.done():
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.01)
+    assert launches["n"] == 0
+    popen.assert_not_called()
+
+
+def test_begin_handoff_timeout_leaves_the_gateway_retryable(
+    gateway_loop, monkeypatch
+):
+    """The fresh-review probe: the plugin's bounded hand-off guard cancels a
+    wedged begin_user_restart; the coroutine's rollback must restore
+    admission so the next tool call retries — and stop() is never reached."""
+    import gateway.slash_commands as slash_commands
+    from plugins.gateway_restart import tool as restart_tool
+
+    runner = _live_runner(monkeypatch, gateway_loop, _running_agents={"tg-42": object()})
+    runner.stop = AsyncMock()
+
+    real_write = slash_commands.atomic_json_write
+    release = threading.Event()
+
+    def _blocked_notify_write(path, *args, **kwargs):
+        if Path(path).name.startswith(".restart_notify.json"):
+            release.wait(timeout=10)
+            return None
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(slash_commands, "atomic_json_write", _blocked_notify_write)
+    monkeypatch.setattr(restart_tool, "_BEGIN_RESTART_TIMEOUT_S", 0.2)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert "Failed to begin gateway restart" in result["error"]
+    # The cancelled begin rolled back: no restart, admission open, no stop().
+    runner.request_restart.assert_not_called()
+    runner.stop.assert_not_called()
+    assert runner._draining is False
+
+    # Retry once the loop is unblocked: admitted again, never in_progress.
+    release.set()
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        retry = json.loads(restart_tool.handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert retry["success"] is True
+    assert retry["status"] == "restarting"
+    runner.request_restart.assert_called_once()
+    runner.stop.assert_not_called()
 
 
 # ── the blocked shell paths point at the tool ───────────────────────────────

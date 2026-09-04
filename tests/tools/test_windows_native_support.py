@@ -995,7 +995,7 @@ class TestWindowlessGatewayRestartSpec:
 
 
 # ---------------------------------------------------------------------------
-# gateway/run.py :: GatewayRunner._launch_detached_restart_command
+# gateway/run.py :: GatewayRunner._launch_detached_restart_watcher
 # outer watcher Popen breakaway-denied fallback (PR #42993)
 # ---------------------------------------------------------------------------
 
@@ -1026,14 +1026,13 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         from types import SimpleNamespace
 
         return SimpleNamespace(
-            _detached_restart_helper_started=False,
-            _restart_drain_timeout=0.0,
+            _detached_restart_watcher_started=False,
         )
 
     @classmethod
     def _drive(cls, gr):
         asyncio.run(
-            gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
+            gr.GatewayRunner._launch_detached_restart_watcher(cls._fake_self())
         )
 
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
@@ -1042,8 +1041,6 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             windows_detach_flags_without_breakaway,
             windows_detach_popen_kwargs,
         )
-
-        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
 
         calls = []
 
@@ -1065,12 +1062,15 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         # argv is identical across primary and fallback, and every current
         # watcher parameter survives:
-        #   [watcher_python, "-c", <script>, str(pid), str(restart_after_s), *cmd_argv]
+        #   [watcher_python, "-c", <bootstrap>, str(old_pid), project_root]
         assert argv1 == argv2
         assert argv1[1] == "-c"
         assert argv1[3] == str(os.getpid())
-        assert float(argv1[4]) >= 5.0  # restart deadline preserved
-        assert argv1[-2:] == ["gateway", "restart"]
+        assert argv1[-1] == str(Path(gr.__file__).resolve().parent.parent)
+        # The bootstrap is the shared watcher contract, not the legacy CLI.
+        assert "run_detached_restart_watcher" in argv1[2]
+        assert "gateway restart" not in " ".join(argv1)
+        assert "--replace" not in argv1
 
         # Scrubbed env preserved and identical on both calls.
         assert kw1["env"] is kw2["env"]
@@ -1105,8 +1105,6 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
     def test_outer_watcher_happy_path_spawns_once(self, monkeypatch):
         import gateway.run as gr
 
-        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
-
         calls = []
         monkeypatch.setattr(
             "subprocess.Popen",
@@ -1127,8 +1125,6 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         self, monkeypatch
     ):
         import gateway.run as gr
-
-        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
 
         calls = []
 

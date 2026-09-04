@@ -3405,7 +3405,6 @@ from gateway.restart_wind_down import (
     RESTART_WIND_DOWN_SEND_WAIT_SECONDS,
     WIND_DOWN_TERMINAL_CLOSED,
     WIND_DOWN_TERMINAL_DRAINED,
-    WIND_DOWN_TERMINAL_SAFETY_CAP,
 )
 
 
@@ -3417,6 +3416,28 @@ logger = logging.getLogger(__name__)
 # (a transcript append, a routing save); anything slower is a stuck worker we
 # must not wait on, and the caller clamps this to the watchdog leash anyway.
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0
+
+# Pause between retries when the restart's after-turn wait itself throws:
+# the boundary guard keeps waiting instead of falling through into stop(),
+# but must not spin the loop hot on a persistently failing wait.
+_RESTART_WAIT_RETRY_SLEEP_S = 1.0
+
+# Slash commands still dispatched while ``_draining`` is set (admission
+# closed for a user-requested restart). Deny-by-default: the drain gate in
+# ``_handle_message`` reads this set, so a command newly registered or
+# forgotten here is REJECTED during a drain, never silently admitted. The
+# entries are only (a) the restart request itself, (b) lifecycle of work
+# that is already in flight (its approval flow, pausing, stopping it), and
+# (c) read-only visibility — nothing here can START executor/agent work.
+_DRAIN_ALLOWED_COMMANDS = frozenset({
+    # the restart request entry (a second /restart reports already-in-progress)
+    "restart",
+    # lifecycle of in-flight work
+    "stop", "approve", "deny", "pause",
+    # read-only visibility + the no-op platform ping
+    "status", "context", "agents",
+    "help", "commands", "version", "whoami", "start",
+})
 
 
 _OWN_POLICY_OPEN_ENV = {
@@ -8961,6 +8982,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    # LEGACY, non-authoritative: the after-turn wait is unbounded (see
+    # ``_await_active_work_before_restart``), so this value never caps or
+    # authorizes a user-requested restart's progress into ``stop()``. Retained
+    # only so old configs keep parsing and CLI observers can size their
+    # advisory wait budget (``resolve_restart_exit_wait_budget``).
     _restart_after_turn_timeout: float = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
     _cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
     _signal_interrupt_grace_timeout: float = (
@@ -8973,7 +8999,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
-    _detached_restart_helper_started: bool = False
+    _detached_restart_watcher_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _cooperative_restart_steered_sessions: Optional[List[str]] = None
     # ── Opt-in restart wind-down cycle state (⏸️ Discord reaction) ─────────
@@ -9205,7 +9231,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
-        self._detached_restart_helper_started = False
+        self._detached_restart_watcher_started = False
         self._restart_command_source: Optional[SessionSource] = None
         self._restart_generation = 0
         self._restart_cycle_open = False
@@ -10983,9 +11009,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + self._pending_background_task_count()
         )
 
-    def _active_cron_job_count(self) -> int:
+    def _active_cron_job_count(self, *, strict: bool = False) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's
         own in-flight tracking (``cron.scheduler._running_job_ids``).
 
@@ -10998,26 +11025,99 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         to killing tool subprocesses while a cron job's terminal command is
         still running (#60432). Best-effort: returns 0 if the cron module
         can't be imported (e.g. a minimal test double for this class).
+
+        ``strict=True`` re-raises instead: the restart's authoritative
+        accounting must never read a failed probe as "no cron work" —
+        an unreadable scheduler is BUSY, not idle.
         """
         try:
             from cron.scheduler import get_running_job_ids
             return len(get_running_job_ids())
         except Exception:
+            if strict:
+                raise
             return 0
 
-    def _active_api_run_count(self) -> int:
+    def _active_api_run_count(self, *, strict: bool = False) -> int:
         """Count API-server work that is outside ``_running_agents``.
 
         The primary API server owns the sole HTTP listener. Secondary multiplex
         profiles cannot create an ``api_server`` adapter because it binds a port,
         so only the primary registry is a supported source of this work.
+
+        ``strict=True`` re-raises instead of degrading to 0 — see
+        ``_active_cron_job_count``: a probe the restart cannot read is work
+        it cannot prove absent, so the authoritative count must fail closed.
         """
         try:
             adapter = getattr(self, "adapters", {}).get(Platform.API_SERVER)
             helper = getattr(adapter, "active_agent_work_count", None)
             return max(0, int(helper())) if callable(helper) else 0
         except Exception:
+            if strict:
+                raise
             return 0
+
+    def _pending_background_task_count(self) -> int:
+        """Pending ``/bg``-style background tasks the restart must wait out.
+
+        ``_run_background_task`` coroutines live in ``_background_tasks``,
+        outside ``_running_agents`` — without this count a restart requested
+        while a backgrounded agent turn is mid-flight would see zero active
+        work, run ``stop()``, and have ``_stop_impl`` cancel the task while
+        its executor worker keeps running anyway.
+
+        PERMANENT supervised watchers (tagged ``_hermes_supervised_watcher``
+        by ``_spawn_supervised``) are excluded with the same predicate as
+        ``_scale_to_zero_has_live_background_work``: they live for the whole
+        process — the restart machinery included — so counting them would
+        wedge every restart at "1 active unit" forever. ``_restart_task``
+        never enters this set (see ``request_restart``).
+        """
+        tasks = getattr(self, "_background_tasks", None)
+        if not tasks:
+            return 0
+        return sum(
+            1
+            for task in list(tasks)
+            if not task.done() and not getattr(task, "_hermes_supervised_watcher", False)
+        )
+
+    def _authoritative_active_work_count(self) -> int:
+        """Fail-closed total for the restart's destructive boundary.
+
+        Same classes of work as ``_active_work_count()`` — plus the pending
+        background tasks — but the cron/API probes run STRICT: any exception
+        propagates to the caller instead of degrading to zero. Callers at a
+        stop()/no-stop decision must treat a raised probe as "busy and
+        retryable", never as permission to proceed.
+        """
+        return (
+            self._running_agent_count()
+            + self._active_cron_job_count(strict=True)
+            + self._active_api_run_count(strict=True)
+            + self._active_deferred_agent_worker_count()
+            + self._pending_background_task_count()
+        )
+
+    def _probed_active_work_count(self) -> Optional[int]:
+        """``_authoritative_active_work_count()`` as a drain-wait view.
+
+        Returns None when a probe failed: the drain loop treats None as
+        "still busy" and keeps waiting (the probe is retried every loop
+        iteration), so an unreadable cron/api state can never satisfy the
+        wait and can never crash it either.
+        """
+        try:
+            return self._authoritative_active_work_count()
+        except Exception as exc:
+            logger.warning(
+                "Active-work probe failed (cron/api state unreadable: %s); "
+                "treating the gateway as busy until every probe answers "
+                "again",
+                exc,
+            )
+            return None
 
     def _interrupt_api_server_runs(self, reason: str) -> int:
         """Interrupt API-server agents that are not in ``_running_agents``.
@@ -12315,7 +12415,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_restart_after_turn_timeout() -> float:
-        """Load in-band restart wait-for-idle timeout in seconds (#77184)."""
+        """Load the legacy ``restart_after_turn_timeout`` value (#77184).
+
+        Non-authoritative for restart progress: the in-band restart wait is
+        unbounded and never consults this as a deadline. The parsed value is
+        kept only so existing configs keep loading and CLI-side observers
+        can size their advisory wait budget. ``0`` (the legacy
+        immediate-drain setting) parses like any other value and likewise
+        no longer advances a restart into ``stop()``.
+        """
         env_raw = os.getenv("HERMES_RESTART_AFTER_TURN_TIMEOUT")
         if env_raw is not None and str(env_raw).strip() != "":
             raw: object = env_raw
@@ -14269,7 +14377,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-    async def _launch_detached_restart_command(self) -> None:
+    async def _launch_detached_restart_watcher(self) -> None:
+        """Spawn the one detached watcher that waits out this PID, then respawns.
+
+        ``stop()`` is the SOLE owner of the standalone watcher: this method
+        runs only from ``_stop_impl`` (and directly in tests) — the restart
+        drain loop leading into ``stop()`` never launches one, so nothing is
+        awaited between the final active-count boundary check and ``stop()``
+        itself. A process-wide latch makes duplicate calls — a second stop
+        into the same teardown — idempotent no-ops.
+
+        The watcher body (``gateway.restart.run_detached_restart_watcher``)
+        waits WITHOUT a deadline until this exact PID is proven absent
+        (EPERM/unknown probe errors read as still-live) and only then
+        relaunches the gateway through its direct entry point —
+        ``sys.executable -m gateway.run`` from the project root — never
+        ``hermes gateway restart``, ``--replace``, a service manager, or a
+        signal, and never while the old PID may still exist.
+        """
         import shutil
         import subprocess
 
@@ -14279,107 +14404,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "(test run must not spawn a restart watcher)"
             )
             return
-        hermes_cmd = _resolve_hermes_bin()
-        if not hermes_cmd:
-            logger.error("Could not locate hermes binary for detached /restart")
+        if self._detached_restart_watcher_started:
             return
-        if self._detached_restart_helper_started:
-            return
-        self._detached_restart_helper_started = True
+        self._detached_restart_watcher_started = True
 
         current_pid = os.getpid()
-        restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
+        project_root = str(Path(__file__).resolve().parent.parent)
 
-        # On Windows there's no bash/setsid chain — spawn a tiny Python
-        # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `hermes gateway
-        # restart` with detach flags so the respawn survives the CLI
-        # that triggered the /restart command closing its console.
+        # One watcher contract on both platforms: a tiny ``-c`` bootstrap that
+        # imports ``gateway.restart.run_detached_restart_watcher`` — wait out
+        # this exact PID (no deadline, fail-closed probes), then relaunch the
+        # gateway's direct entry point. The bootstrap resolves its import
+        # from the project-root cwd BOTH platforms are spawned with below
+        # (``-c`` puts the cwd at the head of ``sys.path``); the PYTHONPATH
+        # enrichment on Windows is a belt-and-braces fallback for the venv
+        # site-packages, not the import's only hope. Without an explicit cwd
+        # the watcher would inherit the dying gateway's arbitrary working
+        # directory and the import would fail wherever the repo is not
+        # installed — silently (stderr is DEVNULL), leaving no replacement.
+        bootstrap = (
+            "import sys\n"
+            "from gateway.restart import run_detached_restart_watcher\n"
+            "run_detached_restart_watcher(int(sys.argv[1]), sys.argv[2])\n"
+        )
+
+        # The watcher is intentionally outside the running gateway and must
+        # not inherit the gateway marker ``_HERMES_GATEWAY``: the replacement
+        # it spawns is a fresh gateway process, and self-restart loop guards
+        # keyed on that marker would refuse to run inside it.
+        from tools.environments.local import build_subprocess_env
+        watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+        watcher_env.pop("_HERMES_GATEWAY", None)
+
+        # On Windows there's no bash/setsid chain — spawn the Python watcher
+        # directly via sys.executable instead.
         if sys.platform == "win32":
-            import textwrap
             from hermes_cli._subprocess_compat import (
                 windows_detach_flags_without_breakaway,
                 windows_detach_popen_kwargs,
             )
 
-            cmd_argv = [*hermes_cmd, "gateway", "restart"]
-            watcher = textwrap.dedent(
-                """
-                import os, subprocess, sys, time
-                from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
-                pid = int(sys.argv[1])
-                restart_after_s = float(sys.argv[2])
-                cmd = sys.argv[3:]
-                deadline = time.monotonic() + restart_after_s
-
-                def _alive(p):
-                    # On Windows, os.kill(pid, 0) is NOT a no-op — it maps to
-                    # GenerateConsoleCtrlEvent(0, pid) (bpo-14484). Use the
-                    # Win32 handle-based existence check instead.
-                    if os.name == 'nt':
-                        import ctypes
-                        k32 = ctypes.windll.kernel32
-                        k32.OpenProcess.restype = ctypes.c_void_p
-                        k32.WaitForSingleObject.restype = ctypes.c_uint
-                        k32.GetLastError.restype = ctypes.c_uint
-                        h = k32.OpenProcess(0x1000 | 0x100000, False, int(p))
-                        if not h:
-                            return k32.GetLastError() != 87
-                        try:
-                            return k32.WaitForSingleObject(h, 0) == 0x102
-                        finally:
-                            k32.CloseHandle(h)
-                    try:
-                        os.kill(int(p), 0)
-                        return True
-                    except ProcessLookupError:
-                        return False
-                    except PermissionError:
-                        return True
-                    except OSError:
-                        return False
-
-                while time.monotonic() < deadline:
-                    if not _alive(pid):
-                        break
-                    time.sleep(0.2)
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=windows_detach_flags_without_breakaway(),
-                )
-                """
-            ).strip()
-            from tools.environments.local import build_subprocess_env
-            watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-            # This watcher is intentionally outside the running gateway. If it
-            # inherits the gateway marker, `hermes gateway restart` refuses to
-            # run as a self-restart loop guard and the gateway stays stopped.
-            watcher_env.pop("_HERMES_GATEWAY", None)
-            project_root = Path(__file__).resolve().parent.parent
             # The watcher runs sys.executable (console python) under the
             # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
-            # console, inherited by the `hermes gateway restart` child, so
+            # console, inherited by the replacement gateway child, so
             # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
             # a console-less watcher forces every console-subsystem
             # descendant to allocate a visible conhost (#54220/#56747).
             watcher_python = sys.executable
-            venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
+            venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or Path(project_root) / "venv")
             site_packages = venv_dir / "Lib" / "site-packages"
             if site_packages.exists():
                 watcher_env["VIRTUAL_ENV"] = str(venv_dir)
-                pythonpath = [str(project_root), str(site_packages)]
+                pythonpath = [project_root, str(site_packages)]
                 if watcher_env.get("PYTHONPATH"):
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
             watcher_argv = [
                 watcher_python,
                 "-c",
-                watcher,
+                bootstrap,
                 str(current_pid),
-                str(restart_after_s),
-                *cmd_argv,
+                project_root,
             ]
             # The watcher process must itself break away from any job object the
             # parent CLI lives in (Electron/Tauri-wrapped Hermes Desktop, Windows
@@ -14397,6 +14482,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     env=watcher_env,
+                    cwd=project_root,
                     **windows_detach_popen_kwargs(),
                 )
             except OSError:
@@ -14406,6 +14492,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         env=watcher_env,
+                        cwd=project_root,
                         creationflags=windows_detach_flags_without_breakaway(),
                     )
                 except OSError as exc:
@@ -14430,36 +14517,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             return
 
-        cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
-        shell_cmd = (
-            f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
-            f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
-        # Same marker scrub as the Windows watcher above: this watcher runs
-        # `hermes gateway restart` from outside the gateway, but it inherits
-        # _HERMES_GATEWAY=1 from us, and the CLI's self-restart loop guard
-        # refuses to run when that marker is set — silently (DEVNULL), so the
-        # gateway stops and never comes back.
-        from tools.environments.local import build_subprocess_env
-        watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-        watcher_env.pop("_HERMES_GATEWAY", None)
+        watcher_argv = [sys.executable, "-c", bootstrap, str(current_pid), project_root]
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
+            watcher_argv = [setsid_bin, *watcher_argv]
+        try:
             subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
+                watcher_argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=watcher_env,
+                cwd=project_root,
                 start_new_session=True,
             )
-        else:
-            subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                start_new_session=True,
+        except OSError as exc:
+            # Same plain, path-safe reporting as the Windows dual-failure
+            # branch above: state that no watcher was started (so no
+            # replacement was scheduled) and log only the launched program's
+            # basename and a numeric error code — never argv, env, or
+            # str(exc), which can carry full interpreter paths.
+            winerror = getattr(exc, "winerror", None)
+            error_code = winerror if winerror is not None else exc.errno
+            error_field = "winerror" if winerror is not None else "errno"
+            logger.warning(
+                "Detached restart watcher was not started (%s; %s=%r). The "
+                "gateway will not be respawned by this restart attempt.",
+                os.path.basename(watcher_argv[0]),
+                error_field,
+                error_code,
             )
 
     def _wedged_agent_count(self) -> int:
@@ -14467,19 +14552,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         A turn whose agent has recorded no activity (no API bytes, no tool
         progress) for longer than ``agent.gateway_timeout`` is wedged — the
-        same threshold at which the turn reaper gives up on it. The restart
-        after-turn wait must not treat such turns as work worth waiting for:
-        a wedged agent pinned ``hermes update`` in "draining" for the full
-        ``restart_after_turn_timeout`` cap because the drain counted it as
-        active while its own inactivity watchdog had already declared it dead
-        (Aug 2026, WhatsApp turn idle 30+ min, drain waited on it anyway).
+        same threshold at which the turn reaper gives up on it.
+
+        DIAGNOSTICS ONLY. The restart wait never treats this label as
+        authority to stop waiting: a live-but-unresponsive work item still
+        counts toward ``_active_work_count()`` and keeps blocking a
+        user-requested restart, however long it stays wedged. The count is
+        reported in the periodic "still waiting" status lines so an operator
+        can see why a restart is parked and choose the crash-recovery path
+        (a provably dead process) themselves.
 
         Returns 0 when the inactivity timeout is disabled (``gateway_timeout``
-        0/unset ⇒ the operator opted into unbounded turns; the after-turn cap
-        still bounds the wait). Cron/API-server work has no per-turn activity
-        clock and is never counted as wedged. Pending sentinels are brand-new
-        turns, never wedged. Fail-open per agent: an unreadable activity
-        summary means "not wedged".
+        0/unset ⇒ the operator opted into unbounded turns). Cron/API-server
+        work has no per-turn activity clock and is never counted as wedged.
+        Pending sentinels are brand-new turns, never wedged. Fail-open per
+        agent: an unreadable activity summary means "not wedged".
         """
         timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         if timeout <= 0:
@@ -14502,9 +14589,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 wedged += 1
         return wedged
 
-    def _awaitable_work_count(self) -> int:
-        """Active work minus wedged turns — what the restart wait waits on."""
-        return max(0, self._active_work_count() - self._wedged_agent_count())
+    def _slash_drain_gate_notice(self, canonical: Optional[str]) -> Optional[str]:
+        """Admission verdict for a slash command while ``_draining`` is set.
+
+        The AUTHORITATIVE drain gate: ``_handle_message`` consults this
+        BEFORE any dispatch path that can start work — the busy-session
+        slash resolver and every cold-path handler (plain map, explicit
+        branches, quick/plugin/skill commands, agent turns). Until this
+        repair the only ``_draining`` check sat ~600 lines into the cold
+        path, AFTER the dispatch of heavy executor commands like
+        /compress, /refine, /review and the /bg background-task spawn, so
+        a message that arrived after a confirmed restart could still start
+        work the drain had already promised to wait out (#77184).
+
+        Deny-by-default: only ``_DRAIN_ALLOWED_COMMANDS`` (restart entry,
+        in-flight-work lifecycle, read-only visibility) pass; every other
+        command — including commands registered in the future — gets the
+        drain notice. ``canonical=None`` (plain text, media) is always
+        denied. Returns the user-facing notice, or None when the message
+        may proceed.
+        """
+        if not self._draining:
+            return None
+        if canonical is not None and canonical in _DRAIN_ALLOWED_COMMANDS:
+            return None
+        return (
+            f"⏳ Gateway is {self._status_action_gerund()} and is not "
+            f"accepting new work right now."
+        )
 
     async def _await_active_work_before_restart(self) -> bool:
         """Wait for in-flight work to finish before entering ``stop()``.
@@ -14515,103 +14627,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         wait here for active agents/cron/api work to reach zero, then let
         ``stop()`` run against an idle gateway (drain is instant).
 
-        Turns already past the inactivity timeout are excluded from the wait
-        (``_wedged_agent_count``): restart is usually the *remedy* for a
-        wedged turn, so deferring it behind one inverts the point of the
-        graceful path. ``stop()``'s drain interrupts them under
-        ``restart_drain_timeout`` instead.
+        The wait is deliberately UNBOUNDED. A user-requested restart must
+        never force a restart while any work remains active: elapsed time,
+        ``agent.restart_after_turn_timeout`` (any value, including the legacy
+        ``0`` immediate-drain), and the ``_wedged_agent_count()`` label are
+        all non-authoritative here. A live but unresponsive/wedged work item
+        still counts as active and keeps blocking the restart — the wedged
+        label is reported in the status lines for diagnostics only. The
+        remedy for a genuinely dead process is the separate crash-recovery
+        path, never this wait.
 
-        Returns True when work drained to zero, False when the safety cap
-        elapsed with work still active — or when only wedged work remains —
-        (caller proceeds to ``stop()``, which may then interrupt remaining
-        runs under ``restart_drain_timeout``).
+        Returns True only once the real active-work count reached zero —
+        PROVEN, not assumed: the count is read through
+        ``_probed_active_work_count()``, and a failed cron/api probe (None)
+        keeps the wait blocked and retrying exactly like a live work unit.
+        There is no timeout branch to take: this coroutine either drains or
+        keeps waiting, and a cancellation propagates without falling through
+        into ``stop()`` (the boundary guard in ``request_restart`` enforces
+        the same invariant defensively).
         """
-        active = self._active_work_count()
-        if active <= 0:
+        active = self._probed_active_work_count()
+        if active is not None and active <= 0:
             await self._finalize_restart_wind_down_offer(
                 WIND_DOWN_TERMINAL_DRAINED
             )
             return True
 
-        awaitable = self._awaitable_work_count()
-        if awaitable <= 0:
+        if active is None:
             logger.warning(
-                "Restart requested with %d active work unit(s), all wedged "
-                "past the inactivity timeout; skipping the after-turn wait "
-                "and proceeding to stop()/drain which will interrupt them",
-                active,
+                "Restart requested while the active-work probe is failing "
+                "(cron/api state unreadable) — waiting for a provable zero, "
+                "never forcing"
             )
-            await self._finalize_restart_wind_down_offer(
-                WIND_DOWN_TERMINAL_SAFETY_CAP
-            )
-            return False
-
-        timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
-        if timeout <= 0:
+        else:
             logger.info(
-                "Restart requested with %d active work unit(s); "
-                "restart_after_turn_timeout=0 — entering stop()/drain immediately",
+                "Restart requested with %d active work unit(s); deferring "
+                "stop() until they finish — the wait is unbounded and never "
+                "forces in-flight work (#77184)",
                 active,
             )
-            await self._finalize_restart_wind_down_offer(
-                WIND_DOWN_TERMINAL_SAFETY_CAP
-            )
-            return False
-
-        logger.info(
-            "Restart requested with %d active work unit(s); "
-            "deferring stop() until they finish (cap=%.0fs) so in-flight "
-            "turns are not amputated (#77184)",
-            active,
-            timeout,
-        )
         try:
             self._update_runtime_status("draining")
         except Exception:
             pass
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         last_status_at = 0.0
-        while self._awaitable_work_count() > 0:
+        while True:
+            active = self._probed_active_work_count()
+            if active is not None and active <= 0:
+                break
             now = loop.time()
-            if now >= deadline:
-                logger.warning(
-                    "Restart after-turn wait timed out after %.0fs with %d "
-                    "still active; proceeding to stop()/drain which may "
-                    "interrupt remaining work (#77184)",
-                    timeout,
-                    self._active_work_count(),
-                )
-                await self._finalize_restart_wind_down_offer(
-                    WIND_DOWN_TERMINAL_SAFETY_CAP
-                )
-                return False
             if (now - last_status_at) >= 30.0:
-                logger.info(
-                    "Restart deferred: waiting on %d active work unit(s) "
-                    "(%d wedged and excluded; %.0fs remaining before force drain)",
-                    self._awaitable_work_count(),
-                    self._wedged_agent_count(),
-                    deadline - now,
-                )
+                if active is None:
+                    logger.warning(
+                        "Restart deferred: the active-work probe is failing "
+                        "(cron/api state unreadable) — the gateway is "
+                        "treated as busy and the restart proceeds only once "
+                        "the count is provably zero"
+                    )
+                else:
+                    logger.info(
+                        "Restart deferred: still waiting on %d active work "
+                        "unit(s) (%d idle past the inactivity timeout and "
+                        "still counted); the restart proceeds only once "
+                        "every unit finishes",
+                        active,
+                        self._wedged_agent_count(),
+                    )
                 try:
                     self._update_runtime_status("draining")
                 except Exception:
                     pass
                 last_status_at = now
             await asyncio.sleep(0.1)
-
-        if self._active_work_count() > 0:
-            logger.warning(
-                "Restart deferred wait: %d wedged work unit(s) remain; "
-                "proceeding to stop()/drain which will interrupt them",
-                self._active_work_count(),
-            )
-            await self._finalize_restart_wind_down_offer(
-                WIND_DOWN_TERMINAL_SAFETY_CAP
-            )
-            return False
 
         logger.info(
             "Restart deferred wait complete — active work drained; "
@@ -14623,6 +14712,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
+        # One provisional setup transaction: every flag and partial cycle
+        # mutation below is owned by THIS request until the restart task
+        # exists. ``_begin_restart_cycle()`` and the ``create_task`` call can
+        # both raise (a wedged cycle setter, a closing loop), and a failure
+        # before the task is established must not strand the started latch —
+        # otherwise no task exists while every retry answers
+        # ``already_in_progress`` and admission stays closed forever. Once
+        # the task is real, none of this is ever undone: an established
+        # restart owns its state outright.
+        cycle_was_open = bool(getattr(self, "_restart_cycle_open", False))
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
@@ -14633,22 +14732,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._draining = True
         # No cooperative wind-down here. The drain waits naturally; the park
         # steer only happens if the requester opts in via the ⏸️ reaction on
-        # the Discord embed begin_user_restart offered for this cycle.
-        self._begin_restart_cycle()
+        # the Discord embed begin_user_restart offered for this cycle. The
+        # cycle opener itself runs INSIDE the setup transaction below — an
+        # exception out of it must hit the rollback, not strand the latch.
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
-            # Launch the detached helper only AFTER the after-turn wait.
-            # Its deadline is drain_timeout+5 and covers stop() teardown —
-            # launching earlier would fire `hermes gateway restart` while
-            # the requesting turn was still running.
-            if detached:
+            # ── Destructive boundary ────────────────────────────────────
+            # stop() may run only once the real active-work count is zero
+            # while admission (_draining) is still closed — with NOTHING
+            # awaited between that final check and the call. Every await
+            # this loop performs (the drain wait, the settle sleep) sits
+            # BEFORE the check, so work that appears during either sends the
+            # loop back to the no-deadline wait instead of into stop()
+            # (#77184). ``_await_active_work_before_restart`` owns the
+            # no-deadline wait by construction; this guard makes the
+            # boundary structural so a future timeout branch cannot
+            # silently reintroduce a force drain. The detached watcher is
+            # NOT launched here: ``stop()`` is its sole owner, reached only
+            # through this boundary.
+            while True:
                 try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart helper: %s", e)
-            await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+                    await self._await_active_work_before_restart()
+                except asyncio.CancelledError:
+                    # A cancelled wait never falls through into stop().
+                    logger.info(
+                        "Restart wait cancelled before active work drained; "
+                        "stop() not started"
+                    )
+                    raise
+                except Exception:
+                    # Neither does a failed one: an exception in the wait is
+                    # never permission to stop() while work may remain.
+                    logger.exception(
+                        "Restart wait failed; stop() deferred until active "
+                        "work can be proven finished"
+                    )
+                    await asyncio.sleep(_RESTART_WAIT_RETRY_SLEEP_S)
+                    continue
+                # Last awaited step before the boundary check: let pending
+                # callbacks (status writes, adapter settles) run so the
+                # final count below observes post-await reality.
+                await asyncio.sleep(0.05)
+                # Fail-closed final recheck: the authoritative count runs
+                # the cron/api probes STRICT, and a probe that cannot
+                # answer is work that cannot be proven absent — the only
+                # exit is a count that provably reached zero. A raised
+                # probe therefore sends the loop back to the no-deadline
+                # wait; it can never authorize stop().
+                try:
+                    active_now = self._authoritative_active_work_count()
+                except Exception:
+                    logger.exception(
+                        "Restart boundary: the active-work probe failed — "
+                        "stop() stays deferred until the count is provably "
+                        "zero; retrying"
+                    )
+                    await asyncio.sleep(_RESTART_WAIT_RETRY_SLEEP_S)
+                    continue
+                if self._draining and active_now <= 0:
+                    # FINAL boundary: nothing is awaited between this
+                    # check and stop(), so no late arrival can slip past.
+                    await self.stop(
+                        restart=True,
+                        detached_restart=detached,
+                        service_restart=via_service,
+                    )
+                    return
+                logger.error(
+                    "Restart boundary guard: %d active work unit(s) "
+                    "(admission closed=%s) after the setup awaits — "
+                    "continuing to wait; a user-requested restart never "
+                    "forces active work",
+                    active_now,
+                    self._draining,
+                )
 
         # _run_restart is a short-lived self-terminating task (calls stop()
         # then returns).  Don't add it to _background_tasks — _stop_impl
@@ -14662,7 +14819,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # loop may garbage-collect a still-pending task mid-flight.  The
         # cancel loop in _stop_impl explicitly skips _restart_task for the
         # same reason it skips _stop_task.
-        self._restart_task = asyncio.create_task(_run_restart())
+        try:
+            self._begin_restart_cycle()
+            self._restart_task = asyncio.create_task(_run_restart())
+        except BaseException:
+            # No restart task exists — not from create_task failing (a
+            # closing loop), and not from anything that raised before it:
+            # the flags and cycle state set above are unowned, so undo them
+            # or every later request answers ``already_in_progress``
+            # against a restart that never started, with admission closed
+            # forever (same failure class as a cancelled begin_user_restart).
+            # Nothing after a successful create_task can raise, so a real
+            # task is never rolled back.
+            self._restart_task = None
+            self._restart_task_started = False
+            self._restart_requested = False
+            self._restart_detached = False
+            self._restart_via_service = False
+            if not cycle_was_open:
+                # This request opened (or was opening) the wind-down cycle;
+                # a half-minted generation with no drain task behind it must
+                # not shadow the next cycle's offer binding.
+                self._restart_cycle_open = False
+            if getattr(self, "_running", True):
+                self._draining = False
+            raise
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
@@ -14680,45 +14861,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     )
 
     def _request_cooperative_restart_wind_down(self) -> list[str]:
-        """Ask live chat sessions to park, then mark them for auto-continue.
+        """Ask live chat sessions to park, then record only who accepted.
 
         New turns stay refused (``_draining``). This only steers already-
         running agents so they can reach a pausable state instead of
         pinning the drain until they naturally finish.
 
         Called at opt-in time — never merely because a restart began — so the
-        snapshot reflects what is live *at the reaction*, and a requester who
+        steer reflects what is live *at the reaction*, and a requester who
         never reacts leaves every live session to finish on its own.
 
-        The snapshot receipt is written only when somebody was left to ask:
-        an empty snapshot is a terminal no-op, not "resume nobody".
+        Persistence follows acceptance, never intent: the receipt left for
+        the next process is exactly the keys whose agent accepted the steer.
+        A session whose ``steer()`` returned False must finish on its own —
+        persisting it would auto-resume it at startup as if it had parked.
+        An empty accepted set is still a real receipt ("resume nobody"),
+        and the ``written`` latch is set only when that exact set is
+        durably on disk, so a failed write invalidates any stale receipt
+        instead of letting an older cycle's file speak for this one.
         """
         from gateway.restart_wind_down import (
             mark_cooperative_restart_sessions,
-            snapshot_active_sessions_for_restart,
             steer_running_agents_for_restart,
+            write_resume_allowlist,
         )
 
-        snapshotted = snapshot_active_sessions_for_restart(self)
         steered = steer_running_agents_for_restart(self)
-        if snapshotted:
+        persisted = write_resume_allowlist(steered)
+        if persisted:
             self._restart_wind_down_allowlist_written = True
-        # This is deliberately distinct from the broader steer-time snapshot:
-        # user-facing shutdown notices may claim an LLM steer was sent only
-        # for sessions whose agent actually accepted that exact text.
+        # Deliberately the accepted set, not the attempted one: user-facing
+        # shutdown notices may claim an LLM steer was accepted only for
+        # sessions whose agent actually took that exact text.
         self._cooperative_restart_steered_sessions = list(steered)
-        existing = list(getattr(self, "_cooperative_restart_sessions", []) or [])
-        for session_key in snapshotted:
-            if session_key not in existing:
-                existing.append(session_key)
-        self._cooperative_restart_sessions = existing
         marked = mark_cooperative_restart_sessions(self, steered)
         logger.info(
-            "Cooperative restart: snapshotted %d active chat(s), steered %d "
-            "(%d marked resume_pending)",
-            len(snapshotted),
+            "Cooperative restart: %d session(s) recorded as asked to park, "
+            "%d accepted the steer (%d marked resume_pending; receipt %s)",
+            len(getattr(self, "_cooperative_restart_sessions", []) or []),
             len(steered),
             marked,
+            "written"
+            if persisted
+            else "NOT written — stale receipt invalidated",
         )
         return steered
 
@@ -14756,6 +14941,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         a native Discord source. This is the second gate: even on that path an
         offer needs a numeric requester snowflake to authorize against, and at
         least one live chat that is not the requester's own turn.
+
+        The engaged-restart check is ``_restart_task_started``, not
+        ``_draining``: ``begin_user_restart`` closes admission (sets
+        ``_draining``) synchronously on confirmation, *before* this offer is
+        sent, so a draining flag alone must not suppress the one prompt this
+        cycle is about to make. Once the drain task itself is running — a
+        signal/update/API restart that went straight to
+        ``request_restart()`` — no offer may appear behind it.
         """
         if source is None or source.platform != Platform.DISCORD:
             return False
@@ -14764,7 +14957,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         requester_user_id = str(getattr(source, "user_id", "") or "").strip()
         if not requester_user_id.isdigit():
             return False
-        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
+        if getattr(self, "_restart_task_started", False):
             return False
         from gateway.restart_wind_down import iter_steerable_agents
 
@@ -15054,11 +15247,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_wind_down_accepted = True
         self._restart_wind_down_offer = None
 
+        attempted_before = len(
+            getattr(self, "_cooperative_restart_sessions", None) or []
+        )
         steered = self._request_cooperative_restart_wind_down()
+        had_targets = (
+            len(getattr(self, "_cooperative_restart_sessions", None) or [])
+            > attempted_before
+        )
         if not self._restart_wind_down_allowlist_written:
+            # The exact accepted set could not be persisted and the stale
+            # receipt was already invalidated inside the write. The accepted
+            # sessions keep their resume_pending marks — a missing receipt
+            # falls back to the usual pending scan, which still revives
+            # them — and the cycle-finalize path clears the receipt again
+            # before the next boot could rely on a half-written one.
+            logger.warning(
+                "Restart wind-down opt-in: the accepted-steer receipt could "
+                "not be persisted; any stale receipt was invalidated"
+            )
+        if not had_targets:
             logger.info(
                 "Restart wind-down opt-in: every live session had already "
-                "finished; nothing to pause and no resume receipt written"
+                "finished; nothing to pause (empty receipt: resume nobody)"
             )
             return {"accepted": True, "no_targets": True, "accepted_count": 0}
         logger.info(
@@ -19146,10 +19357,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             if self._restart_requested and self._restart_detached:
+                # stop() is the sole owner of the standalone watcher: it
+                # launches exactly once per process (latch-guarded inside),
+                # only now that the drain proved active work finished, and
+                # never from the drain loop itself.
                 try:
-                    await self._launch_detached_restart_command()
+                    await self._launch_detached_restart_watcher()
                 except Exception as e:
-                    logger.error("Failed to launch detached gateway restart: %s", e)
+                    logger.error("Failed to launch detached restart watcher: %s", e)
 
             await self._finalize_shutdown_agents(active_agents)
 
@@ -21795,6 +22010,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
 
+            # AUTHORITATIVE drain gate, before the busy resolver: a slash
+            # command with busy_policy="dispatch" (e.g. /bg, /btw) would
+            # otherwise START executor work while a confirmed restart is
+            # already waiting for in-flight work to finish (#77184).
+            if _evt_cmd and _cmd_def_inner is not None:
+                _drain_notice = self._slash_drain_gate_notice(
+                    _cmd_def_inner.name
+                )
+                if _drain_notice is not None:
+                    return _drain_notice
+
             # Any recognized slash command: dispatch according to its
             # declared busy_policy (dispatch / interrupt_then_dispatch /
             # reject). Unrecognized commands and plain text fall through
@@ -22103,6 +22329,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
                     break
+
+        # AUTHORITATIVE drain gate — the single admission point for the
+        # whole cold path. It must sit BEFORE the first dispatch that can
+        # start work (the plain map's /bg //btw spawn, the /compress //
+        # /refine /review executor branches below): with the gate further
+        # down, a message arriving after a confirmed restart started its
+        # work before the old _draining check ever ran (#77184). Hook
+        # rewrites above have already re-resolved ``canonical``, so a
+        # rewritten command is gated under its FINAL name.
+        _cold_drain_notice = self._slash_drain_gate_notice(canonical)
+        if _cold_drain_notice is not None:
+            return _cold_drain_notice
 
         plain_handler = self._gateway_plain_command_handlers().get(canonical)
         if plain_handler is not None:
@@ -22440,9 +22678,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
-
-        if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -28027,6 +28262,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
+            # Box filled in on the worker thread once the AIAgent exists, so
+            # a cancellation that defers this work to the shutdown registry
+            # can hand the interrupt hook the live agent.
+            agent_holder: dict = {}
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -28059,6 +28299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent_holder["agent"] = agent
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -28067,7 +28308,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            # Cancellation-safe executor dispatch: a cancelled /bg coroutine
+            # must leave the still-running worker counted as deferred work,
+            # not silently drop it from the restart accounting (#77184).
+            result = await self._run_background_agent_executor_work(
+                run_sync, agent_holder
+            )
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -30234,6 +30480,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             func,
             *args,
         )
+
+    async def _run_background_agent_executor_work(self, run_sync, agent_holder):
+        """Run a /bg agent body in the executor, surviving cancellation.
+
+        Cancelling the wrapping coroutine only cancels the asyncio VIEW of
+        the executor work: cancellation of a ``run_in_executor`` future is
+        a request the worker thread never sees (see ``_shutdown_executor``),
+        so the thread keeps running to completion. A restart-time cancel of
+        a pending ``/bg`` task would therefore drop the work from every
+        accounting while the executor worker lives on — the drain could
+        reach zero, ``stop()`` could run, and a backgrounded agent turn
+        would be killed mid-write with no record. On cancellation, keep the
+        still-running executor future in the deferred-worker registry (the
+        same registry the shutdown drain/interrupt paths read) so the work
+        stays counted — and interruptible — until the thread really exits
+        (#77184).
+
+        ``agent_holder`` is the ``{"agent": AIAgent}`` box ``run_sync``
+        fills in on its thread once the agent exists, so the registry can
+        offer the interrupt hook the real agent.
+        """
+        loop = asyncio.get_running_loop()
+        ctx = copy_context()
+        executor = self._get_executor()
+        future = executor.submit(ctx.run, run_sync)
+        wrapped = asyncio.wrap_future(future, loop=loop)
+        try:
+            return await wrapped
+        except asyncio.CancelledError:
+            if not future.done():
+                self._track_deferred_agent_worker(
+                    future, agent_holder.get("agent")
+                )
+            raise
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
