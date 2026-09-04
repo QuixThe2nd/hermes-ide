@@ -4649,6 +4649,11 @@ def run_conversation(
                             "error": "First response truncated due to output length limit"
                         }
                 
+                # Count every completed provider attempt, including providers
+                # that omit usage. Token/cost accounting below remains gated on
+                # real usage, but the request itself must stay observable.
+                agent.session_api_calls += 1
+
                 # Track actual token usage from response for context management
                 if hasattr(response, 'usage') and response.usage:
                     canonical_usage = normalize_usage(
@@ -4823,7 +4828,6 @@ def run_conversation(
                     agent.session_prompt_tokens += prompt_tokens
                     agent.session_completion_tokens += completion_tokens
                     agent.session_total_tokens += total_tokens
-                    agent.session_api_calls += 1
                     agent.session_input_tokens += canonical_usage.input_tokens
                     agent.session_output_tokens += canonical_usage.output_tokens
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
@@ -4970,6 +4974,15 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+                else:
+                    logger.info(
+                        "API call #%d: model=%s provider=%s in=? out=? total=? "
+                        "latency=%.1fs usage=unavailable",
+                        agent.session_api_calls,
+                        agent.model,
+                        agent.provider or "unknown",
+                        api_duration,
+                    )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
@@ -5672,6 +5685,37 @@ def run_conversation(
                         agent.log_prefix,
                         replay_stats["items"],
                         replay_stats["messages"],
+                    )
+                    continue
+
+                # ── Reasoning-mandatory route rejected a disable ──────
+                # The route (Nous Portal / OpenRouter, e.g. GLM-5.3) answers
+                # ``reasoning: {enabled: false}`` with HTTP 400.  The catalog
+                # guard in the provider profile normally swallows the
+                # disable, but a process that warmed its capability cache
+                # before the route flipped to mandatory keeps sending it.
+                # One-shot: never send a disable again this session (the
+                # wire builder omits it → upstream default thinking), queue
+                # a catalog refresh so the guard is right next time, retry.
+                if (
+                    classified.reason == FailoverReason.reasoning_mandatory
+                    and not _retry.reasoning_mandatory_retry_attempted
+                ):
+                    _retry.reasoning_mandatory_retry_attempted = True
+                    agent._reasoning_disable_rejected = True
+                    try:
+                        from hermes_cli.models import refresh_reasoning_caps_async
+                        refresh_reasoning_caps_async(agent.provider)
+                    except Exception:
+                        pass
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  {agent.model} requires reasoning — "
+                        f"thinking stays on for this session, retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sReasoning-mandatory recovery: dropping reasoning disable for %s",
+                        agent.log_prefix, agent.model,
                     )
                     continue
 
@@ -8607,6 +8651,7 @@ def run_conversation(
                             agent,
                             finish_reason=finish_reason,
                             response=response,
+                            observed_generation=_has_structured,
                         )
                     _empty_retry_budget = (
                         _empty_guard.empty_retry_budget(agent, response)
@@ -8674,15 +8719,14 @@ def run_conversation(
 
                     if _truly_empty and _deterministic_empty:
                         logger.warning(
-                            "Deterministic empty response detected "
-                            "(consecutive zero-output completions, "
-                            "model=%s provider=%s finish_reason=%s) — "
+                            "Repeated empty response detected "
+                            "(model=%s provider=%s finish_reason=%s) — "
                             "skipping remaining retries",
                             agent.model, agent.provider, finish_reason,
                         )
                         agent._buffer_status(
-                            "⚠️ Model is deterministically returning empty "
-                            "(zero output tokens) — skipping further retries "
+                            "⚠️ Model is repeatedly returning empty content — "
+                            "skipping further retries "
                             "to avoid repeat charges"
                         )
 
