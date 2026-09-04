@@ -262,6 +262,181 @@ def test_auth_add_non_registry_configured_provider_preserves_endpoint(
     assert entry["base_url"] == "https://private.example/v1"
 
 
+ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_GENERAL_URL = "https://api.z.ai/api/paas/v4"
+
+
+def _clear_zai_env(monkeypatch):
+    for var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "GLM_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _clear_kimi_env(monkeypatch):
+    for var in ("KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_auth_add_zai_manual_key_explicit_base_url_wins_without_probe(
+    tmp_path, monkeypatch
+):
+    """A manually added z.ai key honors an explicit GLM_BASE_URL verbatim.
+
+    The override must skip the endpoint probe entirely — the user told us
+    where the key lives.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_zai_env(monkeypatch)
+    monkeypatch.setenv("GLM_BASE_URL", ZAI_CODING_URL)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    def _probe_must_not_run(*args, **kwargs):
+        raise AssertionError("explicit GLM_BASE_URL must skip the z.ai probe")
+
+    monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _probe_must_not_run)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "zai"
+        auth_type = "api-key"
+        api_key = "zai-coding-key"
+        label = "coding"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["zai"][0]
+    assert entry["base_url"] == ZAI_CODING_URL
+
+
+def test_auth_add_zai_manual_key_without_override_uses_detected_endpoint(
+    tmp_path, monkeypatch
+):
+    """Without GLM_BASE_URL, a manual z.ai key must land on the endpoint the
+    shared detector resolves for that key — not blindly on the registry's
+    general endpoint, which 429s with code 1113 for Coding Plan keys
+    (insufficient balance / no resource package).
+
+    The detector is stubbed (no real network) to the coding-plan result the
+    live probe would return for such a key.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_zai_env(monkeypatch)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    probe_keys = []
+
+    def _fake_detect(api_key, *args, **kwargs):
+        probe_keys.append(api_key)
+        return {
+            "id": "coding-global",
+            "base_url": ZAI_CODING_URL,
+            "model": "glm-5.3",
+            "label": "Global (Coding Plan)",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _fake_detect)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "zai"
+        auth_type = "api-key"
+        api_key = "zai-coding-key"
+        label = "coding"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["zai"][0]
+    # The key's own endpoint (coding plan), never the general endpoint that
+    # rejects it with 1113.
+    assert entry["base_url"] == ZAI_CODING_URL
+    assert entry["base_url"] != ZAI_GENERAL_URL
+    # The supplied token reached the shared detector.
+    assert probe_keys == ["zai-coding-key"]
+
+
+def test_auth_add_kimi_manual_sk_kimi_key_routes_to_kimi_code_endpoint(
+    tmp_path, monkeypatch
+):
+    """A manually added ``sk-kimi-`` key must be stored against the Kimi Code
+    endpoint, mirroring env seeding's key-prefix auto-detection."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_kimi_env(monkeypatch)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth import KIMI_CODE_BASE_URL
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "kimi-coding"
+        auth_type = "api-key"
+        api_key = "sk-kimi-manual-key"
+        label = "kimi code"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["kimi-coding"][0]
+    assert entry["base_url"] == KIMI_CODE_BASE_URL
+
+
+def test_auth_add_kimi_manual_key_explicit_base_url_wins(tmp_path, monkeypatch):
+    """An explicit KIMI_BASE_URL beats prefix auto-detection for manual adds."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_kimi_env(monkeypatch)
+    monkeypatch.setenv("KIMI_BASE_URL", "https://proxy.moonshot.example/v1")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "kimi-coding"
+        auth_type = "api-key"
+        api_key = "sk-kimi-manual-key"
+        label = "kimi proxy"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["kimi-coding"][0]
+    assert entry["base_url"] == "https://proxy.moonshot.example/v1"
+
+
+def test_auth_add_openrouter_manual_key_keeps_constant_base_url(
+    tmp_path, monkeypatch
+):
+    """OpenRouter manual adds keep the well-known constant endpoint."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_constants import OPENROUTER_BASE_URL
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = "sk-or-manual"
+        label = "personal"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in payload["credential_pool"]["openrouter"]
+        if item["source"] == "manual"
+    )
+    assert entry["base_url"] == OPENROUTER_BASE_URL
+
+
 def test_auth_list_includes_non_registry_configured_provider(
     tmp_path, monkeypatch, capsys
 ):
@@ -959,12 +1134,16 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
         "suppressed_sources": {"anthropic": ["hermes_pkce"]},
     }))
 
-    # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_adapter as aa
-    monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
+    # Stub the readers so only hermes_pkce is "available"; claude_code returns None.
+    # Stub agent.anthropic_credentials — the module _seed_from_singletons imports
+    # the readers from (agent.anthropic_adapter merely re-exports them). Stubbing
+    # the adapter left the real reader active, so a developer machine with real
+    # ~/.claude/.credentials.json seeded a claude_code entry and failed the test.
+    import agent.anthropic_credentials as ac
+    monkeypatch.setattr(ac, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
-    monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda: None)
 
     from agent.credential_pool import _seed_from_singletons
     entries = []
