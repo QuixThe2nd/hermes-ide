@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-03T07:08:39Z",
+  "updated_at": "2026-09-04T09:04:24Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -9,7 +9,7 @@
     "openrouter": {
       "metadata": {
         "display_name": "OpenRouter",
-        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
+        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one, spelled for this provider (see PREFERRED_SILENT_DEFAULT_MODEL_IDS)."
       },
       "models": [
         {
@@ -94,7 +94,8 @@
         },
         {
           "id": "x-ai/grok-4.6",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "deepseek/deepseek-v4-pro",
@@ -130,8 +131,7 @@
         },
         {
           "id": "z-ai/glm-5.3",
-          "description": "default",
-          "default": true
+          "description": ""
         },
         {
           "id": "z-ai/glm-5.3-flash",
@@ -226,7 +226,7 @@
     "nous": {
       "metadata": {
         "display_name": "Nous Portal",
-        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
+        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one, spelled for this provider (see PREFERRED_SILENT_DEFAULT_MODEL_IDS)."
       },
       "models": [
         {
@@ -284,7 +284,8 @@
           "id": "google/gemini-3.7-flash"
         },
         {
-          "id": "x-ai/grok-4.6"
+          "id": "x-ai/grok-4.6",
+          "default": true
         },
         {
           "id": "deepseek/deepseek-v4-pro"
@@ -311,8 +312,7 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.3",
-          "default": true
+          "id": "z-ai/glm-5.3"
         },
         {
           "id": "z-ai/glm-5.3-flash"
@@ -337,6 +337,39 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        }
+      ]
+    },
+    "xai-oauth": {
+      "metadata": {
+        "display_name": "xAI Grok OAuth",
+        "note": "SuperGrok / Premium+ subscription models served through xAI OAuth. This block carries the silent default in its native spelling \u2014 the (provider, model) pair a no-override install lands on. The entry labeled \"default\": true is that model. Built from the static fallback so the manifest is reproducible on any machine (the runtime picker prefers the live models.dev listing)."
+      },
+      "models": [
+        {
+          "id": "grok-4.6",
+          "default": true
+        },
+        {
+          "id": "grok-composer-2.5-fast"
+        },
+        {
+          "id": "grok-build-0.1"
+        },
+        {
+          "id": "grok-4.5"
+        },
+        {
+          "id": "grok-4.3"
+        },
+        {
+          "id": "grok-4.20-0309-reasoning"
+        },
+        {
+          "id": "grok-4.20-0309-non-reasoning"
+        },
+        {
+          "id": "grok-4.20-multi-agent-0309"
         }
       ]
     }

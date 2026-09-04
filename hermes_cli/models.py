@@ -104,8 +104,9 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.8-flash",                ""),
     ("google/gemini-3.7-flash",                ""),
-    # xAI
-    ("x-ai/grok-4.6",                          ""),
+    # xAI — OpenRouter spelling of the silent default (see
+    # PREFERRED_SILENT_DEFAULT_MODEL_IDS).
+    ("x-ai/grok-4.6",                          "default"),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
     ("deepseek/deepseek-v4-pro-0813",          "dated snapshot of v4-pro"),
@@ -119,7 +120,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
-    ("z-ai/glm-5.3",                           "default"),
+    ("z-ai/glm-5.3",                           ""),
     ("z-ai/glm-5.3-flash",                     ""),
     ("z-ai/glm-5.2",                           ""),
     # Xiaomi
@@ -1618,40 +1619,67 @@ _PROVIDER_ALIASES = {
 # remote model catalog: the manifest labels exactly one entry per provider
 # with ``"default": true`` (see get_default_model_from_cache in
 # model_catalog.py), so maintainers can rotate the default without shipping a
-# release. This constant is the offline/fresh-install fallback and MUST match
-# the labeled entry in website/static/api/model-catalog.json. Deliberately a
-# capable low-cost model rather than the curated lists' entry [0]: aggregator
-# lists are ordered most-capable-first, so [0] is the priciest Anthropic
-# flagship (claude-fable-5 / opus) — silently billing the most expensive model
-# for traffic the user never opted into.
-PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.3"
+# release. These constants are the offline/fresh-install fallback and MUST
+# match the labeled entries in website/static/api/model-catalog.json.
+#
+# The silent default is a (provider, model) PAIR and matches the reference
+# gateway's primary (``model.provider: xai-oauth`` + ``model.default:
+# grok-4.6``). The model id is xAI's NATIVE spelling — ``grok-4.6``, not an
+# OpenRouter ``x-ai/...`` id; aggregators spell it per the table below.
+# Deliberately a capable low-cost model rather than the curated lists' entry
+# [0]: aggregator lists are ordered most-capable-first, so [0] is the priciest
+# Anthropic flagship (claude-fable-5 / opus) — silently billing the most
+# expensive model for traffic the user never opted into.
+PREFERRED_SILENT_DEFAULT_PROVIDER = "xai-oauth"
+PREFERRED_SILENT_DEFAULT_MODEL = "grok-4.6"
+
+# Per-provider spelling of the silent default. Aggregators that vendor-prefix
+# foreign models (OpenRouter, Nous Portal) serve grok-4.6 as
+# ``x-ai/grok-4.6``; every other provider uses the native id. This table —
+# not the bare constant — is what provider-scoped lookups fall back to when
+# no cached catalog label exists, so an aggregator never receives a model id
+# its API would reject (nor escalates to curated entry [0]: the priciest
+# Anthropic flagship).
+PREFERRED_SILENT_DEFAULT_MODEL_IDS: dict[str, str] = {
+    PREFERRED_SILENT_DEFAULT_PROVIDER: PREFERRED_SILENT_DEFAULT_MODEL,
+    "openrouter": "x-ai/grok-4.6",
+    "nous": "x-ai/grok-4.6",
+}
 
 
-def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
-    """Return the silent-default model id — catalog label first, constant second.
+def get_preferred_silent_default_model(provider: str | None = None) -> str:
+    """Return the silent-default model id — catalog label first, table second.
+
+    ``provider`` unset is the no-override case (empty ``model.default``, no
+    user picker choice): the lookup targets the silent-default provider's own
+    catalog block. An explicit provider looks up that provider's block — the
+    label a user who set the provider but never chose a model lands on.
 
     Reads the ``"default": true`` label from the cached remote catalog
     (never hits the network — safe on hot resolution paths), falling back to
-    :data:`PREFERRED_SILENT_DEFAULT_MODEL` when no cached manifest exists or
-    the provider block carries no label.
+    :data:`PREFERRED_SILENT_DEFAULT_MODEL_IDS` (or the canonical constant for
+    providers the table doesn't cover) when no cached manifest exists or the
+    provider block carries no label.
     """
+    lookup = (provider or "").strip() or PREFERRED_SILENT_DEFAULT_PROVIDER
     try:
         from hermes_cli.model_catalog import get_default_model_from_cache
-        labeled = get_default_model_from_cache(provider)
+        labeled = get_default_model_from_cache(lookup)
         if labeled:
             return labeled
     except Exception:
         pass
-    return PREFERRED_SILENT_DEFAULT_MODEL
+    return PREFERRED_SILENT_DEFAULT_MODEL_IDS.get(lookup, PREFERRED_SILENT_DEFAULT_MODEL)
 
 
-def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
+def pick_silent_default_model(model_ids: list[str], provider: str | None = None) -> str:
     """Pick the silent default from an available-models list.
 
     Returns the catalog-labeled default (see
-    :func:`get_preferred_silent_default_model`) when the list carries it,
-    else the first entry, else "". Used by every surface that must choose a
-    model on the user's behalf without an interactive picker (GUI onboarding
+    :func:`get_preferred_silent_default_model`) for ``provider`` — or the
+    no-override global default when unset — when the list carries it, else
+    the first entry, else "". Used by every surface that must choose a model
+    on the user's behalf without an interactive picker (GUI onboarding
     recommended-default, empty-model runtime fallback).
     """
     preferred = get_preferred_silent_default_model(provider)
@@ -1670,14 +1698,18 @@ def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter"
 # escalated to Opus and billed 863 requests before the user noticed). The
 # catalog manifest labels the default entry (``"default": true``) so it can
 # rotate without a release; a missing model must never escalate to the
-# flagship.
+# flagship. ``xai-oauth`` — the silent-default provider itself — is in this
+# set for the same reason: its curated [0] is just "whatever model got pinned
+# top", while the labeled default is a deliberate maintainer choice.
 #
 # This is deliberately a network-free lookup for the hot resolution path
 # (cache-only catalog read). The *interactive* default (GUI onboarding /
 # ``hermes model``) uses the richer free/paid-tier-aware resolver — see
 # ``get_recommended_default_model`` in hermes_cli/web_server.py and
 # ``partition_nous_models_by_tier`` — which can hit the Portal.
-_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
+_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset(
+    {"nous", "openrouter", PREFERRED_SILENT_DEFAULT_PROVIDER}
+)
 
 
 def get_default_model_for_provider(provider: str) -> str:

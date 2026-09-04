@@ -467,7 +467,8 @@ def get_default_model_from_cache(provider: str) -> str | None:
     resolution paths (agent build, gateway session setup) that must stay
     network-free. The cache is kept fresh by the picker/`hermes update` paths;
     when no cached manifest exists (fresh install, offline), returns None and
-    the caller falls back to the in-repo constant.
+    the caller falls back to the in-repo silent-default table
+    (``PREFERRED_SILENT_DEFAULT_MODEL_IDS`` in hermes_cli.models).
     """
     if _catalog_cache is not None:
         block = _catalog_cache.get("providers", {}).get(provider)

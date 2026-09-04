@@ -5430,7 +5430,9 @@ def _resolve_model() -> str:
 
         return get_preferred_silent_default_model()
     except Exception:
-        return "z-ai/glm-5.3"
+        # Last-ditch literal for a hermes_cli import failure; MUST equal
+        # hermes_cli.models.PREFERRED_SILENT_DEFAULT_MODEL.
+        return "grok-4.6"
 
 
 def _resolve_session_platform() -> str:
