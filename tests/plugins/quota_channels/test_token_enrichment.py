@@ -345,11 +345,11 @@ class TestV1ConfigAutoEnrichment:
         assert "token_usage" not in result
         names = [body["name"] for body in rename_bodies]
         assert "Codex: 99% \u2022 2.2B tok/7d \u2022 7d left" in names
-        assert "z.ai: 74% \u2022 250.0M tok/7d \u2022 4d left" in names
+        assert "z.ai 1: 74% \u2022 250.0M tok/7d \u2022 4d left" in names
         assert "Cursor: 88%/85% \u2022 49.0M tok/7d \u2022 27d left" in names
         assert "Kimi: 74% \u2022 4d left" in names
         assert result["providers"]["Codex"]["tokens_7d"] == 2_234_567_890
-        assert result["providers"]["z.ai"]["tokens_7d"] == 250_000_000
+        assert result["providers"]["z.ai 1"]["tokens_7d"] == 250_000_000
         assert result["providers"]["Cursor"]["tokens_7d"] == 49_000_000
         assert "tokens_7d" not in result["providers"]["Kimi"]
         assert "tokens_7d" not in result["providers"]["Grok"]
@@ -538,7 +538,7 @@ class TestQuotaFailureIsolation:
         assert not any("/channels/301" in u for u in patch_urls)
         assert any("/channels/303" in u for u in patch_urls)
         assert "error" in result["providers"]["Codex"]
-        assert result["providers"]["z.ai"]["tokens_7d"] == 250_000_000
+        assert result["providers"]["z.ai 1"]["tokens_7d"] == 250_000_000
 
 
 class TestSortingUnchanged:
