@@ -17,8 +17,8 @@ API server, which owns every session write.
 ## What it shows
 
 - An inbox of every non-hidden session with activity in the last 24
-  hours, in honest sections — Active / Open · completed /
-  Open · unfinished / Closed — with search, profile filters, and a
+  hours, in honest sections — Active / Open · unfinished /
+  Open · completed / Closed — with search, profile filters, and a
   no-JS auto-refresh fallback. Open always outranks closed: every open
   row renders before any closed row, however much newer the closed
   session's last activity is, while each section keeps its own
