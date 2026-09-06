@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import pytest
 from pathlib import Path
@@ -168,6 +169,26 @@ class TestTakeCheckpoint:
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('modified')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
+
+    def test_checkpoint_tolerates_nested_repo_without_commit(self, mgr, work_dir):
+        """``git add -A`` is fatal on a nested repo with an unborn HEAD —
+        the exclude-pathspec retry must stage the rest of the tree."""
+        nested = work_dir / "embedded"
+        nested.mkdir()
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        (nested / "placeholder.txt").write_text("never committed\n")
+
+        assert mgr.ensure_checkpoint(str(work_dir), "with nested repo") is True
+
+        (work_dir / "main.py").write_text("print('modified')\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "after edit") is True
+        assert mgr.list_checkpoints(str(work_dir))
+
+    def test_system_temp_root_is_skipped(self, mgr):
+        # Volatile temp roots are never staged (systemd-private-*, other
+        # users' scratch, nested-repo trees).
+        assert mgr.ensure_checkpoint(tempfile.gettempdir(), "tmp") is False
 
 
 # =========================================================================
@@ -695,6 +716,42 @@ class TestErrorResilience:
         monkeypatch.setattr("shutil.which", lambda x: None)
         mgr._git_available = None
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
+
+    def test_hard_stage_failure_suppresses_directory_for_session(
+        self, mgr, work_dir, tmp_path, monkeypatch,
+    ):
+        """A deterministic staging failure is suppressed for the whole
+        session, not just the current turn — no per-turn retry storm."""
+        real_run_git = _run_git
+
+        def failing_run_git(args, *rest, **kwargs):
+            if "add" in args:
+                return False, "", "fatal: synthetic staging failure"
+            return real_run_git(args, *rest, **kwargs)
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", failing_run_git)
+        assert mgr.ensure_checkpoint(str(work_dir), "fails") is False
+        assert str(Path(work_dir).resolve()) in mgr._failed_dirs
+
+        mgr.new_turn()
+        take_calls = []
+        real_take = mgr._take
+
+        def counting_take(*args, **kwargs):
+            take_calls.append(args)
+            return real_take(*args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_take", counting_take)
+        assert mgr.ensure_checkpoint(str(work_dir), "next turn") is False
+        assert take_calls == []  # suppressed — _take is never reached again
+
+        # Only the failed directory is suppressed; a healthy one still
+        # checkpoints once git works again.
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", real_run_git)
+        healthy = tmp_path / "healthy"
+        healthy.mkdir()
+        (healthy / "ok.txt").write_text("fine\n")
+        assert mgr.ensure_checkpoint(str(healthy), "healthy") is True
 
 
 class TestTouchProjectMalformedMeta:
