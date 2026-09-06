@@ -29,7 +29,14 @@ API server, which owns every session write.
 - Full transcripts: user/assistant text (HTML-escaped, never rendered
   as markdown), maximal runs of consecutive tool calls collapsed into
   one expandable group per run, sub-agent children, and cross-profile
-  lineage for dispatched research jobs.
+  lineage for dispatched research jobs. Delegate spawns render as
+  inline dispatch cards at their call carriers (replacing the generic
+  delegate tool row, linked to the child session only on a proven
+  window + goal match), and a `delegate_claude_agent` card opens that
+  exact run in the live Claude viewer — while it runs and after it
+  finishes — through a per-dispatch spawn receipt under the profile's
+  own `claude-runs` tree, resolved fail-closed so anything less than a
+  fully validated receipt keeps the static card.
 - Assistant commentary recovery: an assistant row whose `content` is
   empty narrates only in `codex_message_items`; exactly those rows
   recover their displayable assistant text (bounded, defensively
