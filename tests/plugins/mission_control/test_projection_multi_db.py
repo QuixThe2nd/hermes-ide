@@ -227,7 +227,7 @@ class TestGlobalOrderAcrossDBs(ProjectionCase):
         # The profile's archived row is the NEWEST conversation
         # overall; it still renders after every open row. Within the
         # open partition the fixed section order (Active, then
-        # Open-completed, then Open-unfinished) is preserved
+        # Open-unfinished, then Open-completed) is preserved
         # presentation on top of the global order.
         base = self.now - 1000
         self.seed(self.main_db, "d-open-answered", started=base + 90)
@@ -244,10 +244,10 @@ class TestGlobalOrderAcrossDBs(ProjectionCase):
         # (newest closed row first inside the partition).
         self.assertEqual(order[-2:], ["w-closed-newest", "d-closed"])
         # Every open row before every closed one, whatever the
-        # timestamps say — and the completed open row keeps its
-        # section slot ahead of the unfinished one.
+        # timestamps say — and the unfinished open row keeps its
+        # section slot ahead of the completed one.
         self.assertEqual(order[:2],
-                         ["d-open-answered", "d-open-unfinished"])
+                         ["d-open-unfinished", "d-open-answered"])
 
     def test_ended_not_archived_is_closed_across_dbs(self):
         """The browser-observed disagreement, on the two-DB fixture it

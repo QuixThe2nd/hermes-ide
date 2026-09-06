@@ -67,10 +67,10 @@ session_turn_leases row for the conversation — the holder's
 "turn=<continuation id>" parsed conservatively, conversation_id as
 the fallback — or a composer reply this server is currently running
 for the session; never for a conversation the tip already ended or
-archived), then Open · completed (the newest active non-hidden event
-is a plain assistant answer) and Open · unfinished (everything else
-— stale user- or tool-ended transcripts are never mislabeled
-completed) — and Closed strictly last, however recent a closed
+archived), then Open · unfinished (everything else — stale user- or
+tool-ended transcripts are never mislabeled completed) and Open ·
+completed (the newest active non-hidden event is a plain assistant
+answer) — and Closed strictly last, however recent a closed
 session is. Every closed row says why with an explicit Archived or
 Ended chip and subdued styling, and the Closed block is a collapsed
 disclosure so open work stays on top literally and visually.
@@ -417,23 +417,23 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 """
 
 # Inbox section keys in display order. The ordering contract: every
-# open session renders above every closed one — Active first, then the
-# two open resting buckets, and Closed strictly last — so a closed
-# conversation can never jump ahead of an older open one however
-# fresh its last activity is. Rows are bucketed by state before any
-# rendering (this surface has no row cap or window to partition
-# around), and each bucket keeps its own newest-first order. The open
-# resting buckets are retitled "Open · …" so the headers read as one
-# honest question: live, or open (and if open, done or not), with the
-# closed tail collapsed by default. The ids/data-state values are
-# unchanged stable hooks for the client filter; only order and titles
-# moved.
+# open session renders above every closed one — Active first, then
+# Open · unfinished, Open · completed, and Closed strictly last — so
+# a closed conversation can never jump ahead of an older open one
+# however fresh its last activity is. Rows are bucketed by state
+# before any rendering (this surface has no row cap or window to
+# partition around), and each bucket keeps its own newest-first
+# order. The open resting buckets are retitled "Open · …" so the
+# headers read as one honest question: live, or open (and if open,
+# done or not), with the closed tail collapsed by default. The
+# ids/data-state values are unchanged stable hooks for the client
+# filter; only order and titles moved.
 # Active and Completed always render (when the page has any rows at
 # all), Incomplete and Closed only when they have members. Closed is
 # the projected tip's ended_at or the archived flag (archived mirrors
 # Discord or a local close) — it wins over every other signal, and
 # every closed row says so itself with an Archived or Ended chip.
-SECTION_ORDER = ("active", "completed", "incomplete", "closed")
+SECTION_ORDER = ("active", "incomplete", "completed", "closed")
 SECTION_TITLES = {"active": "Active", "closed": "Closed",
                   "completed": "Open \N{MIDDLE DOT} completed",
                   "incomplete": "Open \N{MIDDLE DOT} unfinished"}
@@ -6600,8 +6600,8 @@ def render_conv_row(now, r, selected=None):
 
 
 def render_conv_sections(now, rows, selected=None):
-    """Rows -> the honest sections (Active / Open · completed /
-    Open · unfinished / Closed), newest-first inside each, with count
+    """Rows -> the honest sections (Active / Open · unfinished /
+    Open · completed / Closed), newest-first inside each, with count
     badges.
 
     Every open section renders before Closed: the buckets are filled
