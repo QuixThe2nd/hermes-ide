@@ -22,6 +22,8 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
 
     assert retained_models.issubset(DEFAULT_CODEX_MODELS)
     assert retained_models.issubset(template_models)
+    # The v42 rotation default joins the curated offline list; Sol stays listed.
+    assert {"gpt-6-astra", "gpt-5.6-sol"}.issubset(DEFAULT_CODEX_MODELS)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(template_models)
 

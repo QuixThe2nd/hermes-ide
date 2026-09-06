@@ -661,7 +661,7 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 900_000
 
-    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest"])
+    @pytest.mark.parametrize("slug", ["gpt-6-astra", "gpt-5.6-sol", "gpt-daybreak-blue-latest"])
     def test_fallback_table_base_slug_stays_272k(self, slug):
         """Fallback-table resolution for BASE slugs stays at the advertised
         272K — the opt-in rule applies on the offline path too."""

@@ -34,7 +34,7 @@ The Models category is a quota wall. Hermes IDE automatically monitors configure
 
 Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
 
-`fallback_quota_reorder` uses the same score to rotate the primary and fallback list, moving the top scorer into the primary slot. Wallets that reset sooner rank higher. `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
+`fallback_quota_reorder` uses the same score to rotate the primary and fallback list, moving the top scorer into the primary slot. Wallets that reset sooner rank higher. The Codex rotation default is `gpt-6-astra` (config migration v42 advances older `gpt-5.6-sol` entries; Sol stays manually selectable). `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
 
 The Speeds category is the same trick pointed at downloads. `speed_channels` turns Discord voice channels into a download wall for qBittorrent, SABnzbd, and slskd. The names show live throughput and queue depth, and the category label shows current 1.1.1.1 ICMP latency plus the countdown to the next poll.
 

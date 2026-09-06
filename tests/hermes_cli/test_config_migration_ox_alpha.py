@@ -51,8 +51,9 @@ class TestOxAlphaV41Registry:
             _migrate_to_41,
         )
 
-        assert DEFAULT_CONFIG["_config_version"] == 41
-        assert MIGRATIONS[-1] == (41, _migrate_to_41)
+        # v41 stays registered; the tip is now the v42 rotation step.
+        assert DEFAULT_CONFIG["_config_version"] == MIGRATIONS[-1][0]
+        assert (41, _migrate_to_41) in MIGRATIONS
         # Strictly ascending registry stays intact.
         versions = [target for target, _ in MIGRATIONS]
         assert versions == sorted(versions)
