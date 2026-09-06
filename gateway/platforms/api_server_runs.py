@@ -41,24 +41,46 @@ _CLARIFY_MAX_RESPONSE_CHARS = 8192
 _CLARIFY_MAX_RESPONSE_ITEMS = 16
 
 
+def _redact_clarify_text(text: object) -> str:
+    """Redact secrets from text bound for a clarify card.
+
+    The question and choice labels are model-generated text that can
+    echo credentials (a proposed command, a masked key); the card leaves
+    the process on the session clarify routes, the run status, and the
+    SSE stream, so it gets the same forced redaction error text gets.
+    Lazy import keeps this module importable without the agent package;
+    on import failure the text still passes through the bounds below —
+    bounded-but-unredacted beats losing the card entirely.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(str(text), force=True)
+    except Exception:  # pragma: no cover - defensive
+        return str(text)
+
+
 def _bounded_clarify_card(
     clarify_id: str,
     question: str,
     choices: Optional[List[str]],
     multi_select: bool,
 ) -> Dict[str, Any]:
-    """Render one pending clarify as the bounded card the session
-    clarify routes serve. The card is read-only presentation: ids,
-    question text, choice labels and the multi-select flag, all clamped
-    so no payload-heavy or oversized agent text crosses the API."""
+    """Render one pending clarify as the bounded, redacted card the
+    session clarify routes serve. The card is read-only presentation:
+    ids, question text, choice labels and the multi-select flag, all
+    redacted and clamped so no secret-bearing, payload-heavy, or
+    oversized agent text crosses the API."""
     bounded: List[str] = []
     for choice in list(choices or [])[:_CLARIFY_MAX_CHOICES]:
-        text = str(choice).strip()
+        text = _redact_clarify_text(choice).strip()
         if text:
             bounded.append(text[:_CLARIFY_MAX_CHOICE_CHARS])
     return {
         "clarify_id": str(clarify_id)[:_CLARIFY_ID_MAX_CHARS],
-        "question": str(question)[:_CLARIFY_MAX_QUESTION_CHARS],
+        "question": _redact_clarify_text(question)[
+            :_CLARIFY_MAX_QUESTION_CHARS
+        ],
         "choices": bounded or None,
         "multi_select": bool(multi_select),
     }
@@ -122,7 +144,15 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # only records which run/profile each entry belongs to so the session
     # clarify routes can fail closed on cross-run/cross-profile ids.
     self._run_clarify_registrations: Dict[str, Dict[str, str]] = {}
-    self._run_clarify_lock = threading.Lock()
+    # Control gate for the clarify lifecycle transitions that must be
+    # atomic ACROSS threads (agent executor thread vs the event loop):
+    # the clarify callback's admission+register+waiting-status section,
+    # its settle section, and /stop's stopping-marker+cancel section.
+    # Reentrant so those sections can call each other while holding it.
+    # Fixed lock ordering: this gate is ALWAYS acquired before
+    # ``clarify_gateway``'s registry lock (register/resolve run inside a
+    # gate section) and never the reverse.
+    self._run_clarify_lock = threading.RLock()
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -356,29 +386,52 @@ def _make_run_clarify_callback(
         from tools.clarify_tool import TIMEOUT_RESPONSE
         import uuid as _uuid
 
-        clarify_id = _uuid.uuid4().hex[:10]
-        _clarify_mod.register(
-            clarify_id=clarify_id,
-            session_key=session_id,
-            question=str(question or ""),
-            choices=[str(c) for c in choices] if choices else None,
-            multi_select=bool(multi_select),
-        )
+        # Admission, registry write, and the waiting status form ONE
+        # atomic section on the run clarify gate — the same reentrant
+        # lock /stop's stopping-marker+cancel section takes. Without it,
+        # a /stop landing between the register and the status write
+        # would cancel a registration the map had not recorded yet (the
+        # agent then blocks for the whole clarify timeout with a prompt
+        # nothing can answer), or the waiting status could overwrite
+        # "stopping" and the settle path would resurrect the run to
+        # "running". A callback that arrives after the stop (or after
+        # the run went terminal) returns the canonical timeout sentinel
+        # without registering anything.
         with self._run_clarify_lock:
+            if (
+                run_id in self._stopping_run_ids
+                or (self._run_statuses.get(run_id) or {}).get("status")
+                in {
+                    "stopping",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                }
+            ):
+                return TIMEOUT_RESPONSE
+            clarify_id = _uuid.uuid4().hex[:10]
+            _clarify_mod.register(
+                clarify_id=clarify_id,
+                session_key=session_id,
+                question=str(question or ""),
+                choices=[str(c) for c in choices] if choices else None,
+                multi_select=bool(multi_select),
+            )
             self._run_clarify_registrations[clarify_id] = {
                 "run_id": run_id,
                 "session_id": session_id,
                 "profile": profile or "default",
             }
-        card = _bounded_clarify_card(
-            clarify_id, question, choices, bool(multi_select)
-        )
-        self._set_run_status(
-            run_id,
-            "waiting_for_clarify",
-            last_event="clarify.request",
-            clarify=card,
-        )
+            card = _bounded_clarify_card(
+                clarify_id, question, choices, bool(multi_select)
+            )
+            self._set_run_status(
+                run_id,
+                "waiting_for_clarify",
+                last_event="clarify.request",
+                clarify=card,
+            )
         put_event({
             "event": "clarify.request",
             "run_id": run_id,
@@ -392,16 +445,20 @@ def _make_run_clarify_callback(
         finally:
             # The registry entry is reaped here even on cancellation:
             # wait_for_response always removes its own indices, and the
-            # registration must not outlive the entry it names.
+            # registration must not outlive the entry it names. The
+            # settle (waiting_for_clarify -> running) runs inside the
+            # gate so a concurrent /stop can never slip between the
+            # check and the write: a run already moved to stopping or a
+            # terminal status is never resurrected to running.
             with self._run_clarify_lock:
                 self._run_clarify_registrations.pop(clarify_id, None)
-            if (
-                self._run_statuses.get(run_id, {}).get("status")
-                == "waiting_for_clarify"
-            ):
-                self._set_run_status(
-                    run_id, "running", last_event="clarify.responded"
-                )
+                if (
+                    self._run_statuses.get(run_id, {}).get("status")
+                    == "waiting_for_clarify"
+                ):
+                    self._set_run_status(
+                        run_id, "running", last_event="clarify.responded"
+                    )
             put_event({
                 "event": "clarify.responded",
                 "run_id": run_id,
@@ -422,7 +479,9 @@ def _cancel_run_clarifies(self, run_id: str) -> None:
     (which then reports "user did not respond"), and the registration
     map never keeps an entry whose run is gone. Precise to the run — a
     concurrent run sharing the same session id keeps its own pending
-    question."""
+    question. Callable inside the stop gate's section: the lock is
+    reentrant, and holding the gate across the pops means no admission
+    for this run can interleave between the marker and the cancel."""
     with self._run_clarify_lock:
         doomed = [
             clarify_id
@@ -446,19 +505,24 @@ def _cancel_run_clarifies(self, run_id: str) -> None:
             )
 
 
-def _pending_session_clarify(
+def _session_clarify_cards(
     self, session_id: str, profile: str
-) -> Optional[Dict[str, Any]]:
-    """The oldest pending clarify card for one exact session+profile.
+) -> List[Dict[str, Any]]:
+    """Every pending clarify card for one exact session+profile,
+    oldest first.
 
     Only entries an API run of this session registered (and whose
     registration profile matches) are visible; anything else pending in
     the process-wide registry under the same key — a native-gateway
-    prompt, another profile's run — reads as no card at all."""
+    prompt, another profile's run — reads as no card at all. More than
+    one card means more than one run of this session is parked on a
+    question: the callers fail closed on that instead of exposing or
+    resolving a guessed card."""
     from tools import clarify_gateway as _clarify_mod
 
     with self._run_clarify_lock:
         registrations = dict(self._run_clarify_registrations)
+    cards: List[Dict[str, Any]] = []
     for entry in _clarify_mod.pending_entries_for_session(session_id):
         meta = registrations.get(entry.clarify_id)
         if (
@@ -466,13 +530,15 @@ def _pending_session_clarify(
             and meta.get("session_id") == session_id
             and meta.get("profile") == (profile or "default")
         ):
-            return _bounded_clarify_card(
-                entry.clarify_id,
-                entry.question,
-                entry.choices,
-                entry.multi_select,
+            cards.append(
+                _bounded_clarify_card(
+                    entry.clarify_id,
+                    entry.question,
+                    entry.choices,
+                    entry.multi_select,
+                )
             )
-    return None
+    return cards
 
 
 def _run_idempotency_scope(
@@ -1694,16 +1760,27 @@ async def _handle_stop_run(
             status=409,
         )
 
-    self._set_run_status(run_id, "stopping", last_event="run.stopping")
-    self._stopping_run_ids.add(run_id)
+    # Atomic stop section on the run clarify gate — the same reentrant
+    # lock the clarify callback's admission+register+waiting section and
+    # its settle section take. Holding it across BOTH the stopping
+    # marker and the clarify cancel is what makes the cross-thread
+    # stop/clarify races impossible: a clarify callback on the executor
+    # thread either completes its whole registration first (this cancel
+    # then releases that entry, and the settle that follows no-ops on
+    # the now-stopping status) or it sees the marker below and returns
+    # the canonical timeout sentinel without ever touching the registry.
+    with self._run_clarify_lock:
+        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        self._stopping_run_ids.add(run_id)
 
-    # Release any clarify the worker is parked on right now — the run's
-    # own finally block would also do it, but not until the interrupted
-    # worker unwinds. Stopping must leave no pending entry behind.
-    try:
-        self._cancel_run_clarifies(run_id)
-    except Exception:
-        pass
+        # Release any clarify the worker is parked on right now — the
+        # run's own finally block would also do it, but not until the
+        # interrupted worker unwinds. Stopping must leave no pending
+        # entry behind.
+        try:
+            self._cancel_run_clarifies(run_id)
+        except Exception:
+            pass
 
     if agent is not None:
         try:
@@ -1745,6 +1822,10 @@ async def _handle_session_clarify_get(
     Profile-scoped like every ``/api/sessions`` route: only clarifies a
     run of *this* session started under *this* profile are visible, so
     one profile's composer can neither see nor answer another's prompt.
+    With more than one such run parked on a question the route fails
+    closed (409 clarify_ambiguous): which card is "the" card is the
+    client's ambiguity to resolve by stopping a run, never ours to
+    guess, and a guessed card could answer the wrong waiter.
     """
     _openai_error = _api_server._openai_error
 
@@ -1754,7 +1835,17 @@ async def _handle_session_clarify_get(
 
     session_id = request.match_info.get("session_id") or ""
     profile = _request_profile_name(_api_server)
-    card = self._pending_session_clarify(session_id, profile)
+    cards = self._session_clarify_cards(session_id, profile)
+    if len(cards) > 1:
+        return web.json_response(
+            _openai_error(
+                "Multiple pending clarifies for this session; stop or "
+                "resolve the others until exactly one remains",
+                code="clarify_ambiguous",
+            ),
+            status=409,
+        )
+    card = cards[0] if cards else None
     return web.json_response(
         {
             "object": "hermes.session.clarify",
@@ -1775,8 +1866,8 @@ async def _handle_session_clarify_post(
     Fails closed: the ``clarify_id`` must be exactly the one the GET
     served for this session, the registration must belong to this
     session *and* profile, and the entry must still be pending. Stale,
-    cross-session, cross-profile, and lost-race answers all 409 without
-    revealing whether the id ever existed.
+    cross-session, cross-profile, ambiguous, and lost-race answers all
+    409 without revealing whether the id ever existed.
     """
     _openai_error = _api_server._openai_error
 
@@ -1834,11 +1925,16 @@ async def _handle_session_clarify_post(
                     ),
                     status=400,
                 )
-        items = [
-            item.strip()[:_CLARIFY_MAX_RESPONSE_CHARS]
-            for item in raw_response
-            if item.strip()
-        ]
+            if len(item) > _CLARIFY_MAX_RESPONSE_CHARS:
+                return web.json_response(
+                    _openai_error(
+                        "response items must be at most "
+                        f"{_CLARIFY_MAX_RESPONSE_CHARS} characters.",
+                        code="invalid_clarify_response",
+                    ),
+                    status=400,
+                )
+        items = [item.strip() for item in raw_response if item.strip()]
         if not items:
             return web.json_response(
                 _openai_error(
@@ -1857,7 +1953,18 @@ async def _handle_session_clarify_post(
                 ),
                 status=400,
             )
-        response_text = text[:_CLARIFY_MAX_RESPONSE_CHARS]
+        if len(text) > _CLARIFY_MAX_RESPONSE_CHARS:
+            # Refused, never truncated: a silently shortened answer
+            # could change the agent's decision.
+            return web.json_response(
+                _openai_error(
+                    "response must be at most "
+                    f"{_CLARIFY_MAX_RESPONSE_CHARS} characters.",
+                    code="invalid_clarify_response",
+                ),
+                status=400,
+            )
+        response_text = text
     else:
         return web.json_response(
             _openai_error(
@@ -1868,6 +1975,21 @@ async def _handle_session_clarify_post(
         )
 
     from tools.clarify_gateway import get_pending_entry, resolve_gateway_clarify
+
+    # Same fail-closed rule as GET: with several pending cards for this
+    # exact session+profile, an exact clarify_id still names one of
+    # several live waiters and releasing the wrong one is unrecoverable
+    # — the client must first reduce the session to a single pending
+    # clarify (stop the extra run) before any answer is accepted.
+    if len(self._session_clarify_cards(session_id, profile)) > 1:
+        return web.json_response(
+            _openai_error(
+                "Multiple pending clarifies for this session; stop or "
+                "resolve the others until exactly one remains",
+                code="clarify_ambiguous",
+            ),
+            status=409,
+        )
 
     with self._run_clarify_lock:
         registration = self._run_clarify_registrations.get(clarify_id)

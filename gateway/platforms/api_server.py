@@ -7682,10 +7682,10 @@ class APIServerAdapter(BasePlatformAdapter):
     def _cancel_run_clarifies(self, run_id: str) -> None:
         return _api_runs._cancel_run_clarifies(self, run_id)
 
-    def _pending_session_clarify(
+    def _session_clarify_cards(
         self, session_id: str, profile: str
-    ) -> Optional[Dict[str, Any]]:
-        return _api_runs._pending_session_clarify(self, session_id, profile)
+    ) -> List[Dict[str, Any]]:
+        return _api_runs._session_clarify_cards(self, session_id, profile)
 
     def _run_idempotency_scope(self, request: "web.Request") -> str:
         return _api_runs._run_idempotency_scope(

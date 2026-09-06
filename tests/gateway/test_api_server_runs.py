@@ -28,6 +28,8 @@ from gateway.platforms.api_server import (
     security_headers_middleware,
 )
 from tools import approval as approval_mod
+from tools import clarify_gateway
+from tools.clarify_tool import TIMEOUT_RESPONSE
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,15 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
+    # Session clarify surface the run workers park behind.
+    app.router.add_get(
+        "/api/sessions/{session_id}/clarify",
+        adapter._handle_session_clarify_get,
+    )
+    app.router.add_post(
+        "/api/sessions/{session_id}/clarify",
+        adapter._handle_session_clarify_post,
+    )
     return app
 
 
@@ -2186,3 +2197,752 @@ class TestHostedRoomRuns:
                 )
             assert rejected.status == 403
             create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Session clarify control for admitted /v1/runs agents
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _drain_clarify_registry():
+    """No parked clarify outlives its test.
+
+    ``tools.clarify_gateway`` is process-wide state shared by every test
+    in the suite's process; a worker left parked by a failing assertion
+    would pin its executor thread for the clarify timeout (an hour by
+    default) and bleed into whichever test runs next.
+    """
+    yield
+    with clarify_gateway._lock:
+        doomed = list(clarify_gateway._entries)
+    for clarify_id in doomed:
+        try:
+            clarify_gateway.resolve_gateway_clarify(clarify_id, "")
+        except Exception:
+            pass
+
+
+def _make_clarifying_agent(
+    question,
+    choices=None,
+    multi_select=False,
+    gate=None,
+):
+    """A mock agent whose turn parks in the injected clarify callback.
+
+    Returns ``(agent, answered)`` where ``answered`` is set once the
+    callback returned and ``agent.captured_clarify`` holds the response
+    the parked worker received (set from the executor thread). When
+    ``gate`` is a threading.Event the worker asks the question only
+    after that event is set, so a test can stage a stop before the
+    question lands.
+    """
+    agent = MagicMock()
+    answered = threading.Event()
+    agent.captured_clarify = None
+
+    def _park(user_message=None, conversation_history=None, task_id=None):
+        if gate is not None:
+            gate.wait(timeout=10)
+        response = agent.clarify_callback(
+            question, choices=choices, multi_select=multi_select
+        )
+        agent.captured_clarify = response
+        answered.set()
+        return {"final_response": "clarified:%s" % response}
+
+    agent.run_conversation.side_effect = _park
+    agent.session_prompt_tokens = 0
+    agent.session_completion_tokens = 0
+    agent.session_total_tokens = 0
+    return agent, answered
+
+
+async def _wait_run_status(cli, run_id, want, headers=None, timeout=15.0):
+    """Poll GET /v1/runs/{run_id} until its status is in ``want``."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    last = None
+    while asyncio.get_running_loop().time() < deadline:
+        resp = await cli.get(f"/v1/runs/{run_id}", headers=headers)
+        assert resp.status == 200
+        last = await resp.json()
+        if last.get("status") in want:
+            return last
+        await asyncio.sleep(0.05)
+    pytest.fail(f"run {run_id} never reached {want} (last: {last!r})")
+
+
+async def _session_clarify_get(cli, session_id, headers=None):
+    """(status, body) of one session clarify GET."""
+    resp = await cli.get(
+        f"/api/sessions/{session_id}/clarify", headers=headers
+    )
+    return resp.status, await resp.json()
+
+
+async def _wait_for_card(cli, session_id, headers=None, timeout=15.0):
+    """Poll the session clarify GET until exactly one card appears."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    last = None
+    while asyncio.get_running_loop().time() < deadline:
+        status, body = await _session_clarify_get(cli, session_id, headers)
+        last = (status, body)
+        if status == 200 and body.get("pending_clarify"):
+            return body["pending_clarify"]
+        await asyncio.sleep(0.05)
+    pytest.fail(f"no pending clarify card appeared (last: {last!r})")
+
+
+async def _wait_for(predicate, timeout=10.0, interval=0.02):
+    """Await a sync predicate, failing with its last value."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    last = None
+    while asyncio.get_running_loop().time() < deadline:
+        last = predicate()
+        if last:
+            return last
+        await asyncio.sleep(interval)
+    pytest.fail(f"condition never met (last: {last!r})")
+
+
+async def _answer_clarify(cli, session_id, clarify_id, response, headers=None):
+    resp = await cli.post(
+        f"/api/sessions/{session_id}/clarify",
+        json={"clarify_id": clarify_id, "response": response},
+        headers=headers,
+    )
+    return resp.status, await resp.json()
+
+
+class TestRunClarifyControl:
+    """The blocking clarify bridge: callback injection, the card round
+    trip on the session routes, and the fail-closed answer contract."""
+
+    @pytest.mark.asyncio
+    async def test_admitted_run_gets_blocking_clarify_callback(self, adapter):
+        """Each admitted run carries a blocking clarify callback that
+        registers exactly one bounded card under the canonical session
+        id, records exact run/session/profile ownership, and parks the
+        worker with the run mirroring ``waiting_for_clarify``."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Which format?", choices=["json", "yaml"]
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_inject_1"},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                card = await _wait_for_card(cli, "rc_inject_1")
+                assert card["question"] == "Which format?"
+                assert card["choices"] == ["json", "yaml"]
+                assert card["multi_select"] is False
+
+                # exact ownership recorded for the fail-closed routes
+                assert adapter._run_clarify_registrations == {
+                    card["clarify_id"]: {
+                        "run_id": run_id,
+                        "session_id": "rc_inject_1",
+                        "profile": "default",
+                    }
+                }
+                # the waiter parks in the process-wide registry under the
+                # canonical session id the 202 exposed
+                entries = clarify_gateway.pending_entries_for_session(
+                    "rc_inject_1"
+                )
+                assert [e.clarify_id for e in entries] == [card["clarify_id"]]
+                # the run status mirrors the pause while the worker parks
+                status = await (
+                    await cli.get(f"/v1/runs/{run_id}")
+                ).json()
+                assert status["status"] == "waiting_for_clarify"
+                assert status["clarify"]["clarify_id"] == card["clarify_id"]
+
+                assert not answered.is_set()
+                code, body = await _answer_clarify(
+                    cli, "rc_inject_1", card["clarify_id"], "json"
+                )
+                assert (code, body["resolved"]) == (200, True)
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == "json"
+                await _wait_run_status(cli, run_id, {"completed"})
+
+    @pytest.mark.asyncio
+    async def test_get_post_round_trip_transitions_status_and_clears(
+        self, adapter
+    ):
+        """A full round trip: waiting_for_clarify with the bounded card,
+        an exact-id answer, the same run resuming to completed, and no
+        pending state surviving anywhere."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Which format?", choices=["json", "yaml"]
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_round_1"},
+                )
+                run_id = (await resp.json())["run_id"]
+
+                card = await _wait_for_card(cli, "rc_round_1")
+                # the exact id is required: a ghost id answers nothing
+                ghost_code, _ = await _answer_clarify(
+                    cli, "rc_round_1", "does-not-exist", "yaml"
+                )
+                assert ghost_code == 409
+                # a cross-session POST with the right id fails closed
+                # without resolving anything
+                away_code, _ = await _answer_clarify(
+                    cli, "rc_other_1", card["clarify_id"], "yaml"
+                )
+                assert away_code == 409
+
+                code, body = await _answer_clarify(
+                    cli, "rc_round_1", card["clarify_id"], "yaml"
+                )
+                assert code == 200
+                assert body["resolved"] is True
+
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == "yaml"
+                final = await _wait_run_status(cli, run_id, {"completed"})
+                assert "clarify" not in final  # terminal status drops the card
+
+                status, body = await _session_clarify_get(cli, "rc_round_1")
+                assert (status, body["pending_clarify"]) == (200, None)
+                assert adapter._run_clarify_registrations == {}
+                assert (
+                    clarify_gateway.pending_entries_for_session("rc_round_1")
+                    == []
+                )
+
+    @pytest.mark.asyncio
+    async def test_card_is_bounded(self, adapter):
+        """Whatever the agent asked, only the bounded card crosses the
+        API: at most 8 choices, 500 chars per choice, 2000-char
+        question, 128-char clarify id."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Q" * 5000,
+                    choices=["%d-" % i + "x" * 900 for i in range(12)],
+                )
+                mock_create.return_value = agent
+                await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_bound_1"},
+                )
+                card = await _wait_for_card(cli, "rc_bound_1")
+                assert len(card["clarify_id"]) <= 128
+                assert len(card["question"]) == 2000
+                assert len(card["choices"]) == 8
+                # first 8 choices served, each clamped to 500 chars
+                assert all(len(c) == 500 for c in card["choices"])
+                assert card["choices"][0].startswith("0-")
+                assert card["choices"][7].startswith("7-")
+                # settle the parked run with the (bounded) first choice
+                await _answer_clarify(
+                    cli, "rc_bound_1", card["clarify_id"], card["choices"][0]
+                )
+                assert answered.wait(timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_response_shapes_are_validated_before_resolving(
+        self, adapter
+    ):
+        """Bounded string/list responses only: shape violations are a
+        400 that resolves nothing; a list is refused on a
+        single-select prompt."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Which format?", choices=["json", "yaml"]
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_shape_1"},
+                )
+                assert resp.status == 202
+                card = await _wait_for_card(cli, "rc_shape_1")
+
+                for bad in (
+                    {"response": ""},  # empty string
+                    {"response": "x" * 9000},  # over the char bound
+                    {"response": ["json", 3]},  # non-string item
+                    {"response": ["c%d" % i for i in range(20)]},  # too many
+                    {"response": ["  ", ""]},  # only blank items
+                    {"response": 42},  # neither string nor list
+                ):
+                    payload = {"clarify_id": card["clarify_id"], **bad}
+                    resp = await cli.post(
+                        "/api/sessions/rc_shape_1/clarify", json=payload
+                    )
+                    assert resp.status == 400, bad
+                # a list answer on a single-select prompt is a 400
+                resp = await cli.post(
+                    "/api/sessions/rc_shape_1/clarify",
+                    json={
+                        "clarify_id": card["clarify_id"],
+                        "response": ["json", "yaml"],
+                    },
+                )
+                assert resp.status == 400
+                # nothing above resolved anything: the card is unchanged
+                still = await _wait_for_card(cli, "rc_shape_1")
+                assert still["clarify_id"] == card["clarify_id"]
+                assert not answered.is_set()
+
+                # the bounded multi-item list answer on a multi-select
+                # prompt round-trips as the JSON array form
+                # (single-select prompt here, so settle with a string)
+                code, _ = await _answer_clarify(
+                    cli, "rc_shape_1", card["clarify_id"], "json"
+                )
+                assert code == 200
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == "json"
+
+    @pytest.mark.asyncio
+    async def test_multi_select_list_answer_round_trips(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Which checks?",
+                    choices=["lint", "types", "tests"],
+                    multi_select=True,
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_multi_1"},
+                )
+                run_id = (await resp.json())["run_id"]
+                card = await _wait_for_card(cli, "rc_multi_1")
+                assert card["multi_select"] is True
+
+                code, _ = await _answer_clarify(
+                    cli, "rc_multi_1", card["clarify_id"], ["lint", "tests"]
+                )
+                assert code == 200
+                assert answered.wait(timeout=10)
+                # the clarify tool decodes the JSON array form back to a list
+                assert agent.captured_clarify == '["lint", "tests"]'
+                await _wait_run_status(cli, run_id, {"completed"})
+
+
+class TestRunClarifyAmbiguity:
+    """Two pending cards for one session+profile are the client's
+    ambiguity: never exposed, never resolved by guessing."""
+
+    @staticmethod
+    async def _admit_parked_run(cli, adapter, session_id):
+        """Admit one run that parks in a clarify; (agent, answered, run_id)."""
+        with patch.object(adapter, "_create_agent") as mock_create:
+            agent, answered = _make_clarifying_agent(
+                "Pick for %s?" % session_id, choices=["a", "b"]
+            )
+            mock_create.return_value = agent
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hi", "session_id": session_id},
+            )
+            assert resp.status == 202
+            return agent, answered, (await resp.json())["run_id"]
+
+    @pytest.mark.asyncio
+    async def test_same_session_two_pending_cards_fail_closed(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            agent_a, answered_a, run_a = await self._admit_parked_run(
+                cli, adapter, "rc_amb_1"
+            )
+            await _wait_for_card(cli, "rc_amb_1")
+
+            agent_b, answered_b, run_b = await self._admit_parked_run(
+                cli, adapter, "rc_amb_1"
+            )
+            await _wait_for(
+                lambda: len(adapter._run_clarify_registrations) == 2
+            )
+
+            # GET refuses to expose a guessed card
+            status, body = await _session_clarify_get(cli, "rc_amb_1")
+            assert status == 409
+            assert body["error"]["code"] == "clarify_ambiguous"
+            # even an exact clarify_id cannot resolve a guessed waiter
+            card_a_id = next(
+                cid
+                for cid, meta in adapter._run_clarify_registrations.items()
+                if meta["run_id"] == run_a
+            )
+            status, body = await _answer_clarify(
+                cli, "rc_amb_1", card_a_id, "a"
+            )
+            assert status == 409
+            assert body["error"]["code"] == "clarify_ambiguous"
+            assert not answered_a.is_set()
+            assert not answered_b.is_set()
+
+            # reduce the ambiguity: stop one run, then the survivor's
+            # card is servable and answerable again
+            stop = await cli.post(f"/v1/runs/{run_b}/stop")
+            assert stop.status == 200
+            assert answered_b.wait(timeout=10)
+            card = await _wait_for_card(cli, "rc_amb_1")
+            assert card["clarify_id"] == card_a_id
+            code, _ = await _answer_clarify(
+                cli, "rc_amb_1", card_a_id, "a"
+            )
+            assert code == 200
+            assert answered_a.wait(timeout=10)
+            assert agent_a.captured_clarify == "a"
+            await _wait_run_status(cli, run_a, {"completed"})
+            await _wait_run_status(cli, run_b, {"cancelled", "completed"})
+            assert adapter._run_clarify_registrations == {}
+
+
+class TestRunClarifyProfileIsolation:
+    """Only the URL-selected profile sees and answers its own session
+    cards; same-session cards across profiles never merge."""
+
+    KEYS = {
+        "default": "sk-rc-default-profile-key-1",
+        "staging": "sk-rc-staging-profile-key-1",
+    }
+
+    @classmethod
+    def _profile_app(cls, adapter):
+        @web.middleware
+        async def stamp_profile(request, handler):
+            token = _api_request_profile.set(
+                request.headers.get("X-Test-Profile") or "default"
+            )
+            try:
+                return await handler(request)
+            finally:
+                _api_request_profile.reset(token)
+
+        adapter._expected_api_key = lambda: cls.KEYS.get(
+            _api_request_profile.get(), ""
+        )
+        app = _create_runs_app(adapter)
+        app.middlewares.append(stamp_profile)
+        return app
+
+    def _headers(self, profile):
+        return {
+            "X-Test-Profile": profile,
+            "Authorization": f"Bearer {self.KEYS[profile]}",
+        }
+
+    @pytest.mark.asyncio
+    async def test_named_profile_card_is_invisible_and_unanswerable_from_default(
+        self, adapter
+    ):
+        app = self._profile_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Staging only?", choices=["a", "b"]
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_prof_1"},
+                    headers=self._headers("staging"),
+                )
+                assert resp.status == 202
+                card = await _wait_for_card(
+                    cli, "rc_prof_1", headers=self._headers("staging")
+                )
+                assert (
+                    list(adapter._run_clarify_registrations.values())[0][
+                        "profile"
+                    ]
+                    == "staging"
+                )
+
+                # default profile sees no card on the same session id
+                status, body = await _session_clarify_get(
+                    cli, "rc_prof_1", headers=self._headers("default")
+                )
+                assert (status, body["pending_clarify"]) == (200, None)
+                # and cannot answer what it cannot see
+                code, _ = await _answer_clarify(
+                    cli,
+                    "rc_prof_1",
+                    card["clarify_id"],
+                    "b",
+                    headers=self._headers("default"),
+                )
+                assert code == 409
+                assert not answered.is_set()
+
+                # the owning profile still can
+                code, _ = await _answer_clarify(
+                    cli,
+                    "rc_prof_1",
+                    card["clarify_id"],
+                    "a",
+                    headers=self._headers("staging"),
+                )
+                assert code == 200
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == "a"
+
+    @pytest.mark.asyncio
+    async def test_same_session_cards_across_profiles_stay_separate(
+        self, adapter
+    ):
+        """One session id, two profiles: each profile sees exactly its
+        own card — the two pending cards are not an ambiguity for
+        either viewer and never answer each other's waiters."""
+        app = self._profile_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            parked = {}
+            for profile in ("default", "staging"):
+                with patch.object(adapter, "_create_agent") as mock_create:
+                    agent, answered = _make_clarifying_agent(
+                        "For %s?" % profile, choices=["a", "b"]
+                    )
+                    mock_create.return_value = agent
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={"input": "hi", "session_id": "rc_prof_2"},
+                        headers=self._headers(profile),
+                    )
+                    assert resp.status == 202
+                    card = await _wait_for_card(
+                        cli, "rc_prof_2", headers=self._headers(profile)
+                    )
+                    parked[profile] = (agent, answered, card)
+
+            for profile, (_agent, _answered, card) in parked.items():
+                status, body = await _session_clarify_get(
+                    cli, "rc_prof_2", headers=self._headers(profile)
+                )
+                assert status == 200
+                assert body["pending_clarify"]["clarify_id"] == card[
+                    "clarify_id"
+                ]
+
+            # each profile's answer resumes only its own run
+            for profile in ("default", "staging"):
+                agent, answered, card = parked[profile]
+                code, _ = await _answer_clarify(
+                    cli,
+                    "rc_prof_2",
+                    card["clarify_id"],
+                    "a",
+                    headers=self._headers(profile),
+                )
+                assert code == 200
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == "a"
+            assert adapter._run_clarify_registrations == {}
+
+
+class TestRunClarifyStopRaces:
+    """Stop must always win against a clarify registration: never a
+    waiter left until timeout, never a registration after stop, never a
+    resurrected status."""
+
+    @pytest.mark.asyncio
+    async def test_stop_releases_a_parked_waiter_immediately(self, adapter):
+        """The parked worker is released by the stop itself — the
+        sentinel, not a real answer — long before any clarify timeout."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch.object(
+                    clarify_gateway, "get_clarify_timeout", return_value=3600
+                ),
+            ):
+                agent, answered = _make_clarifying_agent(
+                    "Which format?", choices=["json", "yaml"]
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_stop_1"},
+                )
+                run_id = (await resp.json())["run_id"]
+                card = await _wait_for_card(cli, "rc_stop_1")
+
+                stop = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop.status == 200
+
+                # released now (3600s timeout would otherwise pin it)
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == TIMEOUT_RESPONSE
+                # no pending state survives the stop
+                await _wait_for(
+                    lambda: not adapter._run_clarify_registrations
+                )
+                assert (
+                    clarify_gateway.pending_entries_for_session("rc_stop_1")
+                    == []
+                )
+                # a late answer for the dead card fails closed
+                code, _ = await _answer_clarify(
+                    cli, "rc_stop_1", card["clarify_id"], "json"
+                )
+                assert code == 409
+
+    @pytest.mark.asyncio
+    async def test_clarify_after_stop_never_registers(self, adapter):
+        """A question that lands after the stop returns the timeout
+        sentinel without registering: no card, no waiting status, and
+        the stopping status is never overwritten."""
+        app = _create_runs_app(adapter)
+        may_ask = threading.Event()
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Which format?", choices=["json", "yaml"], gate=may_ask
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_late_1"},
+                )
+                run_id = (await resp.json())["run_id"]
+                await _wait_run_status(cli, run_id, {"running"})
+
+                stop = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop.status == 200
+                stopping = await (
+                    await cli.get(f"/v1/runs/{run_id}")
+                ).json()
+                assert stopping["status"] == "stopping"
+
+                may_ask.set()
+                assert answered.wait(timeout=10)
+                assert agent.captured_clarify == TIMEOUT_RESPONSE
+                # nothing was registered, so nothing is pending
+                assert adapter._run_clarify_registrations == {}
+                assert (
+                    clarify_gateway.pending_entries_for_session("rc_late_1")
+                    == []
+                )
+                status, body = await _session_clarify_get(cli, "rc_late_1")
+                assert (status, body["pending_clarify"]) == (200, None)
+
+    @pytest.mark.asyncio
+    async def test_settle_never_resurrects_a_stopped_run(self, adapter):
+        """The settle that follows a released wait cannot flip a
+        stopping/terminal run back to running or waiting."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent, answered = _make_clarifying_agent(
+                    "Which format?", choices=["json", "yaml"]
+                )
+                mock_create.return_value = agent
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hi", "session_id": "rc_res_1"},
+                )
+                run_id = (await resp.json())["run_id"]
+                await _wait_for_card(cli, "rc_res_1")
+
+                await cli.post(f"/v1/runs/{run_id}/stop")
+                # answered fires only after the callback fully returned,
+                # i.e. after the settle section already ran
+                assert answered.wait(timeout=10)
+                status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                assert status["status"] in {"stopping", "cancelled", "completed"}
+                assert status["status"] != "running"
+
+                final = await _wait_run_status(
+                    cli, run_id, {"cancelled", "completed"}
+                )
+                # and it stays settled
+                await asyncio.sleep(0.2)
+                again = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                assert again["status"] == final["status"]
+                assert again["status"] not in {"running", "waiting_for_clarify"}
+
+    def test_registration_beating_the_stop_is_cancelled(self, adapter):
+        """Race order 1: the whole registration (registry + ownership +
+        waiting status) completes first, then /stop lands — the stop's
+        cancel section must still find and release it, and the settle
+        must not overwrite ``stopping``."""
+        run_id = "run_rc_race_won"
+        adapter._set_run_status(run_id, "running")
+        events = []
+        callback = adapter._make_run_clarify_callback(
+            run_id, "rc_race_1", "default", events.append
+        )
+        worker = threading.Thread(
+            target=callback, args=("Which format?", ["json", "yaml"])
+        )
+        worker.start()
+        deadline = time.monotonic() + 10
+        while not adapter._run_clarify_registrations:
+            assert time.monotonic() < deadline, "admission never completed"
+            time.sleep(0.01)
+
+        # the stop handler's atomic section, verbatim
+        with adapter._run_clarify_lock:
+            adapter._set_run_status(run_id, "stopping", last_event="run.stopping")
+            adapter._stopping_run_ids.add(run_id)
+            adapter._cancel_run_clarifies(run_id)
+
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert adapter._run_clarify_registrations == {}
+        assert clarify_gateway.pending_entries_for_session("rc_race_1") == []
+        # the released waiter settled without resurrecting the run
+        assert adapter._run_statuses[run_id]["status"] == "stopping"
+        # the card crossed the run transport in the safe event shape
+        requests = [e for e in events if e.get("event") == "clarify.request"]
+        assert len(requests) == 1
+        assert requests[0]["run_id"] == run_id
+        assert requests[0]["clarify_id"]
+        assert events[-1]["event"] == "clarify.responded"
+
+    def test_registration_losing_the_stop_race_is_refused(self, adapter):
+        """Race order 2: the stop section completes first — the
+        admission that arrives next must refuse without touching the
+        registry, so no waiter can outlive the stop."""
+        run_id = "run_rc_race_lost"
+        adapter._set_run_status(run_id, "running")
+        callback = adapter._make_run_clarify_callback(
+            run_id, "rc_race_2", "default", lambda event: None
+        )
+        result = {}
+        with adapter._run_clarify_lock:
+            # the stop handler's atomic section, held while the worker
+            # is already trying to enter its admission section
+            adapter._set_run_status(run_id, "stopping", last_event="run.stopping")
+            adapter._stopping_run_ids.add(run_id)
+            adapter._cancel_run_clarifies(run_id)
+            worker = threading.Thread(
+                target=lambda: result.__setitem__(
+                    "response", callback("Which format?", ["json", "yaml"])
+                )
+            )
+            worker.start()
+            worker.join(timeout=0.3)  # blocked on the gate, not parked
+        worker.join(timeout=10)
+
+        assert result["response"] == TIMEOUT_RESPONSE
+        assert adapter._run_clarify_registrations == {}
+        assert clarify_gateway.pending_entries_for_session("rc_race_2") == []
+        assert adapter._run_statuses[run_id]["status"] == "stopping"
