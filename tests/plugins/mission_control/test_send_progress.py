@@ -725,23 +725,24 @@ class TestLiveSidebarRefresh(ServerCase):
         conversation row (fails the test when nothing is selected)."""
         for m in re.finditer(
                 r'<(section|details) class="convsec"[^>]*'
-                r'data-section="([a-z]+)"', page):
+                r'data-section="([a-z_]+)"', page):
             close = page.find("</%s>" % m.group(1), m.end())
             block = page[m.end():close]
             if 'class="conv is-selected' in block:
                 return m.group(2)
         self.fail("no selected conversation row found in the sidebar")
 
-    def test_completed_answer_renders_under_open_completed(self):
+    def test_completed_answer_renders_under_your_turn(self):
         self.add_session("s_sb_done", source="cli", title="settled turn")
         self.add_message("s_sb_done", "user", "the question")
         self.add_message("s_sb_done", "assistant", "the answer")
         status, page = self.request("GET", "/s/default/s_sb_done")
         self.assertEqual(status, 200)
-        # a completed assistant answer classifies the row Open ·
-        # completed, and the chat page's own URL renders it selected
-        self.assertEqual(self.selected_section(page), "completed")
-        self.assertIn("Open · completed", page)
+        # a settled assistant answer means the next move is the
+        # human's: the row classifies Your turn, and the chat page's
+        # own URL renders it selected
+        self.assertEqual(self.selected_section(page), "your_turn")
+        self.assertIn("Your turn", page)
 
     def test_row_moves_to_active_while_reply_runs_then_back(self):
         self.write_stub("reply-block")
@@ -751,7 +752,7 @@ class TestLiveSidebarRefresh(ServerCase):
 
         status, page = self.request("GET", "/s/default/s_sb_move")
         self.assertEqual(status, 200)
-        self.assertEqual(self.selected_section(page), "completed")
+        self.assertEqual(self.selected_section(page), "your_turn")
 
         # the send is accepted fast while the faked reply is still live
         status, _body = self.request_json(
@@ -767,7 +768,7 @@ class TestLiveSidebarRefresh(ServerCase):
         self.assertEqual(self.selected_section(active_page), "active")
 
         # settle the turn: the answer lands and the busy key clears,
-        # after which the same URL renders the row completed again
+        # after which the same URL renders the row Your turn again
         self.release()
         self.poll_status(
             "/s/default/s_sb_move/feed?after=0",
@@ -776,7 +777,7 @@ class TestLiveSidebarRefresh(ServerCase):
             and not p.get("busy"))
         status, done_page = self.request("GET", "/s/default/s_sb_move")
         self.assertEqual(status, 200)
-        self.assertEqual(self.selected_section(done_page), "completed")
+        self.assertEqual(self.selected_section(done_page), "your_turn")
         self.assertEqual(self.call_count(), 1)
 
     def test_chat_client_carries_the_no_reload_refresh_path(self):
