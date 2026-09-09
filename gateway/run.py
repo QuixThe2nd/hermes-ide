@@ -7836,12 +7836,32 @@ class TurnRunner:
                 return ""
 
             clarify_id = _uuid.uuid4().hex[:10]
+            # Registration-time owner identity for read-only status
+            # surfaces (the API server's batch waiting-status route): the
+            # canonical durable session id this turn writes to, plus the
+            # profile the turn was routed to — both resolved ONCE here,
+            # from the owning gateway context, precisely so a later
+            # rotation of the routing session_key can never re-attribute
+            # this wait to another session. Failure to resolve either
+            # leaves the metadata absent and the wait invisible to
+            # owner-scoped readers (fail closed, never guessed).
+            _owner_profile = None
+            try:
+                _owner_profile = (
+                    self._runner._profile_name_for_source(ctx.source)
+                    or self._runner._active_profile_name()
+                )
+            except Exception:
+                _owner_profile = None
             _clarify_mod.register(
                 clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
                 question=question,
                 choices=list(choices) if choices else None,
                 multi_select=bool(multi_select),
+                owner_profile=_owner_profile,
+                owner_session_id=ctx.session_id or None,
+                wait_kind="clarify",
             )
 
             # For WeCom native streaming: finalize the current stream before

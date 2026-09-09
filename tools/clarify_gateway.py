@@ -55,6 +55,21 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    # Registration-time owner identity (see ``register``): the canonical
+    # durable session id and profile the OWNING turn resolved when the
+    # prompt was armed — captured once here precisely because ``session_key``
+    # is only a gateway routing key, and resolving it to a session id later
+    # (after /new, rotation, or a re-route) would attribute the wait to
+    # whatever session currently owns that key. Entries without owner
+    # metadata (every pre-existing registration) are simply invisible to
+    # the owner-scoped readers — never guessed onto a profile.
+    owner_profile: Optional[str] = None
+    owner_session_id: Optional[str] = None
+    # What kind of wait this entry parks ("clarify" or "restart"). Native
+    # restart confirmations register through this same primitive; the kind
+    # lets read-only status surfaces say *that* a session waits without
+    # exposing the question, choices, or any answer capability.
+    wait_kind: str = "clarify"
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -83,11 +98,23 @@ def register(
     question: str,
     choices: Optional[List[str]],
     multi_select: bool = False,
+    *,
+    owner_profile: Optional[str] = None,
+    owner_session_id: Optional[str] = None,
+    wait_kind: Optional[str] = None,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
     The caller (gateway clarify_callback) will then send the prompt to the
     user and block on ``wait_for_response(clarify_id, timeout)``.
+
+    ``owner_profile`` / ``owner_session_id`` / ``wait_kind`` are optional,
+    backward-compatible registration-time metadata for read-only status
+    surfaces (the API server's batch waiting-status route). They carry the
+    canonical ``{profile, session_id}`` the OWNING turn resolved when the
+    prompt was armed; callers that cannot resolve a real owning identity
+    pass nothing and the entry stays invisible to owner-scoped readers
+    (fail closed — never guessed from the routing key's format).
     """
     entry = _ClarifyEntry(
         clarify_id=clarify_id,
@@ -97,6 +124,15 @@ def register(
         multi_select=bool(multi_select) and bool(choices),
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
+        owner_profile=(str(owner_profile).strip() or None)
+        if owner_profile is not None
+        else None,
+        owner_session_id=(str(owner_session_id).strip() or None)
+        if owner_session_id is not None
+        else None,
+        wait_kind=(str(wait_kind).strip() or "clarify")
+        if wait_kind is not None
+        else "clarify",
     )
     with _lock:
         _entries[clarify_id] = entry
@@ -512,6 +548,44 @@ def get_pending_entry(clarify_id: str) -> Optional[_ClarifyEntry]:
         if entry is None or entry.event.is_set():
             return None
         return entry
+
+
+def pending_waits_for_profile(profile: str) -> List[Dict[str, str]]:
+    """``[{session_id, kind}, ...]`` waits armed with this owner profile.
+
+    Read-only snapshot for the API server's batch waiting-status route:
+    every still-unresolved entry whose registration-time owner metadata
+    names this exact profile. ``pending`` means the entry exists AND its
+    event is unset — a resolved-but-not-yet-reaped entry has already had
+    its answer decided and reports nothing here, so the waiting evidence
+    disappears the moment the wait settles even if the waiter's reap lags.
+
+    Fail closed on identity: entries without BOTH owner fields (every
+    registration made before the metadata existed, and any caller that
+    could not resolve a real owning identity) are skipped, so a wait is
+    never attributed to a guessed profile or session. The routing
+    ``session_key`` is deliberately NOT used to guess an owner here —
+    only the captured canonical id travels out.
+    """
+    profile_key = (profile or "default").strip() or "default"
+    waits: List[Dict[str, str]] = []
+    seen: set = set()
+    with _lock:
+        for entry in _entries.values():
+            if entry.event.is_set():
+                continue
+            if (entry.owner_profile or "").strip() != profile_key:
+                continue
+            session_id = (entry.owner_session_id or "").strip()
+            if not session_id:
+                continue
+            kind = entry.wait_kind or "clarify"
+            key = (session_id, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            waits.append({"session_id": session_id, "kind": kind})
+    return waits
 
 
 def clear_session(session_key: str) -> int:

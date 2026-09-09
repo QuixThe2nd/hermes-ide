@@ -450,7 +450,11 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 """
 
 # Inbox section keys in display order. The ordering contract: every
-# open session renders above every closed one — Active first, then
+# open session renders above every closed one — Your turn first (the
+# open conversations whose next move is the human's: an explicit wait
+# the core names in its batch waiting-status answer — an API-run
+# clarify, a native gateway clarify prompt, a restart confirmation —
+# or an idle chat resting on a plain assistant answer), then Active,
 # Open · unfinished, Open · completed, and Closed strictly last — so
 # a closed conversation can never jump ahead of an older open one
 # however fresh its last activity is. Rows are bucketed by state
@@ -462,14 +466,16 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 # ids/data-state values are unchanged stable hooks for the client
 # filter; only order and titles moved.
 # Active and Completed always render (when the page has any rows at
-# all), Incomplete and Closed only when they have members. Closed is
-# the projected tip's ended_at or the archived flag (archived mirrors
-# Discord or a local close) — it wins over every other signal, and
-# every closed row says so itself with an Archived or Ended chip.
-SECTION_ORDER = ("active", "incomplete", "completed", "closed")
+# all), Your turn, Incomplete and Closed only when they have members.
+# Closed is the projected tip's ended_at or the archived flag
+# (archived mirrors Discord or a local close) — it wins over every
+# other signal, and every closed row says so itself with an Archived
+# or Ended chip.
+SECTION_ORDER = ("your_turn", "active", "incomplete", "completed", "closed")
 SECTION_TITLES = {"active": "Active", "closed": "Closed",
                   "completed": "Open \N{MIDDLE DOT} completed",
-                  "incomplete": "Open \N{MIDDLE DOT} unfinished"}
+                  "incomplete": "Open \N{MIDDLE DOT} unfinished",
+                  "your_turn": "Your turn"}
 
 # ---- chat transcript route (/s/<profile>/<session_id>) ---------------
 # The profile must be one discover_dbs() actually serves (so it maps to
@@ -610,6 +616,10 @@ CLARIFY_MAX_CHOICES = 8
 CLARIFY_MAX_QUESTION_CHARS = 2000
 CLARIFY_MAX_CHOICE_CHARS = 500
 CLARIFY_ID_MAX_CHARS = 128
+# The batch waiting-status call runs on the inbox render path (every
+# refresh), so it gets the tightest core deadline of all: one bounded
+# GET per profile, and a wedged core must never stall the page.
+WAITING_TIMEOUT_SECONDS = 2.0
 # A response list can never legitimately exceed the card's choice bound
 # plus its Other; anything larger is refused before ever proxying.
 CLARIFY_MAX_RESPONSE_ITEMS = 16
@@ -1605,6 +1615,38 @@ def mark_job_states(rows):
     for r in rows:
         if (r["profile"], r["id"]) in keys and r["state"] != "closed":
             r["state"] = "active"
+
+
+def mark_your_turn(rows, waits):
+    """Move the open conversations waiting on the human into Your turn.
+
+    Membership is exactly the two ways a chat stops being the agent's
+    turn while staying open (closed still wins here — the projected
+    tip's ended_at or the archived flag, exactly as load_sessions
+    decided; those rows are never touched): an explicit wait the core
+    names in the batch waiting-status answer — an API-run clarify, a
+    native gateway clarify prompt, or a restart confirmation, all one
+    surface to this server — or an idle chat whose newest active event
+    is a plain assistant answer (classify_session's completed rule,
+    so those rows move over instead of resting mislabeled). An
+    explicit wait outranks a live lease or composer job AND needs
+    neither: whatever is parked on the human's answer, the row is the
+    human's to move, lease or no lease.
+
+    ``waits`` is the waiting_session_ids(dbs, profiles) map of one
+    refresh. Fail closed: a profile absent from the map (no key,
+    unreachable core, error) promotes nothing — its rows keep the
+    sections they already had. Idle rows still classify from the
+    newest-event tuple with no per-session HTTP at all.
+    """
+    for r in rows:
+        if r["state"] == "closed":
+            continue
+        waiting = waits.get(r["profile"])
+        if waiting is not None and r["id"] in waiting:
+            r["state"] = "your_turn"
+        elif r["state"] == "completed":
+            r["state"] = "your_turn"
 
 
 def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
@@ -3806,6 +3848,48 @@ def feed_clarify(profile, session_id, dbs, archived):
         return {"active": False, "id": "", "html": ""}
     return {"active": True, "id": card["clarify_id"],
             "html": render_clarify_card(card)}
+
+
+def waiting_session_ids(dbs, profiles):
+    """{profile: set(session ids)} the core says wait on the human.
+
+    ONE bounded GET /api/sessions/waiting per profile per inbox
+    refresh — the batch answer that feeds the Your turn section, so
+    the request count scales with profiles, never with rows. The
+    endpoint is read-only and profile-scoped; it names sessions only,
+    so native gateway waits (a clarify prompt or restart confirmation
+    armed by the gateway itself, not an API run) are included without
+    this server ever seeing their questions.
+
+    Fail closed on every axis: no key, an unreachable core, a non-2xx,
+    or an unparseable/hostile body (a waiting value that is not a list
+    included) simply omits the profile from the map — its rows keep
+    the sections they already had, and no wait is ever invented from a
+    guess."""
+    waits = {}
+    for profile in sorted(profiles):
+        _status, obj, err = core_api_request(
+            "GET", "/api/sessions/waiting", profile, dbs,
+            timeout=WAITING_TIMEOUT_SECONDS)
+        if err is not None or not isinstance(obj, dict):
+            continue
+        raw = obj.get("waiting")
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list):
+            # A non-list waiting value ({"waiting": 1} or true) is
+            # malformed, not an empty wait list: fail closed like any
+            # other hostile body rather than crash iterating it.
+            continue
+        ids = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            sid = item.get("session_id")
+            if isinstance(sid, str) and sid.strip():
+                ids.add(sid.strip())
+        waits[profile] = ids
+    return waits
 
 
 def _discord_wait_turn():
@@ -7681,7 +7765,7 @@ def render_conv_sections(now, rows, selected=None):
     sections = []
     for key in SECTION_ORDER:
         items = buckets[key]
-        if key in ("incomplete", "closed") and not items:
+        if key in ("your_turn", "incomplete", "closed") and not items:
             continue
         dot = ('<span class="sec-dot" aria-hidden="true"></span>'
                if key == "active" else "")
@@ -8826,6 +8910,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 rows, notes = load_sessions(now)
                 mark_job_states(rows)  # replies running here are Active
+                # waiting on the human, not us: one bounded batch call
+                # per profile, never a probe per session
+                mark_your_turn(rows, waiting_session_ids(
+                    {name: db_path for db_path, name in discover_dbs()},
+                    {r["profile"] for r in rows}))
                 body = render(now, rows, notes, prof).encode("utf-8")
             except Exception as exc:  # keep the server alive no matter what
                 self._send_page(500, error_page(exc).encode("utf-8"))
@@ -8927,6 +9016,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             rows, notes = load_sessions(time.time())
             mark_job_states(rows)
+            mark_your_turn(rows, waiting_session_ids(
+                {name: db_path for db_path, name in discover_dbs()},
+                {r["profile"] for r in rows}))
             return rows, notes
         except Exception:
             return [], []

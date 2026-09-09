@@ -170,7 +170,7 @@ class ProjectionCase(unittest.TestCase):
         spans = []
         for m in re.finditer(
                 r'<(section|details) class="convsec"[^>]*'
-                r'data-section="([a-z]+)"', body):
+                r'data-section="([a-z_]+)"', body):
             close = body.find("</%s>" % m.group(1), m.end())
             title = re.search(r'convsec-title">([^<]*)<',
                               body[m.end():close])
@@ -244,10 +244,11 @@ class TestGlobalOrderAcrossDBs(ProjectionCase):
         # (newest closed row first inside the partition).
         self.assertEqual(order[-2:], ["w-closed-newest", "d-closed"])
         # Every open row before every closed one, whatever the
-        # timestamps say — and the unfinished open row keeps its
-        # section slot ahead of the completed one.
+        # timestamps say — and the answered open row keeps its section
+        # slot ahead of the unfinished one (Your turn precedes
+        # Open · unfinished).
         self.assertEqual(order[:2],
-                         ["d-open-unfinished", "d-open-answered"])
+                         ["d-open-answered", "d-open-unfinished"])
 
     def test_ended_not_archived_is_closed_across_dbs(self):
         """The browser-observed disagreement, on the two-DB fixture it
@@ -278,8 +279,11 @@ class TestGlobalOrderAcrossDBs(ProjectionCase):
         _status, page = self.get("/")
         # Public section names in document order: the open buckets,
         # then the Closed disclosure strictly last (no unfinished row
-        # exists, so that section renders not at all).
+        # exists, so that section renders not at all; the answered open
+        # rows rest in Your turn, and Active and Open · completed keep
+        # rendering empty per the section contract).
         self.assertEqual(self.rendered_sections(page), [
+            ("your_turn", "Your turn"),
             ("active", "Active"),
             ("completed", "Open · completed"),
             ("closed", "Closed")])
@@ -296,7 +300,7 @@ class TestGlobalOrderAcrossDBs(ProjectionCase):
                     "archived-profile"):
             self.assertEqual(self.section_of(page, sid), "closed")
         for sid in ("open-default-old", "open-profile-middle"):
-            self.assertEqual(self.section_of(page, sid), "completed")
+            self.assertEqual(self.section_of(page, sid), "your_turn")
 
     def test_canonical_last_active_order_within_partitions(self):
         base = self.now - 1000

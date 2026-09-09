@@ -638,6 +638,26 @@ def _confirm_restart_with_requester(
     # gateway text-intercept eat the requester's next message in this session
     # instead of starting a new turn.
     clarify_id = uuid.uuid4().hex[:10]
+    # Registration-time owner identity for read-only status surfaces (the
+    # API server's batch waiting-status route): the canonical durable
+    # session id of the turn running this tool, plus the profile that turn
+    # was routed to — captured once, here, from the owning gateway
+    # context. Resolving the routing session_key to a session LATER could
+    # misattribute the wait after a rotation, so the wait carries its own
+    # id from the start. Failure to resolve leaves the metadata absent and
+    # the wait invisible to owner-scoped readers (fail closed, never
+    # guessed from the key's format).
+    from gateway.session_context import get_session_env
+
+    owner_session_id = (get_session_env("HERMES_SESSION_ID") or "").strip() or None
+    owner_profile = None
+    try:
+        owner_profile = (
+            runner._profile_name_for_source(source)
+            or runner._active_profile_name()
+        )
+    except Exception:
+        owner_profile = None
     clarify_gateway.register(
         clarify_id=clarify_id,
         session_key=session_key,
@@ -645,6 +665,9 @@ def _confirm_restart_with_requester(
         # in the sent content only.
         question=prompt,
         choices=None,
+        owner_profile=owner_profile,
+        owner_session_id=owner_session_id,
+        wait_kind="restart",
     )
 
     # The thread itself becomes the pending indicator: retitled before the

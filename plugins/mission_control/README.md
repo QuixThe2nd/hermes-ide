@@ -17,7 +17,7 @@ API server, which owns every session write.
 ## What it shows
 
 - An inbox of every non-hidden session with activity in the last 24
-  hours, in honest sections — Active / Open · unfinished /
+  hours, in honest sections — Your turn / Active / Open · unfinished /
   Open · completed / Closed — with search, profile filters, and a
   no-JS auto-refresh fallback. Open always outranks closed: every open
   row renders before any closed row, however much newer the closed
@@ -26,6 +26,19 @@ API server, which owns every session write.
   carries `ended_at` or the archived flag — an ended-but-unarchived
   session never sits in an open section; its row says which it is
   (Ended or Archived).
+- Your turn, the first section: the open conversations whose next
+  move is the human's. Membership is an explicit wait the core names
+  in one bounded, authenticated, per-profile batch call
+  (`GET /api/sessions/waiting`, once per inbox refresh regardless of
+  row count — an API-run clarify, a native gateway clarify prompt, or
+  a restart confirmation all look the same from here, because the
+  endpoint says only THAT a session waits) or an idle chat whose
+  newest active event is a plain assistant answer. A named wait needs
+  neither a live lease nor a composer job, and outranks both. Closed
+  still wins; a user-last or tool-last chat keeps Open · unfinished; a
+  working session with no wait stays Active. If the endpoint errors,
+  is missing, or the core is unreachable, nothing is promoted — rows
+  keep the sections they already had and no wait is ever invented.
 - Full transcripts: user/assistant text (HTML-escaped, never rendered
   as markdown), maximal runs of consecutive tool calls collapsed into
   one expandable group per run, sub-agent children, and cross-profile

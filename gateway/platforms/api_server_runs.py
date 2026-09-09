@@ -541,6 +541,84 @@ def _session_clarify_cards(
     return cards
 
 
+def _sessions_waiting(self, profile: str) -> List[Dict[str, str]]:
+    """``[{session_id, kind}, ...]`` this profile is explicitly waiting on.
+
+    Two disjoint owners, one fail-closed rule each:
+
+    * API-run clarifies — the same registrations ``_session_clarify_cards``
+      reads, joined against the registry's *actual* pending entries: a
+      registration whose entry has resolved (or never landed) reports
+      nothing, so waiting evidence vanishes the moment the wait settles
+      even when the waiter's reap lags. Session/profile come from the
+      registration map, exactly as the per-session clarify routes do.
+    * Native gateway waits — clarify prompts and restart confirmations
+      registered by the gateway itself, whose entries carry
+      registration-time owner metadata (canonical ``{profile,
+      session_id}`` captured from the owning turn). Entries without that
+      metadata are invisible here: their identity is never guessed from
+      the routing ``session_key``.
+
+    The answer names sessions only — never a question, choices,
+    response, clarify_id, or run_id — and confers no ability to answer;
+    the per-session clarify routes stay the only answer path.
+    """
+    from tools import clarify_gateway as _clarify_mod
+
+    profile_key = (profile or "default").strip() or "default"
+    with self._run_clarify_lock:
+        registrations = dict(self._run_clarify_registrations)
+    waiting: List[Dict[str, str]] = []
+    seen: set = set()
+    for clarify_id, meta in registrations.items():
+        if (meta.get("profile") or "default") != profile_key:
+            continue
+        # Pending means registration AND still-unresolved event — not
+        # mere map membership.
+        if _clarify_mod.get_pending_entry(clarify_id) is None:
+            continue
+        session_id = str(meta.get("session_id") or "").strip()
+        if not session_id:
+            continue
+        if session_id not in seen:
+            seen.add(session_id)
+            waiting.append({"session_id": session_id, "kind": "clarify"})
+    for wait in _clarify_mod.pending_waits_for_profile(profile_key):
+        if wait.get("session_id") not in seen:
+            seen.add(wait.get("session_id"))
+            waiting.append(wait)
+    return waiting
+
+
+async def _handle_sessions_waiting(
+    self,
+    request: "web.Request",
+    *,
+    _api_server,
+) -> "web.Response":
+    """GET /api/sessions/waiting — batch waiting-on-the-human status.
+
+    One narrow, authenticated, profile-scoped, read-only endpoint for
+    inbox surfaces (Mission Control's Your turn): instead of one
+    per-session clarify probe per row, a single bounded request names
+    every session of THIS profile that is parked on an explicit wait
+    (API-run clarify, native clarify, native restart confirmation). The
+    response carries only canonical session identity and explicit
+    pending presence — no prompt content and no answer capability, which
+    stay exclusive to the existing per-session clarify GET/POST.
+    """
+    auth_err = self._check_auth(request)
+    if auth_err:
+        return auth_err
+    profile = _request_profile_name(_api_server)
+    return web.json_response(
+        {
+            "object": "hermes.sessions.waiting",
+            "waiting": self._sessions_waiting(profile),
+        }
+    )
+
+
 def _run_idempotency_scope(
     self,
     request: "web.Request",

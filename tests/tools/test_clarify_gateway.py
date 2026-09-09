@@ -283,6 +283,180 @@ class TestClarifyTimeoutResolution:
         assert cm.resolve_clarify_timeout({"clarify": {"timeout": -1}}) == -1
 
 
+class TestPendingWaitsForProfile:
+    """The owner-scoped read-only reader behind /api/sessions/waiting.
+
+    ``pending_waits_for_profile`` backs the Mission Control "Your turn"
+    status surface, so its rules are the ownership boundary:
+
+    - pending means the entry exists AND its event is unset — a resolved
+      answer is decided even before the waiter reaps the entry;
+    - identity comes ONLY from registration-time owner metadata: an entry
+      without both owner fields is invisible to every profile (never
+      guessed from the routing ``session_key``);
+    - a wait keeps the canonical session id it was registered with, so a
+      later rotation of the routing key cannot re-attribute it.
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def teardown_method(self):
+        # Tests here park resolved-but-unreaped entries (no real waiter
+        # runs); drop them so a later file's strict emptiness check in
+        # the same process sees a clean registry.
+        _clear_clarify_state()
+
+    def test_entries_without_owner_metadata_are_invisible(self):
+        """Pre-metadata registrations (and unresolvable identity) report nothing."""
+        from tools import clarify_gateway as cm
+
+        cm.register("legacy", "sk-legacy", "Q?", ["A"])  # no owner args
+        cm.register("half", "sk-half", "Q?", ["A"], owner_profile="alpha")
+
+        assert cm.pending_waits_for_profile("alpha") == []
+        assert cm.pending_waits_for_profile("default") == []
+        assert cm.pending_waits_for_profile("") == []
+
+    def test_profile_isolation(self):
+        """Only waits whose owner_profile names this exact profile appear."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "a1", "sk-a", "Q?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-a1",
+        )
+        cm.register(
+            "b1", "sk-b", "Q?", ["A"],
+            owner_profile="beta", owner_session_id="sess-b1",
+        )
+
+        assert cm.pending_waits_for_profile("alpha") == [
+            {"session_id": "sess-a1", "kind": "clarify"},
+        ]
+        assert cm.pending_waits_for_profile("beta") == [
+            {"session_id": "sess-b1", "kind": "clarify"},
+        ]
+
+    def test_default_profile_normalizes(self):
+        """A blank profile query reads the default profile's waits."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "d1", "sk-d", "Q?", ["A"],
+            owner_profile="default", owner_session_id="sess-d1",
+        )
+        assert cm.pending_waits_for_profile("default") == [
+            {"session_id": "sess-d1", "kind": "clarify"},
+        ]
+        assert cm.pending_waits_for_profile("") == [
+            {"session_id": "sess-d1", "kind": "clarify"},
+        ]
+        assert cm.pending_waits_for_profile(None) == [
+            {"session_id": "sess-d1", "kind": "clarify"},
+        ]
+
+    def test_signalled_but_not_reaped_is_not_pending(self):
+        """A resolved entry stops waiting immediately, even before its
+        waiter wakes and reaps the registry indices."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "s1", "sk-s", "Q?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-s1",
+        )
+        assert cm.pending_waits_for_profile("alpha") != []
+
+        assert cm.resolve_gateway_clarify("s1", "A") is True
+        # The waiter has not called wait_for_response yet: the entry is
+        # still in _entries with its event set — the answer is decided.
+        with cm._lock:
+            assert "s1" in cm._entries
+        assert cm.pending_waits_for_profile("alpha") == []
+
+    def test_two_waits_one_resolved_still_waits(self):
+        """A session with one answered and one live question stays waiting."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "w1", "sk-w", "Q1?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-w",
+        )
+        cm.register(
+            "w2", "sk-w", "Q2?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-w",
+        )
+        assert cm.resolve_gateway_clarify("w1", "A") is True
+
+        waits = cm.pending_waits_for_profile("alpha")
+        # The live wait is still named (deduped to one row per session+kind).
+        assert waits == [{"session_id": "sess-w", "kind": "clarify"}]
+
+    def test_wait_kind_and_dedupe_by_session_and_kind(self):
+        """kind rides along from registration; distinct kinds coexist."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "c1", "sk-c", "Q?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-c",
+        )
+        cm.register(
+            "r1", "sk-c", "Restart?", None,
+            owner_profile="alpha", owner_session_id="sess-c",
+            wait_kind="restart",
+        )
+        # A second clarify on the same session collapses onto one row.
+        cm.register(
+            "c2", "sk-c", "Q2?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-c",
+        )
+
+        waits = cm.pending_waits_for_profile("alpha")
+        assert sorted(waits, key=lambda w: w["kind"]) == [
+            {"session_id": "sess-c", "kind": "clarify"},
+            {"session_id": "sess-c", "kind": "restart"},
+        ]
+
+    def test_rotation_of_session_key_cannot_reattribute(self):
+        """The routing key can rotate to a new session; a wait keeps the
+        canonical session id captured when it was armed."""
+        from tools import clarify_gateway as cm
+
+        # One wait armed while sk-routes belonged to sess-original.
+        cm.register(
+            "orig", "sk-routes", "Q?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-original",
+        )
+        # The key rotates: /new or a re-route arms the NEXT wait on the
+        # same routing key under a different canonical session.
+        cm.register(
+            "rotated", "sk-routes", "Q?", ["A"],
+            owner_profile="alpha", owner_session_id="sess-rotated",
+        )
+        # Even a legacy entry with no owner metadata on the same key
+        # stays invisible rather than guessing sess-rotated.
+        cm.register("anon", "sk-routes", "Q?", ["A"])
+
+        waits = cm.pending_waits_for_profile("alpha")
+        assert sorted(w["session_id"] for w in waits) == [
+            "sess-original", "sess-rotated",
+        ]
+        # Clearing the rotated key's queue releases everything it parked;
+        # nothing re-attributes the surviving waits to another session.
+        cm.clear_session("sk-routes")
+        assert cm.pending_waits_for_profile("alpha") == []
+
+    def test_blank_owner_session_id_is_invisible(self):
+        """An owner session id that resolves to whitespace reports nothing."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "blank", "sk-blank", "Q?", ["A"],
+            owner_profile="alpha", owner_session_id="   ",
+        )
+        assert cm.pending_waits_for_profile("alpha") == []
+
+
 class TestUnlimitedWait:
     """timeout <= 0 makes wait_for_response block until the answer arrives
     instead of auto-skipping."""

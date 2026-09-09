@@ -170,7 +170,7 @@ class OrderingCase(unittest.TestCase):
         tag, in document order (the rendered sidebar only)."""
         return {m.group(2): m.start() for m in re.finditer(
             r'<(section|details) class="convsec"[^>]*'
-            r'data-section="([a-z]+)"', page)}
+            r'data-section="([a-z_]+)"', page)}
 
     def row_position(self, page, sid):
         """Position of one session's conversation row (matched on its
@@ -186,7 +186,7 @@ class OrderingCase(unittest.TestCase):
         spans = []
         for m in re.finditer(
                 r'<(section|details) class="convsec"[^>]*'
-                r'data-section="([a-z]+)"', page):
+                r'data-section="([a-z_]+)"', page):
             close = page.find("</%s>" % m.group(1), m.end())
             title = re.search(r'convsec-title">([^<]*)<',
                               page[m.end():close])
@@ -265,8 +265,10 @@ class TestOpenBeforeClosed(OrderingCase):
                     "ended_older"):
             self.assertEqual(self.section_of(page, sid), "closed",
                              "%s must render under Closed" % sid)
+        # the open assistant-answered rows are Your turn now (idle
+        # rule); the user-last row keeps Open · unfinished
         for sid in ("open_new_completed", "open_old_completed"):
-            self.assertEqual(self.section_of(page, sid), "completed")
+            self.assertEqual(self.section_of(page, sid), "your_turn")
         self.assertEqual(self.section_of(page, "open_unfinished"),
                          "incomplete")
         # every closed row says which flavor it is, in words
@@ -274,15 +276,19 @@ class TestOpenBeforeClosed(OrderingCase):
         self.assertIn(">Ended</span>", page)
 
     def test_rendered_section_names_and_positions(self):
-        """The public section names render in the fixed order — Active,
-        Open · unfinished, Open · completed, then the Closed
-        disclosure strictly last — and the Closed badge counts every
-        closed row, ended or archived."""
+        """The public section names render in the fixed order — Your
+        turn, Active, Open · unfinished, Open · completed, then the
+        Closed disclosure strictly last — and the Closed badge counts
+        every closed row, ended or archived. The fixture's idle
+        assistant-answered rows rest in Your turn (no core is running,
+        so no explicit wait names anything: the idle rule alone)."""
         status, page = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertEqual(self.mod.SECTION_ORDER,
-                         ("active", "incomplete", "completed", "closed"))
+                         ("your_turn", "active", "incomplete",
+                          "completed", "closed"))
         self.assertEqual(self.rendered_sections(page), [
+            ("your_turn", "Your turn"),
             ("active", "Active"),
             ("incomplete", "Open · unfinished"),
             ("completed", "Open · completed"),
