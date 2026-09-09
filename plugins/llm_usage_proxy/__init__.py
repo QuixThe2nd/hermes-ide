@@ -40,3 +40,14 @@ def register(ctx) -> None:
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("on_gateway_start", _on_gateway_start)
+
+    # CLI bootstrap: discover_plugins() calls this register() before main()
+    # constructs any provider client, but on_gateway_start only fires when a
+    # gateway actually starts — plain `hermes chat` never starts one, so the
+    # hook alone would leave CLI-built SDK clients unrouted (unmetered).
+    # Run the same guarded, idempotent lifecycle now for enabled profiles;
+    # gateway start re-runs it via the hook above. Disabled profiles are
+    # untouched (no systemd calls, no routing changes).
+    from plugins.llm_usage_proxy.lifecycle import reconcile_proxy_on_plugin_load
+
+    reconcile_proxy_on_plugin_load()
