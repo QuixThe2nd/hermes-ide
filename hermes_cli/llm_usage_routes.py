@@ -19,6 +19,15 @@ identity, authentication, API mode, or profile resolution:
   active flag, so a late activation/deactivation applies to already-built
   clients without rebuilding them.
 
+Nothing in this module discovers plugins or reads ``sys.argv``: registering a
+table is always the plugin lifecycle's decision. The one exception is the
+*lazy bootstrap* below — because ``main()`` skips plugin discovery for the
+built-in subcommands (``hermes chat`` included), a plain CLI run never loads
+the plugin and would build every provider client unrouted. The HTTP-client
+boundary is the seam that *does* run on every real client, so the first
+client built for a profile with no routing state yet asks the plugin's
+existing guarded lifecycle to reconcile; see :func:`_lazy_bootstrap_routing`.
+
 State is scoped to a single Hermes profile — the identity
 :func:`agent.relay_runtime.current_profile_key` already derives from
 ``get_hermes_home()`` for every other runtime-isolation need in this process.
@@ -269,6 +278,111 @@ def clear_route_table(reason: str = "route table cleared", *, profile: Optional[
         _STATES[key] = state
 
 
+# ── lazy first-use bootstrap ─────────────────────────────────────────────────
+
+# Bookkeeping for the one-shot bootstrap below. Deliberately a *separate* lock
+# from ``_LOCK`` (and always taken before it): the lifecycle callback calls
+# ``register_route_table``/``activate_routing``, which take ``_LOCK``, so
+# holding ``_LOCK`` across the callback would deadlock on a non-reentrant lock.
+# Reentrant, and held *across* the reconcile callback, because the first
+# initialization has to be serialized: a second client built while it runs must
+# wait for the decision instead of constructing a direct client. The registry
+# lock is never held across the callback.
+_BOOTSTRAP_LOCK = threading.RLock()
+# Profiles whose bootstrap already ran (or was refused). One attempt per
+# profile per process: a client build is a terrible place to retry service
+# reconciliation, and the reason for standing down stays visible in status.
+# Written only once an attempt is over, under ``_BOOTSTRAP_LOCK`` — never
+# before it starts.
+_BOOTSTRAP_SEEN: set[str] = set()
+# Re-entrancy guard: the reconcile makes HTTP calls, so a wrapper built inside
+# it must consult the registry as it stands, not recurse into bootstrapping.
+_BOOTSTRAP_TLS = threading.local()
+
+
+def _lazy_bootstrap_routing(key: str) -> None:
+    """Reconcile once for *key* when nothing has decided routing for it yet.
+
+    ``main()`` skips plugin discovery for the built-in subcommands
+    (``hermes chat`` included) to save startup time, so a plain CLI run never
+    calls the plugin's ``register()`` and — before this seam existed — built
+    every provider client unrouted, however the profile was configured. The
+    HTTP-client boundary is what every real main/aux/CLI client goes through
+    regardless of plugin discovery, so the first client build consults the
+    plugin's existing guarded lifecycle here
+    (``lifecycle.reconcile_proxy_on_load``): an enabled profile verifies
+    its sidecar's identity and route table and activates in time for the client
+    being built. Disabled profiles never get that far — the config gates below
+    return before any systemd work is even attempted.
+
+    Deliberately narrow:
+
+    * one attempt per profile per process, and the first initialization is
+      serialized: a concurrent first client waits for the decision instead of
+      slipping through unrouted;
+    * an entry already present for the profile — registered, active,
+      deactivated, or cleared — is an explicit decision that is never
+      second-guessed;
+    * never raises, and never blocks a second client behind a failed attempt.
+    """
+    if getattr(_BOOTSTRAP_TLS, "active", False):
+        return
+    with _BOOTSTRAP_LOCK:
+        if key in _BOOTSTRAP_SEEN:
+            return
+        with _LOCK:
+            _BOOTSTRAP_SEEN.add(key)
+        _BOOTSTRAP_TLS.active = True
+        try:
+            with _LOCK:
+                # A registered, active, deactivated or cleared table is an
+                # explicit decision this bootstrap must not second-guess.
+                if _STATES.get(key) is not None:
+                    return
+
+            from plugins.llm_usage_proxy import lifecycle
+            from plugins.llm_usage_proxy.config import (
+                load_llm_usage_proxy_config,
+                plugin_explicitly_disabled,
+            )
+
+            # Denied by the plugins deny-list, or simply not enabled in this
+            # profile's config: stand down here, so the lifecycle — and with
+            # it every systemctl call — is never reached.
+            if plugin_explicitly_disabled() or not load_llm_usage_proxy_config().get(
+                "enabled"
+            ):
+                return
+
+            lifecycle.reconcile_proxy_on_load()
+        except Exception:
+            # The lifecycle never raises; if anything else blows up the traffic
+            # simply stays direct and unmetered rather than breaking client
+            # construction.
+            pass
+        finally:
+            _BOOTSTRAP_TLS.active = False
+            # Recorded only now, while still holding the bootstrap lock: a
+            # concurrent client that waited above either sees the decision
+            # this attempt made, or gets the next attempt — it never skips
+            # initialization and builds a direct client.
+            _BOOTSTRAP_SEEN.add(key)
+
+
+def _entry_profile(profile: Optional[str]) -> str:
+    """Resolve the calling profile, lazily bootstrapping routing for it.
+
+    Only a profile resolved from the *current context* may bootstrap: the
+    lifecycle reconciles the current profile's config, service and identity,
+    so a caller that passed an explicit profile must never trigger (or inherit)
+    another profile's reconcile.
+    """
+    key = resolve_profile_key(profile)
+    if profile is None:
+        _lazy_bootstrap_routing(key)
+    return key
+
+
 def _default_routing_state() -> dict[str, Any]:
     return {
         "active": False,
@@ -358,7 +472,7 @@ def base_url_routable(base_url: Any, *, profile: Optional[str] = None) -> bool:
     Cheap construct-time eligibility probe used by the HTTP-client seams; the
     authoritative decision stays per-request in :func:`reroute_url`.
     """
-    key = resolve_profile_key(profile)
+    key = _entry_profile(profile)
     with _LOCK:
         state = _STATES.get(key)
         if state is None or not state.routes:
@@ -506,7 +620,10 @@ def wrap_mounts_for_usage_routing(
     try:
         if verify is not True or not mounts:
             return mounts
-        key = resolve_profile_key(profile)
+        # May run the one-shot lazy bootstrap, so a CLI that never loaded the
+        # plugin still gets its enabled profile's verified routing in time for
+        # this client.
+        key = _entry_profile(profile)
         if not base_url_routable(base_url, profile=key):
             return mounts
         global _SYNC_WRAPPER, _ASYNC_WRAPPER
@@ -535,12 +652,14 @@ def build_sync_routed_client(
     Returned only when this *base_url* is routable under default TLS policy
     for the profile constructing the client; ``None`` means "let the SDK build
     its default client" (direct, unmetered). The client's transport is bound
-    to that profile for its whole lifetime.
+    to that profile for its whole lifetime. Like the mount-wrapper seam, this
+    may run the one-shot lazy bootstrap first, so an enabled profile whose
+    plugin never loaded still gets routing in time for this client.
     """
     try:
         import httpx
 
-        key = resolve_profile_key(profile)
+        key = _entry_profile(profile)
         if not base_url_routable(base_url, profile=key):
             return None
         global _SYNC_WRAPPER
@@ -556,6 +675,8 @@ def build_sync_routed_client(
 
 def _reset_registry() -> None:
     """Drop every profile's state (test teardown only)."""
+    with _BOOTSTRAP_LOCK:
+        _BOOTSTRAP_SEEN.clear()
     with _LOCK:
         _STATES.clear()
 
