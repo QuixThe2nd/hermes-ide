@@ -51,6 +51,7 @@ modules can import it cheaply.
 
 from __future__ import annotations
 
+import ssl
 import threading
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
@@ -484,6 +485,21 @@ def base_url_routable(base_url: Any, *, profile: Optional[str] = None) -> bool:
 # ── httpx transport wrappers ─────────────────────────────────────────────────
 
 
+def _verified_tls_policy(verify: Any) -> bool:
+    """True when *verify* is a TLS policy that still verifies the upstream.
+
+    Both the literal default (``True``) and an explicit ``ssl.SSLContext`` —
+    what ``agent.ssl_verify.resolve_httpx_verify`` returns whenever a CA bundle
+    is in play (``HERMES_CA_BUNDLE``, ``SSL_CERT_FILE``, a per-provider
+    ``ssl_ca_cert``), i.e. what the real provider clients are built with —
+    keep certificate verification on, so rerouting them changes nothing about
+    the trust decision. ``verify=False`` turns verification off: that policy
+    must stay direct and unmetered rather than be traded for the proxy's own
+    upstream TLS settings.
+    """
+    return verify is True or isinstance(verify, ssl.SSLContext)
+
+
 def _proxied_request(request: Any, target: str) -> Any:
     """Build the request actually sent to the proxy from the logical one.
 
@@ -605,9 +621,10 @@ def wrap_mounts_for_usage_routing(
 
     * a route table is registered whose bases cover this client's base URL
       (per-request matching stays authoritative for redirects etc.);
-    * TLS policy is the default (``verify is True``): a custom CA bundle or
-      SSLContext must not be silently traded for the proxy's own upstream
-      TLS settings;
+    * TLS policy still verifies the upstream (``verify is True`` or an
+      ``ssl.SSLContext``, see :func:`_verified_tls_policy`): a disabled
+      verification (``verify=False``) must not be silently traded for the
+      proxy's own upstream TLS settings;
     * the caller passed no env proxy for this base (a pinned HTTPS_PROXY is
       a policy the proxy leg would silently bypass).
 
@@ -618,7 +635,7 @@ def wrap_mounts_for_usage_routing(
     and per-client close semantics are preserved exactly.
     """
     try:
-        if verify is not True or not mounts:
+        if not _verified_tls_policy(verify) or not mounts:
             return mounts
         # May run the one-shot lazy bootstrap, so a CLI that never loaded the
         # plugin still gets its enabled profile's verified routing in time for

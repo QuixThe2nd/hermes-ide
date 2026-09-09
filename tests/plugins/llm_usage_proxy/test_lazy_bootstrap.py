@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import socket
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -234,6 +235,112 @@ def test_enabled_profile_first_client_bootstraps_routing_and_meters(
     assert reconciles == [1]
     # Adopting an already-running verified unit restarts nothing.
     assert not any("restart" in call for call in systemctl_calls)
+
+
+def test_ssl_context_verify_first_client_still_bootstraps_and_meters(
+    hermes_home, start_upstream, start_proxy, tmp_path, monkeypatch, fake_dns
+):
+    """An ``ssl.SSLContext`` verify is a *verified* TLS policy, so the first
+    client built with one must bootstrap and route exactly like the default.
+
+    ``agent.ssl_verify.resolve_httpx_verify`` returns a context (not the
+    literal ``True``) whenever a CA bundle is configured — the live
+    environment's ``SSL_CERT_FILE`` does — so demanding ``verify is True`` here
+    would leave every real provider client direct and unmetered, and the lazy
+    bootstrap would never fire at all."""
+    upstream = start_upstream(respond_json(_openai_completion_payload()))
+    fake_dns[LOGICAL_HOST] = "127.0.0.1"
+    logical_base = f"http://{LOGICAL_HOST}:{upstream.server_address[1]}/v4"
+    proxy_port = _free_port()
+    _write_enabled_config(hermes_home, proxy_port=proxy_port, logical_base=logical_base)
+
+    from plugins.llm_usage_proxy.config import load_llm_usage_proxy_config
+    from plugins.llm_usage_proxy.routes import build_route_table
+    from plugins.llm_usage_proxy.systemd import profile_identity
+
+    start_proxy(
+        build_route_table(load_llm_usage_proxy_config()),
+        identity=profile_identity(hermes_home),
+        port=proxy_port,
+    )
+    _install_fake_systemctl(monkeypatch)
+    reconciles = _count_reconciles(monkeypatch)
+
+    # Exactly what the seam is handed on a CA-bundle deployment: a context.
+    verify = ssl.create_default_context()
+    assert isinstance(verify, ssl.SSLContext) and verify is not True
+
+    http_client = build_keepalive_http_client(logical_base, verify=verify)
+    try:
+        response = http_client.post(
+            f"{logical_base}/chat/completions",
+            json={"model": "glm-5", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+        )
+        assert response.status_code == 200
+
+        state = routing_state()
+        assert state["active"] is True
+        assert state["proxy_origin"] == f"http://127.0.0.1:{proxy_port}"
+        assert state["routes"][ROUTE_NAME] == logical_base
+    finally:
+        http_client.close()
+
+    # Routed, not direct: only the proxy ledgered the provider-reported usage.
+    assert len(upstream.requests) == 1
+    assert upstream.requests[0]["path"].startswith("/v4/chat/completions")
+    rows = wait_for_row_count(tmp_path / "usage.sqlite", 1)
+    assert len(rows) == 1
+    assert rows[0]["upstream"] == ROUTE_NAME
+    assert rows[0]["prompt_tokens"] == 3
+    assert rows[0]["completion_tokens"] == 1
+    assert reconciles == [1]
+
+
+def test_verify_false_client_stays_direct_and_unmetered(
+    hermes_home, start_upstream, start_proxy, monkeypatch, fake_dns
+):
+    """``verify=False`` turns upstream verification off — a policy the proxy
+    leg must not silently replace. Such a client stays direct and unmetered
+    even with an enabled profile and a verified sidecar already serving."""
+    upstream = start_upstream(respond_json(_openai_completion_payload()))
+    fake_dns[LOGICAL_HOST] = "127.0.0.1"
+    logical_base = f"http://{LOGICAL_HOST}:{upstream.server_address[1]}/v4"
+    proxy_port = _free_port()
+    _write_enabled_config(hermes_home, proxy_port=proxy_port, logical_base=logical_base)
+
+    from plugins.llm_usage_proxy.config import load_llm_usage_proxy_config
+    from plugins.llm_usage_proxy.routes import build_route_table
+    from plugins.llm_usage_proxy.systemd import profile_identity
+
+    start_proxy(
+        build_route_table(load_llm_usage_proxy_config()),
+        identity=profile_identity(hermes_home),
+        port=proxy_port,
+    )
+    _install_fake_systemctl(monkeypatch)
+    reconciles = _count_reconciles(monkeypatch)
+
+    http_client = build_keepalive_http_client(logical_base, verify=False)
+    try:
+        response = http_client.post(
+            f"{logical_base}/chat/completions",
+            json={"model": "glm-5", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+        )
+        assert response.status_code == 200
+    finally:
+        http_client.close()
+
+    # Direct: the provider answered it itself, nothing was ledgered, and no
+    # reconcile was spent on a TLS policy routing must not trade away. (Routing
+    # state is read, never consulted: base_url_routable() itself triggers the
+    # lazy bootstrap, which would defeat the point of this test.)
+    assert len(upstream.requests) == 1
+    assert upstream.requests[0]["path"].startswith("/v4/chat/completions")
+    assert routing_state()["active"] is False
+    assert routing_state()["routes"] == {}
+    assert reconciles == []
 
 
 def test_disabled_profile_first_client_stays_direct_without_reconcile(
