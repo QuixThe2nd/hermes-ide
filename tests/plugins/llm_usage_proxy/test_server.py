@@ -16,6 +16,8 @@ import pytest
 
 from plugins.llm_usage_proxy.server import (
     DEFAULT_UPSTREAMS,
+    PROTOCOL_VERSION,
+    SERVICE_ID,
     UsageProxyServer,
     maybe_inject_stream_options,
     merge_usage,
@@ -193,12 +195,12 @@ def test_anthropic_json_usage_recorded(start_upstream, start_proxy):
     row = wait_for_row_count(proxy.store.path, 1)[0]
     assert row["upstream"] == "zai-anthropic"
     assert row["model"] == "claude-sonnet-5"
-    assert row["prompt_tokens"] == 100  # input_tokens
+    assert row["prompt_tokens"] == 152  # input + cache_read + cache_creation
     assert row["completion_tokens"] == 55  # output_tokens
     assert row["cached_tokens"] == 40  # cache_read_input_tokens
     assert row["cache_creation_tokens"] == 12
     assert row["reasoning_tokens"] is None
-    assert row["total_tokens"] == 155  # derived when absent
+    assert row["total_tokens"] == 207  # derived when absent
 
 
 def test_codex_responses_json_usage_recorded(start_upstream, start_proxy):
@@ -363,10 +365,10 @@ def test_sse_anthropic_usage_merges_across_events(start_upstream, start_proxy):
 
     row = wait_for_row_count(proxy.store.path, 1)[0]
     assert row["model"] == "claude-sonnet-5"
-    assert row["prompt_tokens"] == 100
+    assert row["prompt_tokens"] == 150  # input + cache_read (no cache_creation)
     assert row["completion_tokens"] == 42
     assert row["cached_tokens"] == 50
-    assert row["total_tokens"] == 142
+    assert row["total_tokens"] == 192
 
 
 def test_sse_codex_responses_completed_event_usage(start_upstream, start_proxy):
@@ -519,7 +521,13 @@ def test_health_endpoint(start_proxy):
         proxy.server_address[1], "GET", "/health"
     )
     assert status == 200
-    assert json.loads(body) == {"ok": True}
+    payload = json.loads(body)
+    assert payload["ok"] is True
+    assert payload["service"] == SERVICE_ID
+    assert payload["version"] == PROTOCOL_VERSION
+    assert "identity" in payload
+    assert isinstance(payload["routes"], dict)
+    assert payload["routes"]["zai"] == "https://api.invalid.example/v4"
     assert "application/json" in headers["Content-Type"]
 
 
@@ -640,11 +648,11 @@ def test_usage_row_fields_covers_all_families():
             "cache_creation_input_tokens": 6,
         }
     )
-    assert anthropic["prompt_tokens"] == 10
+    assert anthropic["prompt_tokens"] == 21  # input + cache_read + cache_creation
     assert anthropic["completion_tokens"] == 20
     assert anthropic["cached_tokens"] == 5
     assert anthropic["cache_creation_tokens"] == 6
-    assert anthropic["total_tokens"] == 30
+    assert anthropic["total_tokens"] == 41
 
 
 def test_default_upstreams_and_argv_parsing():
