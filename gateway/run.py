@@ -1149,6 +1149,88 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+def _status_failure_is_transient(result: Any) -> bool:
+    """True when a status SendResult is a transient transport failure.
+
+    The reconnect-recovery vocabulary is the delivery ledger's: adapters mark
+    connection-shaped failures ``error="send_path_degraded"`` (Discord's
+    dead-transport send) and/or ``retryable=True``. Everything else — blocked
+    bot, bad auth, refused chat — is permanent and must NOT be retained for
+    replay.
+    """
+    if result is None or getattr(result, "success", False):
+        return False
+    error = str(getattr(result, "error", "") or "").strip().lower()
+    return error == "send_path_degraded" or bool(getattr(result, "retryable", False))
+
+
+async def _retain_undelivered_status_notice(
+    *,
+    adapter: Any,
+    chat_id: Any,
+    thread_metadata: Any,
+    session_key: str,
+    status_key: str,
+    content: str,
+) -> None:
+    """Durably retain a transiently-failed status notice for replay.
+
+    During a platform outage the agent keeps executing, but the important
+    status/warning notices its status rail emits vanish with the transport —
+    final-response redelivery alone did not recover them. This records the
+    already-prepared message (post suppression/redaction — the exact text the
+    direct rail would have sent) in the delivery ledger as a notice row, so
+    the existing reconnect lifecycle replays it to the same
+    platform/chat/thread once the adapter is back.
+
+    Never raises: ledger trouble must not disturb the status rail. Runs on
+    the gateway loop; ledger writes hop off-loop via ``asyncio.to_thread``.
+    """
+    if not content or adapter is None:
+        return
+    try:
+        from gateway.delivery_ledger import (
+            compute_notice_id,
+            ledger_enabled,
+            record_notice,
+        )
+
+        if not await asyncio.to_thread(ledger_enabled):
+            return
+        platform = getattr(adapter, "platform", None)
+        platform_value = str(getattr(platform, "value", platform) or "")
+        if not platform_value:
+            return
+        metadata = thread_metadata if isinstance(thread_metadata, dict) else None
+        thread_id = (metadata or {}).get("thread_id")
+        await asyncio.to_thread(
+            record_notice,
+            notice_id=compute_notice_id(session_key or "", status_key, content),
+            session_key=session_key or "",
+            platform=platform_value,
+            chat_id=str(chat_id),
+            thread_id=str(thread_id) if thread_id else None,
+            content=content,
+            status_key=str(status_key or ""),
+            error="send_path_degraded",
+            send_metadata=metadata,
+            adapter_profile=getattr(adapter, "_owner_profile", None),
+            # A rail the adapter renders as one editable bubble keeps only
+            # its newest undelivered state (see record_notice); append-only
+            # rails keep each distinct notice.
+            mutable_rail=callable(
+                getattr(adapter, "send_or_update_status", None)
+            ),
+        )
+        logger.info(
+            "Status notice retained for reconnect recovery (%s/%s)",
+            platform_value,
+            status_key,
+        )
+    except Exception:
+        logger.debug("status notice retention failed", exc_info=True)
+
+
 # FIFO marker for a branded agent-viewer status line (``Claude Code Agent:
 # <url>`` / ``Cursor Cloud Agent: <url>``) routed through the tool-progress
 # queue instead of the independently scheduled status coro. The delegation
@@ -6930,16 +7012,51 @@ class TurnRunner:
         )
         if _fut is None:
             return
-        if ctx._cleanup_progress:
-            def _track_status_id(fut) -> None:
-                try:
-                    res = fut.result()
-                except Exception:
-                    return
-                mid = getattr(res, "message_id", None)
-                if getattr(res, "success", False) and mid:
-                    ctx._cleanup_msg_ids.append(str(mid))
-            _fut.add_done_callback(_track_status_id)
+
+        def _status_send_done(fut) -> None:
+            """Post-send bookkeeping for one status message.
+
+            Success: track the platform message id for cleanup exactly as
+            before. Transient transport failure: durably retain the prepared
+            notice so the reconnect lifecycle replays it — without this, an
+            outage silently eats the agent's status/warning/explanation
+            notices even though the turn itself kept running. Suppressed,
+            empty, and permanent failures never reach this callback's
+            retention branch (suppression/empty return earlier; permanent
+            errors are not transient-classified).
+            """
+            try:
+                res = fut.result()
+            except Exception:
+                return
+            if getattr(res, "success", False):
+                if ctx._cleanup_progress:
+                    mid = getattr(res, "message_id", None)
+                    if mid:
+                        ctx._cleanup_msg_ids.append(str(mid))
+                return
+            # ``retry_progress`` is the opt-in live mirror of buffered retry
+            # chatter (throttled, drop-on-success semantics upstream) — not a
+            # durable notice. Everything else on this rail is user-facing.
+            if event_type == "retry_progress":
+                return
+            if not _status_failure_is_transient(res):
+                return
+            safe_schedule_threadsafe(
+                _retain_undelivered_status_notice(
+                    adapter=ctx._status_adapter,
+                    chat_id=ctx._status_chat_id,
+                    thread_metadata=ctx._status_thread_metadata,
+                    session_key=str(getattr(ctx, "session_key", "") or ""),
+                    status_key=event_type,
+                    content=prepared_message,
+                ),
+                ctx._loop_for_step,
+                logger=logger,
+                log_message="status notice retention scheduling error",
+            )
+
+        _fut.add_done_callback(_status_send_done)
 
     async def _deliver_agent_status_marker(self, marker: tuple) -> None:
         """Send one queued branded agent-viewer status line as its own message.
@@ -6985,6 +7102,21 @@ class TurnRunner:
             and getattr(result, "message_id", None)
         ):
             ctx._cleanup_msg_ids.append(str(result.message_id))
+        # Same transient-failure retention as the direct status rail: the
+        # marker carries the exact line the direct rail would have sent, so
+        # it gets the same durable second chance after reconnect.
+        if (
+            event_type != "retry_progress"
+            and _status_failure_is_transient(result)
+        ):
+            await _retain_undelivered_status_notice(
+                adapter=adapter,
+                chat_id=ctx._status_chat_id,
+                thread_metadata=ctx._status_thread_metadata,
+                session_key=str(getattr(ctx, "session_key", "") or ""),
+                status_key=event_type,
+                content=content,
+            )
 
     def run_sync(self):
         ctx = self._ctx
@@ -15730,9 +15862,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reconnect recovery is stricter: if the session-store write fails, the
         corresponding response must not be sent because the same agent turn
         could otherwise be resumed immediately afterward.
+
+        Notice rows are exempt: a recovered status notice never gated a turn,
+        so replaying one must not touch the user's resume/active-turn state
+        in either direction (no clearing, no scheduling).
         """
         sendable = []
         for row in claimed:
+            if (row.get("kind") or "final") == "notice":
+                sendable.append(row)
+                continue
             session_key = row.get("session_key") or ""
             if not session_key:
                 sendable.append(row)
@@ -15815,8 +15954,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return claimed
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
-        """Redeliver final responses for rows already claimed (and
-        resume-cleared) by :meth:`_claim_pending_obligations`.
+        """Redeliver final responses (and retained notices) for rows already
+        claimed (and resume-cleared) by :meth:`_claim_pending_obligations` or
+        the runtime reconnect sweeps.
 
         Network half of the split — runs inside the bounded boot-send task,
         so a flood-limited send can be abandoned by the restore gate without
@@ -15827,6 +15967,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.delivery_ledger import (
                 RECOVERED_MARKER,
+                RECOVERED_NOTICE_MARKER,
                 mark_delivered,
                 mark_failed,
                 release_runtime_claim,
@@ -15873,11 +16014,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # + stale cutoff bound later retries.
                 continue
             content = row["content"]
+            is_notice = (row.get("kind") or "final") == "notice"
             if row.get("needs_marker"):
-                content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = (
-                {"thread_id": row["thread_id"]} if row.get("thread_id") else None
-            )
+                default_marker = (
+                    RECOVERED_NOTICE_MARKER if is_notice else RECOVERED_MARKER
+                )
+                content = row.get("marker", default_marker) + content
+            if is_notice and row.get("send_metadata"):
+                # Notices replay with their exact original routing metadata
+                # (thread id, reply anchor) — and always as a plain send,
+                # never send_or_update_status: editing the rail's current
+                # bubble would regress a newer status back to this older one.
+                try:
+                    metadata = json.loads(row["send_metadata"])
+                except Exception:
+                    metadata = None
+                if not isinstance(metadata, dict):
+                    metadata = None
+            else:
+                metadata = (
+                    {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+                )
 
             try:
                 result = await adapter.send(
@@ -15896,8 +16053,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
-                        "Redelivered recovered final response to %s:%s "
+                        "Redelivered recovered %s to %s:%s "
                         "(obligation %s, attempt %d)",
+                        "notice" if is_notice else "final response",
                         row["platform"], row["chat_id"],
                         row["obligation_id"], row["attempts"],
                     )
@@ -15937,12 +16095,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``send_path_degraded`` responses otherwise remain failed until the next
         process restart. Claiming, resume clearing, and sending stay best-effort
         and reuse the startup redelivery path's attempt and ambiguity contract.
+
+        Retained status notices (``kind='notice'``) ride the same reconnect
+        lifecycle: swept separately, replayed WITHOUT any resume-state
+        interaction — a notice never gated a turn, so its recovery must not
+        clear (or schedule) resume/active-turn state either way.
         """
+        redelivered = 0
         try:
             from gateway.delivery_ledger import (
                 ledger_enabled,
                 release_runtime_claim,
                 sweep_failed_for_runtime,
+                sweep_failed_notices_for_runtime,
             )
 
             if not await asyncio.to_thread(ledger_enabled):
@@ -15959,8 +16124,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
             return 0
+
+        # Notices first: they are sweep-and-send with no resume interaction,
+        # so a session-store hiccup can never strand them behind the final
+        # answers' stricter resume gate.
+        try:
+            notice_rows = await asyncio.to_thread(
+                sweep_failed_notices_for_runtime,
+                platform.value,
+                profile=profile,
+            )
+        except Exception:
+            logger.debug(
+                "runtime notice ledger sweep failed after %s reconnect",
+                platform.value,
+                exc_info=True,
+            )
+            notice_rows = []
+        if notice_rows:
+            redelivered += await self._redeliver_claimed_obligations(notice_rows)
+
         if not claimed:
-            return 0
+            return redelivered
 
         # Clear before any send so the reconnect path cannot both redeliver an
         # already-produced answer and schedule the same agent turn for resume.
@@ -15983,7 +16168,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     row["obligation_id"],
                     exc_info=True,
                 )
-        return await self._redeliver_claimed_obligations(sendable)
+        redelivered += await self._redeliver_claimed_obligations(sendable)
+        return redelivered
+
+    def _record_recoverable_notice(
+        self,
+        *,
+        source: Any,
+        adapter: Any,
+        content: str,
+        status_key: str,
+        session_key: str = "",
+    ) -> bool:
+        """Durably retain an important notice that could not be sent now.
+
+        Used by off-loop callers (the restart tool's worker thread) whose
+        message could not be delivered and whose explanation the user still
+        needs to see: the row replays through the same reconnect/crash
+        lifecycle as status notices. Content is redacted here — unlike the
+        status rail, callers of this helper pass raw explanatory text that
+        may embed transport error details. Best-effort: returns whether a
+        row was recorded, never raises.
+        """
+        try:
+            from gateway.delivery_ledger import (
+                compute_notice_id,
+                ledger_enabled,
+                record_notice,
+            )
+
+            text = str(content or "").strip()
+            if not text or not ledger_enabled():
+                return False
+            platform = getattr(source, "platform", None)
+            platform_value = str(getattr(platform, "value", platform) or "")
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            if not platform_value or not chat_id:
+                return False
+            thread_id = getattr(source, "thread_id", None)
+            record_notice(
+                notice_id=compute_notice_id(
+                    session_key or "", status_key, text
+                ),
+                session_key=session_key or "",
+                platform=platform_value,
+                chat_id=chat_id,
+                thread_id=str(thread_id) if thread_id else None,
+                content=_redact_gateway_user_facing_secrets(text),
+                status_key=str(status_key or ""),
+                error="send_path_degraded",
+                send_metadata=(
+                    {"thread_id": str(thread_id)} if thread_id else None
+                ),
+                adapter_profile=getattr(adapter, "_owner_profile", None),
+                # Latest failure explanation per rail wins: an older stale
+                # explanation must not replay over a newer one.
+                mutable_rail=True,
+            )
+            return True
+        except Exception:
+            logger.debug("recoverable notice recording failed", exc_info=True)
+            return False
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.

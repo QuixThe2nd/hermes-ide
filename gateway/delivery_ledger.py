@@ -35,6 +35,22 @@ sends):
 Poison rows cannot spin: attempts are capped, stale rows expire, and both
 transition to ``abandoned`` (kept briefly for inspection, then pruned).
 
+The same table also carries important non-final notices
+(``kind='notice'``): user-facing status/warning notices the status rail
+FAILED to deliver transiently (adapter marked the send degraded/retryable).
+Unlike final responses, notices are recorded only AFTER a transient
+failure — a delivered notice never enters the ledger, so nothing that was
+seen can replay. ``record_notice()`` writes them straight to ``failed``
+with the retryable marker so both reconnect recovery
+(``sweep_failed_notices_for_runtime``) and crash recovery
+(``sweep_recoverable``) can claim them. Notice replay never touches
+resume/active-turn state and routes to the exact persisted
+platform/chat/thread. On bubble-editing rails (adapters implementing
+``send_or_update_status``) a rail shows one current state, so a newer
+undelivered notice supersedes older undelivered ones on the same rail
+(state ``superseded``) — stale "running"-era text cannot reappear after a
+newer state exists.
+
 Everything here is best-effort by design: ledger failures must never block
 or delay an actual send. Callers wrap every call in try/except.
 """
@@ -78,6 +94,22 @@ RECOVERED_MARKER = (
 RECONNECTED_MARKER = (
     "♻️ Recovered reply — the messaging platform reconnected after the original "
     "delivery failed, so this may be a duplicate:\n\n"
+)
+
+# Notice-row kinship: final answers and notices share the table but never the
+# identity space, the markers, or the resume semantics.
+FINAL_KIND = "final"
+NOTICE_KIND = "notice"
+
+# Visible markers for replayed notices (same honest at-least-once contract as
+# final responses, worded for a status notice rather than a reply).
+RECOVERED_NOTICE_MARKER = (
+    "♻️ Recovered notice — the gateway restarted before this status could be "
+    "delivered, so this may be a duplicate:\n\n"
+)
+RECONNECTED_NOTICE_MARKER = (
+    "♻️ Recovered notice — the messaging platform reconnected after the "
+    "original delivery failed, so this may be a duplicate:\n\n"
 )
 
 # Runtime replay is deliberately fail-closed. Only errors whose send contract
@@ -124,7 +156,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             owner_pid INTEGER,
             owner_started_at INTEGER,
             last_error TEXT,
-            adapter_profile TEXT
+            adapter_profile TEXT,
+            kind TEXT NOT NULL DEFAULT 'final',
+            status_key TEXT,
+            send_metadata TEXT
         )"""
     )
     columns = {
@@ -139,6 +174,19 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             # Concurrent first-use connections can both observe the old schema.
             if "duplicate column" not in str(exc).lower():
                 raise
+    # kind/status_key/send_metadata carry the notice rows added for reconnect
+    # notice recovery. Defaults keep pre-migration final-response rows valid.
+    for column, ddl in (
+        ("kind", "ALTER TABLE delivery_obligations ADD COLUMN kind TEXT NOT NULL DEFAULT 'final'"),
+        ("status_key", "ALTER TABLE delivery_obligations ADD COLUMN status_key TEXT"),
+        ("send_metadata", "ALTER TABLE delivery_obligations ADD COLUMN send_metadata TEXT"),
+    ):
+        if column not in columns:
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
 
 @contextmanager
@@ -230,6 +278,18 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:24]
 
 
+def compute_notice_id(session_key: str, status_key: str, content: str) -> str:
+    """Stable id for notice rows, in a SEPARATE namespace from final answers.
+
+    The ``notice|`` prefix guarantees a notice id can never equal a
+    ``compute_obligation_id`` hash of the same text in the same session, and
+    the session_key in the payload keeps distinct sessions/profiles from
+    colliding on one shared chat surface.
+    """
+    payload = f"notice|{session_key}|{status_key}|{content}"
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:24]
+
+
 def record_obligation(
     *,
     obligation_id: str,
@@ -254,6 +314,75 @@ def record_obligation(
             (obligation_id, session_key, platform, str(chat_id),
              str(thread_id) if thread_id else None, content, now, now,
              pid, started, stored_profile),
+        )
+    _prune()
+
+
+def record_notice(
+    *,
+    notice_id: str,
+    session_key: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    content: str,
+    status_key: str,
+    error: str = "",
+    send_metadata: Optional[Dict[str, Any]] = None,
+    adapter_profile: Optional[str] = None,
+    mutable_rail: bool = False,
+) -> None:
+    """Record an important notice whose delivery just failed transiently.
+
+    Written ONLY after a transient transport failure (caller-classified:
+    ``send_path_degraded`` or ``retryable``), directly to ``failed`` with the
+    normalized retryable error so the reconnect and crash sweeps can claim
+    it. A notice that was delivered never enters the ledger, so nothing the
+    user already saw can replay.
+
+    ``status_key`` is the status rail (the event type the status producer
+    keyed the send on); ``send_metadata`` preserves the exact routing
+    metadata (thread id, reply anchor) as JSON for replay.
+
+    ``mutable_rail=True`` marks an adapter that renders the rail as ONE
+    editable bubble (``send_or_update_status``): only the newest undelivered
+    state on that rail is worth replaying, so older undelivered rows on the
+    same (platform, profile, chat, thread, status_key) rail transition to
+    ``superseded`` — a stale "running"-era line cannot reappear after a
+    newer state was emitted. Append-only rails (Discord and every adapter
+    without the edit capability) keep each distinct notice; the shared
+    attempts cap, stale cutoff, retention, and row bound apply either way.
+    """
+    now = time.time()
+    stored_profile = str(adapter_profile).strip() if adapter_profile else "default"
+    pid, started = _owner_stamp()
+    metadata_json = (
+        json.dumps(send_metadata, ensure_ascii=False) if send_metadata else None
+    )
+    with _DB_LOCK, _transaction() as conn:
+        if mutable_rail:
+            conn.execute(
+                """UPDATE delivery_obligations
+                   SET state='superseded', updated_at=?
+                   WHERE kind='notice' AND platform=? AND chat_id=?
+                     AND status_key=? AND state IN ('pending', 'failed')
+                     AND thread_id IS ? AND adapter_profile=?""",
+                (now, platform, str(chat_id), str(status_key or ""),
+                 str(thread_id) if thread_id else None, stored_profile),
+            )
+        conn.execute(
+            """INSERT OR REPLACE INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id,
+                content, state, attempts, created_at, updated_at,
+                owner_pid, owner_started_at, adapter_profile,
+                kind, status_key, send_metadata, last_error)
+               VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, ?, ?, ?, ?, ?,
+                       'notice', ?, ?, ?)""",
+            (notice_id, session_key, platform, str(chat_id),
+             str(thread_id) if thread_id else None, content, now, now,
+             pid, started, stored_profile,
+             str(status_key or ""), metadata_json,
+             (error or "send_path_degraded")[:500]),
         )
     _prune()
 
@@ -339,13 +468,14 @@ def sweep_recoverable(
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile
+                      owner_pid, owner_started_at, adapter_profile,
+                      kind, status_key, send_metadata
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state,
              attempts, created_at, owner_pid, owner_started_at,
-             adapter_profile) in rows:
+             adapter_profile, kind, status_key, send_metadata) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
@@ -387,6 +517,9 @@ def sweep_recoverable(
                     "needs_marker": state != "pending",
                     "profile": adapter_profile,
                     "attempts": attempts + 1,
+                    "kind": kind or FINAL_KIND,
+                    "status_key": status_key,
+                    "send_metadata": send_metadata,
                 })
     return claimed
 
@@ -397,7 +530,12 @@ def sweep_failed_for_runtime(
     *,
     profile: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Claim this process's reconnect-retryable failed rows for one adapter.
+    """Claim this process's reconnect-retryable failed FINAL rows for one adapter.
+
+    Notice rows (``kind='notice'``) are deliberately out of scope here —
+    :func:`sweep_failed_notices_for_runtime` owns them, so a replayed notice
+    can never ride the final-answer path (wrong marker, and the caller's
+    resume-clearing treats final claims as turns that gated a session).
 
     ``profile`` scopes multiplexed gateways to the bot identity that actually
     owned the failed send; ``None`` means the primary/default adapter. The
@@ -432,7 +570,7 @@ def sweep_failed_for_runtime(
                       content, attempts, created_at, owner_pid,
                       owner_started_at, last_error, adapter_profile
                FROM delivery_obligations
-               WHERE state='failed' AND platform=?""",
+               WHERE state='failed' AND platform=? AND kind='final'""",
             (platform,),
         ).fetchall()
         for (
@@ -494,6 +632,100 @@ def sweep_failed_for_runtime(
     return claimed
 
 
+def sweep_failed_notices_for_runtime(
+    platform: str,
+    now: Optional[float] = None,
+    *,
+    profile: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Claim this process's reconnect-retryable failed NOTICE rows for one
+    adapter.
+
+    Same ownership contract as :func:`sweep_failed_for_runtime` — exact
+    process-instance owner, allowlisted transient error only, attempts/stale
+    bounds, atomic claiming — but scoped to ``kind='notice'`` rows, which the
+    status rail recorded after a transient delivery failure. Callers replay
+    them WITHOUT touching resume/active-turn state: a notice never gated a
+    turn, so its recovery must not either.
+    """
+    now = now if now is not None else time.time()
+    pid, started = _owner_stamp()
+    if started is None:
+        # Same fail-closed rule as runtime final-answer recovery: without the
+        # process fingerprint, PID reuse could steal another incarnation's
+        # rows. Startup recovery remains the durable fallback.
+        return []
+    expected_profile = "default" if not profile or profile == "default" else str(profile)
+    claimed: List[Dict[str, Any]] = []
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                      content, attempts, created_at, owner_pid,
+                      owner_started_at, last_error, adapter_profile,
+                      status_key, send_metadata
+               FROM delivery_obligations
+               WHERE state='failed' AND platform=? AND kind='notice'""",
+            (platform,),
+        ).fetchall()
+        for (
+            oid,
+            session_key,
+            row_platform,
+            chat_id,
+            thread_id,
+            content,
+            attempts,
+            created_at,
+            owner_pid,
+            owner_started_at,
+            last_error,
+            adapter_profile,
+            status_key,
+            send_metadata,
+        ) in rows:
+            if adapter_profile != expected_profile:
+                continue
+            if owner_pid != pid or owner_started_at != started:
+                continue
+            if str(last_error or "").strip().lower() not in _RUNTIME_RETRYABLE_ERRORS:
+                continue
+            owner_guard = (oid, owner_pid, owner_started_at)
+            if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
+                conn.execute(
+                    """UPDATE delivery_obligations
+                       SET state='abandoned', updated_at=?
+                       WHERE obligation_id=? AND state='failed'
+                         AND owner_pid IS ? AND owner_started_at IS ?""",
+                    (now, *owner_guard),
+                )
+                continue
+            cursor = conn.execute(
+                """UPDATE delivery_obligations
+                   SET state='attempting', attempts=attempts+1, updated_at=?
+                   WHERE obligation_id=? AND state='failed'
+                     AND owner_pid IS ? AND owner_started_at IS ?""",
+                (now, *owner_guard),
+            )
+            if cursor.rowcount:
+                claimed.append({
+                    "obligation_id": oid,
+                    "session_key": session_key,
+                    "platform": row_platform,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "content": content,
+                    "needs_marker": True,
+                    "marker": RECONNECTED_NOTICE_MARKER,
+                    "profile": adapter_profile,
+                    "runtime_recovery": True,
+                    "attempts": attempts + 1,
+                    "kind": NOTICE_KIND,
+                    "status_key": status_key,
+                    "send_metadata": send_metadata,
+                })
+    return claimed
+
+
 def _prune(now: Optional[float] = None) -> None:
     now = now if now is not None else time.time()
     cutoff = now - _RETENTION_SECONDS
@@ -501,7 +733,8 @@ def _prune(now: Optional[float] = None) -> None:
         with _transaction() as conn:
             conn.execute(
                 """DELETE FROM delivery_obligations
-                   WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
+                   WHERE state IN ('delivered', 'abandoned', 'superseded')
+                     AND updated_at < ?""",
                 (cutoff,),
             )
             total = conn.execute(
@@ -515,6 +748,7 @@ def _prune(now: Optional[float] = None) -> None:
                          ORDER BY CASE state
                                     WHEN 'delivered' THEN 0
                                     WHEN 'abandoned' THEN 1
+                                    WHEN 'superseded' THEN 1
                                     ELSE 2
                                   END, updated_at ASC
                          LIMIT ?)""",
