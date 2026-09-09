@@ -429,6 +429,114 @@ def test_confirm_none_reply_cancels_as_non_matching(gateway_loop, monkeypatch):
     _assert_unlimited_wait(wait)
 
 
+def test_confirm_registers_owner_identity_and_wait_kind(gateway_loop, monkeypatch):
+    """The restart wait is armed with registration-time owner identity.
+
+    The canonical session id comes from the owning turn's session context
+    (HERMES_SESSION_ID) and the profile from the runner — both captured
+    ONCE when the prompt is armed, so a later rotation of the routing
+    ``session_key`` can never re-attribute the wait. While armed, the
+    owner-scoped reader sees it as a ``restart`` wait on the canonical
+    id (what /api/sessions/waiting reports for Mission Control).
+    """
+    import tools.clarify_gateway as cg
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    # Single-profile gateway: routed-profile resolution returns None and
+    # the active profile is the owner.
+    runner._active_profile_name = lambda: "alpha"
+
+    seen_during_wait = {}
+
+    def _wait(clarify_id, timeout):
+        seen_during_wait["waits"] = cg.pending_waits_for_profile("alpha")
+        return None  # a non-matching reply: cancels
+
+    wait = MagicMock(side_effect=_wait)
+    monkeypatch.setattr(cg, "wait_for_response", wait)
+
+    register_kwargs = {}
+    real_register = cg.register
+
+    def _capturing_register(**kwargs):
+        register_kwargs.update(kwargs)
+        return real_register(**kwargs)
+
+    monkeypatch.setattr(cg, "register", _capturing_register)
+
+    _bind_session(
+        platform="telegram",
+        chat_id="42",
+        chat_type="dm",
+        session_key="tg-42",
+        session_id="sess-canonical-1",
+    )
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        # The mocked wait skipped the real reap; leave no armed entry.
+        cg.clear_session("tg-42")
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    runner.request_restart.assert_not_called()
+    _assert_unlimited_wait(wait)
+
+    assert register_kwargs["wait_kind"] == "restart"
+    assert register_kwargs["owner_profile"] == "alpha"
+    assert register_kwargs["owner_session_id"] == "sess-canonical-1"
+    assert register_kwargs["session_key"] == "tg-42"
+    # While the wait was armed, the owner-scoped reader named exactly the
+    # canonical session and the restart kind.
+    assert seen_during_wait["waits"] == [
+        {"session_id": "sess-canonical-1", "kind": "restart"},
+    ]
+
+
+def test_confirm_registers_bare_when_identity_unresolvable(gateway_loop, monkeypatch):
+    """Identity that cannot be resolved registers WITHOUT owner fields —
+    the wait stays invisible to owner-scoped readers rather than being
+    guessed onto a profile or the wrong session."""
+    import tools.clarify_gateway as cg
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+
+    def _raise():
+        raise RuntimeError("no active profile")
+
+    runner._active_profile_name = _raise
+    register, wait = _mock_confirm(monkeypatch, None)
+
+    seen_during_wait = {}
+
+    def _wait(clarify_id, timeout):
+        seen_during_wait["alpha"] = cg.pending_waits_for_profile("alpha")
+        seen_during_wait["default"] = cg.pending_waits_for_profile("default")
+        return None
+
+    wait.side_effect = _wait
+
+    # No canonical session id bound to the turn.
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    register.assert_called_once()
+    kwargs = register.call_args.kwargs
+    assert kwargs["wait_kind"] == "restart"
+    assert kwargs["owner_profile"] is None
+    assert kwargs["owner_session_id"] is None
+    assert seen_during_wait["alpha"] == []
+    assert seen_during_wait["default"] == []
+
+
 def test_confirm_prompt_mentions_the_discord_requester(gateway_loop, monkeypatch):
     """Discord prompts start with the requester's snowflake and stay in-thread."""
     from gateway.config import Platform

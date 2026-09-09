@@ -2236,6 +2236,10 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
+            # Batch waiting-on-the-human status for inbox surfaces — a
+            # STATIC path, so it must sit ABOVE /api/sessions/{session_id}
+            # in the table or the dynamic route would shadow it.
+            ("GET", "/api/sessions/waiting", self._handle_sessions_waiting),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
@@ -3539,6 +3543,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
                 "session_clarify": {"method": "GET", "path": "/api/sessions/{session_id}/clarify"},
                 "session_clarify_answer": {"method": "POST", "path": "/api/sessions/{session_id}/clarify"},
+                "sessions_waiting": {"method": "GET", "path": "/api/sessions/waiting"},
                 "browser_control_register": {"method": "POST", "path": "/v1/browser-control/register"},
                 "browser_control_ws": {"method": "GET", "path": "/v1/browser-control/ws"},
                 "artifact_upload": {"method": "POST", "path": "/v1/artifacts/upload"},
@@ -7687,6 +7692,9 @@ class APIServerAdapter(BasePlatformAdapter):
     ) -> List[Dict[str, Any]]:
         return _api_runs._session_clarify_cards(self, session_id, profile)
 
+    def _sessions_waiting(self, profile: str) -> List[Dict[str, str]]:
+        return _api_runs._sessions_waiting(self, profile)
+
     def _run_idempotency_scope(self, request: "web.Request") -> str:
         return _api_runs._run_idempotency_scope(
             self,
@@ -7846,6 +7854,16 @@ class APIServerAdapter(BasePlatformAdapter):
     ) -> "web.Response":
         """GET /api/sessions/{session_id}/clarify — oldest pending question."""
         return await _api_runs._handle_session_clarify_get(
+            self,
+            request,
+            _api_server=sys.modules[__name__],
+        )
+
+    async def _handle_sessions_waiting(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """GET /api/sessions/waiting — batch waiting-on-the-human status."""
+        return await _api_runs._handle_sessions_waiting(
             self,
             request,
             _api_server=sys.modules[__name__],

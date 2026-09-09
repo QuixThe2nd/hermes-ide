@@ -168,7 +168,7 @@ class ServerCase(unittest.TestCase):
         conversation row (fails the test when nothing is selected)."""
         for m in re.finditer(
                 r'<(section|details) class="convsec"[^>]*'
-                r'data-section="([a-z]+)"', page):
+                r'data-section="([a-z_]+)"', page):
             close = page.find("</%s>" % m.group(1), m.end())
             block = page[m.end():close]
             if 'class="conv is-selected' in block:
@@ -188,11 +188,12 @@ class TestArchiveSidebarRefresh(ServerCase):
         self.add_message(sid, "user", "the question")
         self.add_message(sid, "assistant", "the answer")
 
-        # resting state: a settled assistant answer classifies the row
-        # Open · completed, selected on its own chat page
+        # resting state: a settled assistant answer means the next
+        # move is the human's — the row classifies Your turn,
+        # selected on its own chat page
         status, page = self.request("GET", "/s/default/" + sid)
         self.assertEqual(status, 200)
-        self.assertEqual(self.selected_section(page), "completed")
+        self.assertEqual(self.selected_section(page), "your_turn")
 
         # close: the POST commits the flip before answering ok
         status, payload = self.post("/s/default/%s/close" % sid, {})
@@ -224,7 +225,7 @@ class TestArchiveSidebarRefresh(ServerCase):
         self.assertFalse(payload["archived"])
         status, open_page = self.request("GET", "/s/default/" + sid)
         self.assertEqual(status, 200)
-        self.assertEqual(self.selected_section(open_page), "completed")
+        self.assertEqual(self.selected_section(open_page), "your_turn")
         self.assertNotIn('<details class="convsec" id="sec-closed"',
                          open_page)
         self.assertIn('data-archived="0"', open_page)
@@ -275,7 +276,7 @@ class TestArchiveSidebarRefresh(ServerCase):
 
         status, page = self.request("GET", "/s/default/" + sid)
         self.assertEqual(status, 200)
-        self.assertEqual(self.selected_section(page), "completed")
+        self.assertEqual(self.selected_section(page), "your_turn")
         self.assertNotIn('<details class="convsec" id="sec-closed"', page)
 
     def test_toggle_without_csrf_token_is_refused(self):
@@ -291,7 +292,7 @@ class TestArchiveSidebarRefresh(ServerCase):
         self.assertEqual(status, 403)
         self.assertFalse(payload["ok"])
         status, page = self.request("GET", "/s/default/" + sid)
-        self.assertEqual(self.selected_section(page), "completed")
+        self.assertEqual(self.selected_section(page), "your_turn")
 
     def test_client_source_refreshes_sidebar_on_archive_transition(self):
         """The shipped script re-renders the sidebar exactly on an

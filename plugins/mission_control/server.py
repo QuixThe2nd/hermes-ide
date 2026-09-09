@@ -158,9 +158,12 @@ Interactive layer (all same-origin, relative URLs, stdlib only):
   can't drift from server-rendered ones; last_id is the cursor for the
   next poll. busy reports whether a composer reply is currently running
   for the session. subagents (a backwards-compatible addition) carries
-  the direct-children state — count, ids, and the exact section HTML —
-  which the client swaps in on every poll so an open page discovers
-  newly dispatched children without a reload.
+  the inline sub-agent child rows AND the delegate dispatch cards as one
+  keyed list — {count, ids, items:[{key, id, profile, started, state,
+  rev, html}]} — re-shipped in full on every poll, so an open page
+  reconciles both by key (insert at the chronological spot, update in
+  place exactly once per real change, never duplicate, never reload)
+  whether or not the parent's tool-call carrier has landed.
 - The transcript page polls that feed every ~2 s (faster while a reply
   is in flight) and appends new user/agent bubbles and tool groups in
   place — no reload; it auto-scrolls only when already near the bottom.
@@ -278,11 +281,41 @@ snapshot as a structured "activity" object {active, state,
 pending_count, names, html} whose html is the exact server-rendered
 strip, which the client swaps in (or removes) on every poll while
 the feed cursor keeps its existing behavior.
+
+Inline dispatch cards: the real spawn-shaped delegate tool call
+(delegate_agent, delegate_task, delegate_claude_agent,
+delegate_cursor_agent) is the chronological authority — one
+Discord-style dispatch card renders at the call carrier's position
+in the transcript (a batch call contributes one card per task, in
+order), and exactly the matching generic delegate_* tool result row
+disappears (control calls such as delegate_agent action
+list/steer/stop are not dispatches and keep their ordinary rows).
+A card links into a child transcript only when a real direct child
+session or async delegation proves the route — same time window AND
+agreeing goal text, matched one-to-one; a matched child renders AS
+its card, never as a second standalone row, and an unmatched child
+keeps its own inline row at its dispatch time. A
+delegate_claude_agent card additionally resolves a durable spawn
+receipt (tools/claude_run_receipts.py — written the moment the
+Claude subprocess exists, keyed by the exact parent session id +
+tool call id under that profile's own claude-runs tree) and, when
+every check passes, the whole card opens that exact run's live
+viewer page (a Watch affordance) while the run is still going and
+after it completes; anything less than a fully validated receipt
+fails closed to the same static card. Claude viewer links take
+precedence over child-session links on Claude cards; non-Claude
+cards and standalone child rows are unchanged. The initial render
+and every /feed poll share the exact renderer and revision key, so
+a static card upgrades in place the moment its receipt appears —
+no duplicate cards, no reload. A floating "Next sub-agent" pill
+steps through the inline child rows and dispatch cards by one
+identity space.
 """
 
 import argparse
 import atexit
 import glob
+import importlib
 import ipaddress
 import html
 import json
@@ -417,7 +450,11 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 """
 
 # Inbox section keys in display order. The ordering contract: every
-# open session renders above every closed one — Active first, then
+# open session renders above every closed one — Your turn first (the
+# open conversations whose next move is the human's: an explicit wait
+# the core names in its batch waiting-status answer — an API-run
+# clarify, a native gateway clarify prompt, a restart confirmation —
+# or an idle chat resting on a plain assistant answer), then Active,
 # Open · unfinished, Open · completed, and Closed strictly last — so
 # a closed conversation can never jump ahead of an older open one
 # however fresh its last activity is. Rows are bucketed by state
@@ -429,14 +466,16 @@ SELECT session_id, role, has_content, has_tools, silent FROM (
 # ids/data-state values are unchanged stable hooks for the client
 # filter; only order and titles moved.
 # Active and Completed always render (when the page has any rows at
-# all), Incomplete and Closed only when they have members. Closed is
-# the projected tip's ended_at or the archived flag (archived mirrors
-# Discord or a local close) — it wins over every other signal, and
-# every closed row says so itself with an Archived or Ended chip.
-SECTION_ORDER = ("active", "incomplete", "completed", "closed")
+# all), Your turn, Incomplete and Closed only when they have members.
+# Closed is the projected tip's ended_at or the archived flag
+# (archived mirrors Discord or a local close) — it wins over every
+# other signal, and every closed row says so itself with an Archived
+# or Ended chip.
+SECTION_ORDER = ("your_turn", "active", "incomplete", "completed", "closed")
 SECTION_TITLES = {"active": "Active", "closed": "Closed",
                   "completed": "Open \N{MIDDLE DOT} completed",
-                  "incomplete": "Open \N{MIDDLE DOT} unfinished"}
+                  "incomplete": "Open \N{MIDDLE DOT} unfinished",
+                  "your_turn": "Your turn"}
 
 # ---- chat transcript route (/s/<profile>/<session_id>) ---------------
 # The profile must be one discover_dbs() actually serves (so it maps to
@@ -577,6 +616,10 @@ CLARIFY_MAX_CHOICES = 8
 CLARIFY_MAX_QUESTION_CHARS = 2000
 CLARIFY_MAX_CHOICE_CHARS = 500
 CLARIFY_ID_MAX_CHARS = 128
+# The batch waiting-status call runs on the inbox render path (every
+# refresh), so it gets the tightest core deadline of all: one bounded
+# GET per profile, and a wedged core must never stall the page.
+WAITING_TIMEOUT_SECONDS = 2.0
 # A response list can never legitimately exceed the card's choice bound
 # plus its Other; anything larger is refused before ever proxying.
 CLARIFY_MAX_RESPONSE_ITEMS = 16
@@ -1574,6 +1617,38 @@ def mark_job_states(rows):
             r["state"] = "active"
 
 
+def mark_your_turn(rows, waits):
+    """Move the open conversations waiting on the human into Your turn.
+
+    Membership is exactly the two ways a chat stops being the agent's
+    turn while staying open (closed still wins here — the projected
+    tip's ended_at or the archived flag, exactly as load_sessions
+    decided; those rows are never touched): an explicit wait the core
+    names in the batch waiting-status answer — an API-run clarify, a
+    native gateway clarify prompt, or a restart confirmation, all one
+    surface to this server — or an idle chat whose newest active event
+    is a plain assistant answer (classify_session's completed rule,
+    so those rows move over instead of resting mislabeled). An
+    explicit wait outranks a live lease or composer job AND needs
+    neither: whatever is parked on the human's answer, the row is the
+    human's to move, lease or no lease.
+
+    ``waits`` is the waiting_session_ids(dbs, profiles) map of one
+    refresh. Fail closed: a profile absent from the map (no key,
+    unreachable core, error) promotes nothing — its rows keep the
+    sections they already had. Idle rows still classify from the
+    newest-event tuple with no per-session HTTP at all.
+    """
+    for r in rows:
+        if r["state"] == "closed":
+            continue
+        waiting = waits.get(r["profile"])
+        if waiting is not None and r["id"] in waiting:
+            r["state"] = "your_turn"
+        elif r["state"] == "completed":
+            r["state"] = "your_turn"
+
+
 def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
     """Load one conversation's header and transcript page from its DB.
 
@@ -1617,6 +1692,7 @@ def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
             if row[3] > last_id:
                 last_id = row[3]
         subagents = subagents_for(con, profile, chain)
+        delegate = delegate_cards(con, profile, chain, subagents)
         activity = compute_activity(con, session_id, time.time(),
                                     busy_job, busy_since)
     finally:
@@ -1633,7 +1709,11 @@ def load_chat(profile, session_id, dbs, busy_job=False, busy_since=None):
         "archived": bool(archived),
         "rows": rows,
         "last_id": last_id,
-        "subagents": subagents,
+        # Children a dispatch card absorbed leave the standalone list;
+        # the cards render at their call carriers instead.
+        "subagents": delegate["children"],
+        "delegate_cards": delegate["cards"],
+        "delegate_suppress": delegate["suppress"],
         "activity": activity,
     }
 
@@ -2464,9 +2544,13 @@ def parse_tool_calls(raw):
     Accepts both the OpenAI-ish shape ({"function": {"name",
     "arguments"}}) and flatter legacy shapes ({"name", "arguments"}).
     arguments may be a JSON string or an already-parsed object; ids
-    collects every non-empty id-ish field a tool result could echo
-    back (id, call_id, response_item_id). Malformed input yields [] —
-    the page and the feed simply see no pending calls from it.
+    collects every non-empty id-ish field a tool result could echo back
+    — canonical first (call_id, the Responses pairing key the executor
+    and the spawn receipts use, matching coalesce_tool_call_id), then
+    the legacy transport aliases (id, response_item_id) — so a caller
+    taking the first id correlates the way the runtime does. Malformed
+    input yields [] — the page and the feed simply see no pending calls
+    from it.
     """
     if not raw or not isinstance(raw, str):
         return []
@@ -2501,12 +2585,702 @@ def parse_tool_calls(raw):
         if not isinstance(name, str):
             name = ""
         ids = []
-        for key in ("id", "call_id", "response_item_id"):
+        for key in ("call_id", "id", "response_item_id"):
             v = c.get(key)
             if isinstance(v, str) and v:
                 ids.append(v)
         calls.append({"name": name, "args": args_raw, "ids": ids})
     return calls
+
+
+# ---- inline delegate dispatch cards (/s/<profile>/<id>) --------------
+# The real spawn-shaped delegate tool call is the chronological
+# authority for a dispatch: one card renders at the carrier's position
+# (replacing the generic delegate_* tool row), links into a child
+# transcript only when a child session or async delegation proves the
+# route, and — for delegate_claude_agent — opens that exact run's live
+# viewer page through a validated spawn receipt. Control calls
+# (delegate_agent with action list/steer/stop) are not dispatches and
+# never produce cards.
+
+# The delegate tools whose spawn-shaped calls become dispatch cards.
+DELEGATE_SPAWN_NAMES = ("delegate_agent", "delegate_task",
+                        "delegate_claude_agent", "delegate_cursor_agent")
+# delegate_agent actions that manage existing work instead of
+# dispatching it; they never produce cards.
+DELEGATE_CONTROL_ACTIONS = frozenset(("list", "steer", "stop"))
+
+# The assistant carriers that may hold delegate calls, oldest first —
+# over the conversation's whole canonical chain (a dispatch
+# mid-conversation hangs off whichever member made the call). Bounded
+# twice: LIKE selects only delegate-bearing rows, LIMIT caps even a
+# pathological session, and the tool_calls slice is sized so a real
+# batch call's task list usually parses whole (truncation past it is
+# still handled — the carrier recovery below reads the surviving
+# prefix, just with less label detail).
+DELEGATE_CALLS_CHAIN_SQL = """
+SELECT id, session_id, timestamp,
+       substr(IFNULL(tool_calls, ''), 1, {chars})
+FROM messages
+WHERE session_id IN ({placeholders})
+  AND role = 'assistant'
+  AND tool_calls LIKE '%delegate%'
+ORDER BY timestamp ASC, id ASC
+LIMIT ?
+"""
+DELEGATE_CALLS_MAX = 40
+DELEGATE_CALLS_CHARS = 16384
+
+# The delegate tool result rows: their call ids drive result-row
+# suppression and the no-lineage state fallback (a returned synchronous
+# call reads Done). Bounded by the same per-conversation delegate count.
+DELEGATE_RESULTS_CHAIN_SQL = """
+SELECT id, tool_name, tool_call_id, timestamp
+FROM messages
+WHERE session_id IN ({placeholders})
+  AND role = 'tool'
+  AND tool_name IN ('delegate_agent', 'delegate_task',
+                    'delegate_claude_agent', 'delegate_cursor_agent')
+ORDER BY id ASC
+LIMIT ?
+"""
+DELEGATE_RESULTS_MAX = 120
+
+# Async delegations dispatched by this conversation, oldest first — the
+# durable record a background delegate_agent spawn leaves behind (the
+# parent is whichever chain member made the call). The task_json slice
+# stays bounded; a missing table (older DBs, fixtures) degrades to no
+# delegation matches, never an error.
+DELEGATIONS_CHAIN_SQL = """
+SELECT delegation_id, state, dispatched_at, completed_at,
+       substr(IFNULL(task_json, ''), 1, {chars})
+FROM async_delegations
+WHERE parent_session_id IN ({placeholders})
+ORDER BY dispatched_at ASC, delegation_id ASC
+LIMIT ?
+"""
+DELEGATIONS_MAX = 50
+DELEGATIONS_TASK_CHARS = 4000
+
+# Matching windows: a child session or async delegation belongs to a
+# dispatch only when it starts within this many seconds of the carrier
+# AND its goal text agrees with the card's label. Both conditions are
+# required — time alone or text alone never fabricates a link.
+DELEGATE_MATCH_WINDOW = 120.0
+DELEGATE_MATCH_SKEW = 10.0
+# How much shared normalized text counts as "the same goal": short
+# enough to be cheap, long enough that two different tasks from one
+# batch practically never collide.
+DELEGATE_LABEL_MATCH_CHARS = 32
+
+# Friendly per-tool labels for the card's meta line.
+DELEGATE_TOOL_LABELS = {
+    "delegate_agent": "Sub-agent",
+    "delegate_task": "Sub-agent",
+    "delegate_claude_agent": "Claude agent",
+    "delegate_cursor_agent": "Cursor agent",
+}
+DELEGATION_STATE_KEYS = {
+    "completed": "done",
+    "complete": "done",
+    "done": "done",
+    "failed": "failed",
+    "error": "failed",
+    "timed_out": "failed",
+    "timeout": "failed",
+    "cancelled": "interrupted",
+    "canceled": "interrupted",
+    "stopped": "interrupted",
+}
+
+
+def _decode_json_string(text, start):
+    """text[start] must be '\"' -> (value, next_index), or (partial,
+    None) when the string runs off the end of a truncated JSON slice.
+    Escapes are honored, so a premature quote inside the value never
+    ends it early; anything malformed yields ("", None)."""
+    if start >= len(text) or text[start] != '"':
+        return "", None
+    out = []
+    i = start + 1
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            return "".join(out), i + 1
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "u" and i + 5 < len(text):
+                try:
+                    out.append(chr(int(text[i + 2:i + 6], 16)))
+                    i += 6
+                    continue
+                except ValueError:
+                    return "".join(out), None
+            out.append({"n": "\n", "t": "\t", "r": "\r",
+                        "b": "\b", "f": "\f"}.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), None
+
+
+def _scan_string_field(text, key, start=0):
+    """Best-effort value of one JSON string field inside a possibly
+    truncated object slice: the decoded string at the first "key": "…"
+    at or after `start`, or "" when the key or its string value never
+    appears. Used only when whole-document parsing already failed."""
+    needle = '"%s"' % key
+    pos = text.find(needle, start)
+    if pos < 0:
+        return ""
+    i = pos + len(needle)
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+    if i >= len(text) or text[i] != ":":
+        return ""
+    i += 1
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+    value, _end = _decode_json_string(text, i)
+    return value
+
+
+def _task_label(obj):
+    """One parsed task/dispatch argument dict -> its best goal text:
+    goal, then task, then context (the batch shape carries all three;
+    the goal is the dispatch's own words, context is scenery)."""
+    if not isinstance(obj, dict):
+        return ""
+    for key in ("goal", "task", "context", "message", "prompt"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def delegate_spawn_calls(name, args_raw):
+    """One delegate call -> its dispatch descriptors, [] for control
+    calls and non-spawn shapes. Each descriptor is {tool, label, model}
+    with the raw (unclamped, unescaped) goal text as label; the caller
+    clamps and escapes. Never raises: truncated or legacy argument JSON
+    yields whatever partial tasks are still recoverable.
+
+    Batch shapes (delegate_agent/delegate_task with a tasks list) yield
+    one descriptor per recovered task; Claude/Cursor calls always yield
+    exactly one (they take a single task and have no control actions).
+    A delegate_agent whose action reads list/steer/stop — parsed whole
+    or recovered from a truncated slice — yields nothing, and one with
+    no discernible spawn content yields nothing either (its generic
+    tool row simply stays)."""
+    if name not in DELEGATE_SPAWN_NAMES:
+        return []
+    args_raw = args_raw if isinstance(args_raw, str) else ""
+    obj = None
+    if args_raw.strip():
+        try:
+            obj = json.loads(args_raw)
+        except (ValueError, TypeError):
+            obj = None
+    if name in ("delegate_claude_agent", "delegate_cursor_agent"):
+        label = _task_label(obj)
+        if not label:
+            label = _scan_string_field(args_raw, "task") or \
+                _scan_string_field(args_raw, "goal")
+        model = obj.get("model") if isinstance(obj, dict) else None
+        return [{"tool": name, "label": label,
+                 "model": model if isinstance(model, str) else ""}]
+    # delegate_agent / delegate_task: control calls first, from the
+    # parsed object or from a partial scan of a truncated slice.
+    action = ""
+    if isinstance(obj, dict):
+        value = obj.get("action")
+        action = value.strip().lower() if isinstance(value, str) else ""
+    elif args_raw:
+        value = _scan_string_field(args_raw, "action")
+        action = value.strip().lower()
+    if action in DELEGATE_CONTROL_ACTIONS:
+        return []
+    tasks = None
+    if isinstance(obj, dict):
+        raw_tasks = obj.get("tasks")
+        if isinstance(raw_tasks, list):
+            tasks = raw_tasks
+    if tasks is None and obj is None and '"tasks"' in args_raw:
+        # Truncated batch: recover each complete task object still
+        # visible in the slice, and a partial trailing one's label.
+        tasks = _recover_task_prefix(args_raw)
+    if tasks:
+        out = []
+        for task in tasks[:TOOL_CALLS_MAX]:
+            label = _task_label(task)
+            model = task.get("model") if isinstance(task, dict) else None
+            out.append({"tool": name, "label": label,
+                        "model": model if isinstance(model, str)
+                        else ""})
+        if out:
+            return out
+    label = _task_label(obj)
+    if not label and obj is None:
+        label = _scan_string_field(args_raw, "goal") or \
+            _scan_string_field(args_raw, "task") or \
+            _scan_string_field(args_raw, "context")
+    if not label:
+        # No discernible spawn content: not card-worthy (an empty or
+        # control-ish call keeps its ordinary tool row).
+        return []
+    model = obj.get("model") if isinstance(obj, dict) else None
+    return [{"tool": name, "label": label,
+             "model": model if isinstance(model, str) else ""}]
+
+
+# A delegate tool name as a JSON string value — the anchor the carrier
+# recovery scans for when the outer tool_calls array is truncated past
+# whole-document parsing.
+DELEGATE_NAME_RE = re.compile(
+    r'"(delegate_agent|delegate_task|delegate_claude_agent|'
+    r'delegate_cursor_agent)"')
+DELEGATE_NAME_KEY_RE = re.compile(r'"name"\s*:\s*$')
+DELEGATE_CALL_ID_RE = re.compile(r'"call_id"\s*:\s*$')
+DELEGATE_ID_KEY_RE = re.compile(r'"id"\s*:\s*$')
+DELEGATE_ARGS_KEY_RE = re.compile(r'"arguments"\s*:\s*$')
+
+
+def delegate_carrier_calls(raw):
+    """One bounded carrier tool_calls slice -> its delegate call
+    descriptors [{name, args, ids}], tolerating truncation.
+
+    The whole-document parser (parse_tool_calls) wins whenever the
+    slice is complete; a truncated slice — a long batch call cut by the
+    SQL cap takes the entire outer array down with it — falls back to
+    scanning for delegate name values directly: each one's call id is
+    recovered from the id/call_id key just before it, its arguments
+    string decoded from just after it (partial when the slice ends
+    mid-string). Escaped content inside argument strings never matches
+    the anchors (their quotes are backslash-escaped there), and a name
+    string that is not a "name" value (say, one echoing inside an
+    argument) is rejected by its preceding key context."""
+    calls = [c for c in parse_tool_calls(raw)
+             if c["name"] in DELEGATE_SPAWN_NAMES]
+    if not isinstance(raw, str):
+        return []
+    if calls and raw.rstrip().endswith("]"):
+        return calls
+    out = []
+    for m in DELEGATE_NAME_RE.finditer(raw):
+        name = m.group(1)
+        if not DELEGATE_NAME_KEY_RE.search(
+                raw[max(0, m.start() - 16):m.start()]):
+            continue
+        # The id keys sit at the call object's head, before the name;
+        # scan a bounded window backwards for call_id, then id.
+        head = raw[max(0, m.start() - 2000):m.start()]
+        ids = []
+        for key_re in (DELEGATE_CALL_ID_RE, DELEGATE_ID_KEY_RE):
+            found = None
+            for km in key_re.finditer(head):
+                found = km
+            if found is not None:
+                value, _end = _decode_json_string(head, found.end())
+                if value:
+                    ids = [value]
+                    break
+        args = ""
+        tail = raw[m.end():m.end() + 400]
+        am = DELEGATE_ARGS_KEY_RE.search(tail)
+        if am is not None:
+            args, _end = _decode_json_string(raw, m.end() + am.end())
+        out.append({"name": name, "args": args or "", "ids": ids})
+    return out
+
+
+def _recover_task_prefix(args_raw):
+    """Truncated batch arguments -> the task objects still recoverable
+    from the slice: every balanced {...} inside the tasks array parsed
+    on its own, plus one partial trailing task reduced to its scanned
+    label. Anything malformed yields []."""
+    pos = args_raw.find('"tasks"')
+    if pos < 0:
+        return []
+    start = args_raw.find("[", pos)
+    if start < 0:
+        return []
+    tasks = []
+    i = start + 1
+    while i < len(args_raw) and len(tasks) < TOOL_CALLS_MAX:
+        while i < len(args_raw) and args_raw[i] in " \t\r\n,":
+            i += 1
+        if i >= len(args_raw) or args_raw[i] == "]":
+            break
+        if args_raw[i] != "{":
+            break
+        depth = 0
+        j = i
+        end = None
+        while j < len(args_raw):
+            ch = args_raw[j]
+            if ch == '"':
+                _v, nxt = _decode_json_string(args_raw, j)
+                if nxt is None:
+                    break
+                j = nxt
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+            j += 1
+        if end is None:
+            # Partial trailing task: keep its scanned goal text only.
+            label = ""
+            for key in ("goal", "task", "context"):
+                label = _scan_string_field(args_raw, key, i)
+                if label:
+                    break
+            if label:
+                tasks.append({"goal": label})
+            break
+        try:
+            task = json.loads(args_raw[i:end])
+        except (ValueError, TypeError):
+            task = None
+        if isinstance(task, dict):
+            tasks.append(task)
+        i = end
+    return tasks
+
+
+def load_delegations(con, chain):
+    """This conversation's async delegation records -> [{id, state,
+    dispatched, completed, goals, model}], oldest first. The table is
+    absent on older DBs and fixtures: that simply means no delegation
+    can match, never an error. Each row's task_json is parsed
+    defensively; its goals list (falling back to the single goal) is
+    what cards match against, truncated slice or not."""
+    out = []
+    try:
+        rows = con.execute(
+            DELEGATIONS_CHAIN_SQL.format(
+                chars=DELEGATIONS_TASK_CHARS,
+                placeholders=",".join("?" * len(chain))),
+            list(chain) + [DELEGATIONS_MAX]).fetchall()
+    except sqlite3.Error:
+        return out
+    for did, state, dispatched, completed, task_json in rows:
+        goals = []
+        model = ""
+        obj = None
+        if isinstance(task_json, str) and task_json.strip():
+            try:
+                obj = json.loads(task_json)
+            except (ValueError, TypeError):
+                obj = None
+        if isinstance(obj, dict):
+            raw_goals = obj.get("goals")
+            if isinstance(raw_goals, list):
+                goals = [g for g in raw_goals if isinstance(g, str)]
+            if not goals:
+                goal = obj.get("goal")
+                if isinstance(goal, str) and goal.strip():
+                    goals = [goal]
+            raw_model = obj.get("model")
+            if isinstance(raw_model, str):
+                model = raw_model
+        if not goals:
+            goal = _scan_string_field(
+                task_json if isinstance(task_json, str) else "", "goal")
+            if goal:
+                goals = [goal]
+        try:
+            dispatched_ts = float(dispatched)
+        except (TypeError, ValueError):
+            continue
+        try:
+            completed_ts = float(completed) \
+                if completed is not None else None
+        except (TypeError, ValueError):
+            completed_ts = None
+        out.append({"id": str(did or ""),
+                    "state": str(state or "").strip().lower(),
+                    "dispatched": dispatched_ts,
+                    "completed": completed_ts,
+                    "goals": goals, "model": model,
+                    "claimed": [False] * len(goals)})
+    return out
+
+
+def _norm_goal(text):
+    """Goal text -> its match form: whitespace-collapsed, case-folded,
+    capped — the same normalization both sides of a match get."""
+    return " ".join(str(text or "").split()).casefold()[
+        :DELEGATE_LABEL_MATCH_CHARS * 4]
+
+
+def _goals_agree(a, b):
+    """Whether two goal texts name the same task: equal or one a
+    prefix of the other (labels clamp at different points) once
+    normalized, with a floor so empty/trivial strings never agree."""
+    na, nb = _norm_goal(a), _norm_goal(b)
+    if len(na) < DELEGATE_LABEL_MATCH_CHARS // 2 \
+            or len(nb) < DELEGATE_LABEL_MATCH_CHARS // 2:
+        return False
+    short = na[:DELEGATE_LABEL_MATCH_CHARS]
+    other = nb[:DELEGATE_LABEL_MATCH_CHARS]
+    return short == other or na.startswith(nb) or nb.startswith(na)
+
+
+# The spawn-receipt validator (tools.claude_run_receipts — the same
+# fail-closed reader the writer ships with) is an OPTIONAL capability:
+# this module's static imports stay stdlib plus the core state helpers
+# so the plugin remains standalone-loadable, so it is bound dynamically
+# and cached once. Without it (or on any error) every Claude card keeps
+# its static form — the viewer link degrades, never the page.
+_RECEIPTS_MODULE = None
+_RECEIPTS_LOADED = False
+
+
+def _receipt_watch_url(home, sid, call_id):
+    """resolve_watch_url(home, sid, call_id) from the tools layer, or
+    None when that module is unavailable. Never raises."""
+    global _RECEIPTS_MODULE, _RECEIPTS_LOADED
+    if not _RECEIPTS_LOADED:
+        _RECEIPTS_LOADED = True
+        try:
+            _RECEIPTS_MODULE = importlib.import_module(
+                "tools.claude_run_receipts")
+        except Exception:
+            _RECEIPTS_MODULE = None
+    if _RECEIPTS_MODULE is None:
+        return None
+    try:
+        return _RECEIPTS_MODULE.resolve_watch_url(home, sid, call_id)
+    except Exception:
+        return None
+
+
+def claude_card_watch_url(home, card):
+    """The validated live-viewer URL for one Claude dispatch card, or "".
+
+    `home` is the profile's own HERMES_HOME (profile_home — the only
+    trusted home source, never request input; resolved once by the
+    caller for the whole card set). Resolution is exact on every axis:
+    the receipt must live in THAT home's claude-runs tree, keyed by the
+    exact carrier session id + tool call id the card carries, and the
+    fail-closed reader rejects anything malformed, oversized, mismatched,
+    cross-profile, unsafe or missing its run log. A Claude card without
+    a call id, the tools layer being unavailable, or any failure keeps
+    the static form — a URL is never fabricated from tool arguments."""
+    if card.get("tool") != "delegate_claude_agent":
+        return ""
+    call_id = str(card.get("call_id") or "")
+    sid = str(card.get("sid") or "")
+    if not call_id or not sid or not home:
+        return ""
+    return str(_receipt_watch_url(home, sid, call_id) or "")
+
+
+def delegate_cards(con, profile, chain, children):
+    """The dispatch cards one conversation renders at its delegate
+    call carriers, plus the suppression/match fallout.
+
+    Returns {"cards", "suppress", "children"}: cards in carrier
+    discovery order (one per dispatched task, batch calls contributing
+    several at one carrier; repeated delegate_claude_agent carriers of
+    one (session, call id) pair fold into a single card tied to the
+    latest carrier, because the redriven execution's receipt replaces
+    the earlier one at the same path), suppress the set of tool_call
+    ids whose generic delegate result row a card replaces, and children
+    the sub-agent
+    list minus every child a card absorbed (a matched child renders AS
+    its dispatch card — linked, with the child's own state — never as a
+    second standalone row). Matching is one-to-one and fail-open: a
+    child/delegation pairs with a card only inside the time window AND
+    with agreeing goal text, and only when exactly one candidate fits;
+    anything weaker leaves the card truthful but unlinked and keeps the
+    child its own row. A delegate_claude_agent card additionally
+    resolves its spawn receipt's live-viewer URL (claude_card_watch_
+    url), which takes precedence over any child link on that card."""
+    if isinstance(chain, str):
+        chain = [chain]
+    carriers = con.execute(
+        DELEGATE_CALLS_CHAIN_SQL.format(
+            chars=DELEGATE_CALLS_CHARS,
+            placeholders=",".join("?" * len(chain))),
+        list(chain) + [DELEGATE_CALLS_MAX]).fetchall()
+    result_times = {}
+    for _res_id, _res_name, res_call_id, res_ts in con.execute(
+            DELEGATE_RESULTS_CHAIN_SQL.format(
+                placeholders=",".join("?" * len(chain))),
+            list(chain) + [DELEGATE_RESULTS_MAX]):
+        if res_call_id:
+            result_times[str(res_call_id)] = res_ts
+    delegations = load_delegations(con, chain)
+
+    cards = []
+    suppress = set()
+    seen_keys = {}
+    claude_carriers = {}
+    for row_id, row_sid, ts, raw in carriers:
+        try:
+            carrier_ts = float(ts)
+        except (TypeError, ValueError):
+            continue
+        for call in delegate_carrier_calls(raw):
+            spawns = delegate_spawn_calls(call["name"], call["args"])
+            if not spawns:
+                continue
+            call_id = ""
+            for candidate in call["ids"]:
+                if candidate:
+                    call_id = candidate
+                    break
+            if call_id:
+                suppress.add(call_id)
+            base = call_id or "row%d" % row_id
+            sid = str(row_sid or "")
+            for idx, spawn in enumerate(spawns):
+                # A redriven delegate_claude_agent call reuses its exact
+                # (carrier session, canonical call id) pair, and the
+                # second execution's spawn receipt atomically replaces
+                # the first at the same path: the pair names ONE logical
+                # dispatch. Repeated carriers therefore fold into a
+                # single card that follows the LATEST carrier (its time,
+                # label, model) — the one execution the receipt can ever
+                # point at — instead of multiplying cards that would all
+                # silently retarget to the newest run. Distinct sessions
+                # sharing one call id, independent calls, id-less
+                # carriers and every other delegate tool keep their
+                # per-carrier cards.
+                if call_id and spawn["tool"] == "delegate_claude_agent":
+                    prior = claude_carriers.get((sid, call_id))
+                    if prior is not None:
+                        prior["ts"] = carrier_ts
+                        prior["label"] = clamp_label(spawn["label"])
+                        prior["model"] = spawn.get("model") or ""
+                        continue
+                key = delegate_dom_key(base, idx)
+                # Distinct dispatches sharing one base key (one call id
+                # echoed in two chain sessions, say) must not share a
+                # DOM key: bump the suffix until it is unique.
+                bump = seen_keys.get(key, 0)
+                seen_keys[key] = bump + 1
+                if bump:
+                    key = "%s-%d" % (key, bump)
+                card = {
+                    "key": key,
+                    "call_id": call_id,
+                    "sid": sid,
+                    "ts": carrier_ts,
+                    "tool": spawn["tool"],
+                    "label": clamp_label(spawn["label"]),
+                    "model": spawn.get("model") or "",
+                    "profile": profile,
+                    "child": None,
+                    "delegation": None,
+                    "result_ts": (result_times.get(call_id)
+                                  if call_id else None),
+                }
+                cards.append(card)
+                if call_id and spawn["tool"] == "delegate_claude_agent":
+                    claude_carriers[(sid, call_id)] = card
+
+    # Delegation matching first (the durable dispatch record), one goal
+    # slot per card, only inside the window with agreeing text.
+    for card in cards:
+        matches = []
+        for d in delegations:
+            if abs(d["dispatched"] - card["ts"]) > DELEGATE_MATCH_WINDOW:
+                continue
+            for gi, goal in enumerate(d["goals"]):
+                if not d["claimed"][gi] and \
+                        _goals_agree(goal, card["label"]):
+                    matches.append((d, gi))
+        chosen = {(id(d), gi) for d, gi in matches}
+        if len(chosen) == 1:
+            d, gi = matches[0]
+            d["claimed"][gi] = True
+            card["delegation"] = d
+            if not card["model"] and d["model"]:
+                card["model"] = d["model"]
+
+    # Then direct/linked children: same window (with a small skew for
+    # write ordering), same goal agreement, one-to-one, fail-open.
+    remaining = list(children or [])
+    for card in cards:
+        matches = []
+        for c in remaining:
+            started = c.get("started") or 0
+            try:
+                started = float(started)
+            except (TypeError, ValueError):
+                continue
+            if not (-DELEGATE_MATCH_SKEW
+                    <= started - card["ts"] <= DELEGATE_MATCH_WINDOW):
+                continue
+            if _goals_agree(c.get("label"), card["label"]):
+                matches.append(c)
+        if len(matches) == 1:
+            child = matches[0]
+            remaining.remove(child)
+            card["child"] = child
+            card["profile"] = str(child.get("profile") or profile)
+
+    # Last: the Claude viewer link (exact receipt, fail closed), which
+    # the renderer and the revision key both consume — so a static card
+    # upgrades in place the moment a late receipt lands. One home
+    # lookup serves the whole set.
+    home = profile_home(profile)
+    for card in cards:
+        card["watch_url"] = claude_card_watch_url(home, card)
+        card["state"] = delegate_card_state(card)
+    return {"cards": cards, "suppress": suppress, "children": remaining}
+
+
+def delegate_card_state(card):
+    """One card's truthful state key: the matched child session's own
+    classification when there is one, else the matched delegation's
+    stored state, else the weakest call-lifecycle fact — Running until
+    the (synchronous) call's result row exists, Done once it does."""
+    child = card.get("child")
+    if child is not None:
+        return subagent_state(child.get("ended"), child.get("end_reason"))
+    delegation = card.get("delegation")
+    if delegation is not None:
+        return DELEGATION_STATE_KEYS.get(delegation["state"], "running") \
+            if delegation["state"] else "running"
+    return "done" if card.get("result_ts") is not None else "running"
+
+
+def delegate_dom_key(call_base, idx):
+    """One stable DOM key for a dispatch card: the call id (or carrier
+    row fallback) plus the task index inside its batch, folded to the
+    same safe charset child keys use. Names the row's id, its
+    data-child attribute, the feed item's key and the Next sub-agent
+    anchor's target — one spelling everywhere."""
+    return "delegate-%s-%d" % (
+        CHILD_KEY_UNSAFE_RE.sub("_", str(call_base or "call")), idx)
+
+
+def delegate_revision(card, state):
+    """Everything visible on one dispatch card folded into one cheap
+    string — the page bakes it into data-rev, the feed ships it as rev,
+    so a poll only rebuilds a card whose observable content (state,
+    label, link, model, activity, viewer URL) actually moved. The
+    viewer URL riding here is what upgrades a static Claude card in
+    place exactly once, the moment its receipt appears."""
+    child = card.get("child") or {}
+    return "\N{BULLET}".join((
+        str(card.get("call_id") or ""), state,
+        str(card.get("label") or ""), str(card.get("model") or ""),
+        str(card.get("tool") or ""),
+        str(card.get("watch_url") or ""),
+        str(child.get("id") or ""), str(child.get("profile") or ""),
+        str(child.get("last") or ""),
+        str((card.get("delegation") or {}).get("state") or ""),
+        str(card.get("result_ts") or "")))
 
 
 def summarize_arguments(raw):
@@ -2829,12 +3603,23 @@ def load_feed(profile, session_id, dbs, after, busy_job=False,
             rows.reverse()
             last_id = max([tip] + [r[3] for r in rows])
         subagents = subagents_for(con, profile, chain)
+        # Dispatch cards recompute on every poll from their own bounded
+        # delegate-only queries, independent of the message cursor — a
+        # delta poll whose rows don't include the carrier still
+        # suppresses the carrier's generic result row and still ships
+        # the card (with its current state, and its viewer link the
+        # moment a receipt lands) in the keyed payload.
+        delegate = delegate_cards(con, profile, chain, subagents)
         activity = compute_activity(con, session_id, time.time(),
                                     busy_job, busy_since)
     finally:
         con.close()
-    return {"items": chat_items(chat_messages(rows)), "last_id": last_id,
-            "subagents": subagents, "activity": activity,
+    return {"items": chat_items(chat_messages(
+                rows, suppress=delegate["suppress"])),
+            "last_id": last_id,
+            "subagents": delegate["children"],
+            "delegate_cards": delegate["cards"],
+            "activity": activity,
             "session_state": {
                 "archived": bool(archived),
                 "discord_thread": bool(source == "discord" and thread_id),
@@ -3063,6 +3848,48 @@ def feed_clarify(profile, session_id, dbs, archived):
         return {"active": False, "id": "", "html": ""}
     return {"active": True, "id": card["clarify_id"],
             "html": render_clarify_card(card)}
+
+
+def waiting_session_ids(dbs, profiles):
+    """{profile: set(session ids)} the core says wait on the human.
+
+    ONE bounded GET /api/sessions/waiting per profile per inbox
+    refresh — the batch answer that feeds the Your turn section, so
+    the request count scales with profiles, never with rows. The
+    endpoint is read-only and profile-scoped; it names sessions only,
+    so native gateway waits (a clarify prompt or restart confirmation
+    armed by the gateway itself, not an API run) are included without
+    this server ever seeing their questions.
+
+    Fail closed on every axis: no key, an unreachable core, a non-2xx,
+    or an unparseable/hostile body (a waiting value that is not a list
+    included) simply omits the profile from the map — its rows keep
+    the sections they already had, and no wait is ever invented from a
+    guess."""
+    waits = {}
+    for profile in sorted(profiles):
+        _status, obj, err = core_api_request(
+            "GET", "/api/sessions/waiting", profile, dbs,
+            timeout=WAITING_TIMEOUT_SECONDS)
+        if err is not None or not isinstance(obj, dict):
+            continue
+        raw = obj.get("waiting")
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list):
+            # A non-list waiting value ({"waiting": 1} or true) is
+            # malformed, not an empty wait list: fail closed like any
+            # other hostile body rather than crash iterating it.
+            continue
+        ids = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            sid = item.get("session_id")
+            if isinstance(sid, str) and sid.strip():
+                ids.add(sid.strip())
+        waits[profile] = ids
+    return waits
 
 
 def _discord_wait_turn():
@@ -3960,7 +4787,7 @@ def codex_commentary_text(raw):
     return sanitize_text("\n\n".join(texts))[:CHAT_TEXT_CHARS]
 
 
-def chat_messages(rows):
+def chat_messages(rows, suppress=()):
     """Transcript rows -> renderable messages.
 
     Rows with nothing to show are dropped: the '[SILENT]' marker (same
@@ -3981,6 +4808,13 @@ def chat_messages(rows):
     finish_reason) and the Codex commentary fallback after the display
     fields; display rules ignore the lifecycle ones, and the activity
     snapshot is what actually consumes them.
+
+    `suppress` holds the tool_call ids of delegate dispatches that
+    rendered as inline cards: exactly those generic delegate_* tool
+    result rows drop out here (initial page, full snapshot and delta
+    feed alike), while every unrelated tool row — delegate control
+    calls included, which are never in the set — passes through
+    unchanged.
     """
     out = []
     for row in rows:
@@ -3999,6 +4833,10 @@ def chat_messages(rows):
                 out.append({"kind": "text", "role": role, "ts": ts,
                             "id": row_id, "text": body})
         elif role == "tool":
+            if suppress and tool_name in DELEGATE_SPAWN_NAMES:
+                call_id = row[6] if len(row) > 6 else None
+                if call_id and str(call_id) in suppress:
+                    continue
             # Tool-result details are UI-exposed tool output: the same
             # redaction boundary as argument summaries, applied BEFORE
             # the display slice so a credential can never survive at
@@ -4011,12 +4849,65 @@ def chat_messages(rows):
     return out
 
 
+def merge_children(msgs, children):
+    """The flat chronological message list with one {"kind": "child"}
+    card per sub-agent merged in at that child's dispatch time.
+
+    Merging happens BEFORE tool grouping, on purpose: a child dispatched
+    between two tool rows is its own timeline event — it splits what
+    would otherwise be one collapsed tool group, and several children
+    from one dispatch stay individually addressable rows instead of
+    disappearing into a group. Ordering key is the child's stored
+    sessions.started_at (the chronological dispatch time) against each
+    message's timestamp; the 0/1 tag places a child after the messages
+    of an identical timestamp (a dispatch follows the carrier that
+    triggered it) while the preceding stable sort keeps both input
+    orders (messages by (timestamp, id), children by (started, id)).
+    """
+    if not children:
+        return msgs
+    keyed = [((m["ts"], 0), m) for m in msgs]
+    keyed += [(((c.get("started") or 0), 1), {"kind": "child", "c": c})
+              for c in children]
+    keyed.sort(key=lambda pair: pair[0])
+    return [m for _key, m in keyed]
+
+
+def merge_delegate_cards(msgs, cards):
+    """The message list with one {"kind": "delegate"} item per dispatch
+    card merged in at its call carrier's timestamp — the spawn-shaped
+    delegate tool call is the chronological authority, so the card
+    lands exactly where the carrier sits in the visible timeline (the
+    carrier itself renders nothing when it has no text). The (ts, 1)
+    tag places a card after any same-timestamp message bubble (a
+    carrier WITH text keeps its bubble and the card follows it), and
+    the stable sort keeps a batch's several cards in task order. Runs
+    before tool grouping like merge_children, so a card also splits
+    what would be one collapsed tool group."""
+    if not cards:
+        return msgs
+    # merge_children runs first, so the list may already carry child
+    # items, whose timestamp lives on the child record itself.
+    def item_ts(m):
+        if m["kind"] == "child":
+            return (m["c"].get("started") or 0, 0)
+        return (m.get("ts") or 0, 0)
+    keyed = [(item_ts(m), m) for m in msgs]
+    keyed += [((c["ts"], 1), {"kind": "delegate", "card": c})
+              for c in cards]
+    keyed.sort(key=lambda pair: pair[0])
+    return [m for _key, m in keyed]
+
+
 def chat_items(msgs):
     """Renderable messages -> the final list the page draws.
 
     Every maximal run of consecutive tool messages collapses into ONE
-    {"kind": "tools", "items": [...]} group; text messages pass through
-    unchanged. Grouping runs after chat_messages() has dropped empty
+    {"kind": "tools", "items": [...]} group; text messages and inline
+    child/dispatch cards pass through unchanged (a card between two
+    tool rows therefore splits them into two groups — the merge helpers
+    placed it there on purpose). Grouping runs after chat_messages()
+    has dropped empty
     rows, so tools separated only by an empty assistant carrier merge
     into the same group. The empty case is [] and only []. A group's id
     is its newest row's id (items are chronological), so the feed cursor
@@ -4613,28 +5504,29 @@ body.view-list .main {
   white-space: pre-wrap; word-break: break-word;
 }
 
-/* ---- subagent children (embed) ---------------------------------------- */
-.subagents {
-  margin: 12px 48px 0 72px; padding: 8px 0 6px;
-  background: var(--embed); border-radius: 4px;
-  border-left: 4px solid #4e5058;
+/* ---- inline sub-agent child cards --------------------------------------
+   One slim status card per child, merged into the transcript at the
+   child's dispatch time (not a chat bubble, never inside a tool group):
+   a status dot, the "Sub-agent" tag, the clamped goal label, and the
+   child's own profile/state/activity line — the whole card is a link
+   into the child's own transcript. */
+.subagent-item {
+  display: flex; margin: 6px 48px 2px 72px; min-width: 0;
 }
-.sa-head {
-  margin: 0; padding: 2px 12px 7px;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
-  text-transform: uppercase; color: var(--muted);
+@media (max-width: 900px) {
+  .subagent-item { margin: 6px 12px 2px 64px; }
 }
-.sa-count {
-  margin-left: 4px; font-weight: 600; color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
-}
-.sa-list { list-style: none; margin: 0; padding: 0; display: grid; }
-.sa-link {
+.sa-card {
   display: flex; align-items: flex-start; gap: 9px;
-  padding: 5px 12px; text-decoration: none; color: inherit;
+  width: fit-content; min-width: 240px; max-width: 100%;
+  padding: 6px 12px; text-decoration: none; color: inherit;
+  background: var(--embed); border-radius: 4px;
+  border-left: 4px solid var(--blurple);
 }
-.sa-link:hover { background: rgba(78,80,88,0.30); }
-.sa-link:focus-visible { outline: 2px solid var(--blurple); outline-offset: -2px; }
+.sa-card:hover { background: rgba(78,80,88,0.30); }
+.sa-card:focus-visible {
+  outline: 2px solid var(--blurple); outline-offset: -2px;
+}
 .sa-dot {
   flex: none; width: 8px; height: 8px; border-radius: 50%;
   margin-top: 5px; background: var(--muted);
@@ -4651,6 +5543,11 @@ body.view-list .main {
   70%, 100% { box-shadow: 0 0 0 6px rgba(88,101,242,0); }
 }
 .sa-body { flex: 1; min-width: 0; }
+.sa-tag {
+  display: block; font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--agent-name);
+}
 .sa-label {
   display: -webkit-box; -webkit-box-orient: vertical;
   -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
@@ -4660,6 +5557,62 @@ body.view-list .main {
   display: block; margin-top: 1px; font-size: 11px;
   color: var(--faint); font-variant-numeric: tabular-nums;
 }
+.sa-go {
+  flex: none; align-self: center; font-size: 11px;
+  color: var(--faint); white-space: nowrap;
+}
+.sa-card:hover .sa-go { color: var(--ink-2); }
+
+/* ---- inline delegate dispatch cards ------------------------------------
+   The spawn-shaped delegate tool call rendered as its own embed at the
+   call carrier's position (replacing the generic delegate_* tool row):
+   the same slim card language as inline child rows, but unmistakably a
+   dispatch — a green accent, the exact delegate_* tool name as a mono
+   chip beside the tag, and a tinted body. A card with no safe child
+   route renders identical chrome as a static span (no link, no Open);
+   a Claude card with a validated spawn receipt is the same anchor
+   pointing at the run's live viewer instead, with a Watch chip. */
+.delegate-item {
+  display: flex; margin: 6px 48px 2px 72px; min-width: 0;
+}
+.dlg-card {
+  border-left-color: var(--green);
+  background:
+    linear-gradient(rgba(35,165,90,0.07), rgba(35,165,90,0.07)),
+    var(--embed);
+}
+.dlg-card:hover { background:
+    linear-gradient(rgba(35,165,90,0.10), rgba(35,165,90,0.10)),
+    rgba(78,80,88,0.30); }
+span.dlg-card { cursor: default; }
+.dlg-tool {
+  display: inline-block; margin-left: 4px; padding: 0 5px;
+  border-radius: 3px; background: var(--field);
+  font-family: var(--mono); font-size: 10px; font-weight: 400;
+  letter-spacing: 0; text-transform: none; color: var(--muted);
+  vertical-align: 1px;
+}
+@media (max-width: 900px) {
+  .delegate-item { margin: 6px 12px 2px 64px; }
+}
+
+/* ---- next sub-agent ------------------------------------------------------
+   A floating pill over the composer that steps through the inline
+   child and dispatch cards: next row below the current scroll
+   position, wrapping to the first after the last. Present only while
+   a keyed row exists. */
+.next-subagent {
+  position: absolute; right: 24px;
+  bottom: calc(var(--composer-h) + 12px); z-index: 10;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px; border-radius: 999px;
+  background: var(--green); color: #fff; text-decoration: none;
+  font-size: 12.5px; font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.40);
+}
+.next-subagent:hover { filter: brightness(1.1); }
+.next-subagent:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.next-subagent.is-hidden { display: none; }
 
 /* ---- closed banner ----------------------------------------------------- */
 .closed-banner {
@@ -5203,7 +6156,7 @@ $sidebar
 $session_toggle  </header>
   <div class="scroller" id="scroller">
     <div class="chat-pad" id="chat-pad">
-$closed_banner$subagents
+$closed_banner
 $empty_state
       <ol class="msgs">
 $rows$typing_row$waiting_row      </ol>
@@ -5220,7 +6173,7 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
   <a class="jump-latest" id="jump-latest" href="#latest">
     <span aria-hidden="true">&darr;</span> Jump to latest
   </a>
-</main>
+$next_subagent</main>
 
 <script>$sidebar_js</script>
 <script>
@@ -5254,6 +6207,15 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
   var sendBtn = document.getElementById("composer-send");
   var flash = document.getElementById("composer-flash");
   var emptyState = document.getElementById("empty-state");
+  // The floating child-stepper exists on the server render only when
+  // the page already had children; polling builds it on demand.
+  var nextSub = document.getElementById("next-subagent");
+  // data-child of the row the stepper last targeted. Steps advance
+  // from this key by identity, never by measured scroll position: a
+  // short viewport clamps scrollIntoView at the scroller's maximum,
+  // where a lower row can still sit "below the line" — a position-
+  // based next would reselect that same row forever.
+  var lastSubKey = null;
   var jump = document.getElementById("jump-latest");
   var end = document.getElementById("latest");
   var toggleBtn = document.getElementById("session-toggle");
@@ -5791,27 +6753,190 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
     updateJump();
   }
 
-  // The direct-children section rides every poll: swap it in place so
-  // a child dispatched while the page is open appears without a
-  // reload. It lives above the transcript, so replacing it never moves
-  // the newest message and never touches the typing row or the cursor.
-  function applySubagents(sub) {
-    if (!sub || typeof sub !== "object") return;
-    var html = sub.html || "";
-    var current = document.getElementById("subagents");
-    if (!html) {
-      if (current && current.parentNode) {
-        current.parentNode.removeChild(current);
+  // ---- inline sub-agent children + Next sub-agent -------------------
+  // Child rows and delegate dispatch cards are <li data-child="<key>">
+  // elements inside the message list, each carrying its dispatch time
+  // in data-ts. Every poll ships the full keyed list; reconciliation
+  // diffs it against the DOM by key — independent of the message
+  // cursor, so a card inserts and updates whether or not its parent's
+  // tool-call carrier has landed (and a static Claude card upgrades in
+  // place, no reload, the moment its viewer receipt appears).
+
+  function childRows() {
+    if (!list) return [];
+    return Array.prototype.slice.call(
+      list.querySelectorAll("li[data-child]"));
+  }
+
+  function findChildRow(key) {
+    if (!list) return null;
+    var rows = list.children;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute &&
+          rows[i].getAttribute("data-child") === key) {
+        return rows[i];
       }
+    }
+    return null;
+  }
+
+  // Park a fresh keyed row at the tail, then walk the timeline to its
+  // chronological position: before the first existing row whose data-ts
+  // is newer. Every server-rendered row carries data-ts (text bubbles
+  // their message time, a tool group its oldest row's time, keyed rows
+  // their dispatch time), so a late-discovered dispatch card slots in
+  // before later transcript output that is already on screen. Rows
+  // without data-ts (an optimistic user bubble, the typing/waiting
+  // tails) count as newest, so the card lands above them; one
+  // already-rendered tool group the card's time falls inside is not
+  // split client-side — the next full render shows the true split.
+  function insertChildRow(key, html, ts) {
+    if (!list) return;
+    if (typingRow) typingRow.insertAdjacentHTML("beforebegin", html);
+    else list.insertAdjacentHTML("beforeend", html);
+    var el = findChildRow(key);
+    if (!el) return;
+    var rows = list.children;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r === el || r === typingRow || r === waitingRow) continue;
+      if (!r.hasAttribute || !r.hasAttribute("data-ts")) continue;
+      var rts = parseFloat(r.getAttribute("data-ts"));
+      if (!isNaN(rts) && rts > ts) {
+        list.insertBefore(el, r);
+        return;
+      }
+    }
+  }
+
+  // Full-list reconciliation, keyed by data-child: a missing key
+  // inserts at its chronological spot, a present key whose rev moved
+  // replaces the row in place (state, label, activity, viewer link), a
+  // key the server dropped takes its row away. Nothing can duplicate.
+  function applySubagents(sub) {
+    if (!sub || typeof sub !== "object" || !list) return;
+    var items = sub.items;
+    if (!Array.isArray(items)) return;
+    var seen = {};
+    var changed = false;
+    for (var i = 0; i < items.length; i++) {
+      var c = items[i];
+      if (!c || typeof c !== "object" ||
+          typeof c.key !== "string" || !c.key ||
+          typeof c.html !== "string" || !c.html) continue;
+      seen[c.key] = true;
+      var current = findChildRow(c.key);
+      if (current) {
+        if (current.getAttribute("data-rev") !== String(c.rev || "")) {
+          current.insertAdjacentHTML("beforebegin", c.html);
+          if (current.parentNode) {
+            current.parentNode.removeChild(current);
+          }
+          changed = true;
+        }
+      } else {
+        var ts = parseFloat(c.started);
+        insertChildRow(c.key, c.html, isNaN(ts) ? 0 : ts);
+        changed = true;
+      }
+    }
+    var rows = childRows();
+    for (var r = 0; r < rows.length; r++) {
+      if (!seen[rows[r].getAttribute("data-child")] &&
+          rows[r].parentNode) {
+        rows[r].parentNode.removeChild(rows[r]);
+        changed = true;
+      }
+    }
+    // A stepped row the server dropped ends that sequence cleanly:
+    // the next click restarts from the fallback, never from a key with
+    // no row behind it. (stepNextSub revalidates the key too; this
+    // just keeps the state honest at the reconciliation boundary.)
+    if (lastSubKey && !findChildRow(lastSubKey)) lastSubKey = null;
+    if (changed) updateNextSub();
+  }
+
+  // Build the floating control the moment a first keyed row exists
+  // (the server omits it entirely on pages without children); its
+  // markup is fixed text, so no child-controlled string is ever
+  // interpolated. A poll-built anchor appears AFTER the one-time
+  // startup wiring ran, so it attaches its own stepper here — exactly
+  // once (the early return guards re-entry), mirroring the listener the
+  // server-rendered pill gets at startup; without it the dynamic
+  // control stays a dead href="#" anchor.
+  function ensureNextSub() {
+    if (nextSub || !mainEl) return;
+    var a = document.createElement("a");
+    a.className = "next-subagent";
+    a.id = "next-subagent";
+    a.href = "#";
+    a.innerHTML = '<span aria-hidden="true">&darr;</span> ' +
+                  'Next sub-agent';
+    a.addEventListener("click", stepNextSub);
+    mainEl.appendChild(a);
+    nextSub = a;
+  }
+
+  // The control tracks row existence only — never scroll position.
+  function updateNextSub() {
+    if (!childRows().length) {
+      if (nextSub) nextSub.classList.add("is-hidden");
       return;
     }
-    if (current) {
-      current.insertAdjacentHTML("beforebegin", html);
-      if (current.parentNode) current.parentNode.removeChild(current);
-    } else if (closedBanner) {
-      closedBanner.insertAdjacentHTML("afterend", html);
-    } else if (pad) {
-      pad.insertAdjacentHTML("afterbegin", html);
+    ensureNextSub();
+    if (nextSub) nextSub.classList.remove("is-hidden");
+  }
+
+  function rowTopInScroller(el) {
+    return el.getBoundingClientRect().top -
+           scroller.getBoundingClientRect().top + scroller.scrollTop;
+  }
+
+  // One step: advance from the last stepped row by stable identity
+  // (data-child), wrapping past the last back to the first — identity,
+  // not measured scroll position, because a short viewport clamps
+  // scrollIntoView at the scroller's maximum, where a lower row still
+  // reads as "below the line" and a position-based next would reselect
+  // it forever. Only a first click (or one after the stepped row
+  // vanished from the feed) falls back to geometry, and even then an
+  // exact/near-bottom scroller wraps to the first row instead of
+  // chasing a row it can never scroll up. The anchor's href follows
+  // the target so a follow-up plain navigation (or a no-JS reload of
+  // the same page) keeps pointing somewhere honest.
+  function stepNextSub(e) {
+    if (e) e.preventDefault();
+    var rows = childRows();
+    if (!rows.length || !scroller) return;
+    var target = null;
+    var lastIdx = -1;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute("data-child") === lastSubKey) {
+        lastIdx = i;
+        break;
+      }
+    }
+    if (lastIdx >= 0) {
+      target = rows[(lastIdx + 1) % rows.length];
+    } else {
+      // Exact/near bottom (2px slack for fractional layout): the
+      // scroller sits at its maximum, so no strictly lower row exists.
+      var maxTop = scroller.scrollHeight - scroller.clientHeight;
+      if (scroller.scrollTop < maxTop - 2) {
+        var line = scroller.scrollTop + 8;
+        for (var j = 0; j < rows.length; j++) {
+          if (rowTopInScroller(rows[j]) > line) { target = rows[j]; break; }
+        }
+      }
+      if (!target) target = rows[0];
+    }
+    lastSubKey = target.getAttribute("data-child") || null;
+    if (nextSub && target.id) {
+      nextSub.setAttribute("href", "#" + target.id);
+    }
+    try {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      scroller.scrollTop = rowTopInScroller(target);
     }
   }
 
@@ -6177,12 +7302,15 @@ $clarify_card  <form class="composer" id="composer" autocomplete="off">
       updateJump();
     });
   }
+  if (nextSub) nextSub.addEventListener("click", stepNextSub);
 
-  // Land near the newest message, then sync the button with reality.
+  // Land near the newest message, then sync the button — and the child
+  // stepper — with whatever the server already rendered.
   if (scroller) scroller.scrollTop = scroller.scrollHeight;
   autosize();
   syncComposerVar();
   updateJump();
+  updateNextSub();
   setTyping();
   setWaiting();
   applySessionState({ archived: archived });
@@ -6637,7 +7765,7 @@ def render_conv_sections(now, rows, selected=None):
     sections = []
     for key in SECTION_ORDER:
         items = buckets[key]
-        if key in ("incomplete", "closed") and not items:
+        if key in ("your_turn", "incomplete", "closed") and not items:
             continue
         dot = ('<span class="sec-dot" aria-hidden="true"></span>'
                if key == "active" else "")
@@ -6852,16 +7980,22 @@ def render_tool_group(tools):
             % (esc(t["tool"]), esc(fmt_time(t["ts"])),
                esc(fmt_short(t["ts"])), detail))
 
+    # data-ts anchors the group at its OLDEST row's time — the position
+    # the run occupies in the flat timeline — so a late-discovered
+    # dispatch card can be placed against it during feed reconciliation;
+    # a card whose time falls inside the span is not split client-side
+    # (the next full render shows the true split).
     return (
-        '<li class="tool-group" data-first-id="%d"><details class="tg">'
+        '<li class="tool-group" data-first-id="%d" data-ts="%.3f">'
+        '<details class="tg">'
         '<summary class="tg-sum">'
         '<span class="tg-count">%s</span>'
         '<span class="tg-chips">%s</span>'
         '<span class="tg-when" title="%s">%s</span>'
         '</summary><ol class="tg-list">%s</ol>'
         '</details></li>\n'
-        % (tools[0]["id"], esc(label), "".join(chips), esc(span_full),
-           esc(span), "".join(rows)))
+        % (tools[0]["id"], tools[0]["ts"], esc(label), "".join(chips),
+           esc(span_full), esc(span), "".join(rows)))
 
 
 def render_chat_text(it, cont="", identity=None):
@@ -6896,24 +8030,28 @@ def render_chat_text(it, cont="", identity=None):
         # Continuation: no avatar, no author — a small timestamp in the
         # gutter, revealed while the row is hovered (CSS).
         return (
-            '<li class="msg %s%s">'
+            '<li class="msg %s%s" data-ts="%.3f">'
             '<span class="msg-gutter">'
             '<span class="mtime" title="%s">%s</span></span>'
             '<div class="msg-body"><p class="text">%s</p></div></li>\n'
-            % (side, cont, esc(fmt_time(it["ts"])),
+            % (side, cont, it["ts"], esc(fmt_time(it["ts"])),
                esc(fmt_hhmm(it["ts"])), esc(it["text"])))
     # Letter badge with the optional avatar image layered on top; when
     # the file is missing the img never renders, and when it fails
     # mid-load the error listener hides it — the letter always shows.
+    # data-ts is the row's message time on both shapes: the client-side
+    # dispatch-card reconciliation places a late-discovered card against
+    # it (rows without data-ts — the optimistic bubble, the typing and
+    # waiting tails — still count as newest).
     return (
-        '<li class="msg %s">'
+        '<li class="msg %s" data-ts="%.3f">'
         '<span class="avatar" title="%s">'
         '<span aria-hidden="true">%s</span>%s</span>'
         '<div class="msg-body">'
         '<div class="msg-head"><span class="msg-author">%s</span>'
         '<span class="mtime" title="%s">%s</span></div>'
         '<p class="text">%s</p></div></li>\n'
-        % (side, esc(av_title),
+        % (side, it["ts"], esc(av_title),
            esc(av_letter), av_img, esc(author), esc(fmt_time(it["ts"])),
            esc(fmt_short(it["ts"])), esc(it["text"])))
 
@@ -6960,52 +8098,298 @@ def subagent_state(ended_at, end_reason):
     return "ended"
 
 
-def render_subagents(now, profile, children):
-    """The direct-children section for a conversation page ("" when
-    there are none, so the page carries no trace of it).
+# Folded to a safe id/key charset: profile and session ids are already
+# [A-Za-z0-9_.-] by the route and DB, but the key is also baked into
+# HTML id attributes and data- keys, so anything stranger is folded
+# rather than trusted.
+CHILD_KEY_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 
-    A nested task list inside the chat — not chat bubbles, not an ops
-    table: one slim clickable row per child with a status dot, the goal
-    label clamped to two lines, and the child's profile identity, end
-    state and relative last-activity time. Every child carries its own
-    profile, so a cross-profile child links into its own profile's DB
-    and names its own persona — the parent's profile is only the
-    fallback. The feed ships this exact markup on every poll, which is
-    how an open page discovers newly dispatched children."""
+
+def child_dom_key(profile, sid):
+    """One stable DOM key for a child row: "<profile>-<session id>"
+    with unsafe characters folded to "_". Names the row's id ("sa-<key>")
+    and data-child attribute on the page, the feed item's key, and the
+    Next sub-agent anchor's target — one spelling everywhere."""
+    return "%s-%s" % (
+        CHILD_KEY_UNSAFE_RE.sub("_", str(profile or "profile")),
+        CHILD_KEY_UNSAFE_RE.sub("_", str(sid or "session")))
+
+
+def child_revision(c, state):
+    """Everything visible on one child row, folded into one cheap
+    string. The page bakes it into data-rev and the feed ships it as
+    rev, so a poll only rebuilds a row whose observable content (state,
+    label, profile, activity, end reason) actually moved — the relative
+    last-activity time rides along through `last`, whose bucket changes
+    exactly when the rendered words do."""
+    return "\N{BULLET}".join((
+        str(c.get("id") or ""), str(c.get("profile") or ""), state,
+        str(c.get("label") or ""), str(c.get("last") or ""),
+        str(c.get("end_reason") or "")))
+
+
+def render_child_item(now, parent_profile, c):
+    """One child -> its inline timeline <li>: a slim Discord-style
+    status card that sits in the transcript at the child's dispatch
+    time, not a chat bubble and not part of any tool group.
+
+    The card is one clickable link carrying the status dot, a "Sub-agent"
+    tag, the goal label clamped hard, and the child's own profile
+    identity, end state and relative last-activity time; it opens the
+    child's own transcript (/s/<child profile>/<child id>). data-ts is
+    the stored dispatch time (merge_children sorted on it), data-child
+    the reconciliation key the feed polls diff on, and data-rev the
+    cheap change detector. Every child-controlled string — label, ids,
+    end reason — is html.escape()d here, the one place the row is
+    built; malformed child dicts degrade to their id and never raise."""
     esc = html.escape
-    if not children:
-        return ""  # nothing at all — no heading, no empty box
-    rows = []
-    for c in children:
-        state = subagent_state(c["ended"], c["end_reason"])
-        label = str(c["label"] or c["id"])
-        cprofile = c.get("profile") or profile
-        ident = profile_identity(cprofile)
-        url = "/s/%s/%s" % (quote(cprofile, safe=""),
-                            quote(str(c["id"]), safe=""))
-        tip = str(c["id"])
-        if c["end_reason"]:
-            tip = "%s \N{BULLET} ended: %s" % (tip, c["end_reason"])
-        meta = "%s \N{BULLET} %s" % (ident["label"],
-                                     SUBAGENT_STATE_LABELS[state])
-        if c["last"]:
-            meta = "%s \N{BULLET} %s" % (meta, fmt_rel(now, c["last"]))
-        rows.append(
-            '<li class="sa-item">'
-            '<a class="sa-link" href="%s" title="%s">'
-            '<span class="sa-dot sa-%s" aria-hidden="true"></span>'
-            '<span class="sa-body">'
-            '<span class="sa-label">%s</span>'
-            '<span class="sa-meta">%s</span>'
-            '</span></a></li>\n'
-            % (esc(url), esc(tip), state, esc(label), esc(meta)))
+    state = subagent_state(c.get("ended"), c.get("end_reason"))
+    sid = str(c.get("id") or "")
+    label = clamp_label(str(c.get("label") or sid or "sub-agent"))
+    cprofile = str(c.get("profile") or parent_profile or "default")
+    ident = profile_identity(cprofile)
+    url = "/s/%s/%s" % (quote(cprofile, safe=""), quote(sid, safe=""))
+    key = child_dom_key(cprofile, sid)
+    tip = sid
+    reason = str(c.get("end_reason") or "").strip()
+    if reason:
+        tip = "%s \N{BULLET} ended: %s" % (
+            tip, reason[:SUBAGENT_LABEL_CHARS])
+    meta = "%s \N{BULLET} %s" % (ident["label"],
+                                 SUBAGENT_STATE_LABELS[state])
+    last = c.get("last")
+    if last:
+        try:
+            meta = "%s \N{BULLET} %s" % (meta, fmt_rel(now, float(last)))
+        except (TypeError, ValueError):
+            pass
+    try:
+        ts = float(c.get("started") or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
     return (
-        '<section class="subagents" id="subagents">\n'
-        '  <h2 class="sa-head">Sub-agents'
-        ' <span class="sa-count">%d</span></h2>\n'
-        '  <ul class="sa-list">\n%s  </ul>\n'
-        '</section>\n'
-        % (len(children), "".join(rows)))
+        '<li class="msg subagent-item" id="sa-%s" data-child="%s"'
+        ' data-ts="%.3f" data-state="%s" data-rev="%s">'
+        '<a class="sa-card" href="%s" title="%s">'
+        '<span class="sa-dot sa-%s" aria-hidden="true"></span>'
+        '<span class="sa-body">'
+        '<span class="sa-tag">Sub-agent</span>'
+        '<span class="sa-label">%s</span>'
+        '<span class="sa-meta">%s</span>'
+        '</span><span class="sa-go" aria-hidden="true">Open</span>'
+        '</a></li>\n'
+        % (esc(key), esc(key), ts, esc(state),
+           esc(child_revision(c, state)),
+           esc(url), esc(tip), state, esc(label), esc(meta)))
+
+
+def child_feed_payload(now, parent_profile, children, cards=None):
+    """The per-child object every /feed poll carries:
+    {count, ids, items} where each item is {key, id, profile, started,
+    state, rev, html} — key (the row's data-child) is the
+    reconciliation key, started places a brand-new child at its
+    chronological position, state and rev let an existing row update in
+    place exactly once per real change, and html is the exact
+    server-rendered <li> the page itself uses. Children ride every poll
+    as a full list (never a delta over the message cursor), so a client
+    reconciles by key whether or not the parent's tool-call carrier has
+    landed — and a malformed child row is skipped, never fatal.
+
+    Dispatch cards (the `cards` argument) append to the same list in
+    the same shape: one keyed identity space covers both inline child
+    rows and delegate dispatch cards, so the client's single
+    reconciliation path — and the Next sub-agent stepper — handles both
+    without knowing the difference."""
+    items = []
+    for c in children or []:
+        if not isinstance(c, dict):
+            continue
+        try:
+            sid = str(c.get("id") or "")
+            if not sid:
+                continue
+            cprofile = str(c.get("profile") or parent_profile or "default")
+            started = float(c.get("started") or 0)
+            state = subagent_state(c.get("ended"), c.get("end_reason"))
+        except (TypeError, ValueError):
+            continue
+        items.append({
+            "key": child_dom_key(cprofile, sid),
+            "id": sid,
+            "profile": cprofile,
+            "started": started,
+            "state": state,
+            "rev": child_revision(c, state),
+            "html": render_child_item(now, parent_profile, c),
+        })
+    items.extend(delegate_feed_items(now, parent_profile, cards))
+    return {"count": len(items), "ids": [i["id"] for i in items],
+            "items": items}
+
+
+def render_delegate_card(now, parent_profile, card):
+    """One dispatch card -> its inline timeline <li>: a Discord-style
+    embed at the delegate call carrier's position, where the generic
+    delegate_* tool row used to be — a status dot, a "Sub-agent
+    dispatch" tag with the exact tool name as a mono chip, the clamped
+    goal label, and a meta line (owning profile, agent kind, model when
+    known, state, relative activity).
+
+    A delegate_claude_agent card with a validated spawn receipt is the
+    whole-card anchor to that exact run's live Claude viewer page
+    (target=_blank — the viewer is another surface, not a transcript
+    route), and the viewer link takes PRECEDENCE over any child link:
+    it is the one route that shows the run itself, it exists even while
+    the tool result row is still absent, and it stays equally valid
+    after the run completes. Otherwise, when the dispatch matched a
+    real child session, the card is a link into that child's own
+    transcript (the URL is built from the matched child's validated
+    profile/id only — never from payload text); with no safe route at
+    all the card renders the same truthful embed as a plain span, with
+    no href and no Open affordance. data-child is the reconciliation
+    key the feed polls diff on (shared with inline child rows, so Next
+    sub-agent steps through both by one identity space), data-ts the
+    carrier time merge_delegate_cards sorted on, data-rev the cheap
+    change detector — the page and every /feed poll build this exact
+    markup through this one function, so a static card upgrades in
+    place the moment its receipt appears and never duplicates. Every
+    payload-controlled string is html.escape()d here, the one place the
+    row is built; malformed cards degrade to a generic label and never
+    raise."""
+    esc = html.escape
+    state = str(card.get("state") or "running")
+    if state not in SUBAGENT_STATE_LABELS:
+        state = "running"
+    key = str(card.get("key") or delegate_dom_key("call", 0))
+    tool = str(card.get("tool") or "delegate_agent")
+    tool_label = DELEGATE_TOOL_LABELS.get(tool, "Sub-agent")
+    label = clamp_label(str(card.get("label") or "")) \
+        or "Sub-agent dispatch"
+    cprofile = str(card.get("profile") or parent_profile or "default")
+    ident = profile_identity(cprofile)
+    meta = "%s \N{BULLET} %s" % (ident["label"], tool_label)
+    model = str(card.get("model") or "").strip()
+    if model:
+        meta = "%s \N{BULLET} %s" % (meta, model[:SUBAGENT_LABEL_CHARS])
+    meta = "%s \N{BULLET} %s" % (meta, SUBAGENT_STATE_LABELS[state])
+    child = card.get("child")
+    last = child.get("last") if isinstance(child, dict) else None
+    if not last and isinstance(card.get("delegation"), dict):
+        d = card["delegation"]
+        last = d.get("completed") or d.get("dispatched")
+    if not last:
+        last = card.get("result_ts")
+    if last:
+        try:
+            meta = "%s \N{BULLET} %s" % (meta, fmt_rel(now, float(last)))
+        except (TypeError, ValueError):
+            pass
+    try:
+        ts = float(card.get("ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    # The viewer URL only ever arrives here through the data layer's
+    # validated receipt lookup (claude_card_watch_url); the scheme
+    # re-check is belt-and-braces so a future caller cannot turn a
+    # relative or javascript: string into a link.
+    watch = str(card.get("watch_url") or "")
+    if not watch.lower().startswith(("http://", "https://")):
+        watch = ""
+    tip = tool
+    if isinstance(child, dict) and child.get("id"):
+        tip = "%s \N{BULLET} %s" % (tool, str(child.get("id")))
+    rev = delegate_revision(card, state)
+    head = (
+        '<li class="msg delegate-item" id="sa-%s" data-child="%s"'
+        ' data-ts="%.3f" data-state="%s" data-rev="%s">'
+        % (esc(key), esc(key), ts, esc(state), esc(rev)))
+    body = (
+        '<span class="sa-dot sa-%s" aria-hidden="true"></span>'
+        '<span class="sa-body">'
+        '<span class="sa-tag">Sub-agent dispatch'
+        ' <span class="dlg-tool">%s</span></span>'
+        '<span class="sa-label">%s</span>'
+        '<span class="sa-meta">%s</span>'
+        '</span>' % (state, esc(tool), esc(label), esc(meta)))
+    if watch:
+        return ('%s<a class="sa-card dlg-card" href="%s"'
+                ' target="_blank" rel="noopener"'
+                ' title="Watch this run in the Claude live viewer">'
+                '%s<span class="sa-go" aria-hidden="true">Watch</span>'
+                '</a></li>\n'
+                % (head, esc(watch), body))
+    if isinstance(child, dict) and child.get("id"):
+        url = "/s/%s/%s" % (quote(cprofile, safe=""),
+                            quote(str(child.get("id")), safe=""))
+        return ('%s<a class="sa-card dlg-card" href="%s" title="%s">'
+                '%s<span class="sa-go" aria-hidden="true">Open</span>'
+                '</a></li>\n'
+                % (head, esc(url), esc(tip), body))
+    return ('%s<span class="sa-card dlg-card dlg-static" title="%s">'
+            '%s</span></li>\n' % (head, esc(tip), body))
+
+
+def delegate_feed_items(now, parent_profile, cards):
+    """The dispatch-card half of the keyed /feed payload: one item per
+    card, same {key, id, profile, started, state, rev, html} shape the
+    child items carry, so the client reconciles both kinds through the
+    one keyed path — insert at the carrier's chronological spot, update
+    a state change in place by rev, never duplicate. started is the
+    carrier time (the chronological authority), id the linked child's
+    session id or the call id otherwise. A malformed card is skipped,
+    never fatal."""
+    items = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        try:
+            key = str(card.get("key") or "")
+            if not key:
+                continue
+            started = float(card.get("ts") or 0)
+            state = str(card.get("state") or "running")
+        except (TypeError, ValueError):
+            continue
+        child = card.get("child")
+        items.append({
+            "key": key,
+            "id": (str(child.get("id"))
+                   if isinstance(child, dict) and child.get("id")
+                   else str(card.get("call_id") or key)),
+            "profile": str(card.get("profile")
+                           or parent_profile or "default"),
+            "started": started,
+            "state": state,
+            "rev": delegate_revision(card, state),
+            "html": render_delegate_card(now, parent_profile, card),
+        })
+    return items
+
+
+def next_subagent_control(first_child, parent_profile):
+    """The floating "Next sub-agent" pill as server-rendered HTML for a
+    page whose first inline child is `first_child` — a plain anchor to
+    that child's row, so it navigates even with JavaScript off. The
+    client re-points the anchor on every jump (and builds the pill
+    itself when the first child arrives through polling instead of the
+    initial render)."""
+    cprofile = str((first_child or {}).get("profile")
+                   or parent_profile or "default")
+    sid = str((first_child or {}).get("id") or "")
+    return next_subagent_pill(child_dom_key(cprofile, sid))
+
+
+def next_subagent_pill(dom_key):
+    """The pill anchored at an already-computed row key — used when the
+    timeline's first keyed row is a dispatch card rather than a
+    standalone child. The key is server-folded to the safe id charset
+    before it ever reaches an attribute."""
+    safe = CHILD_KEY_UNSAFE_RE.sub("_", str(dom_key or ""))
+    return (
+        '<a class="next-subagent" id="next-subagent" href="#sa-%s">'
+        '<span aria-hidden="true">&darr;</span> Next sub-agent\n'
+        '  </a>\n'
+        % html.escape(safe))
 
 
 def render_activity(act):
@@ -7063,13 +8447,30 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
     shows, with this session selected.
     """
     esc = html.escape
-    items = chat_items(chat_messages(chat["rows"]))
+    now = time.time()
+    # Children merge into the flat chronological list first, then each
+    # delegate dispatch card at its call carrier's own position, so tool
+    # grouping runs AROUND both: either one dispatched between two tool
+    # rows splits what would be one collapsed group. The generic
+    # delegate result rows a card replaces are already gone (the
+    # suppress set came out of the same delegate pass that matched the
+    # cards), and a child a card absorbed is not in `children` — it
+    # renders AS the card, never as a second standalone row.
+    children = chat.get("subagents") or []
+    cards = chat.get("delegate_cards") or []
+    items = chat_items(merge_delegate_cards(
+        merge_children(
+            chat_messages(chat["rows"],
+                          suppress=chat.get("delegate_suppress") or ()),
+            children),
+        cards))
     # The owning profile's identity drives the header pill label, every
     # agent bubble's badge and the typing row — user bubbles stay You.
     ident = profile_identity(chat["profile"])
 
     parts = []
     prev_side = None
+    first_keyed = None
     for it in items:
         if it["kind"] == "text":
             side = "from-user" if it["role"] == "user" else "from-agent"
@@ -7077,6 +8478,22 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
             cont = " cont" if side == prev_side else ""
             prev_side = side
             parts.append(render_chat_text(it, cont, ident))
+        elif it["kind"] == "child":
+            # an inline child is neither sender: it breaks a run, so the
+            # next bubble shows its full header again
+            prev_side = None
+            if first_keyed is None:
+                first_keyed = child_dom_key(
+                    str(it["c"].get("profile") or chat["profile"]),
+                    str(it["c"].get("id") or ""))
+            parts.append(render_child_item(now, chat["profile"], it["c"]))
+        elif it["kind"] == "delegate":
+            # a dispatch card breaks a sender run the same way
+            prev_side = None
+            if first_keyed is None:
+                first_keyed = str(it["card"].get("key") or "")
+            parts.append(
+                render_delegate_card(now, chat["profile"], it["card"]))
         else:
             prev_side = None
             parts.append(render_tool_group(it["items"]))
@@ -7085,7 +8502,6 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         fmt_short(chat["last"])
     when_full = fmt_time(chat["started"]) + " \N{EN DASH} " + \
         fmt_time(chat["last"])
-    now = time.time()
 
     # Close/Reopen chrome: one compact header button (its data-action
     # and label mirror the current state; the client flips them via
@@ -7145,10 +8561,14 @@ def render_chat(chat, inbox_rows=None, inbox_notes=None):
         closed_banner=closed_banner,
         archived_state="1" if archived else "0",
         composer_disabled=" disabled" if (archived or card_active) else "",
-        # Direct subagent children sit just under the header; ""
-        # (nothing at all) when the session has none.
-        subagents=render_subagents(now, chat["profile"],
-                                   chat["subagents"]),
+        # The floating Next sub-agent control exists only on a page
+        # that already has inline child rows or dispatch cards (a page
+        # with neither must show nothing); with JavaScript off it is a
+        # plain anchor to the first keyed timeline row (child or card,
+        # whichever the transcript reaches first), and the client
+        # builds it on demand the moment polling delivers one.
+        next_subagent=(
+            next_subagent_pill(first_keyed) if first_keyed else ""),
         # The live strip is part of the initial render (the same
         # snapshot the feed recomputes); "" when the turn has nothing
         # truthful to show.
@@ -7229,7 +8649,7 @@ def render_new(inbox_rows=None, inbox_notes=None):
         closed_banner="",
         archived_state="0",
         composer_disabled="",
-        subagents="",
+        next_subagent="",
         # No session yet: no live strip either (and no typing row) — a
         # blank chat must never look like something is running.
         live_activity="",
@@ -7490,6 +8910,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 rows, notes = load_sessions(now)
                 mark_job_states(rows)  # replies running here are Active
+                # waiting on the human, not us: one bounded batch call
+                # per profile, never a probe per session
+                mark_your_turn(rows, waiting_session_ids(
+                    {name: db_path for db_path, name in discover_dbs()},
+                    {r["profile"] for r in rows}))
                 body = render(now, rows, notes, prof).encode("utf-8")
             except Exception as exc:  # keep the server alive no matter what
                 self._send_page(500, error_page(exc).encode("utf-8"))
@@ -7591,6 +9016,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             rows, notes = load_sessions(time.time())
             mark_job_states(rows)
+            mark_your_turn(rows, waiting_session_ids(
+                {name: db_path for db_path, name in discover_dbs()},
+                {r["profile"] for r in rows}))
             return rows, notes
         except Exception:
             return [], []
@@ -7670,17 +9098,17 @@ class Handler(BaseHTTPRequestHandler):
                 "names": list(act.get("names", [])),
                 "html": render_activity(act),
             },
-            # Direct subagent children, re-rendered on every poll so an
-            # open page discovers newly dispatched children without a
-            # reload. Backwards-compatible addition: older clients just
-            # ignore it. ids carry the structured state; html is the
-            # exact section markup the page renders ("" when none).
-            "subagents": {
-                "count": len(feed["subagents"]),
-                "ids": [c["id"] for c in feed["subagents"]],
-                "html": render_subagents(time.time(), profile,
-                                         feed["subagents"]),
-            },
+            # Inline child rows and delegate dispatch cards, re-rendered
+            # on every poll as one keyed list ({count, ids, items}) so
+            # an open page discovers newly dispatched work — and a
+            # static Claude card's viewer link — without a reload.
+            # Backwards-compatible addition: older clients just ignore
+            # it. Each item's html is the exact <li> markup the page
+            # renders through the same renderers, key/rev drive the
+            # in-place reconciliation.
+            "subagents": child_feed_payload(
+                time.time(), profile, feed["subagents"],
+                feed.get("delegate_cards")),
             # The session's archive state rides every poll, so a Discord
             # archive/unarchive (mirrored by the sync) disables/enables
             # the composer and flips the toggle on an open page without a
