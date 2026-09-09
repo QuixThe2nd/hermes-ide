@@ -43,36 +43,6 @@ logger = logging.getLogger(__name__)
 HEALTH_WAIT_TIMEOUT_SEC = 8.0
 
 
-def reconcile_proxy_on_plugin_load() -> None:
-    """``register()``/plugin-load entry point for non-gateway processes.
-
-    ``discover_plugins()`` (which calls this plugin's ``register()``) runs
-    before ``main()`` constructs any provider client, but ``on_gateway_start``
-    only fires when a gateway actually starts — a plain ``hermes chat`` never
-    starts one, so without this call the CLI would build its SDK clients with
-    routing off and its traffic would stay unmetered. Enabled profiles
-    therefore reconcile here; the gateway hook re-runs the same idempotent
-    lifecycle at gateway start.
-
-    Disabled profiles are left entirely alone: no systemd calls and no
-    routing changes (standing them down remains the gateway hook's and the
-    disabled-management module's job). Never raises — a broken reconcile
-    must not fail plugin load.
-    """
-    try:
-        if plugin_explicitly_disabled():
-            return
-        if not load_llm_usage_proxy_config().get("enabled", False):
-            return
-        reconcile_proxy_on_load()
-    except Exception:
-        logger.warning(
-            "llm_usage_proxy plugin-load reconcile failed; provider traffic"
-            " stays direct and unmetered",
-            exc_info=True,
-        )
-
-
 def reconcile_proxy_on_load(
     *,
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
