@@ -27,6 +27,7 @@ Discord applied it cannot lose the restore.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import threading
@@ -309,6 +310,27 @@ def _submit_to_loop(coro: Any, loop: Any) -> tuple[Any, Optional[Exception]]:
         return None, exc
 
 
+def _describe_send_exception(exc: BaseException) -> str:
+    """Non-empty, self-explanatory detail for a prompt-delivery failure.
+
+    ``concurrent.futures.TimeoutError`` (what ``future.result(timeout=...)``
+    raises on the ambiguous path) stringifies to ``""``, which used to render
+    "Failed to deliver the restart confirmation prompt: " — a truncated
+    non-explanation. Any blank-str exception gets its class name plus enough
+    context to act on; the timeout specifically says what timed out and how
+    long we waited.
+    """
+    text = str(exc).strip()
+    if text:
+        return text
+    if isinstance(exc, concurrent.futures.TimeoutError):
+        return (
+            f"no delivery result within {_BEGIN_RESTART_TIMEOUT_S:.0f}s "
+            "(timed out; the prompt may or may not have posted)"
+        )
+    return f"{type(exc).__name__} (no detail provided)"
+
+
 def _deliver_confirm_prompt(
     adapter: Any,
     loop: Any,
@@ -356,7 +378,10 @@ def _deliver_confirm_prompt(
         # clarify — never assume the message did not land, so no duplicate
         # plain fallback. The caller cancels and disarms the registration.
         send_future.cancel()
-        return f"Failed to deliver the restart confirmation prompt: {exc}"
+        return (
+            "Failed to deliver the restart confirmation prompt: "
+            f"{_describe_send_exception(exc)}"
+        )
     if send_result is None or getattr(send_result, "success", True) is not False:
         return None
 
@@ -377,7 +402,10 @@ def _deliver_confirm_prompt(
         fallback_result = fallback_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:
         fallback_future.cancel()
-        return f"Failed to deliver the restart confirmation prompt: {exc}"
+        return (
+            "Failed to deliver the restart confirmation prompt: "
+            f"{_describe_send_exception(exc)}"
+        )
     if (
         fallback_result is not None
         and getattr(fallback_result, "success", True) is False
@@ -502,6 +530,58 @@ def _restore_thread_title(adapter: Any, loop: Any, restore: Any) -> None:
         )
 
 
+def _record_cancelled_restart_notice(
+    runner: Any,
+    source: Any,
+    adapter: Any,
+    session_key: str,
+    deliver_error: str,
+) -> None:
+    """Retain the cancellation explanation for delivery after reconnection.
+
+    The prompt send failed, so the confirmation is cancelled and disarmed —
+    the restart is NOT happening. But the requester asked for a restart and
+    would otherwise see nothing at all: the tool result explaining the
+    cancellation travels back through the agent's final response, which the
+    same dead transport may also drop. Recording the explanation as a
+    durable notice (its own ``restart`` rail, redacted by the gateway)
+    means the reconnect/crash recovery lifecycle delivers a meaningful
+    non-empty explanation once messaging is reachable again.
+
+    The recorded text is deliberately an EXPLANATION, never the confirmation
+    prompt itself: replaying it can never resurrect a pending clarification
+    or look like an actionable restart request. Best-effort and never
+    raises; failure just means the explanation lives only in the tool
+    result and logs.
+    """
+    detail = str(deliver_error or "").strip() or "delivery failed with no detail"
+    record = getattr(runner, "_record_recoverable_notice", None)
+    if source is None or not callable(record):
+        return
+    try:
+        recorded = record(
+            source=source,
+            adapter=adapter,
+            content=(
+                "⚠️ Gateway restart was NOT started: the confirmation prompt "
+                f"could not be delivered ({detail}). No restart is pending — "
+                "request it again once messaging is reachable."
+            ),
+            status_key="restart",
+            session_key=session_key,
+        )
+        if recorded:
+            logger.info(
+                "restart tool: cancellation explanation retained for "
+                "post-reconnect delivery"
+            )
+    except Exception:
+        logger.debug(
+            "restart tool: failed to retain cancellation explanation",
+            exc_info=True,
+        )
+
+
 def _confirm_restart_with_requester(
     runner: Any,
     loop: Any,
@@ -581,6 +661,9 @@ def _confirm_restart_with_requester(
         )
         if deliver_error is not None:
             _drop_pending_confirm(clarify_gateway, clarify_id)
+            _record_cancelled_restart_notice(
+                runner, source, adapter, session_key, deliver_error
+            )
             return deliver_error
 
         response = clarify_gateway.wait_for_response(clarify_id, 0)
