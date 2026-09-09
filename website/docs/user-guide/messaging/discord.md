@@ -592,6 +592,12 @@ display:
       reasoning_style: subtext   # code | blockquote | subtext | compact
 ```
 
+#### `display.long_running_notifications`
+
+**Type:** boolean|string — **Default (Discord):** `"generic"` — **Values:** `true`, `false`, `"generic"`
+
+Discord heartbeats are clean by default: during a long turn the bubble reads exactly `⏳ still working` — no elapsed time, iteration counter, or provider wait diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line (`⏳ Working — 3 min — iteration 1/256, …`), or `false` to turn heartbeats off. The phrase itself comes from the [status-phrase catalog](/user-guide/messaging#configurable-status-phrases), so you can also customize it via `display.status_phrases`.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:

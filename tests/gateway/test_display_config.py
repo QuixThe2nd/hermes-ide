@@ -155,9 +155,12 @@ class TestPlatformDefaults:
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
         assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
-        # Discord keeps all of these on (desktop-first, more vertical space).
+        # Discord keeps interim commentary and busy-ack detail on
+        # (desktop-first, more vertical space), but its long-running
+        # heartbeat defaults to the clean generic phrase ("⏳ still working")
+        # rather than the raw diagnostic join.
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
-        assert resolve_display_setting({}, "discord", "long_running_notifications") is True
+        assert resolve_display_setting({}, "discord", "long_running_notifications") == "generic"
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
 
     def test_slack_workspace_chatter_defaults(self):
