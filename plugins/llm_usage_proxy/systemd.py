@@ -370,10 +370,10 @@ def reconcile_service(
 
     # Probed only once we know systemd is real: an unsupported platform does
     # no socket work at all. Identity+routes are part of the probe so a
-    # foreign or stale listener is never mistaken for ours.
+    # foreign or stale listener is never mistaken for ours. The probe binds
+    # loopback by default — this service never listens anywhere else.
     port_state = probe_port_state(
         int(cfg.get("port") or DEFAULT_PORT),
-        bind=BIND_HOST,
         expect_identity=identity,
         expect_routes=routes,
     )

@@ -921,3 +921,154 @@ def test_single_oversized_line_still_abandons():
     scanner.finish()
     assert scanner._sse.abandoned
     assert scanner.usage is None
+
+
+# ── 11. Managed-service reconcile crosses the real port probe ────────────────
+#
+# Regression: reconcile_service used to call probe_port_state with an
+# unsupported ``bind=`` keyword, so `llm_usage_proxy enable/disable` died with
+# TypeError before installing anything. These tests drive reconcile_service
+# into the REAL probe (sockets + HTTP, no probe mock) on both control paths;
+# only systemctl and the install scope are faked, inside a temp HERMES_HOME.
+
+
+def _free_loopback_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
+
+
+class _FakeSystemctl:
+    """Records systemctl argv and answers state queries from a tiny model."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+        self.enabled = False
+        self.active = False
+
+    def __call__(self, args):
+        argv = [str(part) for part in args]
+        self.calls.append(argv)
+        tail = [part for part in argv if part not in ("systemctl", "--user")]
+        action = tail[0] if tail else ""
+        if action == "is-enabled":
+            return (0, "enabled\n", "") if self.enabled else (3, "disabled\n", "")
+        if action == "is-active":
+            return (0, "active\n", "") if self.active else (3, "inactive\n", "")
+        if action == "enable":
+            self.enabled = True
+            if "--now" in argv:
+                self.active = True
+        elif action == "disable":
+            self.enabled = False
+        elif action == "stop":
+            self.active = False
+        elif action == "restart":
+            self.active = True
+        return (0, "", "")
+
+
+@pytest.fixture
+def reconcile_harness(hermes_home, tmp_path, monkeypatch):
+    """reconcile_service with real probe, fake systemctl, temp unit dir.
+
+    Route discovery's credential-pool read is pinned to empty so a developer
+    machine's real pool cannot leak machine-dependent routes into the table;
+    the probe itself is NOT mocked — it does real socket and /health work.
+    """
+    from plugins.auto_update.platform import InstallScope
+    from plugins.llm_usage_proxy import routes as routes_mod
+    from plugins.llm_usage_proxy import systemd as systemd_mod
+
+    monkeypatch.setattr(systemd_mod, "platform_supported", lambda: True)
+    monkeypatch.setattr(routes_mod, "_pool_entry_bases", lambda provider_id: [])
+
+    scope = InstallScope(
+        system=False,
+        unit_dir=tmp_path / "units",
+        systemctl_prefix=("systemctl", "--user"),
+    )
+    systemctl = _FakeSystemctl()
+    return systemd_mod, scope, systemctl, hermes_home, tmp_path
+
+
+def test_reconcile_enable_free_port_crosses_real_probe(reconcile_harness):
+    systemd_mod, scope, systemctl, hermes_home, _ = reconcile_harness
+    cfg = {"port": _free_loopback_port()}
+
+    result = systemd_mod.reconcile_service(
+        cfg, enabled=True, run_systemctl=systemctl, scope=scope, environ={}
+    )
+
+    assert result.supported
+    assert result.port.status == "free"
+    assert result.unit_installed
+    assert result.enabled and result.service_active
+    unit_path = systemd_mod.service_unit_path(scope, hermes_home)
+    assert unit_path.is_file()
+    unit = systemd_mod.service_name(hermes_home)
+    enable_calls = [c for c in systemctl.calls if "enable" in c]
+    assert enable_calls and all(unit in c for c in enable_calls)
+
+
+def test_reconcile_crosses_real_probe_with_matching_listener(reconcile_harness):
+    """Enabled and disabled paths both reach the real probe carrying this
+    profile's identity and route table, and a verifying listener is neither
+    adopted, rewritten, nor stopped."""
+    systemd_mod, scope, systemctl, hermes_home, tmp_path = reconcile_harness
+    from plugins.llm_usage_proxy.routes import build_route_table
+
+    cfg: dict = {"port": 0}
+    routes = build_route_table(cfg, environ={})
+    server = UsageProxyServer(
+        port=0,
+        db_path=str(tmp_path / "usage.sqlite"),
+        upstreams=routes,
+        identity=systemd_mod.profile_identity(hermes_home),
+    )
+    port = server.server_address[1]
+    cfg["port"] = port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # Enabled path: probe verifies the listener as ours (identity +
+        # routes match), so reconcile stands down instead of installing a
+        # competing unit or adopting the running one.
+        enabled = systemd_mod.reconcile_service(
+            cfg, enabled=True, run_systemctl=systemctl, scope=scope, environ={}
+        )
+        assert enabled.port.status == "healthy"
+        assert enabled.port.occupied
+        assert any("already running" in w for w in enabled.warnings)
+        assert not systemd_mod.service_unit_path(scope, hermes_home).is_file()
+        assert not any("enable" in c for c in systemctl.calls)
+        assert not any("stop" in c for c in systemctl.calls)
+
+        # Disabled path: crosses the same verified probe, then stops/disables
+        # only this profile's unit — the verifying listener keeps serving.
+        systemctl.calls.clear()
+        disabled = systemd_mod.reconcile_service(
+            cfg, enabled=False, run_systemctl=systemctl, scope=scope, environ={}
+        )
+        assert disabled.port.status == "healthy"
+        assert not disabled.enabled
+        assert not disabled.service_active
+        unit = systemd_mod.service_name(hermes_home)
+        stopped = [c for c in systemctl.calls if "stop" in c]
+        disabled_calls = [c for c in systemctl.calls if "disable" in c]
+        assert stopped and all(unit in c for c in stopped)
+        assert disabled_calls and all(unit in c for c in disabled_calls)
+
+        # The listener itself was never mutated by either control path.
+        status, _, body = proxy_request(port, "GET", "/health")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["identity"] == systemd_mod.profile_identity(hermes_home)
+        assert payload["routes"] == routes
+    finally:
+        server.shutdown()
+        server.server_close()
+        server.store.close()
