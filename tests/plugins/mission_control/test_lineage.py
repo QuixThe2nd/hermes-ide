@@ -745,13 +745,11 @@ class TestChildIdentityAndBounds(LineageFixture):
         self.assertEqual([k["id"] for k in kids], sids[:50])
         self.assertEqual([k["id"] for k in kids][-1], sids[49])
 
-        # The public page: a bounded section with the count badge and
-        # profile-qualified links, oldest first, newest five absent.
+        # The public page: bounded inline child rows (one <li> per
+        # child at its dispatch time) with profile-qualified links,
+        # oldest first, newest five absent.
         page = self.parent_page_html("default", parent)
-        self.assertIn(
-            '<span class="sa-count">%d</span>'
-            % server.SUBAGENT_MAX_CHILDREN, page)
-        self.assertEqual(page.count('class="sa-item"'),
+        self.assertEqual(page.count('class="msg subagent-item"'),
                          server.SUBAGENT_MAX_CHILDREN)
         self.assertIn('href="/s/default/%s"' % sids[0], page)
         self.assertIn('href="/s/researcher/%s"' % sids[49], page)

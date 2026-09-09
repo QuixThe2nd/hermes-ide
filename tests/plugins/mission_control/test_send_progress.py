@@ -1042,17 +1042,18 @@ class TestJobRegistryBound(unittest.TestCase):
 
 
 class TestLiveSubagents(ServerCase):
-    """The Sub-agents section is live: a child dispatched after the
-    page loaded appears on the next feed poll — the poll payload
-    carries the whole replacement section — and the client source
-    swaps it in place."""
+    """The inline sub-agent rows are live: a child dispatched after the
+    page loaded appears on the next feed poll — the poll payload carries
+    the whole keyed list, each item the exact server-rendered row — and
+    the client source reconciles it in place by key."""
 
-    def test_feed_poll_replaces_the_subagents_section(self):
+    def test_feed_poll_reconciles_the_subagent_rows(self):
         self.add_session("s_parent", source="discord",
                          title="dispatching chat")
         self.add_message("s_parent", "user", "go research that")
         _status, page = self.request("GET", "/s/default/s_parent")
-        self.assertNotIn('id="subagents"', page)
+        self.assertNotIn('class="msg subagent-item"', page)
+        self.assertNotIn('id="sa-default-s_child"', page)
         self.assertIn("applySubagents", page)  # the client swap path
 
         # a same-profile subagent lands while the page is open
@@ -1074,17 +1075,20 @@ class TestLiveSubagents(ServerCase):
             "/s/default/s_parent/feed?after=0",
             lambda p: p["subagents"]["count"] == 1)
         self.assertEqual(feed["subagents"]["ids"], ["s_child"])
-        self.assertIn("child goal text", feed["subagents"]["html"])
-        self.assertIn('href="/s/default/s_child"',
-                      feed["subagents"]["html"])
+        items = feed["subagents"]["items"]
+        self.assertEqual([i["key"] for i in items],
+                         ["default-s_child"])
+        self.assertEqual([i["id"] for i in items], ["s_child"])
+        self.assertIn("child goal text", items[0]["html"])
+        self.assertIn('href="/s/default/s_child"', items[0]["html"])
 
-        # a reload renders the same section server-side
+        # a reload renders the same row server-side, same key
         _status, page2 = self.request("GET", "/s/default/s_parent")
-        self.assertIn('id="subagents"', page2)
+        self.assertIn('id="sa-default-s_child"', page2)
         self.assertIn("child goal text", page2)
 
-        # and the section leaves again when the child is hidden — the
-        # replacement is a full swap, not an append-only list
+        # and the row leaves again when the child is hidden — the keyed
+        # list is a full reconciliation, not an append-only log
         con = sqlite3.connect(self.db)
         con.execute("UPDATE sessions SET hidden = 1 WHERE id = 's_child'")
         con.commit()
@@ -1092,7 +1096,7 @@ class TestLiveSubagents(ServerCase):
         gone = self.poll_status(
             "/s/default/s_parent/feed?after=0",
             lambda p: p["subagents"]["count"] == 0)
-        self.assertEqual(gone["subagents"]["html"], "")
+        self.assertEqual(gone["subagents"]["items"], [])
 
 
 if __name__ == "__main__":

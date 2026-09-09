@@ -77,6 +77,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from tools.agent_cli_runner import run_agent_cli
+from tools.claude_run_receipts import write_spawn_receipt
 from tools.claude_viewer_url import watch_url
 from tools.registry import registry
 from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
@@ -338,6 +339,25 @@ def _emit_viewer_progress_notice(log_path: Path) -> None:
         logger.debug("claude viewer progress notice failed", exc_info=True)
 
 
+def _spawn_on_spawn(
+    session_id: Optional[str],
+    tool_call_id: Optional[str],
+    workdir: str,
+):
+    """The ``on_spawn`` hook a dispatched run carries: the viewer notice,
+    plus — when the gateway supplied the correlation pair — the durable
+    spawn receipt (``tools/claude_run_receipts``) that lets Mission
+    Control link this exact call's card to this exact run's live viewer
+    page. Both halves are best-effort by contract: ``run_agent_cli``
+    swallows any exception the hook raises, and a missing pair or a
+    failed write simply means no receipt (never a failed delegation)."""
+    def _on_spawn(log_path: Path) -> None:
+        _emit_viewer_progress_notice(log_path)
+        if session_id and tool_call_id:
+            write_spawn_receipt(session_id, tool_call_id, log_path, workdir)
+    return _on_spawn
+
+
 def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     try:
         value = int(timeout_seconds)
@@ -475,8 +495,12 @@ def delegate_claude_agent(
     nothing) when it cannot — and otherwise returns the shared acceptance
     envelope; the terminal result later re-enters the conversation through
     the completion rail.
+
+    The hidden ``session_id``/``tool_call_id`` pair the gateway supplies
+    keys the spawn correlation receipt (see ``_spawn_on_spawn``); it is
+    otherwise unused and its absence changes nothing.
     """
-    del task_id, session_id, tool_call_id  # reserved for correlation; unused
+    del task_id  # reserved; unused
 
     if not task or not str(task).strip():
         return _make_result(
@@ -591,6 +615,9 @@ def delegate_claude_agent(
         ]
     )
 
+    on_spawn = _spawn_on_spawn(session_id, tool_call_id,
+                               str(workdir_path))
+
     if background:
         return _dispatch_claude_background(
             cmd,
@@ -601,6 +628,7 @@ def delegate_claude_agent(
             goal_brief_path=goal_brief_path,
             goal=prompt,
             model_name=model_name,
+            on_spawn=on_spawn,
         )
 
     return _run_claude_agent_sync(
@@ -610,6 +638,7 @@ def delegate_claude_agent(
         log_dir=log_dir,
         run_timestamp=run_timestamp,
         goal_brief_path=goal_brief_path,
+        on_spawn=on_spawn,
     )
 
 
@@ -621,9 +650,15 @@ def _run_claude_agent_sync(
     log_dir: Path,
     run_timestamp: str,
     goal_brief_path: Optional[str],
+    on_spawn: Optional[Callable[[Path], None]] = None,
     on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> str:
-    """Spawn the CLI, wait for it to exit, and return its result inline."""
+    """Spawn the CLI, wait for it to exit, and return its result inline.
+
+    ``on_spawn`` (default: the viewer progress notice alone) fires the
+    moment the run's log path is known — the delegated dispatches pass
+    the correlation hook so the spawn receipt is durable before the run
+    can complete."""
     try:
         watchdog_error, log_path, log_text, duration, returncode = _run_and_stream(
             cmd,
@@ -631,7 +666,7 @@ def _run_claude_agent_sync(
             timeout_seconds=clamped_timeout,
             log_dir=log_dir,
             run_timestamp=run_timestamp,
-            on_spawn=_emit_viewer_progress_notice,
+            on_spawn=on_spawn or _emit_viewer_progress_notice,
             on_proc=on_proc,
         )
     except Exception as exc:
@@ -724,12 +759,14 @@ def _dispatch_claude_background(
     goal_brief_path: Optional[str],
     goal: str,
     model_name: str,
+    on_spawn: Optional[Callable[[Path], None]] = None,
 ) -> str:
     """Return the background acceptance envelope, or a clear rejection.
 
     The subprocess is NOT spawned here: the runner spawns it on the async
     registry's daemon worker, so a capacity rejection leaves nothing
-    running and nothing to tear down.
+    running and nothing to tear down. ``on_spawn`` rides into the worker
+    so the spawn receipt lands exactly as it does for a synchronous run.
     """
     from tools.async_delegation import (
         RESULT_KIND_CLI_AGENT,
@@ -753,6 +790,7 @@ def _dispatch_claude_background(
             log_dir=log_dir,
             run_timestamp=run_timestamp,
             goal_brief_path=goal_brief_path,
+            on_spawn=on_spawn,
             on_proc=_on_proc,
         )
         payload = json.loads(out)
