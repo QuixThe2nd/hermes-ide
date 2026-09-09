@@ -1378,6 +1378,33 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
         )
 
 
+# v42: advance the Codex rotation default gpt-5.6-sol → gpt-6-astra, rewriting
+# only the exact canonical pair (``model.default`` plus matching
+# ``fallback_providers`` entries) in place — no legacy/normalized/inferred
+# shapes. Unmatched configs are not persisted (idempotent; Sol stays choosable).
+
+
+def _migrate_to_42(results: Dict[str, Any], quiet: bool) -> None:
+    _c = _cfg()
+    config = _c.read_raw_config()
+    model_section = config.get("model")
+    fallbacks = config.get("fallback_providers")
+    routes = [(model_section, "default")] if isinstance(model_section, dict) else []
+    if isinstance(fallbacks, list):
+        routes += [(entry, "model") for entry in fallbacks if isinstance(entry, dict)]
+    touched = False
+    for entry, key in routes:
+        if entry.get("provider") == "openai-codex" and entry.get(key) == "gpt-5.6-sol":
+            entry[key] = "gpt-6-astra"
+            touched = True
+    if not touched:
+        return
+    _c._persist_migration(config)
+    results["config_added"].append("openai-codex rotation default gpt-5.6-sol → gpt-6-astra")
+    if not quiet:
+        print("  ✓ Codex rotation default: gpt-5.6-sol → gpt-6-astra (Sol stays selectable).")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -1407,6 +1434,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (39, _migrate_to_39),
     (40, _migrate_to_40),
     (41, _migrate_to_41),
+    (42, _migrate_to_42),
 )
 
 

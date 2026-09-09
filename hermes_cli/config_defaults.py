@@ -4218,7 +4218,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 41,
+    "_config_version": 42,
 }
 
 # Optional environment variables that enhance functionality
