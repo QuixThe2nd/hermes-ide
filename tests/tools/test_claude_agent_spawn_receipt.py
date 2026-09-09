@@ -115,6 +115,13 @@ def _dispatch(monkeypatch, repo, home, marker, background=False):
     path the gateway uses, hidden correlation pair included."""
     import tools.claude_agent_tool as tool
 
+    # Pin the viewer host so watch_url() never falls into the tailscale /
+    # default-route auto-detect probes (a subprocess with a 5s timeout):
+    # the fake child lists the receipts tree 0.15s in, so the parent's
+    # spawn-time receipt write must not wait on host detection.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"delegation": {"claude_viewer": {"public_host": "127.0.0.1"}}})
     _patch_binary(monkeypatch, _write_fake_binary(
         marker.parent, home, marker))
     if background:
