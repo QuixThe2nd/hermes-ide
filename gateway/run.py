@@ -55,6 +55,7 @@ from agent.compression_status import (
     COMPRESSION_TOOL_STATUS_EVENT,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX,
     cooldown_fold_suffix,
+    current_compression_attempt_token,
     is_compression_tool_failure_line,
     is_compression_tool_line,
     is_compression_tool_terminal_line,
@@ -1079,10 +1080,13 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     text = _redact_gateway_user_facing_secrets(text)
     # Tool-style compression lifecycle lines (agent/compression_status.py)
-    # are the user-facing surface for automatic compression — never
-    # noise-filtered and never rewritten as generic provider errors (their
-    # failure reason is already sanitized at emission; a rewrite would break
-    # the episode's terminal detection in _status_callback_sync).
+    # are the user-facing surface for automatic compression on Discord —
+    # never noise-filtered and never rewritten as generic provider errors
+    # (their failure reason is already sanitized at emission; a rewrite would
+    # break the episode's terminal detection in _status_callback_sync). Only
+    # Discord sessions can produce this event: emission is platform-gated in
+    # emit_compression_tool_status and _status_callback_sync drops the event
+    # for any non-episode-rail adapter before it reaches the delivery rail.
     if event_type == COMPRESSION_TOOL_STATUS_EVENT:
         return text
     # Opt-in live retry/fallback progress (`display.retry_progress`). The
@@ -1165,18 +1169,20 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
-# ── Tool-style compression episode rail (Discord-class adapters) ─────────
+# ── Tool-style compression episode rail (Discord) ────────────────────────
 # One message per automatic compression attempt: the agent emits the
 # tool-style lifecycle (agent/compression_status.py, event type
-# COMPRESSION_TOOL_STATUS_EVENT), and adapters that can edit but have no
-# send_or_update_status (Discord) keep a single bubble that is sent once at
-# attempt start and edited in place as the attempt succeeds / fails / stops.
-# The raw failure-class notices from the SAME attempt (abort warning,
-# over-threshold-but-blocked cooldown warning) fold into the episode instead
-# of posting unpaired follow-ups. Telegram/Slack keep their existing
-# per-status-key editing; non-editing adapters keep one-message-per-status.
-# State is scoped per (adapter, chat) episode and delivery failures stay in
-# the logs — they must never affect compression itself.
+# COMPRESSION_TOOL_STATUS_EVENT) for Discord sessions only, and the Discord
+# adapter (edits bubbles, no send_or_update_status) keeps a single bubble
+# that is sent once at attempt start and edited in place as the attempt
+# succeeds / fails / stops. The raw failure-class notices from the SAME
+# attempt (abort warning, over-threshold-but-blocked cooldown warning) fold
+# into the episode instead of posting unpaired follow-ups. Telegram/Slack
+# keep their existing per-status-key editing; every other adapter keeps
+# one-message-per-status — byte-identical to before. State is scoped per
+# (platform, adapter instance, session, chat) episode plus a per-attempt
+# operation token, and delivery failures stay in the logs — they must never
+# affect compression itself.
 
 _COMPRESSION_EPISODE_TTL_SECONDS = 1800.0
 _COMPRESSION_EPISODE_REGISTRY_MAX = 512
@@ -1193,23 +1199,52 @@ class _CompressionEpisodeState:
     failed: bool = False
     cooldown_folded: bool = False
     last_text: str = ""
+    # The terminal line exactly as first delivered (before any cooldown fold
+    # suffix) — late-duplicate detection must compare against THIS, not the
+    # folded text, or a replayed terminal would spawn a second bubble.
+    terminal_base: str = ""
+    # Operation id of the attempt that owns this episode (ContextVar carried
+    # across the emit hop). Events from any other attempt never touch it.
+    token: Optional[str] = None
     updated_at: float = 0.0
 
 
-_compression_episodes: Dict[Tuple[str, str], _CompressionEpisodeState] = {}
+_compression_episodes: Dict[Tuple[str, str, str, str], _CompressionEpisodeState] = {}
 _compression_episodes_lock = threading.Lock()
 # Per-episode asyncio locks serialize send->edit on the gateway loop so a
 # terminal/fold update scheduled behind the start line observes the start's
 # message id and edits instead of posting a second bubble. Created lazily on
-# the loop thread inside the coro.
-_compression_episode_async_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
+# the loop thread inside the coro; evicted together with the episode so the
+# dict cannot grow past the registry it shadows.
+_compression_episode_async_locks: Dict[Tuple[str, str, str, str], asyncio.Lock] = {}
 
 
-def _compression_episode_key(adapter: Any, chat_id: Any) -> Tuple[str, str]:
+def _compression_episode_key(
+    adapter: Any, chat_id: Any, session_key: Any = None
+) -> Tuple[str, str, str, str]:
+    """Episode ownership key: platform + adapter INSTANCE + session + chat.
+
+    Two adapter instances sharing a name and channel (multi-profile runners)
+    must never share an episode; session_key scopes the lifecycle to the
+    profile/conversation the attempt belongs to. Deliberately NOT run-scoped:
+    a cooldown warning arrives on a LATER turn than the failed attempt and
+    must still find its episode.
+    """
+    platform = getattr(getattr(adapter, "platform", None), "value", None)
+    if not platform:
+        platform = str(getattr(adapter, "name", "") or type(adapter).__name__)
     return (
-        str(getattr(adapter, "name", "") or type(adapter).__name__),
+        str(platform),
+        str(id(adapter)),
+        str(session_key or ""),
         str(chat_id),
     )
+
+
+def _evict_compression_episode(key: Tuple[str, str, str, str]) -> None:
+    """Drop an episode AND its async delivery lock (caller holds the lock)."""
+    _compression_episodes.pop(key, None)
+    _compression_episode_async_locks.pop(key, None)
 
 
 def _reset_compression_episodes() -> None:
@@ -1220,14 +1255,18 @@ def _reset_compression_episodes() -> None:
 
 
 def _adapter_uses_compression_episode_rail(adapter: Any) -> bool:
-    """True for adapters that edit bubbles but lack send_or_update_status.
+    """True only for the Discord adapter — the sole surface this rail serves.
 
-    Telegram/Slack implement send_or_update_status and already edit one
-    bubble per status key — they keep that path untouched. Adapters with no
-    real edit_message keep one-message-per-status (a swallowed "edit" would
-    silently lose the terminal state).
+    The tool-style compression lifecycle is scoped to automatic Discord
+    sessions (agent-side emission is Discord-gated too; this is the gateway
+    half of the scope fence). Telegram/Slack implement send_or_update_status
+    and keep per-status-key editing; every other adapter keeps
+    one-message-per-status — both byte-identical to before this feature.
     """
     if adapter is None:
+        return False
+    platform = getattr(adapter, "platform", None)
+    if getattr(platform, "value", platform) != "discord":
         return False
     if callable(getattr(adapter, "send_or_update_status", None)):
         return False
@@ -1235,17 +1274,24 @@ def _adapter_uses_compression_episode_rail(adapter: Any) -> bool:
 
 
 def _compression_episode_decide(
-    adapter: Any, chat_id: Any, event_type: str, text: str
+    adapter: Any,
+    chat_id: Any,
+    event_type: str,
+    text: str,
+    *,
+    session_key: Any = None,
+    attempt_token: Optional[str] = None,
 ) -> Tuple[str, Optional[str]]:
     """Sync-side episode bookkeeping for one prepared status line.
 
     Returns ``(action, content)``:
     - ``"deliver"``: route content through the episode coro (send or edit).
     - ``"drop"``: represented by the episode already (raw abort notice,
-      repeated cooldown warning, late duplicate terminal) — post nothing.
+      repeated cooldown warning, late duplicate terminal, superseded
+      attempt's stale event) — post nothing.
     - ``"pass"``: not episode business — fall through to the normal rail.
     """
-    key = _compression_episode_key(adapter, chat_id)
+    key = _compression_episode_key(adapter, chat_id, session_key)
     now = time.monotonic()
     with _compression_episodes_lock:
         ep = _compression_episodes.get(key)
@@ -1254,40 +1300,65 @@ def _compression_episode_decide(
             and ep.terminal
             and now - ep.updated_at > _COMPRESSION_EPISODE_TTL_SECONDS
         ):
-            _compression_episodes.pop(key, None)
+            _evict_compression_episode(key)
             ep = None
         if event_type == COMPRESSION_TOOL_STATUS_EVENT or is_compression_tool_line(text):
             terminal = is_compression_tool_terminal_line(text)
-            if ep is not None and ep.terminal:
-                if text == ep.last_text:
-                    # Late duplicate terminal (async replay of a closed
-                    # episode) — never re-post, never resurrect.
-                    return "drop", None
-                # A new attempt after a closed episode gets a fresh bubble.
-                ep = None
+            if ep is not None:
+                same_attempt = (
+                    not attempt_token or not ep.token or attempt_token == ep.token
+                )
+                if ep.terminal:
+                    if same_attempt:
+                        # Late/duplicate event for a CLOSED episode (async
+                        # replay of the terminal, a stray progress line):
+                        # the episode has spoken — never re-post, never
+                        # resurrect, never spawn a second bubble.
+                        return "drop", None
+                    # A genuinely NEW attempt after a closed episode gets a
+                    # fresh bubble; the old terminal stays as the record.
+                    ep = None
+                elif not same_attempt:
+                    if terminal:
+                        # Late terminal of a SUPERSEDED attempt (zombie
+                        # unwind after a stall retry claimed the chat): the
+                        # newer attempt owns the episode now.
+                        return "drop", None
+                    # A new attempt superseding an in-flight one: hand the
+                    # open bubble over (edit, not a second message) so no
+                    # orphan "compressing…" is left behind.
+                    ep.token = attempt_token
+                    ep.failed = False
+                    ep.cooldown_folded = False
+                    ep.terminal_base = ""
             if ep is None:
                 if len(_compression_episodes) >= _COMPRESSION_EPISODE_REGISTRY_MAX:
                     oldest_key = min(
                         _compression_episodes,
                         key=lambda k: _compression_episodes[k].updated_at,
                     )
-                    _compression_episodes.pop(oldest_key, None)
+                    _evict_compression_episode(oldest_key)
                 ep = _CompressionEpisodeState()
+                ep.token = attempt_token
                 _compression_episodes[key] = ep
+            elif attempt_token and not ep.token:
+                ep.token = attempt_token
             ep.last_text = text
             ep.updated_at = now
             if terminal:
                 ep.terminal = True
                 ep.failed = is_compression_tool_failure_line(text)
+                ep.terminal_base = text
             return "deliver", text
         stripped = str(text or "")
         if stripped.startswith(COMPRESSION_ABORT_WARNING_PREFIX):
-            # The episode's own failure terminal already carries the
-            # sanitized reason + preservation fact + action; the raw notice
-            # would be an unpaired duplicate of the same attempt. Only
-            # suppressed while an episode represents that attempt — with no
-            # episode (manual /compress, quiet engine) it posts as before.
-            if ep is not None:
+            # The episode's own failure terminal carries the sanitized
+            # reason + preservation fact + action; the raw notice would be an
+            # unpaired duplicate of the same attempt. Dropped ONLY while an
+            # episode for this chat is still in flight — with no episode
+            # (manual /compress, quiet engine) or only a closed one, the
+            # warning posts exactly as before.
+            if ep is not None and not ep.terminal:
                 return "drop", None
             return "pass", None
         if stripped.startswith(CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX):
@@ -1301,7 +1372,7 @@ def _compression_episode_decide(
                 match = re.search(r"currently blocked \(([^)]*)\)", stripped)
                 if match:
                     reason = match.group(1)
-                ep.last_text = ep.last_text + cooldown_fold_suffix(reason)
+                ep.last_text = ep.terminal_base + cooldown_fold_suffix(reason)
                 ep.updated_at = now
                 return "deliver", ep.last_text
             if ep is not None and not ep.terminal:
@@ -1314,14 +1385,16 @@ def _compression_episode_decide(
         return "pass", None
 
 
-async def _send_or_update_compression_episode_coro(adapter, chat_id, content, metadata):
+async def _send_or_update_compression_episode_coro(
+    adapter, chat_id, content, metadata, session_key=None
+):
     """Deliver one episode update: send the start line once, then edit in place.
 
     Runs detached on the gateway loop; never raises — a Discord send/edit
     failure must not affect compression, and the next update simply retries
     delivery (send when no message id is known yet).
     """
-    key = _compression_episode_key(adapter, chat_id)
+    key = _compression_episode_key(adapter, chat_id, session_key)
     lock = _compression_episode_async_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -7124,18 +7197,33 @@ class TurnRunner:
             )
             return
         # Tool-style compression lifecycle (agent/compression_status.py):
-        # Discord-class adapters (edit-capable, no send_or_update_status)
-        # keep ONE message per automatic compression attempt — the start
-        # line is sent once and every state change edits it in place, and
-        # the attempt's raw abort/cooldown warnings fold into the episode
-        # instead of posting unpaired follow-ups. All other adapters fall
-        # through to the existing rail byte-identically.
-        if _adapter_uses_compression_episode_rail(ctx._status_adapter):
+        # a DISCORD-ONLY surface. The agent only emits these events for
+        # Discord sessions; the belt-and-braces drop below keeps every other
+        # adapter's status rail byte-identical even if an event arrives
+        # anyway. On Discord one message per automatic compression attempt:
+        # the start line is sent once and every state change edits it in
+        # place; the attempt's raw abort/cooldown warnings fold into the
+        # episode instead of posting unpaired follow-ups.
+        _uses_episode_rail = _adapter_uses_compression_episode_rail(ctx._status_adapter)
+        if event_type == COMPRESSION_TOOL_STATUS_EVENT and not _uses_episode_rail:
+            logger.debug(
+                "compression tool status dropped for non-Discord adapter %s/%s",
+                ctx.source.platform.value if ctx.source.platform else "unknown",
+                event_type,
+            )
+            return
+        if _uses_episode_rail:
             _episode_action, _episode_content = _compression_episode_decide(
                 ctx._status_adapter,
                 ctx._status_chat_id,
                 event_type,
                 prepared_message,
+                session_key=ctx.session_key,
+                attempt_token=(
+                    current_compression_attempt_token()
+                    if event_type == COMPRESSION_TOOL_STATUS_EVENT
+                    else None
+                ),
             )
             if _episode_action == "drop":
                 logger.debug(
@@ -7152,6 +7240,7 @@ class TurnRunner:
                         ctx._status_chat_id,
                         _episode_content,
                         ctx._status_thread_metadata,
+                        session_key=ctx.session_key,
                     ),
                     ctx._loop_for_step,
                     logger=logger,
