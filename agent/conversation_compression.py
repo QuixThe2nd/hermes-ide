@@ -3587,6 +3587,7 @@ def compress_context(
     # and opened just ahead of the expensive summary work below.
     _tool_episode_open = False
     _tool_terminal_sent = False
+    _tool_attempt_token: Optional[str] = None
 
     def _complete_compaction_lifecycle(*, force_terminal: bool = False) -> None:
         nonlocal _compaction_done_emitted
@@ -4214,15 +4215,18 @@ def compress_context(
 
         # ── Tool-style lifecycle status (presentation-only) ──────────────
         # One ``context_compress`` line posted BEFORE the expensive summary
-        # work below; edit-capable gateways update the same message in place
+        # work below; the Discord gateway updates the same message in place
         # as the attempt resolves (see agent/compression_status.py). Rules:
         # automatic attempts only (manual /compress keeps its existing
-        # feedback), and only when a visible compaction phase was opened
-        # (quiet context engines emit neither, mirroring
+        # feedback), Discord sessions only (emit_compression_tool_status
+        # no-ops elsewhere), and only when a visible compaction phase was
+        # opened (quiet context engines emit neither, mirroring
         # _complete_compaction_lifecycle). The aux route is resolved inside
         # call_llm at call time, so the start line says "selecting
         # compressor" unless a stall-fallback retry actually pinned a route
-        # for THIS attempt — never a guess at the chat model/primary.
+        # for THIS attempt — never a guess at the chat model/primary. When
+        # call_llm records the route it really selected, the compressor's
+        # route observer edits the open episode to name it mid-flight.
         if not force and _compaction_status_emitted:
             _pinned_route: Optional[dict] = None
             try:
@@ -4233,6 +4237,7 @@ def compress_context(
                     _pinned_route = _candidate_route
             except Exception:
                 _pinned_route = None
+            _tool_attempt_token = uuid.uuid4().hex
             _tool_episode_open = emit_compression_tool_status(
                 agent,
                 compression_tool_start_line(
@@ -4240,7 +4245,35 @@ def compress_context(
                     or (_pinned_route or {}).get("provider"),
                     (_pinned_route or {}).get("model"),
                 ),
+                attempt_token=_tool_attempt_token,
             )
+            if _tool_episode_open:
+                def _publish_selected_route(provider: str, model: str) -> None:
+                    # Mid-flight route update for the open episode. Guarded
+                    # like every terminal edge: a superseded attempt must not
+                    # speak for its successor.
+                    if (
+                        _tool_episode_open
+                        and not _tool_terminal_sent
+                        and _compressor_attempt_is_current(
+                            agent.context_compressor, _attempt_generation
+                        )
+                    ):
+                        emit_compression_tool_status(
+                            agent,
+                            compression_tool_start_line(provider, model),
+                            attempt_token=_tool_attempt_token,
+                        )
+
+                try:
+                    agent.context_compressor._summary_route_observer = (
+                        _publish_selected_route
+                    )
+                    agent.context_compressor._summary_route_observer_generation = (
+                        _attempt_generation
+                    )
+                except Exception:
+                    pass
 
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
@@ -4384,8 +4417,15 @@ def compress_context(
                     agent.context_compressor, _attempt_generation
                 )
             ):
+                # Rollback FAILED: the in-memory list was force-restored but
+                # durable/session restoration did not complete — no
+                # preservation claim the engine cannot prove.
                 _tool_terminal_sent = emit_compression_tool_status(
-                    agent, compression_tool_aborted_line("rollback failed")
+                    agent,
+                    compression_tool_aborted_line(
+                        "rollback failed", context_preservation=None
+                    ),
+                    attempt_token=_tool_attempt_token,
                 )
             _emit_compression_attempt_telemetry(
                 agent,
@@ -4416,7 +4456,9 @@ def compress_context(
         # Close the tool-style episode honestly — but only when THIS attempt
         # still owns the compressor. A stall-fallback retry claims the attempt
         # generation before this late unwind runs; its terminal must come from
-        # the retry, not from the zombie attempt it replaced.
+        # the retry, not from the zombie attempt it replaced. The cancel path
+        # restored the pre-attempt snapshot above, so the preservation claim
+        # holds here.
         if (
             _tool_episode_open
             and not _tool_terminal_sent
@@ -4425,7 +4467,9 @@ def compress_context(
             )
         ):
             _tool_terminal_sent = emit_compression_tool_status(
-                agent, compression_tool_aborted_line("cancelled")
+                agent,
+                compression_tool_aborted_line("cancelled"),
+                attempt_token=_tool_attempt_token,
             )
         _emit_compression_attempt_telemetry(
             agent,
@@ -4453,6 +4497,9 @@ def compress_context(
         # Mid-flight exception: no boundary committed, but the in-memory list
         # may have been mutated — close the episode WITHOUT the preservation
         # claim. Suppressed when superseded (the successor owns the episode).
+        # The route is named only when call_llm actually recorded one
+        # (aux_route_known) — telemetry's provider/model fallbacks are config
+        # guesses, not proof of which summarizer failed.
         if (
             _tool_episode_open
             and not _tool_terminal_sent
@@ -4460,12 +4507,21 @@ def compress_context(
                 agent.context_compressor, _attempt_generation
             )
         ):
+            _exc_telemetry = getattr(
+                agent.context_compressor, "_last_compression_telemetry", None
+            )
+            if not isinstance(_exc_telemetry, dict):
+                _exc_telemetry = {}
+            _exc_route_known = bool(_exc_telemetry.get("aux_route_known"))
             _tool_terminal_sent = emit_compression_tool_status(
                 agent,
                 compression_tool_failure_line(
-                    f"{type(_compress_exc).__name__}: {_compress_exc}",
+                    _compress_exc,
+                    _exc_telemetry.get("aux_provider") if _exc_route_known else None,
+                    _exc_telemetry.get("aux_model") if _exc_route_known else None,
                     context_preservation=None,
                 ),
+                attempt_token=_tool_attempt_token,
             )
         _emit_compression_attempt_telemetry(
             agent,
@@ -4478,6 +4534,18 @@ def compress_context(
     finally:
         if _activity_heartbeat is not None:
             _activity_heartbeat.stop("context compression completed")
+        # The route observer only matters while the summary call runs.
+        # Clear it here (owner-checked) so a later attempt — e.g. a manual
+        # /compress that never opens an episode — cannot trip a stale hook.
+        try:
+            _observer_compressor = agent.context_compressor
+            if getattr(
+                _observer_compressor, "_summary_route_observer_generation", None
+            ) == _attempt_generation:
+                _observer_compressor._summary_route_observer = None
+                _observer_compressor._summary_route_observer_generation = None
+        except Exception:
+            pass
 
     _commit_fence_entered = False
     try:
@@ -4511,10 +4579,12 @@ def compress_context(
                         "Run /compress to retry, or /new to start a fresh session."
                     )
                 # Close the tool-style episode as a FAILURE with the sanitized
-                # reason and the actual route the attempt used (telemetry is
-                # recorded in the aux call's finally, so it survives the
-                # failure). The abort path returns the transcript unchanged
-                # and never rotates, so the preservation claim holds.
+                # reason and the route the attempt actually used — named only
+                # when call_llm recorded it (aux_route_known); telemetry's
+                # provider/model fallbacks are config guesses, not proof.
+                # (Telemetry is recorded in the aux call's finally, so it
+                # survives the failure.) The abort path returns the transcript
+                # unchanged and never rotates, so the preservation claim holds.
                 if _tool_episode_open and not _tool_terminal_sent:
                     try:
                         _abort_telemetry = getattr(
@@ -4524,13 +4594,25 @@ def compress_context(
                         )
                         if not isinstance(_abort_telemetry, dict):
                             _abort_telemetry = {}
+                        _abort_route_known = bool(
+                            _abort_telemetry.get("aux_route_known")
+                        )
                         _tool_terminal_sent = emit_compression_tool_status(
                             agent,
                             compression_tool_failure_line(
                                 _err,
-                                _abort_telemetry.get("aux_provider"),
-                                _abort_telemetry.get("aux_model"),
+                                (
+                                    _abort_telemetry.get("aux_provider")
+                                    if _abort_route_known
+                                    else None
+                                ),
+                                (
+                                    _abort_telemetry.get("aux_model")
+                                    if _abort_route_known
+                                    else None
+                                ),
                             ),
+                            attempt_token=_tool_attempt_token,
                         )
                     except Exception:
                         logger.debug(
@@ -5763,9 +5845,12 @@ def compress_context(
         )
         _commit_status = "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         # Tool-style terminal edge: success ONLY when the boundary actually
-        # committed. Carries the real aux route from attempt telemetry plus
-        # genuine before/after counts; the fallback tag appears only when the
-        # engine actually started a fallback (telemetry flag).
+        # committed. The route is named only when call_llm actually recorded
+        # it (aux_route_known) — telemetry's provider/model fallbacks are
+        # config guesses, not proof of summarizer identity. When the engine
+        # inserted its deterministic LOCAL summary (fallback flag), no route
+        # is shown: the failed/skipped provider must not be credited with a
+        # summary it did not produce.
         if (
             _tool_episode_open
             and not _tool_terminal_sent
@@ -5777,17 +5862,32 @@ def compress_context(
                 )
                 if not isinstance(_ok_telemetry, dict):
                     _ok_telemetry = {}
+                _ok_route_known = bool(_ok_telemetry.get("aux_route_known"))
+                _local_summary: Optional[str] = None
+                if _compression_used_fallback:
+                    _local_summary = (
+                        "skipped" if _compression_feasibility_skip else "unavailable"
+                    )
                 _tool_terminal_sent = emit_compression_tool_status(
                     agent,
                     compression_tool_success_line(
-                        _ok_telemetry.get("aux_provider"),
-                        _ok_telemetry.get("aux_model"),
+                        (
+                            _ok_telemetry.get("aux_provider")
+                            if _ok_route_known and not _local_summary
+                            else None
+                        ),
+                        (
+                            _ok_telemetry.get("aux_model")
+                            if _ok_route_known and not _local_summary
+                            else None
+                        ),
                         before_messages=_pre_msg_count,
                         after_messages=len(compressed),
                         before_tokens=approx_tokens or None,
                         after_tokens=_compressed_est or None,
-                        fallback_used=_compression_used_fallback,
+                        local_summary=_local_summary,
                     ),
+                    attempt_token=_tool_attempt_token,
                 )
             except Exception:
                 logger.debug(
@@ -5811,8 +5911,10 @@ def compress_context(
         # neither committed nor emitted a specific terminal (no-progress,
         # empty transcript, commit-fence cancellation, split failure, or an
         # exception raised mid-rotation) closes the episode as stopped —
-        # never as success. A superseded attempt stays silent: the newer
-        # attempt that claimed the generation owns the episode's terminal.
+        # never as success. These exits mix provably-unchanged transcripts
+        # with mid-rotation unwinds the engine cannot prove safe, so the line
+        # makes NO preservation claim. A superseded attempt stays silent: the
+        # newer attempt that claimed the generation owns the terminal.
         try:
             if (
                 _tool_episode_open
@@ -5823,7 +5925,9 @@ def compress_context(
                 )
             ):
                 _tool_terminal_sent = emit_compression_tool_status(
-                    agent, compression_tool_aborted_line()
+                    agent,
+                    compression_tool_aborted_line(context_preservation=None),
+                    attempt_token=_tool_attempt_token,
                 )
         except Exception:
             logger.debug("compression tool episode catch-all failed", exc_info=True)
