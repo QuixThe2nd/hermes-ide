@@ -16,9 +16,11 @@ import pytest
 
 from plugins.llm_usage_proxy.server import (
     DEFAULT_UPSTREAMS,
+    MAX_PARSE_BYTES,
     PROTOCOL_VERSION,
     SERVICE_ID,
     UsageProxyServer,
+    UsageScanner,
     maybe_inject_stream_options,
     merge_usage,
     parse_upstream_args,
@@ -810,3 +812,112 @@ def test_default_upstreams_and_argv_parsing():
         UsageProxyServer(
             port=0, db_path=":memory:", upstreams={"Bad Name": "https://x"}
         )
+
+
+# ── Parser boundary regressions: fragmented sniffing, per-event memory ─────
+
+_RESP_SSE = (
+    'event: response.created\n'
+    'data: {"type":"response.created","response":{"model":"gpt-6","usage":{"input_tokens":3}}}\n\n'
+    'event: response.completed\n'
+    'data: {"type":"response.completed","response":{"model":"gpt-6","usage":{"input_tokens":23,"output_tokens":5,"total_tokens":28}}}\n\n'
+).encode()
+
+_OAI_SSE = (
+    'data: {"id":"1","model":"gpt","choices":[{"delta":{"content":"a"}}]}\n\n'
+    'data: {"id":"1","model":"gpt","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}\n\n'
+    'data: [DONE]\n\n'
+).encode()
+
+
+def _scan(content_type: str, payload: bytes, step: int) -> UsageScanner:
+    scanner = UsageScanner(content_type)
+    for i in range(0, len(payload), step):
+        scanner.feed(payload[i : i + step])
+    scanner.finish()
+    return scanner
+
+
+def test_sniff_no_content_type_sse_survives_every_byte_split():
+    # A first chunk shorter than the SSE keyword (b"e", b"ev", b"dat", ...) is
+    # a proper prefix of a supported field marker: undecidable, not garbage.
+    for step in range(1, len(b"event:") + 1):
+        scanner = _scan("", _RESP_SSE, step)
+        fields = usage_row_fields(scanner.usage or {})
+        assert not scanner._parse_abandoned, f"split={step}"
+        assert fields["prompt_tokens"] == 23, f"split={step}"
+        assert fields["completion_tokens"] == 5, f"split={step}"
+        assert scanner.completeness == "final", f"split={step}"
+
+
+def test_sniff_no_content_type_data_first_survives_every_byte_split():
+    for step in range(1, len(b"data:") + 1):
+        scanner = _scan("", _OAI_SSE, step)
+        fields = usage_row_fields(scanner.usage or {})
+        assert not scanner._parse_abandoned, f"split={step}"
+        assert fields["prompt_tokens"] == 100, f"split={step}"
+        assert fields["completion_tokens"] == 50, f"split={step}"
+        assert scanner.completeness == "final", f"split={step}"
+
+
+def test_sniff_no_content_type_comment_id_retry_lines_parse():
+    body = (
+        b": keep-alive\n"
+        b"id: 42\n"
+        b"retry: 1000\n"
+        + _OAI_SSE
+    )
+    for step in (1, 2, 3):
+        scanner = _scan("", body, step)
+        fields = usage_row_fields(scanner.usage or {})
+        assert not scanner._parse_abandoned, f"split={step}"
+        assert fields["prompt_tokens"] == 100, f"split={step}"
+        assert scanner.completeness == "final", f"split={step}"
+
+
+def test_sniff_no_content_type_json_and_garbage_unchanged():
+    body = b'{"model":"gpt","usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}'
+    for step in (1, 7, len(body)):
+        scanner = _scan("", body, step)
+        fields = usage_row_fields(scanner.usage or {})
+        assert fields["prompt_tokens"] == 11 and fields["completion_tokens"] == 4
+        assert scanner.completeness == "final", f"split={step}"
+    # A bounded prefix that can never decide (whitespace past the sniff
+    # budget) still abandons honestly instead of buffering forever.
+    scanner = UsageScanner("")
+    scanner.feed(b" " * 70)
+    scanner.feed(_OAI_SSE)
+    scanner.finish()
+    assert scanner._parse_abandoned
+    assert scanner.usage is None
+    # Non-SSE, non-JSON first byte still abandons at once.
+    scanner = _scan("", b"<html>nope</html>", 1)
+    assert scanner._parse_abandoned
+    assert scanner.usage is None
+
+
+def test_multiline_event_memory_bounded_during_feed():
+    # Many sub-budget data: lines in ONE event, no terminating blank line:
+    # the parser must abandon mid-event, before any dispatch, and release
+    # what it retained.
+    line = b"data: " + b"x" * 500_000 + b"\n"
+    scanner = UsageScanner("text/event-stream")
+    peak_held = 0
+    for _ in range(64):  # 32MB of event data if never bounded
+        scanner.feed(line)
+        peak_held = max(peak_held, sum(len(d) for d in scanner._sse._data_lines))
+        if scanner._sse.abandoned:
+            break
+    assert scanner._sse.abandoned, "cumulative event bytes exceeded budget mid-feed"
+    assert peak_held <= MAX_PARSE_BYTES, f"peak_held={peak_held}"
+    assert not scanner._sse._data_lines, "retained buffers cleared on abandonment"
+
+
+def test_single_oversized_line_still_abandons():
+    scanner = UsageScanner("text/event-stream")
+    huge = b"data: " + b"z" * (MAX_PARSE_BYTES + 10) + b"\n\n"
+    for i in range(0, len(huge), 65536):
+        scanner.feed(huge[i : i + 65536])
+    scanner.finish()
+    assert scanner._sse.abandoned
+    assert scanner.usage is None

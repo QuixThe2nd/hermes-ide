@@ -324,11 +324,19 @@ class _SSEEventParser:
     abandons parsing (forwarding continues untouched).
     """
 
-    __slots__ = ("_buffer", "_data_lines", "_event_name", "_on_event", "_abandoned")
+    __slots__ = (
+        "_buffer",
+        "_data_lines",
+        "_data_bytes",
+        "_event_name",
+        "_on_event",
+        "_abandoned",
+    )
 
     def __init__(self, on_event: Callable[[str, str], None]):
         self._buffer = bytearray()
         self._data_lines: list[str] = []
+        self._data_bytes = 0
         self._event_name = ""
         self._on_event = on_event
         self._abandoned = False
@@ -337,13 +345,21 @@ class _SSEEventParser:
     def abandoned(self) -> bool:
         return self._abandoned
 
+    def _abandon(self) -> bool:
+        """Stop parsing and release everything retained so far."""
+        self._abandoned = True
+        self._buffer.clear()
+        self._data_lines = []
+        self._data_bytes = 0
+        self._event_name = ""
+        return False
+
     def feed(self, chunk: bytes) -> None:
         if self._abandoned:
             return
         self._buffer.extend(chunk)
         if len(self._buffer) > MAX_PARSE_BYTES:
-            self._abandoned = True
-            self._buffer.clear()
+            self._abandon()
             return
         while True:
             newline = self._buffer.find(b"\n")
@@ -372,12 +388,12 @@ class _SSEEventParser:
             return not self._abandoned
         if line.startswith(":"):
             return True  # SSE comment / keep-alive
-        if len(self._data_lines) * 2 + len(line) > MAX_PARSE_BYTES:
-            self._abandoned = True
-            self._buffer.clear()
-            return False
+        if self._data_bytes + len(line) > MAX_PARSE_BYTES:
+            return self._abandon()
         if line.startswith("data:"):
-            self._data_lines.append(line[len("data:") :].lstrip(" "))
+            data = line[len("data:") :].lstrip(" ")
+            self._data_lines.append(data)
+            self._data_bytes += len(data)
         elif line.startswith("event:"):
             self._event_name = line[len("event:") :].strip()
         return True
@@ -387,6 +403,7 @@ class _SSEEventParser:
             data = "\n".join(self._data_lines)
             name = self._event_name
             self._data_lines = []
+            self._data_bytes = 0
             self._event_name = ""
             self._on_event(name, data)
 
@@ -487,10 +504,11 @@ class UsageScanner:
                 self._parse_abandoned = True
                 self._json_buffer.clear()
 
-    # Format inference reads only the leading bytes of the body, and an
-    # undecidable prefix abandons parsing rather than guessing: SSE and JSON
-    # bodies are already distinct at their first non-whitespace byte, and
-    # anything else is forwarded untouched with usage left honestly missing.
+    # Format inference reads only the leading bytes of the body. A buffered
+    # prefix that is a proper prefix of an SSE field/comment marker (b"e",
+    # b"ev", b"dat", ...) is undecidable, so it keeps buffering within the
+    # sniff budget; anything that can never decide abandons parsing rather
+    # than guessing, forwarded untouched with usage left honestly missing.
     _SNIFF_LIMIT = 64
     _SSE_LINE_PREFIXES = (b"event:", b"data:", b"id:", b"retry:", b":")
 
@@ -505,6 +523,13 @@ class UsageScanner:
             self._events = True
         elif head[:1] in (b"{", b"["):
             self._json = True
+        elif any(p.startswith(head) for p in self._SSE_LINE_PREFIXES):
+            # Proper prefix of an SSE marker (e.g. b"e", b"dat"): wait for
+            # more bytes, bounded by the sniff budget so a prefix that never
+            # resolves still stops parsing honestly.
+            if len(self._sniff_buffer) > self._SNIFF_LIMIT:
+                self._parse_abandoned = True
+            return False
         else:
             self._parse_abandoned = True
             return False
