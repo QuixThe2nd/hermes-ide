@@ -654,6 +654,21 @@ def test_usage_row_fields_covers_all_families():
     assert anthropic["cache_creation_tokens"] == 6
     assert anthropic["total_tokens"] == 41
 
+    # Missing base input stays unknown: 0 + cache components would report a
+    # measured prompt/total that is really just the cache detail.
+    cache_only = usage_row_fields(
+        {
+            "output_tokens": 20,
+            "cache_read_input_tokens": 40,
+            "cache_creation_input_tokens": 12,
+        }
+    )
+    assert cache_only["prompt_tokens"] is None
+    assert cache_only["total_tokens"] is None
+    assert cache_only["completion_tokens"] == 20
+    assert cache_only["cached_tokens"] == 40
+    assert cache_only["cache_creation_tokens"] == 12
+
 
 def test_default_upstreams_and_argv_parsing():
     assert DEFAULT_UPSTREAMS["openai-codex"] == "https://chatgpt.com/backend-api/codex"

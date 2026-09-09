@@ -73,11 +73,15 @@ def _dedup(bases: Iterable[str]) -> list[str]:
 
 
 def _env_override_base(provider_id: str, environ: Optional[Mapping[str, str]]) -> list[str]:
-    """The provider's own declared base-URL env var, if the profile set one."""
-    if environ is None:
-        import os
+    """The provider's own declared base-URL env var, if the profile set one.
 
-        environ = os.environ
+    Resolution is profile-scoped: the process ``os.environ`` may carry a
+    stale shell export or a sibling profile's value under the multiplexed
+    gateway, so the unset case reads through the credential layer's scoped
+    resolver (profile ``.env`` first, then the secret scope). Pass
+    ``environ`` explicitly to pin the mapping — nothing here writes to the
+    environment.
+    """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
     except Exception:  # pragma: no cover - hermes_cli always present in-product
@@ -86,20 +90,39 @@ def _env_override_base(provider_id: str, environ: Optional[Mapping[str, str]]) -
     var = getattr(config, "base_url_env_var", None) if config else None
     if not var:
         return []
-    value = str(environ.get(var) or "").strip().rstrip("/")
+    if environ is not None:
+        value = str(environ.get(var) or "").strip().rstrip("/")
+    else:
+        try:
+            from hermes_cli.config import get_env_value_prefer_dotenv
+        except Exception:  # pragma: no cover - config layer always present
+            return []
+        value = str(get_env_value_prefer_dotenv(var) or "").strip().rstrip("/")
     return [value] if value else []
 
 
 def _pool_entry_bases(provider_id: str) -> list[str]:
-    """Base URLs pinned by rotation accounts — read-only, no selection."""
-    try:
-        from agent.credential_pool import load_pool
+    """Base URLs pinned by rotation accounts — read-only, no selection.
 
-        entries = load_pool(provider_id).entries()
+    ``read_credential_pool`` returns the persisted rows (profile-authoritative
+    with a read-only global-root fallback). ``load_pool`` is deliberately
+    avoided here: it seeds from singletons/env, prunes, and can write the pool
+    back, so route discovery would become a credential mutation.
+    """
+    try:
+        from agent.credential_pool import PooledCredential
+        from hermes_cli.auth import read_credential_pool
+
+        raw_entries = read_credential_pool(provider_id)
+        entries = [
+            PooledCredential.from_dict(provider_id, payload)
+            for payload in raw_entries or []
+            if isinstance(payload, dict)
+        ]
     except Exception:
         return []
     bases = []
-    for entry in entries or []:
+    for entry in entries:
         base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
         if base:
             bases.append(str(base))

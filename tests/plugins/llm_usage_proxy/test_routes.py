@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -358,3 +359,66 @@ def test_routing_state_and_reroute_url_are_profile_scoped(two_profiles):
         "https://api.z.ai/api/paas/v4/chat/completions",
         profile=key_b,
     ) is None
+
+
+def test_env_override_base_reads_profile_scope_not_process_environ(
+    two_profiles, monkeypatch
+):
+    """Discovery resolves the provider env var through the profile, not the shell.
+
+    A value inherited from the parent shell must not win over the profile's
+    own ``.env`` — otherwise route discovery in the multiplexed gateway would
+    register a sibling profile's endpoint.
+    """
+    from plugins.llm_usage_proxy.routes import provider_route_bases
+
+    prof_a, _ = two_profiles
+    monkeypatch.setenv("GLM_BASE_URL", "https://shell-env.example/api/paas/v4")
+    (prof_a / ".env").write_text(
+        "GLM_BASE_URL=https://profile-env.example/api/paas/v4\n", encoding="utf-8"
+    )
+
+    bases = _under_override(prof_a, lambda: provider_route_bases("zai"))
+
+    assert "https://profile-env.example/api/paas/v4" in bases
+    assert "https://shell-env.example/api/paas/v4" not in bases
+    # Discovery is a read: the process environment is left untouched.
+    import os
+
+    assert os.environ.get("GLM_BASE_URL") == "https://shell-env.example/api/paas/v4"
+
+
+def test_pool_entry_bases_are_read_from_disk_without_mutating_credentials(
+    two_profiles, monkeypatch
+):
+    """Route discovery must not select, seed, refresh, or rewrite the pool."""
+    from plugins.llm_usage_proxy.routes import provider_route_bases
+
+    prof_a, _ = two_profiles
+    auth_file = prof_a / "auth.json"
+    pool_entry = {
+        "id": "acct-1",
+        "label": "rotation-a",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "test",
+        "access_token": "sk-test",
+        "base_url": "https://pool-pinned.example/api/paas/v4",
+    }
+    auth_file.write_text(
+        json.dumps({"version": 1, "providers": {}, "credential_pool": {"zai": [pool_entry]}}),
+        encoding="utf-8",
+    )
+    before = auth_file.read_bytes()
+
+    def _discover():
+        assert provider_route_bases("zai") == [
+            "https://api.z.ai/api/paas/v4",
+            "https://api.z.ai/api/coding/paas/v4",
+            "https://pool-pinned.example/api/paas/v4",
+        ]
+        # Any of load_pool's write-throughs would have changed the bytes.
+        assert auth_file.read_bytes() == before
+        assert not list(prof_a.glob("*.corrupt"))
+
+    _under_override(prof_a, _discover)

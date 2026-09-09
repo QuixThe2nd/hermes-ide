@@ -252,10 +252,10 @@ def usage_row_fields(usage: Mapping[str, Any]) -> dict[str, Optional[int]]:
         usage.get("cache_creation_input_tokens"),
         prompt_details.get("cache_creation") if not anthropic_style else None,
     )
-    if anthropic_style:
+    if anthropic_style and prompt is not None:
         # Additive components: include exactly once in the normalized total.
-        if prompt is None:
-            prompt = 0
+        # A missing base input stays missing — substituting 0 would report a
+        # measured prompt/total that is really just the cache components.
         prompt = prompt + (cache_read or 0) + (cache_creation or 0)
     reasoning = _first_int(
         completion_details.get("reasoning_tokens"),
