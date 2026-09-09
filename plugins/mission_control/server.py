@@ -2502,9 +2502,13 @@ def parse_tool_calls(raw):
     Accepts both the OpenAI-ish shape ({"function": {"name",
     "arguments"}}) and flatter legacy shapes ({"name", "arguments"}).
     arguments may be a JSON string or an already-parsed object; ids
-    collects every non-empty id-ish field a tool result could echo
-    back (id, call_id, response_item_id). Malformed input yields [] —
-    the page and the feed simply see no pending calls from it.
+    collects every non-empty id-ish field a tool result could echo back
+    — canonical first (call_id, the Responses pairing key the executor
+    and the spawn receipts use, matching coalesce_tool_call_id), then
+    the legacy transport aliases (id, response_item_id) — so a caller
+    taking the first id correlates the way the runtime does. Malformed
+    input yields [] — the page and the feed simply see no pending calls
+    from it.
     """
     if not raw or not isinstance(raw, str):
         return []
@@ -2539,7 +2543,7 @@ def parse_tool_calls(raw):
         if not isinstance(name, str):
             name = ""
         ids = []
-        for key in ("id", "call_id", "response_item_id"):
+        for key in ("call_id", "id", "response_item_id"):
             v = c.get(key)
             if isinstance(v, str) and v:
                 ids.append(v)
@@ -3040,10 +3044,14 @@ def delegate_cards(con, profile, chain, children):
     """The dispatch cards one conversation renders at its delegate
     call carriers, plus the suppression/match fallout.
 
-    Returns {"cards", "suppress", "children"}: cards in chronological
-    order (one per dispatched task, batch calls contributing several at
-    one carrier), suppress the set of tool_call ids whose generic
-    delegate result row a card replaces, and children the sub-agent
+    Returns {"cards", "suppress", "children"}: cards in carrier
+    discovery order (one per dispatched task, batch calls contributing
+    several at one carrier; repeated delegate_claude_agent carriers of
+    one (session, call id) pair fold into a single card tied to the
+    latest carrier, because the redriven execution's receipt replaces
+    the earlier one at the same path), suppress the set of tool_call
+    ids whose generic delegate result row a card replaces, and children
+    the sub-agent
     list minus every child a card absorbed (a matched child renders AS
     its dispatch card — linked, with the child's own state — never as a
     second standalone row). Matching is one-to-one and fail-open: a
@@ -3072,6 +3080,7 @@ def delegate_cards(con, profile, chain, children):
     cards = []
     suppress = set()
     seen_keys = {}
+    claude_carriers = {}
     for row_id, row_sid, ts, raw in carriers:
         try:
             carrier_ts = float(ts)
@@ -3089,18 +3098,39 @@ def delegate_cards(con, profile, chain, children):
             if call_id:
                 suppress.add(call_id)
             base = call_id or "row%d" % row_id
+            sid = str(row_sid or "")
             for idx, spawn in enumerate(spawns):
+                # A redriven delegate_claude_agent call reuses its exact
+                # (carrier session, canonical call id) pair, and the
+                # second execution's spawn receipt atomically replaces
+                # the first at the same path: the pair names ONE logical
+                # dispatch. Repeated carriers therefore fold into a
+                # single card that follows the LATEST carrier (its time,
+                # label, model) — the one execution the receipt can ever
+                # point at — instead of multiplying cards that would all
+                # silently retarget to the newest run. Distinct sessions
+                # sharing one call id, independent calls, id-less
+                # carriers and every other delegate tool keep their
+                # per-carrier cards.
+                if call_id and spawn["tool"] == "delegate_claude_agent":
+                    prior = claude_carriers.get((sid, call_id))
+                    if prior is not None:
+                        prior["ts"] = carrier_ts
+                        prior["label"] = clamp_label(spawn["label"])
+                        prior["model"] = spawn.get("model") or ""
+                        continue
                 key = delegate_dom_key(base, idx)
-                # Two carriers echoing one call id (a redrive) must not
-                # share a DOM key: bump the suffix until it is unique.
+                # Distinct dispatches sharing one base key (one call id
+                # echoed in two chain sessions, say) must not share a
+                # DOM key: bump the suffix until it is unique.
                 bump = seen_keys.get(key, 0)
                 seen_keys[key] = bump + 1
                 if bump:
                     key = "%s-%d" % (key, bump)
-                cards.append({
+                card = {
                     "key": key,
                     "call_id": call_id,
-                    "sid": str(row_sid or ""),
+                    "sid": sid,
                     "ts": carrier_ts,
                     "tool": spawn["tool"],
                     "label": clamp_label(spawn["label"]),
@@ -3110,7 +3140,10 @@ def delegate_cards(con, profile, chain, children):
                     "delegation": None,
                     "result_ts": (result_times.get(call_id)
                                   if call_id else None),
-                })
+                }
+                cards.append(card)
+                if call_id and spawn["tool"] == "delegate_claude_agent":
+                    claude_carriers[(sid, call_id)] = card
 
     # Delegation matching first (the durable dispatch record), one goal
     # slot per card, only inside the window with agreeing text.
@@ -6665,11 +6698,14 @@ $next_subagent</main>
 
   // Park a fresh keyed row at the tail, then walk the timeline to its
   // chronological position: before the first existing row whose data-ts
-  // is newer. Rows without data-ts (an optimistic user bubble, the
-  // typing/waiting tails) count as newest, so the card lands above
-  // them; one already-rendered tool group the card's time falls
-  // inside is not split client-side — the next full render shows the
-  // true split.
+  // is newer. Every server-rendered row carries data-ts (text bubbles
+  // their message time, a tool group its oldest row's time, keyed rows
+  // their dispatch time), so a late-discovered dispatch card slots in
+  // before later transcript output that is already on screen. Rows
+  // without data-ts (an optimistic user bubble, the typing/waiting
+  // tails) count as newest, so the card lands above them; one
+  // already-rendered tool group the card's time falls inside is not
+  // split client-side — the next full render shows the true split.
   function insertChildRow(key, html, ts) {
     if (!list) return;
     if (typingRow) typingRow.insertAdjacentHTML("beforebegin", html);
@@ -6739,7 +6775,11 @@ $next_subagent</main>
   // Build the floating control the moment a first keyed row exists
   // (the server omits it entirely on pages without children); its
   // markup is fixed text, so no child-controlled string is ever
-  // interpolated.
+  // interpolated. A poll-built anchor appears AFTER the one-time
+  // startup wiring ran, so it attaches its own stepper here — exactly
+  // once (the early return guards re-entry), mirroring the listener the
+  // server-rendered pill gets at startup; without it the dynamic
+  // control stays a dead href="#" anchor.
   function ensureNextSub() {
     if (nextSub || !mainEl) return;
     var a = document.createElement("a");
@@ -6748,6 +6788,7 @@ $next_subagent</main>
     a.href = "#";
     a.innerHTML = '<span aria-hidden="true">&darr;</span> ' +
                   'Next sub-agent';
+    a.addEventListener("click", stepNextSub);
     mainEl.appendChild(a);
     nextSub = a;
   }
@@ -7855,16 +7896,22 @@ def render_tool_group(tools):
             % (esc(t["tool"]), esc(fmt_time(t["ts"])),
                esc(fmt_short(t["ts"])), detail))
 
+    # data-ts anchors the group at its OLDEST row's time — the position
+    # the run occupies in the flat timeline — so a late-discovered
+    # dispatch card can be placed against it during feed reconciliation;
+    # a card whose time falls inside the span is not split client-side
+    # (the next full render shows the true split).
     return (
-        '<li class="tool-group" data-first-id="%d"><details class="tg">'
+        '<li class="tool-group" data-first-id="%d" data-ts="%.3f">'
+        '<details class="tg">'
         '<summary class="tg-sum">'
         '<span class="tg-count">%s</span>'
         '<span class="tg-chips">%s</span>'
         '<span class="tg-when" title="%s">%s</span>'
         '</summary><ol class="tg-list">%s</ol>'
         '</details></li>\n'
-        % (tools[0]["id"], esc(label), "".join(chips), esc(span_full),
-           esc(span), "".join(rows)))
+        % (tools[0]["id"], tools[0]["ts"], esc(label), "".join(chips),
+           esc(span_full), esc(span), "".join(rows)))
 
 
 def render_chat_text(it, cont="", identity=None):
@@ -7899,24 +7946,28 @@ def render_chat_text(it, cont="", identity=None):
         # Continuation: no avatar, no author — a small timestamp in the
         # gutter, revealed while the row is hovered (CSS).
         return (
-            '<li class="msg %s%s">'
+            '<li class="msg %s%s" data-ts="%.3f">'
             '<span class="msg-gutter">'
             '<span class="mtime" title="%s">%s</span></span>'
             '<div class="msg-body"><p class="text">%s</p></div></li>\n'
-            % (side, cont, esc(fmt_time(it["ts"])),
+            % (side, cont, it["ts"], esc(fmt_time(it["ts"])),
                esc(fmt_hhmm(it["ts"])), esc(it["text"])))
     # Letter badge with the optional avatar image layered on top; when
     # the file is missing the img never renders, and when it fails
     # mid-load the error listener hides it — the letter always shows.
+    # data-ts is the row's message time on both shapes: the client-side
+    # dispatch-card reconciliation places a late-discovered card against
+    # it (rows without data-ts — the optimistic bubble, the typing and
+    # waiting tails — still count as newest).
     return (
-        '<li class="msg %s">'
+        '<li class="msg %s" data-ts="%.3f">'
         '<span class="avatar" title="%s">'
         '<span aria-hidden="true">%s</span>%s</span>'
         '<div class="msg-body">'
         '<div class="msg-head"><span class="msg-author">%s</span>'
         '<span class="mtime" title="%s">%s</span></div>'
         '<p class="text">%s</p></div></li>\n'
-        % (side, esc(av_title),
+        % (side, it["ts"], esc(av_title),
            esc(av_letter), av_img, esc(author), esc(fmt_time(it["ts"])),
            esc(fmt_short(it["ts"])), esc(it["text"])))
 
