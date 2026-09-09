@@ -151,7 +151,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Discord has a native "subtext" primitive (-# small grey text) that reads
     # as metadata rather than content, so reasoning summaries default to it
     # here instead of the fenced code block used elsewhere.
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
+    # Discord's long-running heartbeat defaults to the clean generic phrase
+    # ("⏳ still working") instead of the raw diagnostic join ("⏳ Working —
+    # 3 min — iteration N/M, <provider wait notice>"). Raw detail remains
+    # available via display.platforms.discord.long_running_notifications: true
+    # (plus busy_ack_detail for the iteration counter).
+    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext", "long_running_notifications": "generic"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;

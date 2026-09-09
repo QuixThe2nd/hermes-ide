@@ -54,3 +54,20 @@ def test_choose_status_phrase_uses_custom_catalog_without_leaking_args():
 
     assert msg == "custom safe status text"
     assert "SECRET" not in msg
+
+
+def test_discord_zero_config_heartbeat_is_clean_generic_phrase():
+    """No config set → Discord resolves generic mode and the deterministic
+    heartbeat phrase (no elapsed time, iteration counter, or wait notices)."""
+    from gateway.display_config import resolve_display_setting
+
+    assert (
+        resolve_display_setting({}, "discord", "long_running_notifications", True)
+        == "generic"
+    )
+    assert (
+        choose_status_phrase(
+            "status", catalog=resolve_status_phrase_catalog({}, "discord")
+        )
+        == "⏳ still working"
+    )

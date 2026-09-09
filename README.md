@@ -42,7 +42,7 @@ Adding a guest through `discord_guests` creates a private `#<guest>-<host>-loung
 
 Power users will have noticed that when Hermes is used too much, Discord rate limits it from creating new threads. Hermes IDE handles this automatically by queuing threads to be auto-created once the rate limit passes.
 
-Stock Hermes is also inconsistent about when it pings you, so you end up jumping between threads checking which one needs input. Hermes IDE avoids pinging you on iterations or mid-run messages, but will reply to you or ping you on the final message. I found this simple change improved my productivity a lot, because I stopped burning mental bandwidth rotating between 20 chats for hours straight waiting for one to complete.
+Stock Hermes is also inconsistent about when it pings you, so you end up jumping between threads checking which one needs input. Hermes IDE avoids pinging you on iterations or mid-run messages, but will reply to you or ping you on the final message. I found this simple change improved my productivity a lot, because I stopped burning mental bandwidth rotating between 20 chats for hours straight waiting for one to complete. The long-running heartbeat is clean by default too: it reads exactly `⏳ still working` with no elapsed time, iteration counter, or provider diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line.
 
 The smaller edges are handled too. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit.
 
