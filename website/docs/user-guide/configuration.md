@@ -1919,7 +1919,7 @@ display:
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   notify_on_complete: false        # Native OS notification when a turn finishes (titled with the chat/session title; interrupted turns stay silent)
   notify_on_complete_command: ""   # Optional shell-command override; env vars HERMES_NOTIFY_TITLE/SUBTITLE/BODY/PLATFORM/SESSION_ID provided
-  notify_on_complete_ssh: ""       # Optional SSH target (e.g. "parsas-macbook-pro") — runs the AppleScript on that Mac (Linux gateway → Mac desktop)
+  notify_on_complete_ssh: ""       # Optional SSH target (e.g. "living-room-macbook") — runs the AppleScript on that Mac (Linux gateway → Mac desktop)
   bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
   # Both bell flags also emit an OSC 9 desktop notification (Ghostty, iTerm2, Kitty, WezTerm raise an OS
   # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
