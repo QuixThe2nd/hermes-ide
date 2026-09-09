@@ -5130,6 +5130,7 @@ def _format_context_injection_progress(
     message_limit: int,
     supports_code_blocks: bool,
     message_len_fn: Callable[[str], int] = len,
+    include_content: bool = True,
 ) -> list[str]:
     """Render API-bound ephemeral context as tool-style progress cards.
 
@@ -5139,9 +5140,16 @@ def _format_context_injection_progress(
     gateway; the model still receives the untouched API content. Long blocks
     are split below the adapter's message cap so Discord/Telegram edits cannot
     fail merely because Honcho returned a healthy amount of autobiography.
+
+    When ``include_content`` is False, return only the source label line with
+    no char count, fences, body, or continuation chunks.
     """
     if not isinstance(content, str) or not content:
         return []
+
+    source_label = " + ".join(str(s) for s in sources if s) or "turn"
+    if not include_content:
+        return [f"🧠 {source_label} context injected"]
 
     from agent.redact import redact_sensitive_text
 
@@ -5156,7 +5164,6 @@ def _format_context_injection_progress(
     # differ, and recalled text must never wake another user by accident.
     visible = visible.replace("@", "@\u200b")
 
-    source_label = " + ".join(str(s) for s in sources if s) or "turn"
     header = f"🧠 {source_label} context injected (+{max(0, int(injected_chars)):,} chars)"
     continuation = f"🧠 {source_label} context injected (continued)"
     measure = message_len_fn if callable(message_len_fn) else len
@@ -5349,6 +5356,25 @@ class TurnRunner:
                         message_len_fn = candidate_len_fn
                 except Exception:
                     pass
+            # display.context_injection_content collapses the card to its
+            # label line. Resolve from ctx.user_config (already loaded for
+            # this turn) rather than re-reading disk: this callback runs on
+            # the agent worker thread inside _profile_runtime_scope, where
+            # _load_gateway_config could race the profile swap. Display-only:
+            # the model still receives the full injected content either way.
+            try:
+                platform = getattr(ctx.source, "platform", None)
+                platform_key = (
+                    _platform_config_key(platform) if platform is not None else "cli"
+                )
+                include_content = _resolve_gateway_display_bool(
+                    ctx.user_config or {},
+                    platform_key,
+                    "context_injection_content",
+                    default=True,
+                )
+            except Exception:
+                include_content = True
             messages = _format_context_injection_progress(
                 content=content,
                 injected_chars=args.get("injected_chars", len(content)),
@@ -5356,6 +5382,7 @@ class TurnRunner:
                 message_limit=message_limit,
                 supports_code_blocks=bool(getattr(adapter, "supports_code_blocks", False)),
                 message_len_fn=message_len_fn,
+                include_content=include_content,
             )
             for message in messages:
                 ctx.progress_queue.put(message)

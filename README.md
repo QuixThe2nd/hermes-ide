@@ -26,7 +26,7 @@ Hermes Starts is what lets the agent speak first. It creates and pins its own Di
 
 Discord History provides read-only search over an owner-authorized PostgreSQL archive of Discord messages. It is opt-in and off by default. Papercuts keeps a structured journal of workflow friction, and its optional daily autofix cron, installed with `hermes papercuts autofix install`, turns small mechanical fixes into PRs.
 
-Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats.
+Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats. The injection card respects `display.context_injection_content`: the default keeps the redacted full-content card, `false` collapses it to a single `🧠 memory context injected` line, and multiplexed profiles plus `display.platforms.<platform>` overrides each resolve their own value. It is display-only — the injected context still reaches the model unchanged.
 
 The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates Discord voice channels under a Models category — one row each for Codex, Kimi, Cursor, and Grok, and one row per Z.AI credential-pool wallet (`z.ai 1`, `z.ai 2`, …) — ordered with the same score used by fallback routing:
 
