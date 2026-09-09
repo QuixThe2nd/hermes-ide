@@ -1,0 +1,13 @@
+[Unit]
+Description=Hermes usage-proxy ledger web UI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.hermes/scratch/usage-proxy-webui
+ExecStart=/usr/bin/python3 server.py --host 192.168.30.20 --port 9136
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
