@@ -401,6 +401,133 @@ def test_sse_codex_responses_completed_event_usage(start_upstream, start_proxy):
     assert row["reasoning_tokens"] == 4
 
 
+# ── 3b. responses with no Content-Type ───────────────────────────────────────
+
+
+def respond_sse_no_content_type(events: list[bytes]):
+    """Fake upstream that streams SSE but omits Content-Type entirely.
+
+    chatgpt.com/backend-api/codex is observed doing exactly this: 200, chunked
+    body, no ``Content-Type`` and no ``Content-Encoding``. The declared type
+    therefore cannot pick the parser.
+    """
+
+    def _respond(handler: BaseHTTPRequestHandler) -> None:
+        handler.send_response(200)
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        for event in events:
+            handler.wfile.write(b"%x\r\n" % len(event) + event + b"\r\n")
+        handler.wfile.write(b"0\r\n\r\n")
+
+    return _respond
+
+
+_CODEX_EVENTS = [
+    b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+    b'event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-6-astra","usage":{"input_tokens":23,"output_tokens":5,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}\n\n',
+    b"data: [DONE]\n\n",
+]
+
+
+def test_codex_sse_without_content_type_records_usage(start_upstream, start_proxy):
+    upstream = start_upstream(respond_sse_no_content_type(_CODEX_EVENTS))
+    proxy = start_proxy(
+        {"openai-codex": f"http://127.0.0.1:{upstream.server_address[1]}"}
+    )
+
+    status, headers, _ = proxy_request(
+        proxy.server_address[1],
+        "POST",
+        "/p/openai-codex/responses",
+        body=json.dumps({"model": "gpt-6-astra", "stream": True}).encode(),
+    )
+    assert status == 200
+    assert "Content-Type" not in {name.title() for name in headers}
+
+    row = wait_for_row_count(proxy.store.path, 1)[0]
+    assert row["model"] == "gpt-6-astra"
+    assert row["prompt_tokens"] == 23
+    assert row["completion_tokens"] == 5
+    assert row["usage_complete"] == "final"
+    assert row["status_code"] == 200
+
+
+def test_no_content_type_json_usage_recorded(start_upstream, start_proxy):
+    """Inference is not SSE-specific: an unlabelled JSON body parses too."""
+
+    def _respond(handler: BaseHTTPRequestHandler) -> None:
+        body = json.dumps(
+            {
+                "id": "resp_1",
+                "model": "gpt-6-astra",
+                "usage": {"input_tokens": 11, "output_tokens": 3},
+            }
+        ).encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    upstream = start_upstream(_respond)
+    proxy = start_proxy(
+        {"openai-codex": f"http://127.0.0.1:{upstream.server_address[1]}"}
+    )
+
+    status, _, _ = proxy_request(
+        proxy.server_address[1],
+        "POST",
+        "/p/openai-codex/responses",
+        body=json.dumps({"model": "gpt-6-astra"}).encode(),
+    )
+    assert status == 200
+
+    row = wait_for_row_count(proxy.store.path, 1)[0]
+    assert row["model"] == "gpt-6-astra"
+    assert row["prompt_tokens"] == 11
+    assert row["completion_tokens"] == 3
+    assert row["usage_complete"] == "final"
+
+
+def test_no_content_type_body_is_forwarded_byte_for_byte(start_upstream, start_proxy):
+    upstream = start_upstream(respond_sse_no_content_type(_CODEX_EVENTS))
+    proxy = start_proxy(
+        {"openai-codex": f"http://127.0.0.1:{upstream.server_address[1]}"}
+    )
+
+    status, _, body = proxy_request(
+        proxy.server_address[1],
+        "POST",
+        "/p/openai-codex/responses",
+        body=json.dumps({"model": "gpt-6-astra", "stream": True}).encode(),
+    )
+    assert status == 200
+    assert body == b"".join(_CODEX_EVENTS)
+
+
+def test_unrecognized_body_without_content_type_stays_missing(start_upstream, start_proxy):
+    """A body that is neither SSE nor JSON records an honest missing row."""
+    body = b"<html><body>gateway timeout</body></html>"
+    upstream = start_upstream(respond_sse_no_content_type([body]))
+    proxy = start_proxy(
+        {"openai-codex": f"http://127.0.0.1:{upstream.server_address[1]}"}
+    )
+
+    status, _, forwarded = proxy_request(
+        proxy.server_address[1],
+        "POST",
+        "/p/openai-codex/responses",
+        body=json.dumps({"model": "gpt-6-astra", "stream": True}).encode(),
+    )
+    assert status == 200
+    assert forwarded == body
+
+    row = wait_for_row_count(proxy.store.path, 1)[0]
+    assert row["usage_complete"] == "missing"
+    assert row["prompt_tokens"] is None
+    assert row["completion_tokens"] is None
+
+
 # ── 4. stream_options.include_usage injection ────────────────────────────────
 
 

@@ -402,8 +402,14 @@ class UsageScanner:
     """
 
     def __init__(self, content_type: str, content_encoding: str = ""):
-        self._events = "event-stream" in (content_type or "").lower()
-        self._json = not self._events and "json" in (content_type or "").lower()
+        declared = (content_type or "").lower()
+        self._events = "event-stream" in declared
+        self._json = not self._events and "json" in declared
+        # Some upstreams (observed on chatgpt.com/backend-api/codex) answer 200
+        # with no Content-Type at all. The declared type can no longer pick a
+        # parser, so the first bytes of the body decide instead — see
+        # _sniff_format.
+        self._format_unknown = not self._events and not self._json
         self._decoder: Optional[zlib.Decompress] = None
         encoding = (content_encoding or "").lower().strip()
         if encoding in {"gzip", "x-gzip"}:
@@ -411,6 +417,7 @@ class UsageScanner:
         elif encoding == "deflate":
             self._decoder = zlib.decompressobj(zlib.MAX_WBITS)
         self._json_buffer = bytearray()
+        self._sniff_buffer = bytearray()
         self._decompressed_total = 0
         self._parse_abandoned = False
         self.usage: Optional[dict] = None
@@ -466,6 +473,12 @@ class UsageScanner:
             self._terminal_seen = True
 
     def _ingest_text(self, text: bytes) -> None:
+        if self._format_unknown:
+            self._sniff_buffer.extend(text)
+            if not self._sniff_format():
+                return
+            text = bytes(self._sniff_buffer)
+            self._sniff_buffer = bytearray()
         if self._events:
             self._sse.feed(text)
         elif self._json:
@@ -473,6 +486,30 @@ class UsageScanner:
             if len(self._json_buffer) > MAX_PARSE_BYTES:
                 self._parse_abandoned = True
                 self._json_buffer.clear()
+
+    # Format inference reads only the leading bytes of the body, and an
+    # undecidable prefix abandons parsing rather than guessing: SSE and JSON
+    # bodies are already distinct at their first non-whitespace byte, and
+    # anything else is forwarded untouched with usage left honestly missing.
+    _SNIFF_LIMIT = 64
+    _SSE_LINE_PREFIXES = (b"event:", b"data:", b"id:", b"retry:", b":")
+
+    def _sniff_format(self) -> bool:
+        """Decide SSE vs JSON from the buffered prefix; True once decided."""
+        head = self._sniff_buffer.lstrip()
+        if not head:
+            if len(self._sniff_buffer) > self._SNIFF_LIMIT:
+                self._parse_abandoned = True
+            return False
+        if head.startswith(self._SSE_LINE_PREFIXES):
+            self._events = True
+        elif head[:1] in (b"{", b"["):
+            self._json = True
+        else:
+            self._parse_abandoned = True
+            return False
+        self._format_unknown = False
+        return True
 
     def feed(self, chunk: bytes) -> None:
         if self._parse_abandoned or not chunk:
