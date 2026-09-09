@@ -125,6 +125,33 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
     return route
 
 
+class _ObservedRouteInfo(Dict[str, str]):
+    """``route_info`` dict that reports the selected route the moment it is known.
+
+    ``call_llm`` records the one concrete route it selected via item
+    assignment (``auxiliary_client._record_route_info``), possibly more than
+    once when it falls back to a secondary route mid-call. This subclass
+    notifies the compressor as soon as BOTH halves are present — while the
+    summary call is still in flight — so the presentation layer can name the
+    real summarizer without pre-resolving (and potentially diverging from)
+    the route itself.
+    """
+
+    __slots__ = ("_notify",)
+
+    def __init__(self, notify: Any) -> None:
+        super().__init__()
+        self._notify = notify
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        if key in ("provider", "model"):
+            provider = self.get("provider")
+            model = self.get("model")
+            if provider and model:
+                self._notify(str(provider), str(model))
+
+
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
     """Consume the pinned route as explicit ``call_llm`` keyword arguments."""
     route = take_pinned_summary_route()
@@ -2423,6 +2450,11 @@ class ContextCompressor(ContextEngine):
             "aux_output_reservation": None,
             "aux_provider": "",
             "aux_model": "",
+            # True only when call_llm actually recorded the route it selected
+            # (route_info populated). The aux_provider/aux_model fallbacks in
+            # the recording finally are config guesses, NOT proof of the
+            # summarizer's identity — presentation must gate on this flag.
+            "aux_route_known": False,
             "effective_aux_context": None,
             "fit_margin": None,
             "chunking": False,
@@ -2465,6 +2497,7 @@ class ContextCompressor(ContextEngine):
         duration_ms: int,
         aux_provider: str | None = None,
         aux_model: str | None = None,
+        aux_route_known: bool = False,
         effective_aux_context: int | None = None,
         phase_timings: Dict[str, Any] | None = None,
     ) -> None:
@@ -2473,6 +2506,8 @@ class ContextCompressor(ContextEngine):
             return
         telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
         telemetry["aux_output_reservation"] = _safe_int(max_tokens)
+        if aux_route_known:
+            telemetry["aux_route_known"] = True
         if aux_provider:
             telemetry["aux_provider"] = aux_provider
         if aux_model:
@@ -3717,6 +3752,29 @@ class ContextCompressor(ContextEngine):
         self._last_compression_telemetry: Optional[Dict[str, Any]] = None
         self._active_compression_telemetry: Optional[Dict[str, Any]] = None
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
+        # Live route observation for the tool-style lifecycle surface
+        # (agent/compression_status.py): the moment call_llm records the
+        # route it actually selected, `_ObservedRouteInfo` calls the observer
+        # so the open episode can name the real summarizer while it works.
+        # Presentation-only; never fed back into routing decisions.
+        self._current_summary_route: Optional[Dict[str, str]] = None
+        self._summary_route_observer: Optional[Any] = None
+        self._summary_route_observer_generation: Optional[int] = None
+
+    def _on_aux_route_observed(self, provider: str, model: str) -> None:
+        """Publish the summary route the moment call_llm selects it.
+
+        The observer is a best-effort presentation hook installed by
+        agent/conversation_compression.py for the tool-style lifecycle line;
+        a broken observer must never disturb the summary call itself.
+        """
+        self._current_summary_route = {"provider": provider, "model": model}
+        observer = getattr(self, "_summary_route_observer", None)
+        if callable(observer):
+            try:
+                observer(provider, model)
+            except Exception:
+                logger.debug("summary route observer failed", exc_info=True)
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -5524,7 +5582,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             # ``call_llm`` writes the one concrete route it actually selected;
             # do not independently pre-resolve a second, potentially stale
             # provider/model pair for telemetry or fast-lane certification.
-            _aux_route: Dict[str, str] = {}
+            # The observing dict publishes that route to the presentation
+            # layer the moment it is recorded — while the call is still in
+            # flight — and again if call_llm falls back to a secondary route.
+            _aux_route: Dict[str, str] = _ObservedRouteInfo(self._on_aux_route_observed)
             call_kwargs["route_info"] = _aux_route
             # A pinned route (stall fallback, #78981) is an explicit override:
             # it replaces task routing for this one call so the retry actually
@@ -5564,9 +5625,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                     duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
                     aux_provider=_aux_provider,
                     aux_model=_aux_model,
+                    aux_route_known=route_known,
                     effective_aux_context=_aux_context,
                     phase_timings=_latency_info,
                 )
+                # The live route was for THIS call only — never let a stale
+                # observed route leak into the next attempt's presentation.
+                self._current_summary_route = None
             if self._compression_cancelled():
                 raise AuxiliaryExplicitCancellation()
             # Dict/object/str messages + reasoning-field fallback (DeepSeek /

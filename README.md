@@ -126,6 +126,8 @@ Config gains API retry backoff timing plus fallback chains for web search and we
 
 `compression.tail_mode` defaults to `lean`, which clamps the verbatim tail to 10–25K. Set it to `legacy` to restore the old `0.20 × threshold` tail.
 
+On Discord, automatic context compression reports as a single tool-style status instead of scattered notices: one `🗜️ context_compress · …` message appears when an attempt starts (`selecting compressor` until the provider route is actually chosen, then edited to name it while the summary runs) and is edited in place when the attempt resolves — `✅` with the real provider/model and before/after message counts only when compression genuinely commits (a deterministic local summary is labelled as such, never credited to a provider), or a short failure category (e.g. `summary provider timed out`) with a `/compress` retry hint when it does not. A cooldown warning after a failed attempt folds into the same message rather than posting again.
+
 For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this paragraph is upstream's README.
 
 ---
