@@ -573,7 +573,7 @@ def format_status(
         f"  Scope: {'system' if result.scope and result.scope.system else 'user'}",
         f"  Bind: {BIND_HOST}:{port}",
         f"  SQLite: {db_path()}",
-        f"  Key manager: {'on (--manage-keys; keys in ' + keys_path() + ')' if manage_keys_enabled(cfg) else 'off (credential passthrough)'}",
+        f"  Key manager: {'on (--manage-keys; keys in ' + str(keys_path()) + ')' if manage_keys_enabled(cfg) else 'off (credential passthrough)'}",
         f"  Unit installed: {'yes' if result.unit_installed else 'no'}",
         f"  Enabled: {_format_yes_no(result.enabled, known=result.enabled_known)}",
         f"  Service active: {_format_yes_no(result.service_active, known=result.service_active_known)}",
