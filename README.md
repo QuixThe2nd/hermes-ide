@@ -1,6 +1,6 @@
 # Usage Proxy Ledger Web UI
 
-A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) plus the most recent usage events. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
+A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) broken down by model and by harness (`usage_events.caller`), plus the most recent usage events. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
 
 **LAN-only, no authentication.** Bind to a private interface and do not port-forward this service to the public internet.
 

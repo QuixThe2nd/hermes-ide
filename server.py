@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 SYDNEY = ZoneInfo("Australia/Sydney")
+UNATTRIBUTED = "unattributed"
 DEFAULT_HOST = "192.168.30.20"
 DEFAULT_PORT = 9136
 DEFAULT_DB = "/root/.hermes/usage-proxy/usage.sqlite"
@@ -46,6 +47,11 @@ def fmt_int(value: Any) -> str:
     if value is None:
         return "—"
     return str(value)
+
+
+def caller_label(caller: Any) -> str:
+    """Traffic with no recorded caller cannot be attributed to a harness."""
+    return UNATTRIBUTED if not caller else str(caller)
 
 
 def query_summary(conn: sqlite3.Connection, since_ts: str | None = None) -> dict[str, Any]:
@@ -88,10 +94,33 @@ def query_summary(conn: sqlite3.Connection, since_ts: str | None = None) -> dict
         for m in models
     ]
 
+    callers = conn.execute(
+        f"""
+        SELECT
+            caller,
+            COUNT(*) AS requests,
+            SUM(total_tokens) AS total_tokens
+        FROM usage_events{where}
+        GROUP BY caller
+        ORDER BY total_tokens DESC
+        """,
+        params,
+    ).fetchall()
+
+    per_caller = [
+        {
+            "caller": caller_label(c[0]),
+            "requests": c[1] or 0,
+            "total_tokens": c[2] if c[2] is not None else 0,
+        }
+        for c in callers
+    ]
+
     return {
         "total_requests": total_requests,
         "total_tokens": total_tokens,
         "per_model": per_model,
+        "per_caller": per_caller,
     }
 
 
@@ -101,7 +130,7 @@ def query_events(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, A
         SELECT
             id, ts, upstream, model, path, status_code, latency_ms,
             prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens,
-            cache_creation_tokens, total_tokens, outcome, usage_complete
+            cache_creation_tokens, total_tokens, outcome, usage_complete, caller
         FROM usage_events
         ORDER BY id DESC
         LIMIT ?
@@ -129,6 +158,7 @@ def query_events(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, A
                 "total_tokens": r[12],
                 "outcome": r[13],
                 "usage_complete": r[14],
+                "caller": caller_label(r[15]),
             }
         )
     return events
@@ -176,6 +206,20 @@ def render_dashboard(
         if not models_html:
             models_html = '<tr><td colspan="5" class="muted">No events</td></tr>'
 
+        callers_html = ""
+        for c in summary.get("per_caller", []):
+            caller = str(c["caller"])
+            caller_attr = ' class="unattributed"' if caller == UNATTRIBUTED else ""
+            callers_html += (
+                "<tr>"
+                f"<td{caller_attr}>{html.escape(caller)}</td>"
+                f"<td>{c['requests']}</td>"
+                f"<td>{c['total_tokens']}</td>"
+                "</tr>"
+            )
+        if not callers_html:
+            callers_html = '<tr><td colspan="3" class="muted">No events</td></tr>'
+
         return f"""
 <section class="summary-block">
 <h2>{html.escape(label)}</h2>
@@ -183,10 +227,16 @@ def render_dashboard(
   <div class="card"><div class="label">Requests</div><div class="value">{summary['total_requests']}</div></div>
   <div class="card"><div class="label">Total tokens</div><div class="value">{summary['total_tokens']}</div></div>
 </div>
+<div class="tables">
 <table class="model-table">
 <thead><tr><th>Model</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th></tr></thead>
 <tbody>{models_html}</tbody>
 </table>
+<table class="caller-table">
+<thead><tr><th>Harness</th><th>Requests</th><th>Total tokens</th></tr></thead>
+<tbody>{callers_html}</tbody>
+</table>
+</div>
 </section>"""
 
     events_html = ""
@@ -201,11 +251,14 @@ def render_dashboard(
             uc_class = ' class="amber"'
 
         uc_attr = f' {uc_class.strip()}' if uc_class else ""
+        caller = str(e.get("caller") or UNATTRIBUTED)
+        caller_attr = ' class="unattributed"' if caller == UNATTRIBUTED else ""
         events_html += (
             f"<tr{row_class}>"
             f"<td>{html.escape(to_sydney(e.get('ts')))}</td>"
             f"<td>{html.escape(str(e.get('upstream') or '—'))}</td>"
             f"<td>{html.escape(str(e.get('model') or '—'))}</td>"
+            f"<td{caller_attr}>{html.escape(caller)}</td>"
             f"<td>{html.escape(str(e.get('path') or '—'))}</td>"
             f"<td>{fmt_int(e.get('status_code'))}</td>"
             f"<td>{fmt_int(e.get('latency_ms'))}</td>"
@@ -221,7 +274,7 @@ def render_dashboard(
         )
 
     if not events_html:
-        events_html = '<tr><td colspan="14" class="muted">No events</td></tr>'
+        events_html = '<tr><td colspan="15" class="muted">No events</td></tr>'
 
     page = f"""<!DOCTYPE html>
 <html lang="en">
@@ -244,9 +297,12 @@ table {{ width: 100%; border-collapse: collapse; font-size: 0.82rem; }}
 th, td {{ border: 1px solid #2a2a3a; padding: 0.4rem 0.5rem; text-align: left; }}
 th {{ background: #1a1a28; color: #aaa; position: sticky; top: 0; }}
 .model-table {{ max-width: 48rem; }}
+.tables {{ display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }}
+.tables table {{ width: auto; min-width: 20rem; }}
 .events-wrap {{ overflow-x: auto; }}
 .events-table td {{ white-space: nowrap; }}
 .muted {{ color: #666; text-align: center; }}
+.unattributed {{ color: #8a8a9a; font-style: italic; }}
 .amber {{ color: #e6a23c; font-weight: 600; }}
 .row-error {{ background: #2a1515; }}
 .row-error td {{ color: #f0a0a0; }}
@@ -263,7 +319,7 @@ th {{ background: #1a1a28; color: #aaa; position: sticky; top: 0; }}
 <table class="events-table">
 <thead>
 <tr>
-<th>Timestamp (Sydney)</th><th>Upstream</th><th>Model</th><th>Path</th>
+<th>Timestamp (Sydney)</th><th>Upstream</th><th>Model</th><th>Harness</th><th>Path</th>
 <th>Status</th><th>Latency ms</th><th>Prompt</th><th>Completion</th>
 <th>Cached</th><th>Reasoning</th><th>Cache creation</th><th>Total</th>
 <th>Outcome</th><th>Usage complete</th>
