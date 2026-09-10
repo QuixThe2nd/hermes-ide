@@ -1803,54 +1803,17 @@ class HindsightMemoryProvider(MemoryProvider):
         return setup.settled.is_set()
 
     def _build_client(self):
-        """Construct the SDK client object. Must run ON the owning loop."""
+        """Construct the SDK client object. Must run ON the owning loop.
+
+        Dispatcher only — the embedded/cloud bodies live in _new_embedded_client /
+        _new_cloud_client. Every caller (the fail-closed first-setup handshake,
+        _get_client_on_owning_loop) relies on construction happening on the
+        shared Hindsight loop (loop affinity — see _get_client), so this must
+        stay a synchronous call made from a coroutine already running there.
+        """
         if self._mode == "local_embedded":
-            available, reason = _check_local_runtime()
-            if not available:
-                raise RuntimeError(
-                    "Hindsight local runtime is unavailable"
-                    + (f": {reason}" if reason else "")
-                )
-            try:
-                from tools.lazy_deps import ensure as _lazy_ensure
-                _lazy_ensure("memory.hindsight", prompt=False)
-            except ImportError:
-                pass
-            except Exception as _e:
-                raise ImportError(str(_e))
-            from hindsight import HindsightEmbedded
-            HindsightEmbedded.__del__ = lambda self: None
-            llm_provider = self._config.get("llm_provider", "")
-            if llm_provider in {"openai_compatible", "openrouter"}:
-                llm_provider = "openai"
-            logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                         self._config.get("profile", "hermes"), llm_provider)
-            kwargs = dict(
-                profile=self._config.get("profile", "hermes"),
-                llm_provider=llm_provider,
-                llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
-                llm_model=self._config.get("llm_model", ""),
-            )
-            if self._llm_base_url:
-                kwargs["llm_base_url"] = self._llm_base_url
-            idle_timeout = _parse_int_setting(
-                self._config.get("idle_timeout")
-                if self._config.get("idle_timeout") is not None
-                else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
-                _DEFAULT_IDLE_TIMEOUT,
-            )
-            self._idle_timeout = idle_timeout
-            kwargs["idle_timeout"] = idle_timeout
-            return HindsightEmbedded(**kwargs)
-        _ensure_cloud_client_dependency()
-        from hindsight_client import Hindsight
-        timeout = self._timeout or _DEFAULT_TIMEOUT
-        kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
-        if self._api_key:
-            kwargs["api_key"] = self._api_key
-        logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
-                     self._api_url, bool(self._api_key), kwargs["timeout"])
-        return Hindsight(**kwargs)
+            return self._new_embedded_client()
+        return self._new_cloud_client()
 
     async def _aclose_client(self, client) -> bool:
         """Coroutine twin of _close_client() — close a client on the owning loop.
@@ -2214,7 +2177,10 @@ class HindsightMemoryProvider(MemoryProvider):
         try:
             return self._run_sync(_invoke(client))
         except Exception as exc:
-            if not self._is_retriable_embedded_connection_error(exc):
+            # Stale embedded-daemon connection failure only (upstream's marker
+            # set in .embedded is a superset of the fork's inline tuple).
+            text = f"{type(exc).__name__}: {exc}".lower()
+            if self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
                 raise
             logger.info(
                 "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
