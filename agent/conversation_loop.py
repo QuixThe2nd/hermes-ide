@@ -98,6 +98,24 @@ from agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
+# Fork-local blocks kept in this module reference helpers upstream decomposed into
+# siblings (the names resolve on every path this module itself defines; these are the
+# ones it only consumes). Grouped import so the fork bodies stay textually intact.
+from agent import empty_response_guard as _empty_guard  # noqa: F401
+from agent.context_engine import automatic_compaction_status_message  # noqa: F401
+from agent.conversation_compression import (  # noqa: F401
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
+    compression_skipped_due_to_lock, context_compression_timed_out,
+    conversation_history_after_compression)
+from agent.display import KawaiiSpinner  # noqa: F401
+from agent.error_classifier import FailoverReason  # noqa: F401
+from agent.provider_projection import splice_provider_projection  # noqa: F401
+from agent.repetition_guard import is_repetition_dominated  # noqa: F401
+from agent.retry_utils import jittered_backoff  # noqa: F401
+from agent.trajectory import has_incomplete_scratchpad  # noqa: F401
+from agent.usage_pricing import estimate_usage_cost, normalize_usage  # noqa: F401
+from hermes_constants import PARTIAL_STREAM_STUB_ID  # noqa: F401
+from utils import env_var_enabled  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -9038,8 +9056,11 @@ def run_conversation(
     # result dict is returned exactly as before.
     result = finalize_turn(
         agent,
-        user_message,
-        system_message=system_message,
+        final_response=final_response,
+        api_call_count=api_call_count,
+        interrupted=interrupted,
+        failed=failed,
+        messages=messages,
         conversation_history=conversation_history,
         effective_task_id=effective_task_id,
         turn_id=turn_id,

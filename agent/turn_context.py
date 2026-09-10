@@ -789,7 +789,12 @@ def _memory_turn_start_and_prefetch(
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
+            try:
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
+            except TypeError:
+                # Managers/fakes predating the session-scoped prefetch signature take only the
+                # query — degrade to the positional call rather than silently dropping memory.
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
     # Line-level dedup against what this session already injected: the provider
     # re-returns the full memory profile every turn and history replays earlier
     # blocks byte-for-byte via api_content sidecars, so unfiltered re-injection
