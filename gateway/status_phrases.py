@@ -232,6 +232,12 @@ def format_phase_heartbeat(snapshot: Mapping[str, Any] | None) -> str:
     :func:`choose_status_phrase`, this never interpolates raw tool
     args/previews/commands: only short identifiers (tool function name,
     model id, or the word ``packing``) reach the returned line.
+
+    Elapsed prefers ``phase_seconds`` (the current wait's own clock, kept
+    running across liveness heartbeats) over ``seconds_since_activity``
+    (the liveness clock, refreshed every ~30s and therefore stuck at 0–30s
+    for long waits). Snapshots without ``phase_seconds`` — hand-built or
+    durable-projection ones — fall back to ``seconds_since_activity``.
     """
     snap = snapshot if isinstance(snapshot, Mapping) else {}
     tool = str(snap.get("current_tool") or "").strip()
@@ -249,7 +255,10 @@ def format_phase_heartbeat(snapshot: Mapping[str, Any] | None) -> str:
             if any(marker in lowered for marker in _LLM_WAIT_MARKERS)
             else "packing"
         )
-    return f"⏳ {noun} {_format_phase_elapsed(snap.get('seconds_since_activity'))}"
+    elapsed = snap.get("phase_seconds")
+    if elapsed is None:
+        elapsed = snap.get("seconds_since_activity")
+    return f"⏳ {noun} {_format_phase_elapsed(elapsed)}"
 
 
 def classify_status_context(

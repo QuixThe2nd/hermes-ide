@@ -81,21 +81,35 @@ def build_activity_snapshot(
     last_activity_description: Optional[str],
     last_activity_provenance: Optional[ActivityProvenance | str] = None,
     now: Optional[float] = None,
+    phase_started_at: Optional[float] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build the shared activity snapshot (plus optional caller extras)."""
     import time as _time
 
     when = float(last_activity_at) if last_activity_at is not None else None
+    phase_start = float(phase_started_at) if phase_started_at is not None else None
     clock = float(now if now is not None else _time.time())
     desc = bound_activity_description(last_activity_description)
     prov = normalize_activity_provenance(last_activity_provenance)
     elapsed = round(clock - when, 1) if when is not None else None
+    # How long the CURRENT wait has lasted. Unlike ``seconds_since_activity``
+    # (refreshed by periodic liveness heartbeats), the phase clock only
+    # restarts when the activity description changes, so a wait longer than
+    # the heartbeat cadence still counts up. Unknown start (or a start in
+    # the future — clock skew) stays None rather than going negative.
+    phase_elapsed = (
+        round(clock - phase_start, 1)
+        if phase_start is not None and clock >= phase_start
+        else None
+    )
     snap: dict[str, Any] = {
         "last_activity_at": when,
         "last_activity_description": desc,
         "last_activity_provenance": prov.value,
         "seconds_since_activity": elapsed,
+        "phase_started_at": phase_start,
+        "phase_seconds": phase_elapsed,
         # Short aliases used by existing gateway/delegate readers.
         "last_activity_ts": when,
         "last_activity_desc": desc,

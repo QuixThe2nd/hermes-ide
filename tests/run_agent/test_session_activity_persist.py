@@ -318,3 +318,72 @@ def test_compression_transition_provenances_surface_in_activity_summary(monkeypa
         assert summary["provenance"] == provenance.value
         assert summary["last_activity_description"] == desc
         assert summary["last_activity_desc"] == desc
+
+
+def test_touch_activity_phase_start_resets_only_on_desc_change(monkeypatch):
+    """The phase clock measures the CURRENT wait, not the liveness clock.
+
+    Liveness heartbeats re-stamp the same description every ~30s; those
+    refreshes must keep the original phase start so the gateway phase
+    heartbeat ("⏳ <noun> <elapsed>") keeps counting a long wait up instead
+    of showing 0–30s forever. Only a genuinely different description opens
+    a new phase.
+    """
+    agent = _agent_with_db()
+    clock = {"t": 100.0}
+    monkeypatch.setattr(run_agent.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(run_agent.time, "monotonic", lambda: 5000.0)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    agent._touch_activity("executing tool: terminal")
+    assert getattr(agent, "_phase_started_ts", None) == 100.0
+
+    # Same wait, re-stamped by a liveness heartbeat 30s later — phase start
+    # must not move.
+    clock["t"] = 130.0
+    agent._touch_activity("executing tool: terminal")
+    assert agent._phase_started_ts == 100.0
+
+    # Cosmetic-only differences (case, extra whitespace) are the same phase.
+    clock["t"] = 145.0
+    agent._touch_activity("  Executing   tool: terminal ")
+    assert agent._phase_started_ts == 100.0
+
+    # A different wait opens a new phase at its own stamp time.
+    clock["t"] = 160.0
+    agent._touch_activity("waiting for non-streaming API response")
+    assert agent._phase_started_ts == 160.0
+
+
+def test_get_activity_summary_phase_seconds_survives_liveness_refresh(monkeypatch):
+    """Snapshots expose how long the current phase has lasted (or None)."""
+    agent = _agent_with_db()
+    monkeypatch.setattr(run_agent.time, "time", lambda: 130.0)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    agent._last_activity_ts = 130.0
+    agent._last_activity_desc = "executing tool: terminal"
+
+    # No _phase_started_ts at all (test doubles / agents that never touched):
+    # must not raise, and the phase elapsed stays unknown.
+    summary = agent.get_activity_summary()
+    assert summary["phase_started_at"] is None
+    assert summary["phase_seconds"] is None
+
+    # Phase opened at 100; a liveness heartbeat refreshed the activity clock
+    # to 130 — the phase elapsed is measured from the phase start, not the
+    # last refresh.
+    agent._phase_started_ts = 100.0
+    summary = agent.get_activity_summary()
+    assert summary["phase_started_at"] == 100.0
+    assert summary["phase_seconds"] == 30.0
+
+
+def test_reset_activity_labels_after_turn_closes_phase_clock():
+    """Turn end must close the phase clock so the heartbeat does not keep
+    timing a wait that already ended."""
+    agent = _agent_with_db()
+    agent._phase_started_ts = 123.0
+
+    agent._reset_activity_labels_after_turn()
+
+    assert agent._phase_started_ts is None

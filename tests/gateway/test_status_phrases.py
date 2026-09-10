@@ -120,3 +120,51 @@ def test_discord_zero_config_heartbeat_is_phase_line():
         assert "iteration" not in line
         assert "provider may be slow" not in line
         assert "auto-reconnect" not in line
+
+
+def test_phase_heartbeat_elapsed_prefers_phase_seconds():
+    """phase_seconds is the current wait's own clock; the liveness heartbeat
+    refreshes seconds_since_activity every ~30s, so it must lose when both
+    are present or long waits display as 0–30s forever."""
+    from gateway.status_phrases import format_phase_heartbeat
+
+    assert (
+        format_phase_heartbeat(
+            {
+                "current_tool": "terminal",
+                "phase_seconds": 95,
+                "seconds_since_activity": 5,
+            }
+        )
+        == "⏳ terminal 1m35s"
+    )
+
+
+def test_phase_heartbeat_elapsed_falls_back_to_liveness_clock():
+    """Snapshots without a phase clock (hand-built, durable projection with
+    no phase start) keep using seconds_since_activity."""
+    from gateway.status_phrases import format_phase_heartbeat
+
+    assert (
+        format_phase_heartbeat(
+            {
+                "current_tool": None,
+                "last_activity_desc": "tool completed: terminal (1.2s)",
+                "phase_seconds": None,
+                "seconds_since_activity": 12,
+            }
+        )
+        == "⏳ packing 12s"
+    )
+
+
+def test_phase_heartbeat_elapsed_missing_or_invalid_is_zero():
+    from gateway.status_phrases import format_phase_heartbeat
+
+    assert format_phase_heartbeat({"current_tool": "terminal"}) == "⏳ terminal 0s"
+    assert (
+        format_phase_heartbeat(
+            {"current_tool": "terminal", "phase_seconds": "soon"}
+        )
+        == "⏳ terminal 0s"
+    )

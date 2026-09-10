@@ -790,7 +790,7 @@ def _run_agent_tool_execution_middleware(
         _hb_stop = threading.Event()
         _hb_thread = threading.Thread(
             target=_run_tool_activity_heartbeat,
-            args=(agent, _hb_stop, f"tool running: {function_name}"),
+            args=(agent, _hb_stop, f"executing tool: {function_name}"),
             kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
             daemon=True,
             name=f"tool-activity-hb-{function_name[:24]}",

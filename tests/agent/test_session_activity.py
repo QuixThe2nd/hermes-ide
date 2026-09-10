@@ -94,3 +94,42 @@ def test_build_activity_snapshot_preserves_compression_transition_provenances():
         assert snap["provenance"] == provenance.value
         assert snap["last_activity_description"] == desc
         assert snap["seconds_since_activity"] == 5.0
+
+
+def test_build_activity_snapshot_phase_seconds_measures_current_phase():
+    """phase_seconds counts from the phase start, not the last liveness
+    refresh — the two clocks diverge for any wait over the heartbeat
+    cadence."""
+    snap = build_activity_snapshot(
+        last_activity_at=125.0,
+        last_activity_description="executing tool: terminal",
+        phase_started_at=100.0,
+        now=130.0,
+    )
+    assert snap["phase_started_at"] == 100.0
+    assert snap["phase_seconds"] == 30.0
+    assert snap["seconds_since_activity"] == 5.0
+
+
+def test_build_activity_snapshot_without_phase_start_yields_none():
+    snap = build_activity_snapshot(
+        last_activity_at=100.0,
+        last_activity_description="starting API call #1",
+        phase_started_at=None,
+        now=130.0,
+    )
+    assert snap["phase_started_at"] is None
+    assert snap["phase_seconds"] is None
+
+
+def test_build_activity_snapshot_phase_start_in_the_future_yields_none():
+    """A phase start after the clock (skew between stamp and read) must not
+    produce a negative elapsed."""
+    snap = build_activity_snapshot(
+        last_activity_at=100.0,
+        last_activity_description="starting API call #1",
+        phase_started_at=140.0,
+        now=130.0,
+    )
+    assert snap["phase_started_at"] == 140.0
+    assert snap["phase_seconds"] is None
