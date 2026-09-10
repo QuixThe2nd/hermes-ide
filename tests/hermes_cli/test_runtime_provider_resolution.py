@@ -1510,7 +1510,7 @@ class TestAzureAnthropicEnvVarHint:
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
-            "agent.anthropic_adapter.resolve_anthropic_token",
+            "agent.anthropic_credentials.resolve_anthropic_token",
             _fake_resolve,
         )
 

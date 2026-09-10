@@ -1768,6 +1768,54 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _apply_child_cache_ttl(child) -> None:
+    """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
+    away between turns (2x write vs 1.25x for 5m, #14971); a subagent calls every few seconds for
+    minutes and is gone, so it pays the 2x on every tool result and never collects the retention.
+    Caching itself stays exactly as configured (disabled stays disabled)."""
+    if getattr(child, "_cache_ttl", None) == "1h":
+        child._cache_ttl = "5m"
+
+_CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
+
+
+def _child_compression_cap_tokens(raw) -> "int | None":
+    """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
+
+    Unset / ``0`` / ``false`` / ``null`` mean no subagent-specific cap: the child compacts at the
+    same ratio trigger as everyone else (0.50 x window). A bool ``true`` (YAML) would coerce to 1
+    and make every call compress; a string like ``"200k"`` would silently read as no cap. Both are
+    config errors: warn and treat as unset so a typo never changes compaction behaviour."""
+    if raw is None or raw is False or raw == 0:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) < _CHILD_CAP_MIN:
+        logger.warning(
+            "delegation.compression_threshold_tokens=%r is not a token count >= %d; ignoring it "
+            "(children keep the ratio trigger).", raw, _CHILD_CAP_MIN,
+        )
+        return None
+    return int(raw)
+
+
+def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
+    """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
+    (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
+    compacts at 500K like its parent. The compressor applies the cap on first window resolution, which
+    happens after construction, so setting it here is exactly equivalent to config."""
+    from agent.context_compressor import ContextCompressor
+
+    cc = getattr(child, "context_compressor", None)
+    if not isinstance(cc, ContextCompressor):
+        return
+    cap = _child_compression_cap_tokens((delegation_cfg or {}).get("compression_threshold_tokens"))
+    if cap is None:
+        return
+    existing = cc.threshold_tokens_cap
+    cc.threshold_tokens_cap = min(cap, existing) if isinstance(existing, int) and existing > 0 else cap
+    if cc._threshold_tokens is not None:  # already resolved: re-clamp now
+        cc._apply_threshold_tokens_cap()
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -2199,6 +2247,7 @@ def _build_child_agent(
                     pass
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    _apply_child_cache_ttl(child)
     # Ownership transfer for the dedicated handle: the child's close() must
     # release it (nothing else holds a reference), and no parent teardown can
     # close it out from under a background child (#81267).
@@ -2219,6 +2268,7 @@ def _build_child_agent(
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
+    _apply_child_compression_cap(child, delegation_cfg)
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Ownership chain for the model-facing control plane (action=list/steer/

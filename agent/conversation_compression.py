@@ -3282,6 +3282,38 @@ def _messages_match_scoped_identity(left: Any, right: Any) -> bool:
     return True
 
 
+def _stamp_scoped_twins(targets: list, source: dict, *, exact_counts_stamped: bool = False) -> None:
+    """Stamp ``_db_persisted`` on every unstamped scoped twin of ``source`` in ``targets``.
+    Exact-timestamp twins are preferred: when the source carries a timestamp and any exact twin was stamped
+    (or, with ``exact_counts_stamped``, merely exists), the broad scoped pass is skipped so a content-equal
+    old duplicate is left alone."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    source_timestamp = source.get("timestamp")
+    exact_hit = False
+    if source_timestamp is not None:
+        for target in targets:
+            if (
+                not isinstance(target, dict)
+                or target.get("timestamp") != source_timestamp
+                or not _messages_match_scoped_identity(target, source)
+            ):
+                continue
+            if target.get(_DB_PERSISTED_MARKER):
+                exact_hit = exact_hit or exact_counts_stamped
+                continue
+            target[_DB_PERSISTED_MARKER] = True
+            exact_hit = True
+        if exact_hit:
+            return
+    for target in targets:
+        if (
+            isinstance(target, dict)
+            and not target.get(_DB_PERSISTED_MARKER)
+            and _messages_match_scoped_identity(target, source)
+        ):
+            target[_DB_PERSISTED_MARKER] = True
+
+
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = (
     "_pending_context_engine_compression_notification"
 )

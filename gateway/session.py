@@ -390,6 +390,18 @@ _PII_SAFE_PLATFORMS = frozenset({
     Platform.TELEGRAM,
     Platform.BLUEBUBBLES,
 })
+
+
+def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
+    """Keep model-visible identifiers usable on platforms requiring raw mentions."""
+    if not enabled or platform in _PII_SAFE_PLATFORMS:
+        return enabled
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform.value)
+        return bool(entry and entry.pii_safe)
+    except Exception:
+        return False
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""

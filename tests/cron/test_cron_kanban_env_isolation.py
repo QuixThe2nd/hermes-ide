@@ -216,6 +216,7 @@ class TestRunJobKanbanIsolation:
         import sys
 
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class FakeAgent:
@@ -254,7 +255,7 @@ class TestRunJobKanbanIsolation:
         monkeypatch.setattr(
             sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi"
         )
-        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched_delivery, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(
             sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None
@@ -274,6 +275,7 @@ class TestRunJobKanbanIsolation:
 
     def test_agent_runs_as_non_dispatcher(self, monkeypatch, worker_env):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -287,6 +289,7 @@ class TestRunJobKanbanIsolation:
         """The whole point of the ContextVar: os.environ must not be mutated, so
         the worker's claim heartbeat and the gateway watchers keep working."""
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -309,6 +312,7 @@ class TestRunJobKanbanIsolation:
 
     def test_context_reset_after_job(self, monkeypatch, worker_env):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         observed: dict = {}
@@ -319,6 +323,7 @@ class TestRunJobKanbanIsolation:
 
     def test_context_reset_even_when_job_raises(self, monkeypatch, worker_env):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class ExplodingAgent:
@@ -348,6 +353,7 @@ class TestRunJobKanbanIsolation:
         restore this permanently destroyed the worker's identity; a ContextVar is
         per-thread and cannot."""
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -374,9 +380,42 @@ class TestRunJobKanbanIsolation:
         assert after == before, "worker identity must survive concurrent cron jobs"
 
 
-# ---------------------------------------------------------------------------
-# Drift guard
-# ---------------------------------------------------------------------------
+@pytest.mark.linux_only
+def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    import sys
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from hermes_cli.kanban_db_dispatch import _default_spawn
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / "board.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    conn = connect(db)
+    tid = kb.create_task(conn, title="assigned child", assignee="default")
+    kb.claim_task(conn, tid)
+    task = kb.get_task(conn, tid)
+    output = tmp_path / "worker-result.json"
+    worker = tmp_path / "fixture-worker"
+    root = str(Path(__file__).resolve().parents[2])
+    worker.write_text(
+        f"#!{sys.executable}\nimport sys, os, json;sys.path.insert(0, {root!r})\n"
+        "from tools.kanban_tools import _handle_complete\n"
+        f"result=_handle_complete({{'summary':'assigned worker'}});open({str(output)!r}, 'w').write(result)\n"
+    )
+    worker.chmod(0o700)
+    monkeypatch.setenv("HERMES_BIN", str(worker))
+    # Building a new worker under an existing task must replace, not inherit, its scope.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")
+    pid = _default_spawn(task, str(tmp_path), board="default")
+    assert pid is not None
+    os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
+    assert json.loads(output.read_text())["ok"]
+    assert kb.get_task(conn, tid).status == "done"
+    assert os.environ["HERMES_KANBAN_TASK"] == "prior-task"
+    conn.close()
+
 
 def test_every_dispatcher_kanban_var_is_identity_gated():
     """Invariant: every HERMES_KANBAN_* var the dispatcher injects is covered by

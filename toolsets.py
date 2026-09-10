@@ -92,6 +92,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Service-gated connector account status and authorization links.
+    "manage_connections",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -255,6 +257,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "connections": {
+        "description": "Remote connector discovery, execution, and account authorization",
+        "tools": ["manage_connections"],
         "includes": []
     },
 

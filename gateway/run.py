@@ -9549,6 +9549,84 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
+# Only explicit suspension can replace a routed conversation.
+_AUTO_RESET_CONTEXT_NOTES = {
+    "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
+}
+
+
+def _write_runtime_status_quiet(**fields: Any) -> None:
+    """Best-effort ``gateway_state.json`` write; status persistence must never abort the caller."""
+    try:
+        from gateway.status import write_runtime_status
+        write_runtime_status(**fields)
+    except Exception:
+        pass
+
+
+def _command_origin_for_source(source: Any) -> Optional[dict]:
+    """Delivery origin for a shared CLI/gateway command so its job replies to this chat/thread."""
+    try:
+        platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
+        chat_id = getattr(source, "chat_id", None)
+        if platform and chat_id:
+            return {
+                "platform": platform,
+                "chat_id": str(chat_id),
+                "chat_name": getattr(source, "chat_name", None),
+                "thread_id": getattr(source, "thread_id", None)}
+    except Exception:
+        pass
+    return None
+
+
+def _builtin_adapter_import(module: str, adapter_name: str, requirement: str):
+    """Lazy-import ``(adapter_cls, requirements_ok)`` from ``gateway.platforms.<module>``."""
+    import importlib
+    mod = importlib.import_module(f"gateway.platforms.{module}")
+    return getattr(mod, adapter_name), getattr(mod, requirement)
+
+
+# platform -> (module, adapter class, requirements probe, warning on probe failure).
+_BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
+    Platform.WHATSAPP_CLOUD: ("whatsapp_cloud", "WhatsAppCloudAdapter", "check_whatsapp_cloud_requirements",
+                              "WhatsApp Cloud: aiohttp/httpx missing — reinstall hermes-agent"),
+    Platform.SIGNAL: ("signal", "SignalAdapter", "check_signal_requirements",
+                      "Signal: runtime requirements not met"),
+    Platform.WEIXIN: ("weixin", "WeixinAdapter", "check_weixin_requirements",
+                      "Weixin: aiohttp/cryptography not installed"),
+    Platform.API_SERVER: ("api_server", "APIServerAdapter", "check_api_server_requirements",
+                          "API Server: aiohttp not installed"),
+    Platform.WEBHOOK: ("webhook", "WebhookAdapter", "check_webhook_requirements",
+                       "Webhook: aiohttp not installed"),
+    Platform.MSGRAPH_WEBHOOK: ("msgraph_webhook", "MSGraphWebhookAdapter", "check_msgraph_webhook_requirements",
+                               "MSGraph webhook: aiohttp not installed"),
+    Platform.BLUEBUBBLES: ("bluebubbles", "BlueBubblesAdapter", "check_bluebubbles_requirements",
+                           "BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured"),
+    Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
+                     "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
+    Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
+                       "Yuanbao: websockets not installed. Run: pip install websockets")}
+
+
+def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+    """Instantiate a core (non-plugin) adapter, or None when its requirements are unmet/unknown."""
+    spec = _BUILTIN_ADAPTERS.get(platform)
+    if spec is None:
+        return None
+    module, adapter_name, requirement, warning = spec
+    adapter_cls, requirements_ok = _builtin_adapter_import(module, adapter_name, requirement)
+    if not (requirements_ok() if callable(requirements_ok) else requirements_ok):
+        logger.warning(warning)
+        return None
+    if platform == Platform.SIGNAL:
+        from gateway.platforms.signal import validate_signal_config
+        if not validate_signal_config(config):
+            logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
+            return None
+    return adapter_cls(config)
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.

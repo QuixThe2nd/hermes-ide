@@ -729,7 +729,7 @@ class TestTurnContext:
 
 class TestTurnRunner:
     def test_methods_exist_and_bind(self):
-        from gateway.run import TurnRunner
+        from gateway.run_turn_runner import TurnRunner
 
         ctx = TurnContext()
         runner = _make_runner(ctx)
@@ -1017,7 +1017,7 @@ class TestTurnRunner:
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )
 
-        from gateway.run import TurnRunner
+        from gateway.run_turn_runner import TurnRunner
 
         result = TurnRunner(gateway_runner, ctx).run_sync()
 

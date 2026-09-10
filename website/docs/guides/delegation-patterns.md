@@ -200,14 +200,14 @@ Subagents inherit the parent's enabled toolsets. `delegate_agent` does not accep
 
 ## Constraints
 
-- **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
+- **Default 10 parallel tasks**: batches default to 10 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
 - **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_agent`, `clarify`, `memory`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_agent` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling); the other three remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
 
 ### Tuning Concurrency and Depth
 
 | Config | Default | Range | Effect |
 |--------|---------|-------|--------|
-| `max_concurrent_children` | 3 | >=1 | Parallel batch size per `delegate_agent` call |
+| `max_concurrent_children` | 10 | >=1 | Parallel batch size per `delegate_agent` call |
 | `max_spawn_depth` | 1 | >=1 | How many delegation levels can spawn further |
 
 Example: running 30 parallel workers with nested subagents:
@@ -220,7 +220,7 @@ delegation:
 
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_agent`
-- **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
+- **Default 250 iterations** — set `delegation.max_iterations` lower in `config.yaml` for fleets of simple tasks to save cost
 - **Blocking by default** — an omitted or false `background` blocks the calling turn until the delegated work is terminal and returns the final result inline. Pass `background=true` to get a handle immediately instead; the completion then re-enters the conversation as a new message. The mode depends only on that argument — never on the platform or session type.
 - **Not durable** — a `background=true` delegation posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
 
