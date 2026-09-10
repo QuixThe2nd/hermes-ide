@@ -363,6 +363,7 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · plean saor in aisce · nous/welcome · /login chun síniú isteach"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
