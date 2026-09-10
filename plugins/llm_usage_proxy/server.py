@@ -18,6 +18,10 @@ Security posture:
     token, the proxy injects the real upstream credential, and the ledger
     records which caller made each request. Without the flag the proxy is a
     credential passthrough and never rewrites an Authorization header.
+  * Any client may name itself with the ``X-Usage-Caller`` label header. The
+    label is attribution in the ledger and nothing more: it is validated,
+    stripped before anything is forwarded upstream, and is never a credential
+    — it cannot authenticate, and it never causes a refusal.
   * Never follows redirects (a 3xx Location passes through to the client),
     so a response can never pivot the proxy onto a different host.
   * Forwards only to upstreams named on the command line; ``/p/<unknown>``
@@ -105,6 +109,14 @@ KEYS_FILENAME = "keys.json"
 # Header a client may use to present its caller token without also sending a
 # bearer credential (which key-manager mode would otherwise read and replace).
 CALLER_TOKEN_HEADER = "X-Usage-Caller-Token"
+# Header a client may use to name itself — a free-text label such as "hermes"
+# or "codex-cli". It is attribution, never a credential: it is stripped before
+# upstream, and it can never authenticate a request or unlock a route key.
+CALLER_LABEL_HEADER = "X-Usage-Caller"
+# A label longer than this (after stripping) is ignored, not truncated, so a
+# client cannot make the ledger record half a name it did not choose.
+CALLER_LABEL_MAX_CHARS = 64
+CALLER_LABEL_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_events (
@@ -859,6 +871,23 @@ def is_caller_name(name: str) -> bool:
     return bool(CALLER_NAME_RE.match(name or ""))
 
 
+def sanitize_caller_label(value: Any) -> Optional[str]:
+    """The caller label a request arrived with, or None when it is unusable.
+
+    A label is client-supplied display text, so only the first
+    ``CALLER_LABEL_MAX_CHARS`` characters are considered and they must match
+    ``CALLER_LABEL_RE`` in full — any other character anywhere in them, or an
+    empty or non-string value, means the label is ignored rather than
+    sanitized into a name the client did not send.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()[:CALLER_LABEL_MAX_CHARS]
+    if not candidate or not CALLER_LABEL_RE.match(candidate):
+        return None
+    return candidate
+
+
 def _ensure_mode_0700(path: str) -> None:
     try:
         os.chmod(path, 0o700)
@@ -1340,8 +1369,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
     def _forward_headers(self, upstream_netloc: str) -> list[tuple[str, str]]:
         """Request headers minus hop-by-hop and Connection-nominated headers.
 
-        The caller-token header is dropped as well: it is a credential for
-        *this* proxy, and no provider should ever see it.
+        Both caller headers are dropped too: the token is a credential for
+        *this* proxy and the label names the calling harness — neither is
+        something a provider should ever see.
         """
         connection_tokens = {
             token.strip().lower()
@@ -1351,7 +1381,12 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         skip = (
             HOP_BY_HOP
             | connection_tokens
-            | {"host", "content-length", CALLER_TOKEN_HEADER.lower()}
+            | {
+                "host",
+                "content-length",
+                CALLER_TOKEN_HEADER.lower(),
+                CALLER_LABEL_HEADER.lower(),
+            }
         )
         forwarded = []
         for name, value in self.headers.items():
@@ -1372,6 +1407,15 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         if explicit and explicit.strip():
             return explicit.strip()
         return bearer_token(self.headers.get("Authorization"))
+
+    def _presented_caller_label(self) -> Optional[str]:
+        """The harness label this request arrived with, if it parses.
+
+        Read independently of authentication: a label is a name a client
+        gives itself, so it is recorded whether or not the proxy is in
+        key-manager mode, and it never decides whether a request is allowed.
+        """
+        return sanitize_caller_label(self.headers.get(CALLER_LABEL_HEADER))
 
     def _authenticate_caller(
         self, key_store: KeyStore
@@ -1403,6 +1447,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         model: Optional[str],
         status: int,
         started: float,
+        caller: Optional[str] = None,
     ) -> None:
         """Ledger row for a request that never left the proxy.
 
@@ -1420,6 +1465,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 request_id=None,
                 outcome=OUTCOME_REJECTED,
                 usage_complete=USAGE_MISSING,
+                caller=caller,
             )
         except sqlite3.Error as exc:
             logger.error("failed to record usage row: %s", redact_text(str(exc)))
@@ -1458,6 +1504,13 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         # for one of the route's own keys. Without --manage-keys neither step
         # runs: this is a credential passthrough and the client's Authorization
         # reaches the upstream exactly as it arrived.
+        #
+        # Attribution is wider than that gate: a caller *label* is recorded on
+        # every row, managed mode or not. A matched caller token wins — it is
+        # proof of who held the token — and the label is what is left when
+        # there is no token or no match. The label is never itself a
+        # credential, so it never authenticates and never causes a 401.
+        label = self._presented_caller_label()
         caller: Optional[str] = None
         managed_key: Optional[str] = None
         managed_position = -1
@@ -1473,12 +1526,15 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     model=model,
                     status=401,
                     started=started,
+                    caller=caller or label,
                 )
                 return
             route_keys = key_store.route_keys(upstream_name)
             route_key_count = len(route_keys)
             if route_keys and self.rotator is not None:
                 managed_key, managed_position = self.rotator.issue(upstream_name)
+        if caller is None:
+            caller = label
 
         conn: Optional[HTTPConnection] = None
         status_code: Optional[int] = None

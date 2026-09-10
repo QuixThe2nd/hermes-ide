@@ -58,6 +58,10 @@ from urllib.parse import urlsplit
 
 _LOCK = threading.Lock()
 _INACTIVE_REASON = "no route table registered"
+# Label Hermes puts on the traffic it routes itself (see
+# plugins.llm_usage_proxy.server.CALLER_LABEL_HEADER, whose name is imported
+# at request time — this module stays stdlib-only at import).
+HERMES_CALLER_LABEL = "hermes"
 
 # The proxy is loopback-only by construction (the plugin binds 127.0.0.1), so
 # a non-loopback origin is never a table this process verified.
@@ -507,13 +511,22 @@ def _proxied_request(request: Any, target: str) -> Any:
     differs. ``Host`` is pinned to the logical provider netloc so the wire
     request stays honest about where the client thinks it is going; the proxy
     rewrites Host to the upstream netloc when forwarding.
+
+    Routed traffic also names itself: ``X-Usage-Caller: hermes`` unless the
+    request already carries a label. The label is attribution for the proxy's
+    ledger only — it is not a credential and is stripped before the proxy
+    forwards anything upstream.
     """
     import httpx
+
+    from plugins.llm_usage_proxy.server import CALLER_LABEL_HEADER
 
     headers = request.headers.copy()
     logical = urlsplit(str(request.url))
     if logical.netloc:
         headers["Host"] = logical.netloc
+    if not headers.get(CALLER_LABEL_HEADER):
+        headers[CALLER_LABEL_HEADER] = HERMES_CALLER_LABEL
     return httpx.Request(
         request.method,
         target,

@@ -73,6 +73,14 @@ credential in `Authorization` free to pass through untouched — useful when a r
 has no stored key. That header is a credential for the proxy alone and is always
 stripped before anything is forwarded upstream.
 
+Any client may also name itself with `X-Usage-Caller` — a label, not a secret, so it
+is recorded in every mode, not just key-manager mode: the first 64 characters of
+`[A-Za-z0-9._:-]`, ignored otherwise, and always stripped before forwarding. A
+matched caller token wins when both are sent. The label never authenticates, so
+sending one never causes a `401`; once caller tokens exist, the token is still
+required. Hermes sets this header to `hermes` on the traffic it routes itself, and
+keeps whatever label a client supplied.
+
 With no caller tokens configured the proxy accepts anything and attributes nothing,
 which is what keeps Hermes's own in-process routing working unchanged. Once one
 token exists, requests must present a known one: an unknown or missing token is a
