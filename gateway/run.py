@@ -11718,6 +11718,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise
             return 0
 
+    def _retain_background_task(self, task: "asyncio.Task") -> "asyncio.Task":
+        """Register ``task`` in ``_background_tasks`` (created lazily for bare test runners)."""
+        tasks = getattr(self, "_background_tasks", None)
+        if not isinstance(tasks, set):
+            tasks = self._background_tasks = set()
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
     def _pending_background_task_count(self) -> int:
         """Pending ``/bg``-style background tasks the restart must wait out.
 
@@ -17074,6 +17083,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
 
+    @staticmethod
+    def _start_free_tier_bootstrap() -> None:
+        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
+        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
+        from hermes_cli.free_tier_bootstrap import run_bootstrap
+        run_bootstrap(announce=False)
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -17493,6 +17509,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
+
+        # The gateway is a boot owner of the Nous free tier: every demand-time site (provider
+        # resolution, /login, the connector token) is a read that needs the identity to already
+        # exist. Blocking here, before any adapter connects, is what keeps a fast first DM from
+        # arriving with nothing to resolve. With the launch gate unset this is a local
+        # inventory and no network.
+        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
 
         # Serialize startup restore against inbound dispatch.  Platform
         # adapters can begin receiving messages as soon as they connect, but
@@ -33374,11 +33397,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _rst_state.conversation.model_override = None
         self._evict_cached_agent(session_key)
 
-    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
-        """Return True if *agent_model* matches an active /model session override."""
+    def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
+        """True when *agent* running a model other than *config_model* is deliberate: a /model session
+        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
+        alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
         _ims_state = self._peek_session_state(session_key)
         override = _ims_state.conversation.model_override if _ims_state else None
-        return override is not None and override.get("model") == agent_model
+        if override is not None and override.get("model") == agent.model:
+            return True
+        # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
+        # ordinary drift and still evicts.
+        return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
     def _release_running_agent_state(
         self,
@@ -36503,7 +36532,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
                 except Exception:
                     pass
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)
