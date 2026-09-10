@@ -152,10 +152,20 @@ def _configure_mcp_tools_interactive(config: dict):
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
     """Add or remove built-in toolsets for a platform."""
-    from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
+    from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools, _SWAPPED_TOOLSETS
 
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
-    updated = enabled - set(toolset_names) if action == "disable" else enabled | set(toolset_names)
+    if action == "disable":
+        updated = enabled - set(toolset_names)
+    else:
+        updated = enabled | set(toolset_names)
+        # Enabling one side of a swapped pair (file/file_readonly) removes the other BEFORE the
+        # save: _save_platform_tools' tiebreak would otherwise keep the read-only side and
+        # silently revert the operator's explicit enable.
+        for name in toolset_names:
+            swapped = _SWAPPED_TOOLSETS.get(name)
+            if swapped:
+                updated.discard(swapped)
     _save_platform_tools(config, platform, updated)
 
 

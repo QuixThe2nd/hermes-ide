@@ -119,6 +119,16 @@ from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
 from agent.rate_limit_credits import RateLimitCreditsMixin
 from agent.session_persistence import SessionPersistenceMixin
+# Fork-local copies of persistence/flush helpers (kept in this module; they shadow the
+# compact SessionPersistenceMixin bodies in the MRO) reference these decomposed
+# siblings' helpers — import them here so the names resolve.
+from agent.session_persistence import _safe_session_filename_component  # noqa: F401
+from agent.context_compressor import (  # noqa: F401
+    COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor, _DB_PERSISTED_MARKER, user_originated_turn_view)
+from agent.memory_manager import sanitize_context  # noqa: F401
+from agent.redact import redact_sensitive_text  # noqa: F401
+from agent.usage_pricing import normalize_usage  # noqa: F401
+from agent.interrupt_compat import request_hard_interrupt  # noqa: F401
 from agent.compression_facade import CompressionFacadeMixin
 from agent.turn_facade import TurnFacadeMixin
 from agent.vision_message_prep import VisionMessagePrepMixin
