@@ -1,7 +1,7 @@
 name: llm_usage_proxy
 default_enabled: true
 disabled_management: disabled_management
-version: 1.1.0
-description: "Bundled loopback reverse proxy that records real LLM token usage on the wire (z.ai, Kimi, Codex, xAI). Exposes the management CLI; measurement itself is opt-in per profile via `hermes llm_usage_proxy enable` and reroutes matching requests at the HTTP transport boundary, leaving provider identity, auth, and API modes untouched."
+version: 1.2.0
+description: "Bundled loopback reverse proxy that records real LLM token usage on the wire (z.ai, Kimi, Codex, xAI). Exposes the management CLI; measurement itself is opt-in per profile via `hermes llm_usage_proxy enable` and reroutes matching requests at the HTTP transport boundary, leaving provider identity, auth, and API modes untouched. Optional key-manager mode (`hermes llm_usage_proxy manage-keys on`) holds the provider keys in one root-only store, hands clients local caller tokens, and records which caller made each request."
 author: Hermes Agent
 kind: backend

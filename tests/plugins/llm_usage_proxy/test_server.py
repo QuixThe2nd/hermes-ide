@@ -1072,3 +1072,86 @@ def test_reconcile_crosses_real_probe_with_matching_listener(reconcile_harness):
         server.shutdown()
         server.server_close()
         server.store.close()
+
+
+def test_reconcile_restarts_its_own_stale_listener(reconcile_harness):
+    """A listener that verifies as ours but runs a superseded argv is stale.
+
+    Key-manager mode changes the unit's argv; without this, a running proxy
+    would keep serving without --manage-keys forever while reconcile reported
+    the port occupied — the operator would have to restart it by hand.
+    """
+    systemd_mod, scope, systemctl, hermes_home, tmp_path = reconcile_harness
+    from plugins.llm_usage_proxy.routes import build_route_table
+
+    cfg: dict = {"port": 0, "manage_keys": True}
+    routes = build_route_table(cfg, environ={})
+    server = UsageProxyServer(
+        port=0,
+        db_path=str(tmp_path / "stale.sqlite"),
+        upstreams=routes,
+        identity=systemd_mod.profile_identity(hermes_home),
+        # Running without --manage-keys while the config asks for it.
+        manage_keys=False,
+    )
+    cfg["port"] = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = systemd_mod.reconcile_service(
+            cfg, enabled=True, run_systemctl=systemctl, scope=scope, environ={}
+        )
+
+        # Verified as *ours* (identity matches), so not foreign — but stale.
+        assert result.port.status == "stale"
+        assert result.port.stale and result.port.occupied
+        assert any("restarted" in w for w in result.warnings)
+
+        # The unit is rewritten with the new argv and the process restarted.
+        unit = systemd_mod.service_name(hermes_home)
+        unit_path = systemd_mod.service_unit_path(scope, hermes_home)
+        assert unit_path.is_file()
+        unit_body = unit_path.read_text(encoding="utf-8")
+        assert "--manage-keys" in unit_body
+        # No secret is rendered into the unit — only the store's path.
+        assert "keys.json" in unit_body
+        restarts = [c for c in systemctl.calls if "restart" in c]
+        assert restarts and all(unit in c for c in restarts)
+    finally:
+        server.shutdown()
+        server.server_close()
+        server.store.close()
+
+
+def test_stale_is_reported_but_a_foreign_listener_is_never_restarted(reconcile_harness):
+    """Only a listener carrying this profile's identity may be restarted."""
+    systemd_mod, scope, systemctl, hermes_home, tmp_path = reconcile_harness
+    from plugins.llm_usage_proxy.routes import build_route_table
+
+    cfg: dict = {"port": 0, "manage_keys": True}
+    routes = build_route_table(cfg, environ={})
+    server = UsageProxyServer(
+        port=0,
+        db_path=str(tmp_path / "foreign.sqlite"),
+        upstreams=routes,
+        # Someone else's profile identity: never ours to touch.
+        identity="not-this-profile",
+        manage_keys=True,
+    )
+    cfg["port"] = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = systemd_mod.reconcile_service(
+            cfg, enabled=True, run_systemctl=systemctl, scope=scope, environ={}
+        )
+
+        assert result.port.status == "foreign"
+        assert not result.port.stale
+        assert any("leaving it alone" in w for w in result.warnings)
+        assert not systemd_mod.service_unit_path(scope, hermes_home).is_file()
+        assert not any("restart" in c for c in systemctl.calls)
+    finally:
+        server.shutdown()
+        server.server_close()
+        server.store.close()

@@ -112,9 +112,23 @@ class _FakeUpstream(ThreadingHTTPServer):
 class _Proxy(UsageProxyServer):
     """UsageProxyServer carrying its shutdown bookkeeping."""
 
-    def __init__(self, *, db_path, upstreams, identity="", port=0):
+    def __init__(
+        self,
+        *,
+        db_path,
+        upstreams,
+        identity="",
+        port=0,
+        manage_keys=False,
+        keys_path=None,
+    ):
         super().__init__(
-            port=port, db_path=db_path, upstreams=upstreams, identity=identity
+            port=port,
+            db_path=db_path,
+            upstreams=upstreams,
+            identity=identity,
+            manage_keys=manage_keys,
+            keys_path=keys_path,
         )
 
 
@@ -141,12 +155,22 @@ def start_proxy(tmp_path):
     """Factory running a real usage proxy on an ephemeral loopback port."""
     servers: list[_Proxy] = []
 
-    def _start(upstreams, *, db_name="usage.sqlite", identity="", port=0) -> _Proxy:
+    def _start(
+        upstreams,
+        *,
+        db_name="usage.sqlite",
+        identity="",
+        port=0,
+        manage_keys=False,
+        keys_path=None,
+    ) -> _Proxy:
         server = _Proxy(
             db_path=str(tmp_path / db_name),
             upstreams=upstreams,
             identity=identity,
             port=port,
+            manage_keys=manage_keys,
+            keys_path=keys_path,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

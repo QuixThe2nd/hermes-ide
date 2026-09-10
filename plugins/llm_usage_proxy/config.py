@@ -63,7 +63,19 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
         "enabled": _coerce_bool(raw.get("enabled"), False),
         "port": _coerce_port(raw.get("port")),
         "upstreams": upstreams,
+        # Key-manager mode: the proxy owns the provider keys and clients hold
+        # local caller tokens. Off by default — it changes who may call the
+        # proxy at all, so flipping it on has to be a decision, not a default.
+        "manage_keys": _coerce_bool(raw.get("manage_keys"), False),
     }
+
+
+def manage_keys_enabled(cfg: Mapping[str, Any]) -> bool:
+    """Whether a config mapping asks for key-manager mode (never raises)."""
+    try:
+        return _coerce_bool(cfg.get("manage_keys"), False)
+    except AttributeError:
+        return False
 
 
 def plugin_explicitly_disabled(cfg: Mapping[str, Any] | None = None) -> bool:

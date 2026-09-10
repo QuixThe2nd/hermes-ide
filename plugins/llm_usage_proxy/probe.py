@@ -29,13 +29,14 @@ _PROBE_TIMEOUT_SEC = 2.0
 FOREIGN = "foreign"
 HEALTHY = "healthy"
 FREE = "free"
+STALE = "stale"  # this profile's own proxy, but serving a superseded argv
 
 
 @dataclass(frozen=True)
 class PortState:
     """Outcome of probing the configured port."""
 
-    status: str  # FREE | HEALTHY | FOREIGN
+    status: str  # FREE | HEALTHY | FOREIGN | STALE
     detail: str = ""
 
     @property
@@ -45,6 +46,10 @@ class PortState:
     @property
     def healthy(self) -> bool:
         return self.status == HEALTHY
+
+    @property
+    def stale(self) -> bool:
+        return self.status == STALE
 
 
 def port_in_use(port: int, *, bind: str = BIND_HOST) -> bool:
@@ -75,20 +80,23 @@ def port_in_use(port: int, *, bind: str = BIND_HOST) -> bool:
     )
 
 
-def probe_proxy_health(
+def classify_proxy_health(
     port: int,
     *,
     host: str = BIND_HOST,
     timeout: float = _PROBE_TIMEOUT_SEC,
     expect_identity: Optional[str] = None,
     expect_routes: Optional[Mapping[str, str]] = None,
-) -> Tuple[bool, str]:
-    """Return ``(is_our_verified_proxy, detail)`` for the listener on *port*.
+    expect_manage_keys: Optional[bool] = None,
+) -> Tuple[str, str]:
+    """Classify the listener on *port*: HEALTHY, STALE, or FOREIGN.
 
-    Verified means: 200, JSON, ``ok`` true, the right service id and protocol
-    version, the expected profile identity token, and — when the caller
-    passed one — exactly the expected route table. A listener that answers
-    ``{"ok": true}`` without the rest is foreign by definition.
+    *HEALTHY* answers with this service's id and protocol version, this
+    profile's identity token, and exactly the route table and key-manager
+    mode the caller expects. *STALE* is the same proxy with a superseded
+    argv — a route table or key-manager flag that changed after it started —
+    which is this profile's own unit and therefore safe to restart, never a
+    listener to fight. Anything else is *FOREIGN*.
     """
     try:
         conn = http.client.HTTPConnection(host, int(port), timeout=timeout)
@@ -100,48 +108,89 @@ def probe_proxy_health(
         finally:
             conn.close()
     except OSError as exc:
-        return False, f"http probe failed: {exc.strerror or exc}"
+        return FOREIGN, f"http probe failed: {exc.strerror or exc}"
     if status != 200:
-        return False, f"http status {status}"
+        return FOREIGN, f"http status {status}"
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return False, "health response is not JSON"
+        return FOREIGN, "health response is not JSON"
     if not isinstance(payload, dict) or payload.get("ok") is not True:
-        return False, "health response is not a healthy payload"
+        return FOREIGN, "health response is not a healthy payload"
     if payload.get("service") != SERVICE_ID:
-        return False, f"listener service is {payload.get('service')!r}, not {SERVICE_ID!r}"
+        return FOREIGN, f"listener service is {payload.get('service')!r}, not {SERVICE_ID!r}"
     if payload.get("version") != PROTOCOL_VERSION:
-        return False, (
+        return FOREIGN, (
             f"listener protocol version {payload.get('version')!r}"
             f" != {PROTOCOL_VERSION!r}"
         )
     if expect_identity is not None and payload.get("identity") != expect_identity:
-        return False, "listener belongs to a different profile"
+        return FOREIGN, "listener belongs to a different profile"
     if expect_routes is not None:
         routes = payload.get("routes")
         if not isinstance(routes, dict) or routes != dict(expect_routes):
-            return False, "listener route table does not match this profile's config"
-    return True, "usage proxy /health verified (service, identity, routes)"
+            return STALE, (
+                "this profile's usage proxy is serving a superseded route table"
+            )
+    if expect_manage_keys is not None and bool(
+        payload.get("manage_keys")
+    ) != bool(expect_manage_keys):
+        return STALE, (
+            "this profile's usage proxy is running without the key-manager"
+            " mode this profile's config asks for"
+            if expect_manage_keys
+            else "this profile's usage proxy is managing keys although this"
+            " profile's config turned key-manager mode off"
+        )
+    return HEALTHY, "usage proxy /health verified (service, identity, routes)"
+
+
+def probe_proxy_health(
+    port: int,
+    *,
+    host: str = BIND_HOST,
+    timeout: float = _PROBE_TIMEOUT_SEC,
+    expect_identity: Optional[str] = None,
+    expect_routes: Optional[Mapping[str, str]] = None,
+    expect_manage_keys: Optional[bool] = None,
+) -> Tuple[bool, str]:
+    """Return ``(is_our_verified_proxy, detail)`` for the listener on *port*.
+
+    Verified means: 200, JSON, ``ok`` true, the right service id and protocol
+    version, the expected profile identity token, and — when the caller
+    passed one — exactly the expected route table. A listener that answers
+    ``{"ok": true}`` without the rest is foreign by definition.
+    """
+    state, detail = classify_proxy_health(
+        port,
+        host=host,
+        timeout=timeout,
+        expect_identity=expect_identity,
+        expect_routes=expect_routes,
+        expect_manage_keys=expect_manage_keys,
+    )
+    return state == HEALTHY, detail
 
 
 def probe_port_state(
     port: int,
     *,
     in_use_fn: Callable[[int], bool] = port_in_use,
-    health_fn: Callable[..., Tuple[bool, str]] = probe_proxy_health,
+    health_fn: Callable[..., Tuple[str, str]] = classify_proxy_health,
     expect_identity: Optional[str] = None,
     expect_routes: Optional[Mapping[str, str]] = None,
+    expect_manage_keys: Optional[bool] = None,
 ) -> PortState:
-    """Classify the configured port as free / verified proxy / foreign listener."""
+    """Classify the configured port as free / verified / stale / foreign."""
     if not in_use_fn(port):
         return PortState(FREE, "port is free")
-    healthy, detail = health_fn(
-        port, expect_identity=expect_identity, expect_routes=expect_routes
+    state, detail = health_fn(
+        port,
+        expect_identity=expect_identity,
+        expect_routes=expect_routes,
+        expect_manage_keys=expect_manage_keys,
     )
-    if healthy:
-        return PortState(HEALTHY, detail)
-    return PortState(FOREIGN, detail)
+    return PortState(state, detail)
 
 
 def wait_for_verified_health(
@@ -149,22 +198,24 @@ def wait_for_verified_health(
     *,
     timeout: float = 8.0,
     poll_interval: float = 0.25,
-    health_fn: Callable[..., Tuple[bool, str]] = probe_proxy_health,
+    health_fn: Callable[..., Tuple[str, str]] = classify_proxy_health,
     sleep_fn: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     expect_identity: Optional[str] = None,
     expect_routes: Optional[Mapping[str, str]] = None,
+    expect_manage_keys: Optional[bool] = None,
 ) -> Tuple[bool, str]:
     """Poll /health until the proxy verifies or *timeout* elapses."""
     deadline = monotonic() + timeout
     detail = ""
     while True:
-        healthy, detail = health_fn(
+        state, detail = health_fn(
             port,
             expect_identity=expect_identity,
             expect_routes=expect_routes,
+            expect_manage_keys=expect_manage_keys,
         )
-        if healthy:
+        if state == HEALTHY:
             return True, detail
         if monotonic() >= deadline:
             return False, detail

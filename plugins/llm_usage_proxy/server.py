@@ -12,6 +12,12 @@ any optional extra.
 
 Security posture:
   * Binds 127.0.0.1 only — never a LAN/Tailscale address.
+  * Key-manager mode (``--manage-keys``) is opt-in. With it, the proxy holds
+    the provider API keys in one root-only file and hands clients local
+    caller tokens instead: a client authenticates to the proxy with a caller
+    token, the proxy injects the real upstream credential, and the ledger
+    records which caller made each request. Without the flag the proxy is a
+    credential passthrough and never rewrites an Authorization header.
   * Never follows redirects (a 3xx Location passes through to the client),
     so a response can never pivot the proxy onto a different host.
   * Forwards only to upstreams named on the command line; ``/p/<unknown>``
@@ -39,13 +45,17 @@ Honesty rules for the accounting:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -89,6 +99,13 @@ MAX_PARSE_BYTES = 8 * 1024 * 1024
 # Hard cap on a buffered request body (JSON rewrite needs the whole thing).
 MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024
 
+# Key-manager mode: one root-only file next to the ledger holds the provider
+# keys and the caller tokens (see KeyStore).
+KEYS_FILENAME = "keys.json"
+# Header a client may use to present its caller token without also sending a
+# bearer credential (which key-manager mode would otherwise read and replace).
+CALLER_TOKEN_HEADER = "X-Usage-Caller-Token"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,7 +123,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
     path TEXT,
     request_id TEXT,
     outcome TEXT,
-    usage_complete TEXT
+    usage_complete TEXT,
+    caller TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events (ts);
 CREATE INDEX IF NOT EXISTS idx_usage_events_upstream_ts
@@ -136,6 +154,11 @@ REQUEST_ID_HEADERS = ("x-request-id", "openai-request-id", "request-id")
 OUTCOME_COMPLETED = "completed"
 OUTCOME_ABORTED = "aborted"  # client connection lost during relay
 OUTCOME_UPSTREAM_ERROR = "upstream_error"  # connect/read failure upstream
+OUTCOME_REJECTED = "rejected"  # refused locally (unknown caller token), no upstream attempt
+
+# Upstream statuses that make key-manager mode try the route's next stored
+# key — once per request, so a dead key cannot turn into a retry storm.
+KEY_RETRY_STATUSES = frozenset({401, 429})
 
 # Usage completeness values (how authoritative the token numbers are).
 USAGE_FINAL = "final"  # terminal usage event observed per provider rules
@@ -647,7 +670,7 @@ def _ensure_mode_0600(path: str) -> None:
 class UsageStore:
     """Tiny locked SQLite sink — one row per proxied request attempt."""
 
-    _MIGRATION_COLUMNS = ("outcome TEXT", "usage_complete TEXT")
+    _MIGRATION_COLUMNS = ("outcome TEXT", "usage_complete TEXT", "caller TEXT")
 
     def __init__(self, path: str):
         self.path = path
@@ -662,7 +685,12 @@ class UsageStore:
         _ensure_mode_0600(self.path)
 
     def _migrate(self) -> None:
-        """Add columns introduced after an older DB was created in place."""
+        """Add columns introduced after an older DB was created in place.
+
+        ``caller`` is NULL for every row written before key-manager mode —
+        those requests were never attributed, and inventing a caller for them
+        would be worse than an honest unknown.
+        """
         existing = {
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(usage_events)")
@@ -686,6 +714,7 @@ class UsageStore:
         request_id: Optional[str],
         outcome: str,
         usage_complete: str,
+        caller: Optional[str] = None,
     ) -> None:
         fields = usage_row_fields(usage or {})
         with self._lock, self._conn:
@@ -693,8 +722,8 @@ class UsageStore:
                 "INSERT INTO usage_events (ts, upstream, model, prompt_tokens,"
                 " completion_tokens, cached_tokens, reasoning_tokens,"
                 " cache_creation_tokens, total_tokens, status_code, latency_ms,"
-                " path, request_id, outcome, usage_complete)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " path, request_id, outcome, usage_complete, caller)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                     upstream,
@@ -711,6 +740,7 @@ class UsageStore:
                     request_id,
                     outcome,
                     usage_complete,
+                    caller,
                 ),
             )
         _ensure_mode_0600(self.path)
@@ -724,7 +754,7 @@ class UsageStore:
         return [dict(row) for row in rows]
 
     def summary(self, window_hours: int = 24) -> dict[str, Any]:
-        """Totals by upstream, with explicit counts for unknown/partial usage.
+        """Totals by upstream and by caller, with explicit unknown/partial counts.
 
         Sums only cover rows that reported the field — a provider that omits
         usage contributes to ``requests`` and ``usage_missing`` but never to
@@ -735,25 +765,8 @@ class UsageStore:
         since_iso = datetime.fromtimestamp(since, tz=timezone.utc).isoformat(
             timespec="milliseconds"
         )
-        totals_sql = (
-            "SELECT upstream, COUNT(*) AS requests,"
-            " SUM(CASE WHEN usage_complete = 'final' THEN 1 ELSE 0 END)"
-            "   AS usage_final,"
-            " SUM(CASE WHEN usage_complete = 'partial' THEN 1 ELSE 0 END)"
-            "   AS usage_partial,"
-            " SUM(CASE WHEN usage_complete IS NULL OR usage_complete = 'missing'"
-            "   THEN 1 ELSE 0 END) AS usage_missing,"
-            " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
-            " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
-            " COALESCE(SUM(cached_tokens), 0) AS cached_tokens,"
-            " COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,"
-            " COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,"
-            " COALESCE(SUM(total_tokens), 0) AS total_tokens"
-            " FROM usage_events WHERE ts >= ? GROUP BY upstream ORDER BY upstream"
-        )
-        with self._lock:
-            rows = self._conn.execute(totals_sql, (since_iso,)).fetchall()
-        by_upstream = {row["upstream"]: dict(row) for row in rows}
+        by_upstream = self._grouped_totals("upstream", since_iso)
+        by_caller = self._grouped_totals("caller", since_iso)
         keys = (
             "requests",
             "usage_final",
@@ -766,17 +779,379 @@ class UsageStore:
             "cache_creation_tokens",
             "total_tokens",
         )
-        overall = {key: sum(row[key] for row in rows) for key in keys}
+        # Upstream groups are disjoint, so summing them is the overall window.
+        overall = {key: 0 for key in keys}
+        for row in by_upstream.values():
+            for key in keys:
+                overall[key] += row[key]
         return {
             "window_hours": window_hours,
             "since": since_iso,
             "overall": overall,
             "by_upstream": by_upstream,
+            "by_caller": by_caller,
         }
+
+    def _grouped_totals(self, column: str, since_iso: str) -> dict[str, dict[str, Any]]:
+        """Per-``column`` totals over the window; NULL groups stay explicit.
+
+        *column* is always a literal owned by this module, never request data.
+        """
+        totals_sql = (
+            f"SELECT {column} AS group_key, COUNT(*) AS requests,"
+            " SUM(CASE WHEN usage_complete = 'final' THEN 1 ELSE 0 END)"
+            "   AS usage_final,"
+            " SUM(CASE WHEN usage_complete = 'partial' THEN 1 ELSE 0 END)"
+            "   AS usage_partial,"
+            " SUM(CASE WHEN usage_complete IS NULL OR usage_complete = 'missing'"
+            "   THEN 1 ELSE 0 END) AS usage_missing,"
+            " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+            " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
+            " COALESCE(SUM(cached_tokens), 0) AS cached_tokens,"
+            " COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,"
+            " COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,"
+            " COALESCE(SUM(total_tokens), 0) AS total_tokens"
+            f" FROM usage_events WHERE ts >= ? GROUP BY {column} ORDER BY {column}"
+        )
+        with self._lock:
+            rows = self._conn.execute(totals_sql, (since_iso,)).fetchall()
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = row["group_key"]
+            # NULL caller = traffic that predates attribution or arrived while
+            # no caller tokens were configured. Named, never silently dropped.
+            label = key if isinstance(key, str) and key else "(unattributed)"
+            totals = dict(row)
+            totals.pop("group_key", None)
+            grouped[label] = totals
+        return grouped
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+# ── Key-manager mode: provider keys + caller tokens ──────────────────────────
+
+
+def default_keys_path() -> str:
+    """Same root-only directory as the ledger, one file for all secrets."""
+    hermes_home = os.environ.get("HERMES_HOME")
+    root = hermes_home or os.path.expanduser("~/.hermes")
+    return os.path.join(root, "usage-proxy", KEYS_FILENAME)
+
+
+def key_fingerprint(secret: str) -> str:
+    """Short stable digest shown by the CLI instead of a key or token."""
+    return "sha256:" + hashlib.sha256(str(secret or "").encode("utf-8")).hexdigest()[:12]
+
+
+ROUTE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+CALLER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def is_route_name(name: str) -> bool:
+    """Route names share the shape the upstream table already enforces."""
+    return bool(ROUTE_NAME_RE.match(name or ""))
+
+
+def is_caller_name(name: str) -> bool:
+    return bool(CALLER_NAME_RE.match(name or ""))
+
+
+def _ensure_mode_0700(path: str) -> None:
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+class KeyStore:
+    """One root-only file holding provider keys and caller tokens.
+
+    ``keys.json`` (0600, in a 0700 directory) maps a route name to the
+    provider API keys that may be injected for it — several keys means
+    rotation — and a caller name to the local token that names it in the
+    ledger. Clients hold caller tokens only; a caller token is never a
+    provider credential, and the proxy never hands a provider key back out.
+
+    Reads re-read the file when it changed on disk, so ``hermes
+    llm_usage_proxy keys set`` and ``callers create`` take effect on a running
+    proxy without a restart. Writes rewrite the file atomically: a reader
+    either sees the old map or the new one, never a truncated file.
+    """
+
+    def __init__(self, path: Optional[str] = None):
+        self.path = os.path.abspath(str(path or default_keys_path()))
+        self._lock = threading.Lock()
+        self._routes: dict[str, tuple[str, ...]] = {}
+        self._callers: dict[str, str] = {}
+        self._stamp: Optional[tuple[int, int]] = None
+        self._load()
+
+    # ── reads ────────────────────────────────────────────────────────────
+
+    def route_keys(self, route: str) -> tuple[str, ...]:
+        with self._lock:
+            self._maybe_reload()
+            return self._routes.get(route, ())
+
+    def caller_count(self) -> int:
+        with self._lock:
+            self._maybe_reload()
+            return len(self._callers)
+
+    def caller_for_token(self, token: str) -> Optional[str]:
+        """The caller name a token belongs to, or None when it is unknown."""
+        if not token:
+            return None
+        # Bytes, not str: compare_digest rejects non-ASCII *str* outright, and
+        # a header value is client-controlled input, not something to 500 on.
+        presented = token.encode("utf-8", "replace")
+        with self._lock:
+            self._maybe_reload()
+            for name, stored in self._callers.items():
+                if hmac.compare_digest(stored.encode("utf-8"), presented):
+                    return name
+        return None
+
+    def describe(self) -> dict[str, dict[str, object]]:
+        """Route/caller names with fingerprints only — never secret values."""
+        with self._lock:
+            self._maybe_reload()
+            return {
+                "routes": {
+                    name: [key_fingerprint(key) for key in keys]
+                    for name, keys in sorted(self._routes.items())
+                },
+                "callers": {
+                    name: key_fingerprint(token)
+                    for name, token in sorted(self._callers.items())
+                },
+            }
+
+    # ── writes ───────────────────────────────────────────────────────────
+
+    def set_route_keys(self, route: str, keys: list[str]) -> tuple[str, ...]:
+        """Replace a route's key list (order is the rotation order)."""
+        if not is_route_name(route):
+            raise ValueError(f"invalid route name: {route!r}")
+        cleaned: list[str] = []
+        for key in keys:
+            key = str(key or "").strip()
+            if key and key not in cleaned:
+                cleaned.append(key)
+        if not cleaned:
+            raise ValueError(f"no keys given for route {route!r}")
+        with self._lock:
+            self._maybe_reload()
+            self._routes[route] = tuple(cleaned)
+            self._save()
+            return self._routes[route]
+
+    def remove_route(self, route: str) -> bool:
+        """Drop a route and all of its keys. True when something was removed."""
+        if not is_route_name(route):
+            raise ValueError(f"invalid route name: {route!r}")
+        with self._lock:
+            self._maybe_reload()
+            if route not in self._routes:
+                return False
+            del self._routes[route]
+            self._save()
+            return True
+
+    def remove_route_key(self, route: str, index: int) -> Optional[str]:
+        """Remove the 1-based key *index* shown by ``keys list``."""
+        with self._lock:
+            self._maybe_reload()
+            keys = self._routes.get(route)
+            if not keys or not 1 <= index <= len(keys):
+                return None
+            removed = keys[index - 1]
+            kept = keys[: index - 1] + keys[index:]
+            if kept:
+                self._routes[route] = kept
+            else:
+                del self._routes[route]
+            self._save()
+            return removed
+
+    def create_caller(self, name: str) -> tuple[str, bool]:
+        """Mint a caller token; replaces the token when *name* already exists."""
+        if not is_caller_name(name):
+            raise ValueError(f"invalid caller name: {name!r}")
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            self._maybe_reload()
+            rotated = name in self._callers
+            self._callers[name] = token
+            self._save()
+            return token, rotated
+
+    def remove_caller(self, name: str) -> bool:
+        with self._lock:
+            self._maybe_reload()
+            if name not in self._callers:
+                return False
+            del self._callers[name]
+            self._save()
+            return True
+
+    # ── file plumbing ────────────────────────────────────────────────────
+
+    def _stamp_file(self, path: str) -> Optional[tuple[int, int]]:
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
+
+    def _maybe_reload(self) -> None:
+        """Caller holds the lock. Pick up edits made by the CLI meanwhile."""
+        if self._stamp_file(self.path) != self._stamp:
+            self._load()
+
+    def _load(self) -> None:
+        path = self.path
+        self._stamp = self._stamp_file(path)
+        if self._stamp is None:
+            self._routes, self._callers = {}, {}
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except (OSError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError (a subclass) and a
+            # UnicodeDecodeError from a file that is not text at all. Treat a
+            # broken store as empty rather than refusing to proxy — but say so.
+            logger.error(
+                "key store %s unreadable (%s); no keys or callers loaded",
+                path,
+                redact_text(str(exc)),
+            )
+            self._routes, self._callers = {}, {}
+            return
+        routes: dict[str, tuple[str, ...]] = {}
+        callers: dict[str, str] = {}
+        if isinstance(raw, Mapping):
+            raw_routes = raw.get("routes")
+            if isinstance(raw_routes, Mapping):
+                for name, keys in raw_routes.items():
+                    if not is_route_name(str(name)) or not isinstance(keys, list):
+                        continue
+                    cleaned = tuple(
+                        key for key in (str(k).strip() for k in keys) if key
+                    )
+                    if cleaned:
+                        routes[str(name)] = cleaned
+            raw_callers = raw.get("callers")
+            if isinstance(raw_callers, Mapping):
+                for name, token in raw_callers.items():
+                    if is_caller_name(str(name)) and isinstance(token, str) and token:
+                        callers[str(name)] = token
+        self._routes, self._callers = routes, callers
+        _ensure_mode_0600(path)  # a store written loose by an older version
+
+    def _save(self) -> None:
+        """Caller holds the lock. Atomic replace keeps readers on one version."""
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        _ensure_mode_0700(directory)
+        payload = {
+            "version": 1,
+            "routes": {name: list(keys) for name, keys in sorted(self._routes.items())},
+            "callers": dict(sorted(self._callers.items())),
+        }
+        handle_fd, tmp_path = tempfile.mkstemp(
+            dir=directory, prefix=".keys-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _ensure_mode_0600(self.path)
+        self._stamp = self._stamp_file(self.path)
+
+
+class KeyRotator:
+    """Per-route round-robin cursor over the keys a route is configured with.
+
+    ``issue`` hands out the next key and advances the cursor, so concurrent
+    requests spread across a route's keys. ``step`` names the key after one
+    already used *without* moving the cursor: a retry must not cost the next
+    request its own turn.
+    """
+
+    def __init__(self, store: KeyStore):
+        self._store = store
+        self._lock = threading.Lock()
+        self._cursors: dict[str, int] = {}
+
+    def issue(self, route: str) -> tuple[Optional[str], int]:
+        keys = self._store.route_keys(route)
+        if not keys:
+            return None, -1
+        with self._lock:
+            position = self._cursors.get(route, 0) % len(keys)
+            self._cursors[route] = (position + 1) % len(keys)
+        return keys[position], position
+
+    def step(self, route: str, position: int) -> tuple[Optional[str], int]:
+        keys = self._store.route_keys(route)
+        if not keys or position < 0:
+            return None, -1
+        with self._lock:
+            nxt = (position + 1) % len(keys)
+        return keys[nxt], nxt
+
+
+def apply_upstream_auth(
+    headers: list[tuple[str, str]], key: str
+) -> list[tuple[str, str]]:
+    """Swap the client's credential headers for *key*.
+
+    The client's own choice of credential header is the signal for which API
+    dialect the upstream expects, so an existing Authorization stays an
+    Authorization and an existing x-api-key stays an x-api-key — only the
+    value changes. A request carrying no credential at all gets a Bearer
+    header, the OpenAI-compatible default.
+    """
+    replaced: list[tuple[str, str]] = []
+    saw_credential = False
+    for name, value in headers:
+        lowered = name.lower()
+        if lowered == "authorization":
+            saw_credential = True
+            replaced.append((name, f"Bearer {key}"))
+        elif lowered == "x-api-key":
+            saw_credential = True
+            replaced.append((name, key))
+        else:
+            replaced.append((name, value))
+    if not saw_credential:
+        replaced.append(("Authorization", f"Bearer {key}"))
+    return replaced
+
+
+def bearer_token(value: Optional[str]) -> Optional[str]:
+    """The credential in a ``Bearer …`` header value, else None."""
+    if not value:
+        return None
+    parts = value.strip().split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
+        return parts[1].strip()
+    return None
 
 
 # ── Proxy handler ────────────────────────────────────────────────────────────
@@ -828,6 +1203,19 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
     def upstreams(self) -> dict[str, str]:
         return self.server.upstreams  # type: ignore[attr-defined]
 
+    @property
+    def manage_keys(self) -> bool:
+        """True only when the unit was started with --manage-keys."""
+        return bool(getattr(self.server, "manage_keys", False))
+
+    @property
+    def key_store(self) -> Optional[KeyStore]:
+        return getattr(self.server, "key_store", None)
+
+    @property
+    def rotator(self) -> Optional[KeyRotator]:
+        return getattr(self.server, "rotator", None)
+
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
         # Raw access logging is disabled outright: the default request line
         # embeds the full path *with query string*, and query strings can
@@ -861,6 +1249,10 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             "version": PROTOCOL_VERSION,
             "identity": getattr(server, "identity", "") or "",
             "routes": dict(self.upstreams),
+            # Part of the verified identity: a unit running without
+            # --manage-keys must never be mistaken for one running with it,
+            # because the two disagree about who is allowed to call them.
+            "manage_keys": self.manage_keys,
         }
 
     def _send_recent_usage(self) -> None:
@@ -946,13 +1338,21 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         return b"".join(parts)
 
     def _forward_headers(self, upstream_netloc: str) -> list[tuple[str, str]]:
-        """Request headers minus hop-by-hop and Connection-nominated headers."""
+        """Request headers minus hop-by-hop and Connection-nominated headers.
+
+        The caller-token header is dropped as well: it is a credential for
+        *this* proxy, and no provider should ever see it.
+        """
         connection_tokens = {
             token.strip().lower()
             for token in (self.headers.get("Connection") or "").split(",")
             if token.strip()
         }
-        skip = HOP_BY_HOP | connection_tokens | {"host", "content-length"}
+        skip = (
+            HOP_BY_HOP
+            | connection_tokens
+            | {"host", "content-length", CALLER_TOKEN_HEADER.lower()}
+        )
         forwarded = []
         for name, value in self.headers.items():
             if name.lower() in skip:
@@ -960,6 +1360,69 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             forwarded.append((name, value))
         forwarded.append(("Host", upstream_netloc))
         return forwarded
+
+    def _presented_caller_token(self) -> Optional[str]:
+        """The caller token this request arrived with, if any.
+
+        The dedicated header wins, because key-manager mode otherwise reads
+        the Authorization header — which may hold a caller token *or* a
+        credential the client still wants passed through untouched.
+        """
+        explicit = self.headers.get(CALLER_TOKEN_HEADER)
+        if explicit and explicit.strip():
+            return explicit.strip()
+        return bearer_token(self.headers.get("Authorization"))
+
+    def _authenticate_caller(
+        self, key_store: KeyStore
+    ) -> tuple[Optional[str], Optional[str]]:
+        """``(caller, error)`` — exactly one of the two is None.
+
+        Caller tokens gate the proxy only once one has been issued: a request
+        must then name a known caller, because the ledger has to say who made
+        it and an unattributable request cannot be told apart from a forged
+        one. With no caller tokens configured anything is accepted, which is
+        what keeps Hermes's own in-process routed traffic (provider
+        credentials, no caller token) working unchanged.
+        """
+        presented = self._presented_caller_token()
+        if not key_store.caller_count():
+            return None, None
+        name = key_store.caller_for_token(presented or "")
+        if name is not None:
+            return name, None
+        if not presented:
+            return None, "missing caller token"
+        return None, "unknown caller token"
+
+    def _record_rejection(
+        self,
+        *,
+        upstream: str,
+        path: str,
+        model: Optional[str],
+        status: int,
+        started: float,
+    ) -> None:
+        """Ledger row for a request that never left the proxy.
+
+        The attempt happened, so it is a row — with usage honestly missing
+        rather than a fabricated zero, and never a silent gap.
+        """
+        try:
+            self.store.insert(
+                upstream=upstream,
+                model=model,
+                usage=None,
+                status_code=status,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                path=path or "/",
+                request_id=None,
+                outcome=OUTCOME_REJECTED,
+                usage_complete=USAGE_MISSING,
+            )
+        except sqlite3.Error as exc:
+            logger.error("failed to record usage row: %s", redact_text(str(exc)))
 
     def _proxy(self) -> None:
         started = time.monotonic()
@@ -990,6 +1453,33 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             if rewritten is not None:
                 body = rewritten
 
+        # Key-manager mode. The caller is identified first (and refused before
+        # anything is sent upstream), then the incoming credential is swapped
+        # for one of the route's own keys. Without --manage-keys neither step
+        # runs: this is a credential passthrough and the client's Authorization
+        # reaches the upstream exactly as it arrived.
+        caller: Optional[str] = None
+        managed_key: Optional[str] = None
+        managed_position = -1
+        route_key_count = 0
+        key_store = self.key_store if self.manage_keys else None
+        if key_store is not None:
+            caller, auth_error = self._authenticate_caller(key_store)
+            if auth_error is not None:
+                self._send_json(401, {"error": auth_error})
+                self._record_rejection(
+                    upstream=upstream_name,
+                    path=routed_path,
+                    model=model,
+                    status=401,
+                    started=started,
+                )
+                return
+            route_keys = key_store.route_keys(upstream_name)
+            route_key_count = len(route_keys)
+            if route_keys and self.rotator is not None:
+                managed_key, managed_position = self.rotator.issue(upstream_name)
+
         conn: Optional[HTTPConnection] = None
         status_code: Optional[int] = None
         request_id: Optional[str] = None
@@ -997,26 +1487,61 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         outcome = OUTCOME_UPSTREAM_ERROR
         headers_sent = False
         try:
-            if split_base.scheme == "https":
-                conn = HTTPSConnection(
-                    split_base.netloc,
-                    timeout=CONNECT_TIMEOUT_SEC,
-                    context=ssl.create_default_context(),
+
+            def _open_and_send(key: Optional[str]) -> tuple[HTTPConnection, Any]:
+                nonlocal conn
+                if split_base.scheme == "https":
+                    connection: HTTPConnection = HTTPSConnection(
+                        split_base.netloc,
+                        timeout=CONNECT_TIMEOUT_SEC,
+                        context=ssl.create_default_context(),
+                    )
+                else:
+                    connection = HTTPConnection(
+                        split_base.netloc, timeout=CONNECT_TIMEOUT_SEC
+                    )
+                # Bound to the outer name before the request so the finally
+                # below closes this connection even if connect/request raises.
+                conn = connection
+                headers = self._forward_headers(split_base.netloc)
+                if key is not None:
+                    headers = apply_upstream_auth(headers, key)
+                body_for_request = body if body is not None else (
+                    b"" if self.command in ("POST", "PUT", "PATCH") else None
                 )
-            else:
-                conn = HTTPConnection(split_base.netloc, timeout=CONNECT_TIMEOUT_SEC)
-            headers = self._forward_headers(split_base.netloc)
-            body_for_request = body if body is not None else (
-                b"" if self.command in ("POST", "PUT", "PATCH") else None
-            )
-            if body is not None:
-                headers.append(("Content-Length", str(len(body))))
-            # http.client applies the socket timeout to connects AND reads;
-            # stretch it once connected so long streams are not cut short.
-            conn.request(self.command, target, body=body_for_request, headers=dict(headers))
-            if conn.sock is not None:
-                conn.sock.settimeout(STREAM_TIMEOUT_SEC)
-            resp = conn.getresponse()
+                if body is not None:
+                    headers.append(("Content-Length", str(len(body))))
+                # http.client applies the socket timeout to connects AND reads;
+                # stretch it once connected so long streams are not cut short.
+                connection.request(
+                    self.command, target, body=body_for_request, headers=dict(headers)
+                )
+                if connection.sock is not None:
+                    connection.sock.settimeout(STREAM_TIMEOUT_SEC)
+                return connection, connection.getresponse()
+
+            conn, resp = _open_and_send(managed_key)
+            if (
+                managed_key is not None
+                and resp.status in KEY_RETRY_STATUSES
+                and route_key_count > 1
+                and self.rotator is not None
+            ):
+                # One retry per request with the route's next key: a rotated-out
+                # or revoked credential should not surface to the client, and a
+                # rate-limited one gets a second key before the client backs off.
+                retry_key, retry_position = self.rotator.step(
+                    upstream_name, managed_position
+                )
+                if retry_key is not None:
+                    logger.info(
+                        "upstream %s answered %s with key %s; retrying with its next key",
+                        upstream_name,
+                        resp.status,
+                        key_fingerprint(managed_key),
+                    )
+                    conn.close()
+                    conn, resp = _open_and_send(retry_key)
 
             status_code = resp.status
             for header in REQUEST_ID_HEADERS:
@@ -1126,6 +1651,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     request_id=request_id,
                     outcome=outcome,
                     usage_complete=completeness,
+                    caller=caller,
                 )
             except sqlite3.Error as exc:
                 logger.error("failed to record usage row: %s", redact_text(str(exc)))
@@ -1176,6 +1702,8 @@ class UsageProxyServer(ThreadingHTTPServer):
         db_path: Optional[str] = None,
         upstreams: Optional[Mapping[str, str]] = None,
         identity: str = "",
+        manage_keys: bool = False,
+        keys_path: Optional[str] = None,
     ):
         self.store = UsageStore(db_path or default_db_path())
         resolved = dict(DEFAULT_UPSTREAMS)
@@ -1183,6 +1711,11 @@ class UsageProxyServer(ThreadingHTTPServer):
             resolved[name] = base
         self.upstreams = _validate_upstreams(resolved, port=port)
         self.identity = str(identity or "")
+        # Key-manager mode is opt-in per process: without the flag no caller is
+        # ever refused and no Authorization header is ever rewritten.
+        self.manage_keys = bool(manage_keys)
+        self.key_store = KeyStore(keys_path) if self.manage_keys else None
+        self.rotator = KeyRotator(self.key_store) if self.key_store else None
         super().__init__((BIND_HOST, int(port)), UsageProxyHandler)
 
 
@@ -1243,8 +1776,6 @@ def parse_upstream_args(pairs: list[str]) -> dict[str, str]:
 
 def compute_identity(value: str) -> str:
     """Stable short identity digest for /health (never the raw value)."""
-    import hashlib
-
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
 
 
@@ -1259,6 +1790,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--identity",
         default="",
         help="Opaque identity token echoed by /health (profile binding)",
+    )
+    parser.add_argument(
+        "--manage-keys",
+        action="store_true",
+        help=(
+            "Inject provider keys from the key store and require caller tokens;"
+            " without it the proxy is a credential passthrough"
+        ),
+    )
+    parser.add_argument(
+        "--keys-path",
+        default=default_keys_path(),
+        help="Path to the key store (default: <HERMES_HOME>/usage-proxy/keys.json)",
     )
     parser.add_argument(
         "--upstream",
@@ -1286,6 +1830,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             db_path=args.db,
             upstreams=upstreams,
             identity=args.identity,
+            manage_keys=args.manage_keys,
+            keys_path=args.keys_path,
         )
     except (ValueError, OSError, sqlite3.Error) as exc:
         print(
@@ -1295,11 +1841,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     logger.info(
-        "llm-usage-proxy listening on %s:%d (db=%s, upstreams=%s)",
+        "llm-usage-proxy listening on %s:%d (db=%s, upstreams=%s, manage-keys=%s)",
         BIND_HOST,
         args.port,
         args.db,
         ",".join(sorted(server.upstreams)),
+        "yes" if args.manage_keys else "no",
     )
     try:
         server.serve_forever(poll_interval=0.5)

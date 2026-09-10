@@ -33,7 +33,10 @@ from plugins.auto_update.systemd import (
     format_exec_start,
     format_environment,
 )
-from plugins.llm_usage_proxy.config import load_llm_usage_proxy_config
+from plugins.llm_usage_proxy.config import (
+    load_llm_usage_proxy_config,
+    manage_keys_enabled,
+)
 from plugins.llm_usage_proxy.probe import FREE, PortState, probe_port_state
 from plugins.llm_usage_proxy.routes import build_route_table
 from plugins.llm_usage_proxy.server import BIND_HOST, DEFAULT_PORT, compute_identity
@@ -59,6 +62,9 @@ _CAPTURE_NOTE = (
     "# pool entries) — never from a process-global env sweep — then baked into\n"
     "# this unit. Changing provider endpoints needs one\n"
     "# `hermes llm_usage_proxy reconcile` to take effect.\n"
+    "# With --manage-keys the proxy injects provider keys read from\n"
+    "# <HERMES_HOME>/usage-proxy/keys.json (0600) at request time; the keys\n"
+    "# themselves are never written into this unit or anywhere else on disk.\n"
 )
 
 
@@ -125,6 +131,11 @@ def db_path(hermes_home: Optional[Path] = None) -> Path:
     return data_dir_path(hermes_home) / "usage.sqlite"
 
 
+def keys_path(hermes_home: Optional[Path] = None) -> Path:
+    """The root-only key store used when the unit runs with --manage-keys."""
+    return data_dir_path(hermes_home) / "keys.json"
+
+
 def server_script_path() -> Path:
     """Bundled stdlib-only proxy shipped inside this plugin."""
     return Path(__file__).resolve().parent / "server.py"
@@ -152,6 +163,10 @@ def build_exec_start_argv(
         "--identity",
         profile_identity(home),
     ]
+    if manage_keys_enabled(cfg):
+        # No secret travels in argv: the server reads the key store from disk.
+        argv.append("--manage-keys")
+        argv.extend(("--keys-path", str(keys_path(home))))
     targets = build_route_table(cfg, environ=environ)
     for name in sorted(targets):
         argv.extend(("--upstream", f"{name}={targets[name]}"))
@@ -376,6 +391,7 @@ def reconcile_service(
         int(cfg.get("port") or DEFAULT_PORT),
         expect_identity=identity,
         expect_routes=routes,
+        expect_manage_keys=manage_keys_enabled(cfg),
     )
 
     if not enabled:
@@ -408,8 +424,12 @@ def reconcile_service(
     # Port already serving: never race a second copy and never adopt a
     # listener this profile cannot verify (foreign service, another
     # profile's proxy, or a stale route table — all stand down the same way,
-    # with routing left off and the reason reported).
-    if port_state.occupied:
+    # with routing left off and the reason reported). A listener that DOES
+    # verify as ours but is serving a superseded argv is the exception: it is
+    # this profile's own unit, so reconcile rewrites the unit and restarts it
+    # below — that is what makes "one reconcile applies the new routes/key
+    # manager" true instead of a claim the operator has to fix by hand.
+    if port_state.occupied and not port_state.stale:
         if port_state.healthy:
             warnings.append(
                 "this profile's usage proxy already running on the configured"
@@ -481,7 +501,9 @@ def reconcile_service(
     # A running unit keeps its old argv until restarted; without this a
     # changed route table would serve stale routes (and then fail identity
     # verification, leaving routing off) instead of picking the new one up.
-    if changed:
+    # A stale listener restarts even when the unit file happens to match:
+    # the process, not the file, is what is out of date.
+    if changed or port_state.stale:
         code, _, err = runner(
             build_systemctl_cmd(selected, "restart", service_name(home))
         )
@@ -489,6 +511,11 @@ def reconcile_service(
             warnings.append(
                 f"failed to restart {service_name(home)} after unit change:"
                 f" {err.strip() or code}"
+            )
+        elif port_state.stale:
+            warnings.append(
+                "restarted this profile's usage proxy to apply the changed"
+                f" configuration ({port_state.detail})"
             )
 
     enabled_probe = probe_service_is_enabled(
@@ -546,6 +573,7 @@ def format_status(
         f"  Scope: {'system' if result.scope and result.scope.system else 'user'}",
         f"  Bind: {BIND_HOST}:{port}",
         f"  SQLite: {db_path()}",
+        f"  Key manager: {'on (--manage-keys; keys in ' + keys_path() + ')' if manage_keys_enabled(cfg) else 'off (credential passthrough)'}",
         f"  Unit installed: {'yes' if result.unit_installed else 'no'}",
         f"  Enabled: {_format_yes_no(result.enabled, known=result.enabled_known)}",
         f"  Service active: {_format_yes_no(result.service_active, known=result.service_active_known)}",
@@ -583,6 +611,7 @@ __all__ = [
     "db_path",
     "disable_service",
     "format_status",
+    "keys_path",
     "profile_identity",
     "probe_port_state",
     "probe_service_is_active",
