@@ -154,6 +154,30 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
 
 
+def test_waiter_outlives_the_desktop_deliver_deadline():
+    """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
+    up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911).
+    relay-deliver-budget.test.ts pins the TS constants against these Python ones."""
+    desktop_budget_s = (
+        bot_relay.TURN_WAIT_SECONDS_FALLBACK
+        + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
+        + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+    )
+    assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
+    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+
+
+def test_waiter_give_up_message_states_the_real_budget(root):
+    import shlex
+
+    env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    parts = shlex.split(bot_relay.waiter_command(root, env))
+    code = parts[parts.index("-c") + 1]
+    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
+    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
+    assert "within 900s" not in code
+
+
 def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
     """The reply file is written once; the waiter must notice it fast, not
     on a multi-second sleep (dead air the sender's completion notification
