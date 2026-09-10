@@ -192,6 +192,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # agent tab rather than spawning a one-field orphan category.
     "runtime": "agent",
     "session": "general",
+    # `missions.max_foreground_waits` is the only schema-surfaced missions field — fold it
+    # into the agent tab (next to the other delegation controls) rather than spawning a
+    # one-field orphan category.
+    "missions": "agent",
     "nous": "agent",
 }
 
