@@ -668,6 +668,8 @@ def _collect_pre_llm_call_context(
     runaway plugin can't inflate every subsequent turn's prompt. Not invoked on a
     transparent continuation: the hook's only injection target is the NEW user
     message, and there is none."""
+    if getattr(agent, "_persist_disabled", False):
+        return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = (

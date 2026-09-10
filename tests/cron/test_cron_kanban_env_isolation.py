@@ -424,10 +424,12 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
 
     Fails loudly if a new dispatcher var is added without registering it.
     """
-    import hermes_cli.kanban_db as kanban_db
+    # Decomposition moved ``_default_spawn`` out of the kanban_db facade into
+    # the dispatch module; walk the module that owns the spawner now.
+    import hermes_cli.kanban_db_dispatch as kanban_db_dispatch
     from agent.delegation_context import KANBAN_ENV_KEYS
 
-    source = ast.parse(open(kanban_db.__file__, encoding="utf-8").read())
+    source = ast.parse(open(kanban_db_dispatch.__file__, encoding="utf-8").read())
     spawn = next(
         node for node in ast.walk(source)
         if isinstance(node, ast.FunctionDef) and node.name == "_default_spawn"
@@ -478,7 +480,18 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
         "HERMES_KANBAN_GOAL_MODE",
         "HERMES_KANBAN_GOAL_MAX_TURNS",
     }
-    uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
+    # Board/workspace routing pins are deliberately NOT scrubbed from delegated
+    # children — upstream's retained-board-routing semantic (see
+    # tests/tools/test_delegate_kanban_isolation.py: board location and workspace
+    # routing ride along with the fence marker). They stay out of KANBAN_ENV_KEYS
+    # by design; listed here so any NEW dispatcher var still forces a decision.
+    retained_board_routing = {
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACE",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+    }
+    uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only - retained_board_routing
     assert not uncovered, (
         f"dispatcher injects {sorted(uncovered)} which is neither in "
         "KANBAN_ENV_KEYS nor explicitly classified as behaviour-only"

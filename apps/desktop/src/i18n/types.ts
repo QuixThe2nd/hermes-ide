@@ -382,7 +382,6 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
-      plugins: string
     }
     plugins: {
       title: string
@@ -398,11 +397,6 @@ export interface Translations {
       kinds: { bundled: string; disk: string; runtime: string }
       agentHalfMissing: string
       agentHalfMissingTip: string
-      agent: {
-        title: string
-        movedToCapabilities: string
-        openCapabilities: string
-      }
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -433,6 +427,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -1323,6 +1321,8 @@ export interface Translations {
     skillArchivedMessage: string
     tabPlugins: string
     plugins: {
+      agentTitle: string
+      agentBlurb: string
       empty: string
       emptyHint: string
       loadFailed: string
@@ -1335,6 +1335,8 @@ export interface Translations {
       catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
       tierOfficial: string
       tierCommunity: string
       updateToPin: (sha: string) => string
@@ -1691,6 +1693,38 @@ export interface Translations {
     failedRevoke: (name: string) => string
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
+    restartNeeded: string
+    restartNow: string
+    restarting: string
+    restartFailedManual: string
+    telegramQr: {
+      title: string
+      subtitle: string
+      quickSetup: string
+      recommended: string
+      quickHelp: string
+      createWithQr: string
+      starting: string
+      replaceWarning: string
+      scanHint: string
+      waiting: string
+      expiresIn: (remaining: string) => string
+      expired: string
+      openTelegram: string
+      ready: string
+      allowedUsers: string
+      ownerDetected: string
+      addAtLeastOne: string
+      userIdPlaceholder: string
+      add: string
+      numericOnly: string
+      saveAndRestart: string
+      applying: string
+      pairingExpired: string
+      stillWaiting: (detail: string) => string
+      savedRestarting: string
+      savedRestartFailed: (detail: string) => string
+    }
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
   }

@@ -5000,13 +5000,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         # provider's request personality on an explicit endpoint. This
         # short-circuit runs before the resolve_runtime_provider() call below,
         # so without this block the runtime-carried request_overrides
-        # (extra_body / extra_headers, e.g. `thinking: {type: disabled}`) and
-        # max_output_tokens are silently dropped for subagents (#65035).
+        # (extra_body / extra_headers, e.g. `thinking: {type: disabled}`)
+        # are silently dropped for subagents (#65035). Dedicated output caps
+        # (runtime max_output_tokens) are deliberately NOT carried over —
+        # children fall back to the parent's max_tokens (upstream cap removal).
         # Best-effort: the explicit endpoint worked before this change even
         # when the provider can't resolve, so a resolution failure only skips
         # the overrides — it must not fail the dispatch.
         request_overrides = None
-        max_output_tokens = None
         if configured_provider:
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -5015,7 +5016,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
                     requested=configured_provider, target_model=configured_model
                 )
                 request_overrides = dict(runtime.get("request_overrides") or {}) or None
-                max_output_tokens = runtime.get("max_output_tokens")
             except Exception as exc:
                 logger.debug(
                     "delegation.base_url: runtime resolution for provider '%s' "
@@ -5037,7 +5037,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_key": api_key,
             "api_mode": api_mode,
             "request_overrides": request_overrides,
-            "max_output_tokens": max_output_tokens,
         }
 
     if not configured_provider:
@@ -5057,7 +5056,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
                 getattr(parent_agent, "request_overrides", None),
                 explicit_request_overrides,
             ),
-            "max_output_tokens": None,
         }
 
     # Provider is configured — resolve full credentials
@@ -5107,7 +5105,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             runtime.get("request_overrides"), explicit_request_overrides
         )
         or {},
-        "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
