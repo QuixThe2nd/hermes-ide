@@ -56,18 +56,67 @@ def test_choose_status_phrase_uses_custom_catalog_without_leaking_args():
     assert "SECRET" not in msg
 
 
-def test_discord_zero_config_heartbeat_is_clean_generic_phrase():
-    """No config set → Discord resolves generic mode and the deterministic
-    heartbeat phrase (no elapsed time, iteration counter, or wait notices)."""
+def test_discord_zero_config_heartbeat_is_phase_line():
+    """No config set → Discord resolves phase mode and the heartbeat names
+    the current wait (tool / model / packing) with its elapsed time — never
+    an iteration counter or provider wait-notice essay."""
     from gateway.display_config import resolve_display_setting
+    from gateway.status_phrases import format_phase_heartbeat
 
     assert (
         resolve_display_setting({}, "discord", "long_running_notifications", True)
-        == "generic"
+        == "phase"
+    )
+    # Tool in flight: tool function name + elapsed on this tool.
+    assert (
+        format_phase_heartbeat(
+            {"current_tool": "terminal", "seconds_since_activity": 102}
+        )
+        == "⏳ terminal 1m42s"
+    )
+    # Next LLM call: model id parsed from the wait notice (essay dropped).
+    wait_notice = (
+        "⏳ waiting on grok-4.6 — 30s with no response yet (provider may be "
+        "slow or overloaded; auto-reconnect at 120s)"
     )
     assert (
-        choose_status_phrase(
-            "status", catalog=resolve_status_phrase_catalog({}, "discord")
+        format_phase_heartbeat(
+            {
+                "current_tool": None,
+                "last_activity_desc": wait_notice,
+                "seconds_since_activity": 38,
+            }
         )
-        == "⏳ still working"
+        == "⏳ grok-4.6 38s"
     )
+    # Last tool already returned, next LLM wait not started.
+    assert (
+        format_phase_heartbeat(
+            {
+                "current_tool": None,
+                "last_activity_desc": "tool completed: terminal (1.2s)",
+                "seconds_since_activity": 12,
+            }
+        )
+        == "⏳ packing 12s"
+    )
+    # LLM wait without a parseable model id falls back to "model".
+    assert (
+        format_phase_heartbeat(
+            {
+                "current_tool": None,
+                "last_activity_desc": "waiting for non-streaming API response",
+                "seconds_since_activity": 40,
+            }
+        )
+        == "⏳ model 40s"
+    )
+    for snapshot in (
+        {"current_tool": "terminal", "seconds_since_activity": 102},
+        {"current_tool": None, "last_activity_desc": wait_notice, "seconds_since_activity": 38},
+        {"current_tool": None, "last_activity_desc": "tool completed: terminal (1.2s)", "seconds_since_activity": 12},
+    ):
+        line = format_phase_heartbeat(snapshot)
+        assert "iteration" not in line
+        assert "provider may be slow" not in line
+        assert "auto-reconnect" not in line

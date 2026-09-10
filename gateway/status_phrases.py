@@ -182,6 +182,76 @@ def resolve_status_phrase_catalog(user_config: Mapping[str, Any] | None, platfor
     return catalog
 
 
+# Phase-heartbeat classification: ``last_activity_desc`` markers that mean
+# "the run is waiting on its next LLM response". Anything else a finished
+# tool / compression / prompt-build moment stamps lands in "packing".
+_LLM_WAIT_MARKERS = (
+    "waiting on",
+    "waiting for non-streaming",
+    "waiting for provider",
+    "receiving stream",
+)
+# Concurrent tool names arrive comma-joined ("terminal, web_search"); keep
+# them but cap the joined identifier so the line stays short.
+_PHASE_TOOL_NOUN_MAX_CHARS = 40
+# Wait-notice fallback wording when no model id was available — not a noun
+# worth showing, so it maps to the generic "model".
+_NON_MODEL_WAIT_NOUNS = {"", "the", "provider", "the provider"}
+
+
+def _format_phase_elapsed(seconds: Any) -> str:
+    """38s under a minute; 1m42s after; 3m with no remainder."""
+    try:
+        elapsed = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        elapsed = 0
+    if elapsed < 60:
+        return f"{elapsed}s"
+    minutes, secs = divmod(elapsed, 60)
+    return f"{minutes}m{secs}s" if secs else f"{minutes}m"
+
+
+def _phase_model_from_wait_desc(desc: str) -> str:
+    """Pull the model id out of ``waiting on {model} — …`` (essay dropped)."""
+    idx = desc.find("waiting on")
+    if idx < 0:
+        return "model"
+    tail = desc[idx + len("waiting on"):].strip()
+    token = tail.split()[0].strip(",;:.…—–") if tail else ""
+    if token.lower() in _NON_MODEL_WAIT_NOUNS:
+        return "model"
+    return token
+
+
+def format_phase_heartbeat(snapshot: Mapping[str, Any] | None) -> str:
+    """Render the phase heartbeat line ``⏳ <current wait> <elapsed>``.
+
+    Names what the run is waiting on right now — the tool in flight, the
+    model being waited on, or ``packing`` between a finished tool and the
+    next LLM call — plus how long that wait has lasted. Like
+    :func:`choose_status_phrase`, this never interpolates raw tool
+    args/previews/commands: only short identifiers (tool function name,
+    model id, or the word ``packing``) reach the returned line.
+    """
+    snap = snapshot if isinstance(snapshot, Mapping) else {}
+    tool = str(snap.get("current_tool") or "").strip()
+    if tool:
+        noun = tool[:_PHASE_TOOL_NOUN_MAX_CHARS]
+    else:
+        desc = str(
+            snap.get("last_activity_desc")
+            or snap.get("last_activity_description")
+            or ""
+        )
+        lowered = desc.lower()
+        noun = (
+            _phase_model_from_wait_desc(desc)
+            if any(marker in lowered for marker in _LLM_WAIT_MARKERS)
+            else "packing"
+        )
+    return f"⏳ {noun} {_format_phase_elapsed(snap.get('seconds_since_activity'))}"
+
+
 def classify_status_context(
     kind: str,
     *,
