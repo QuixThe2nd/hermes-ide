@@ -399,6 +399,49 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
     return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
 
 
+class DeliveryAuthor:
+    """A relayed turn's author as an in-process object. ``bot_relay.deliver`` builds it from the sender fields
+    an admitted gateway client relays for another connection; nothing verifies the sender itself. A JSON
+    client cannot build one, so ``prompt.submit`` accepts the object and refuses a dict."""
+
+    __slots__ = ("author",)
+
+    def __init__(self, author: dict) -> None:
+        self.author = dict(author)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DeliveryAuthor) and other.author == self.author
+
+    def __repr__(self) -> str:
+        return f"DeliveryAuthor({self.author!r})"
+
+
+def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: Any = None) -> Optional[dict]:
+    """The author of a relayed DM's recipient turn, built from the sender fields as the relaying client reports
+    them. A relayed DM always comes from another gateway, so the id carries the Desktop's id for the sender's
+    connection (``local`` included) and only the recipient's own profiles are bare ``bot:<profile>``. None when
+    the envelope names no sender."""
+    from agent.turn_author import bot_author_id
+
+    profile = str(from_profile or "").strip()
+    if not profile:
+        return None
+    return {"id": bot_author_id(profile, str(from_connection or "")), "name": str(from_handle or "").strip() or profile,
+            "is_bot": True}
+
+
+def delivery_env(author: Optional[dict]) -> dict[str, str]:
+    """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
+    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
+    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+
+    env = dict(os.environ)
+    env.pop(TURN_AUTHOR_ENV, None)
+    if author:
+        env.update(turn_author_env(author))
+    return env
+
+
 # Two deliveries into the SAME profile must never run Bot Chat turns concurrently.
 # Deliveries are separate ``hermes`` subprocesses, so the lock is a per-profile
 # lockfile under ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly

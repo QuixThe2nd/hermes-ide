@@ -3734,6 +3734,7 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
+from gateway.run_turn import is_context_overflow_failure_result
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -5174,8 +5175,13 @@ def _normalize_empty_agent_response(
     silent-drop pattern observed after ``/stop`` where the next user
     message hits a stale generation token and returns an empty result,
     leaving the platform with nothing to send. (#31884)
+
+    A failed context-overflow turn whose ``final_response`` is only the raw provider envelope
+    (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a
+    generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
-    if response:
+    is_overflow = is_context_overflow_failure_result(agent_result, history_len)
+    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
 
     if agent_result.get("failed"):
@@ -5206,11 +5212,7 @@ def _normalize_empty_agent_response(
                 "Your message should already be saved — please send it "
                 "again in a moment."
             )
-        is_context_failure = any(
-            p in error_str
-            for p in ("context", "token", "too large", "too long", "exceed", "payload")
-        ) or ("400" in error_str and history_len > 50)
-        if is_context_failure:
+        if is_overflow:
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or "
@@ -13724,6 +13726,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             return True  # handled (silently dropped); do not fall through
+        # Bot loop guard: a steered or queued follow-up never reaches the cold-path
+        # admission, so the budget is charged here.
+        if not self._admit_bot_message_for_source(event.source):
+            return True
+        event._bot_loop_admitted = True
 
         effective_mode = self._effective_busy_input_mode(event.source)
 
@@ -21286,11 +21293,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 allow_adapter_delegation=False,
             )
 
+        return self._under_authorization_profile(source, _check)
+
+    def _admit_bot_message_for_source(self, source: SessionSource) -> bool:
+        """Count a bot message under the profile that authorized it, so the guard's peek, count and
+        config all read the transport profile's ``gateway.bot_loop_guard``."""
+        return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
+
+    @staticmethod
+    def _under_authorization_profile(source: SessionSource, check):
         authorization_home = getattr(source, "_authorization_profile_home", None)
-        if authorization_home is not None:
-            with _profile_runtime_scope(Path(authorization_home)):
-                return _check()
-        return _check()
+        if authorization_home is None:
+            return check()
+        with _profile_runtime_scope(Path(authorization_home)):
+            return check()
 
     def _primary_platform_event_handler(self):
         if getattr(self.config, "multiplex_profiles", False):
@@ -22345,6 +22361,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     # Record rate limit so subsequent messages are silently ignored
                     pairing_store._record_rate_limit(platform_name, source.user_id)
+            return None
+
+        # Bot loop guard: the busy path charged this event on arrival; a drained
+        # follow-up must not pay twice. Internal synthetic events are never charged.
+        if (
+            not is_internal
+            and not getattr(event, "_bot_loop_admitted", False)
+            and not self._admit_bot_message_for_source(source)
+        ):
             return None
 
         # Global emergency stop (`hermes pause`): give new turns a brief

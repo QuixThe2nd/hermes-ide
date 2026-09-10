@@ -125,6 +125,8 @@ interface RelayAgentRow {
 interface RelayEnvelope {
   id?: string
   message?: string
+  from_profile?: string
+  from_handle?: string
   target_connection?: string
   target_profile?: string
 }
@@ -399,7 +401,10 @@ async function drainRelayOutboxes() {
             'bot_relay.deliver',
             {
               profile: String(envelope?.target_profile || ''),
-              message: String(envelope?.message || '')
+              message: String(envelope?.message || ''),
+              from_profile: String(envelope?.from_profile || ''),
+              from_handle: String(envelope?.from_handle || ''),
+              from_connection: String(sender.id)
             },
             RELAY_DELIVER_TIMEOUT_MS
           )

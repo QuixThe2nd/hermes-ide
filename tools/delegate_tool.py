@@ -344,6 +344,23 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def _subagent_transport_matches(record, transport) -> bool:
+    """Authority follows the owning session's LIVE transport slot, read at check time.
+
+    ``owner_transport`` on the record is only the capture-time marker that a gateway session
+    commissioned the child (``None`` = no RPC authority ever). The slot is authoritative because
+    every reattach path (prompt.submit, queued drain, resume, activate, viewer failover) already
+    mutates it; a per-record copy needed a matching registry sync at each of those sites and two
+    were missed (#106663). Records whose owner is not a session dict keep the exact-object rule."""
+    from tui_gateway.transport import FanoutTransport
+
+    if record.get("owner_transport") is None:
+        return False
+    owner = record.get("owner_session_record")
+    bound = owner.get("transport") if isinstance(owner, dict) else record.get("owner_transport")
+    return bound is transport or (isinstance(bound, FanoutTransport) and bound.contains(transport))
+
+
 def steer_subagent(
     subagent_id: str,
     text: str,
@@ -377,7 +394,7 @@ def steer_subagent(
             if (
                 record.get("owner_session_id") != owner_session_id
                 or owner_transport is None
-                or record.get("owner_transport") is not owner_transport
+                or not _subagent_transport_matches(record, owner_transport)
                 or owner_session_record is None
                 or record.get("owner_session_record") is not owner_session_record
             ):

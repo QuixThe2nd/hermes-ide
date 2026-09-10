@@ -25,6 +25,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
+from agent.turn_author import parse_turn_author
 
 logger = logging.getLogger(__name__)
 
@@ -775,6 +776,7 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, *, messages: Optional[List[Any]] = None,
     current_turn_user_idx: int = -1, continue_interrupted_turn: bool = False,
+    turn_author: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
@@ -786,8 +788,14 @@ def _memory_turn_start_and_prefetch(
     if not agent._memory_manager or continue_interrupted_turn:
         return ""
     _query = original_user_message if isinstance(original_user_message, str) else ""
+    # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
+    _author = turn_author if isinstance(turn_author, dict) else {}
     with suppress(Exception):
-        agent._memory_manager.on_turn_start(agent._user_turn_count, _query)
+        agent._memory_manager.on_turn_start(
+            agent._user_turn_count, _query,
+            author_id=_author.get("id") or None, author_name=_author.get("name") or None,
+            author_is_bot=bool(_author.get("is_bot")),
+        )
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
@@ -891,7 +899,8 @@ def build_turn_context(
     conversation_history: Optional[List[Dict[str, Any]]], task_id: Optional[str], stream_callback,
     persist_user_message: Optional[Any], persist_user_timestamp: Optional[float]=None,
     persist_user_platform_id: Optional[str]=None, *, persist_user_display_kind: Optional[str]=None,
-    persist_user_display_metadata: Optional[Dict[str, Any]]=None, restore_or_build_system_prompt,
+    persist_user_display_metadata: Optional[Dict[str, Any]]=None, turn_author: Optional[Dict[str, Any]]=None,
+    restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
     continue_interrupted_turn: bool=False,
@@ -916,6 +925,10 @@ def build_turn_context(
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
+
+    # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
+    turn_author = parse_turn_author(turn_author)
+    agent._turn_author = turn_author
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.
@@ -1070,6 +1083,7 @@ def build_turn_context(
         agent, original_user_message, messages=messages,
         current_turn_user_idx=current_turn_user_idx,
         continue_interrupted_turn=continue_interrupted_turn,
+        turn_author=turn_author,
     )
 
     # The virtual provider is a MoA path even when no per-turn moa_config was passed.
