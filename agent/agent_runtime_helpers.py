@@ -891,7 +891,8 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent.provider = rt["provider"]
     agent.requested_provider = rt.get("requested_provider", agent.provider)
     agent.base_url = rt["base_url"]           # setter updates _base_url_lower
-    agent.api_mode = rt["api_mode"]
+    from hermes_cli.providers import is_actual_route
+    agent.api_mode = "chat_completions" if is_actual_route(agent.provider, agent.base_url) else rt["api_mode"]
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
@@ -1693,6 +1694,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", ""))
+        if profile is not None:
+            for key, value in profile.build_client_kwargs_extras(
+                base_url=client_kwargs.get("base_url", "")
+            ).items():
+                client_kwargs.setdefault(key, value)
+    except Exception:
+        _ra().logger.debug("Provider client-kwargs hook skipped", exc_info=True)
     # The MoA virtual provider has no OpenAI wire endpoint; the facade *is* the client. Rebuild the
     # facade, never a native client (TypeError; relay re-wire).
     # Rebuilding a native OpenAI client while agent.provider == "moa" (client replacement, stream-retry pool
@@ -1705,7 +1717,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
-    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
+    httpx_verify = resolve_httpx_verify(
+        ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg,
+        base_url=str(client_kwargs.get("base_url", "")),
+    )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     # Provider-supplied client (registration seam): a provider whose wire protocol is not
@@ -1838,7 +1853,7 @@ def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
 
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):
     """Resolve ``(api_mode, base_url, destination_capabilities)`` for the switch target."""
-    from hermes_cli.providers import determine_api_mode
+    from hermes_cli.providers import determine_api_mode, is_actual_route
     from agent.native_compaction import resolve_native_compaction_capabilities
     from hermes_cli.models import opencode_provider_family
     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
@@ -1852,6 +1867,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     effective_base_url = base_url
     if not effective_base_url and old_norm == new_norm:
         effective_base_url = getattr(agent, "base_url", "")
+    if is_actual_route(new_provider, effective_base_url):
+        api_mode = "chat_completions"
+        if effective_base_url:
+            from hermes_cli.auth import normalize_actual_base_url
+            base_url = normalize_actual_base_url(effective_base_url)
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)

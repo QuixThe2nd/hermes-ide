@@ -1344,7 +1344,8 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
     # would otherwise 400 on tools+reasoning).
-    mandated_mode = host_mandated_api_mode(st.base_url)
+    from hermes_cli.providers import is_actual_route
+    mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
     if mandated_mode is not None:
         st.api_mode = mandated_mode
     st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)
