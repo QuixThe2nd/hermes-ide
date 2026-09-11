@@ -360,7 +360,7 @@ class SessionContext:
     """
     source: SessionSource
     connected_platforms: List[Platform]
-    home_channels: Dict[Platform, DeliveryTarget]
+    notification_channels: Dict[Platform, DeliveryTarget]
     shared_multi_user_session: bool = False
     
     # Session metadata
@@ -373,8 +373,8 @@ class SessionContext:
         return {
             "source": self.source.to_dict(),
             "connected_platforms": [p.value for p in self.connected_platforms],
-            "home_channels": {
-                p.value: hc.to_dict() for p, hc in self.home_channels.items()
+            "notification_channels": {
+                p.value: hc.to_dict() for p, hc in self.notification_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
@@ -809,14 +809,14 @@ def build_session_context_prompt(
 
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
 
-    # Home channels
-    if context.home_channels:
+    # Notification channels (gateway lifecycle broadcast destinations)
+    if context.notification_channels:
         lines.append("")
-        lines.append("**Home Channels (default destinations):**")
-        for platform, home in context.home_channels.items():
-            hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
-            safe_name = _format_untrusted_prompt_value(home.name)
-            safe_id = _format_untrusted_prompt_value(hc_id)
+        lines.append("**Notification Channels:**")
+        for platform, channel in context.notification_channels.items():
+            nc_id = _hash_chat_id(channel.chat_id) if redact_pii else channel.chat_id
+            safe_name = _format_untrusted_prompt_value(channel.name)
+            safe_id = _format_untrusted_prompt_value(nc_id)
             lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
 
     # Delivery options for scheduled tasks
@@ -839,11 +839,6 @@ def build_session_context_prompt(
     lines.append(
         f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
     )
-
-    # Platform home channels
-    for platform, home in context.home_channels.items():
-        home_name = _format_untrusted_prompt_value(home.name)
-        lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
 
     # Note about explicit targeting
     lines.append("")
@@ -4854,16 +4849,16 @@ def build_session_context(
     """
     connected = config.get_connected_platforms()
     
-    home_channels = {}
+    notification_channels = {}
     for platform in connected:
-        home = config.get_home_channel(platform)
-        if home:
-            home_channels[platform] = home
+        channel = config.get_notification_channel(platform)
+        if channel:
+            notification_channels[platform] = channel
     
     context = SessionContext(
         source=source,
         connected_platforms=connected,
-        home_channels=home_channels,
+        notification_channels=notification_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),

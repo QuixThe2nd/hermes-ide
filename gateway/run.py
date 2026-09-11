@@ -2818,26 +2818,6 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
-def _home_target_env_var(platform_name: str) -> str:
-    """Return the configured home-target env var for a platform.
-
-    Consults built-in ``_HOME_TARGET_ENV_VARS`` first, then the plugin
-    registry via ``cron.scheduler._resolve_home_env_var``, then falls back
-    to ``<PLATFORM>_HOME_CHANNEL`` for unknown names.
-    """
-    from cron.scheduler import _resolve_home_env_var
-
-    resolved = _resolve_home_env_var(platform_name)
-    if resolved:
-        return resolved
-    return f"{platform_name.upper()}_HOME_CHANNEL"
-
-
-def _home_thread_env_var(platform_name: str) -> str:
-    """Return the optional thread/topic env var for a platform home target."""
-    return f"{_home_target_env_var(platform_name)}_THREAD_ID"
-
-
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -2848,7 +2828,7 @@ def _planned_restart_notification_path() -> Path:
 
 
 def _planned_restart_notification_pending() -> bool:
-    """Return True when a non-chat planned restart should notify home channels."""
+    """Return True when a non-chat planned restart should notify notification channels."""
     return _planned_restart_notification_path().exists()
 
 
@@ -9799,7 +9779,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         # When non-None, SessionDB init failed — the gateway broadcasts a
-        # one-time warning to the home channel(s) after connecting, so the
+        # one-time warning to the notification channel(s) after connecting, so the
         # user knows persistence is broken instead of discovering it later
         # via a missing /resume or empty history (#88235).
         self._session_db_init_error: Optional[str] = None
@@ -10116,7 +10096,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # "locking protocol" from NFS) is now also captured by
             # hermes_state.get_last_init_error() for slash-command error strings.
             logger.warning("SQLite session store not available: %s", e)
-            # Surface the failure to the user via their home channel(s) once
+            # Surface the failure to the user via their notification channel(s) once
             # the gateway connects.  Without this, state.db corruption or
             # NFS/SMB lock failures silently degrade the entire gateway —
             # messages may flow but nothing is persisted, and the user has
@@ -14322,7 +14302,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 # deliver=local jobs — and deliver=origin jobs with no
                 # resolvable origin (#43014) — resolve to zero targets and
-                # must stay silent rather than fall back to a home channel.
+                # must stay silent rather than fall back to a notification channel.
                 # Interrupted notices are failure-category engine status, so
                 # they honor the job's failure_deliver override (NS-788).
                 targets = _resolve_delivery_targets(job, for_failure=True)
@@ -14385,7 +14365,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return len(notified)
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
-        """Send shutdown/restart notifications to active chats and home channels.
+        """Send shutdown/restart notifications to active chats and notification channels.
 
         Called at the very start of stop() — adapters are still connected so
         messages can be delivered. Best-effort: individual send failures are
@@ -14541,7 +14521,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
         # migration — drain-gated, then the machine is recreated). On the
         # always-on Hermes Cloud fleet that broadcast would otherwise fire on
-        # every routine auto-update, spamming home channels with operator-
+        # every routine auto-update, spamming notification channels with operator-
         # flavoured "gateway shutting down" pings the user doesn't care about.
         # The per-active-session interrupt pings above are deliberately NOT
         # gated: on a drained shutdown they're empty by construction, and in the
@@ -14577,16 +14557,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform_cfg = self.config.platforms.get(platform)
             # Lifecycle broadcasts route to the platform's dedicated
             # notification channel when one is configured (e.g. a Discord
-            # "#gateway-restarts" channel); the home channel stays free for
-            # conversation. Platforms without one keep home-channel delivery.
-            notify = platform_cfg.notification_channel if platform_cfg else None
-            home = notify or self.config.get_home_channel(platform)
+            # "#gateway-restarts" channel); without one they are skipped.
+            home = platform_cfg.notification_channel if platform_cfg else None
             if not home or not home.chat_id:
                 continue
 
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
+                    "Shutdown notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
@@ -14608,7 +14586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     result = await adapter.send(str(home.chat_id), base_msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
-                        "Failed to send shutdown notification to home channel %s:%s: %s",
+                        "Failed to send shutdown notification to notification channel %s:%s: %s",
                         platform.value,
                         home.chat_id,
                         getattr(result, "error", "send returned success=False"),
@@ -14631,7 +14609,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s",
+                    "Failed to send shutdown notification to notification channel %s:%s: %s",
                     platform.value,
                     home.chat_id,
                     e,
@@ -16304,7 +16282,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 skip_targets.add(restart_target)
             if planned_restart_notification_pending:
                 try:
-                    delivered_home = await self._send_home_channel_startup_notifications(
+                    delivered_home = await self._send_notification_channel_startup_notifications(
                         skip_targets=skip_targets,
                     )
                     # Fresh set, never an in-place |= : the object handed to
@@ -18102,7 +18080,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
-        # destination platform's home channel, then forges a synthetic user
+        # destination platform's notification channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
         self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
 
@@ -18325,8 +18303,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for each one:
 
         1. Atomically claims it (pending → running).
-        2. Resolves the destination platform's configured home channel.
-        3. Re-binds the gateway's session_key for that home channel to the
+        2. Resolves the destination platform's configured notification channel.
+        3. Re-binds the gateway's session_key for that notification channel to the
            CLI's existing session_id via ``session_store.switch_session`` so
            the full role-aware transcript replays on the next agent turn.
         4. Forges a synthetic ``MessageEvent`` (``internal=True``) with a
@@ -18398,7 +18376,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             stand-in already provides.
 
             ``profile_name`` is threaded to ``_process_handoff`` so delivery
-            uses that profile's OWN adapter/home channel; see the docstring
+            uses that profile's OWN adapter/notification channel; see the docstring
             there. ``None`` means the root/default profile.
             """
             session_db = getattr(self, "_session_db", None)
@@ -18489,9 +18467,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         - ``self.adapters`` only ever holds the DEFAULT profile's adapters;
           secondary profiles live in ``self._profile_adapters[name]``.
-        - ``self.config`` is the primary's config, so ``get_home_channel()``
-          returns the primary's chat — a medicina handoff would be delivered
-          by the default bot, to the default's home channel.
+        - ``self.config`` is the primary's config, so
+          ``get_notification_channel()`` returns the primary's chat — a
+          medicina handoff would be delivered by the default bot, to the
+          default's notification channel.
         - the session key must be namespaced ``agent:<profile>:...`` to match
           the key that profile's own adapter uses for organic inbound
           messages; otherwise the handoff binds a key nobody reads.
@@ -18519,7 +18498,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # both fall back to self.config/self.adapters, so behaviour is
         # byte-identical to before. On a multiplexed gateway a secondary
         # profile MUST use its own map — self.adapters holds only the primary's
-        # adapters, and self.config only the primary's home channel.
+        # adapters, and self.config only the primary's notification channel.
         handoff_config = self.config
         handoff_adapters = self.adapters
         if profile_name and profile_name != "default":
@@ -18531,7 +18510,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             handoff_adapters = secondary
             # The watcher already entered _profile_runtime_scope for this
             # profile, so a fresh load resolves that profile's config.yaml
-            # and .env (home channel, tokens) rather than the primary's.
+            # and .env (notification channel, tokens) rather than the primary's.
             # Fail closed on a load error: self.config is the primary's, so
             # falling back would deliver through the right bot to the
             # WRONG chat and report completed. A failed row the CLI can
@@ -18562,12 +18541,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         adapter = transport.adapter
 
-        # Home channel must be configured
-        home = handoff_config.get_home_channel(platform)
+        # Delivery target must be configured (the platform's notification
+        # channel is the operator-designated destination chat).
+        home = handoff_config.get_notification_channel(platform)
         if not home or not home.chat_id:
             raise RuntimeError(
-                f"no home channel configured for {platform_name}; "
-                f"run /sethome on the desired chat first"
+                f"no delivery target configured for {platform_name}; "
+                f"run /setnotify on the destination chat to set one"
             )
 
         cli_title = row.get("title") or cli_session_id[:8]
@@ -18576,7 +18556,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # has its own scrollback. Adapter returns None if threading isn't
         # supported (Matrix/WhatsApp/Signal/SMS) or if creation failed
         # (no permission, topics-mode off, parent is a DM, etc.). When
-        # None we fall through to using the home channel directly — the
+        # None we fall through to using the notification channel directly — the
         # synthetic turn still lands; just without thread isolation.
         thread_name = f"Hermes — {cli_title}"
         try:
@@ -18591,7 +18571,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             new_thread_id = None
 
         # Use the new thread if the adapter created one; otherwise fall
-        # back to whatever thread (if any) the home channel was configured
+        # back to whatever thread (if any) the notification channel was configured
         # with.
         effective_thread_id = new_thread_id or (
             str(home.thread_id) if home.thread_id else None
@@ -18615,7 +18595,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             dest_chat_type = "thread"
             dest_user_id = "system:handoff"
         else:
-            # No thread — assume DM-style for the home channel. For Telegram
+            # No thread — assume DM-style for the notification channel. For Telegram
             # private-chat topics, use the real user id (same as chat_id) so
             # topic-mode checks and binding persistence see the same identity as
             # subsequent inbound user messages.
@@ -18692,7 +18672,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         # Make sure there's an entry in the session_store for this key. If
-        # the home channel has never been used, get_or_create_session
+        # the notification channel has never been used, get_or_create_session
         # creates one; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest_source)
 
@@ -18745,7 +18725,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         # Send the agent's reply to the destination. Route to the new
-        # thread if we created one; otherwise the configured home channel
+        # thread if we created one; otherwise the configured notification channel
         # (which may itself carry a thread_id). Send through the resolved
         # transport (not adapter.send directly) so a relay-fronted logical
         # platform is stamped on the outbound frame (send_for_platform).
@@ -21920,7 +21900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           3. Catch-all busy-reject text. Rejecting is required rather than
              falling through to interrupt + discard: commands like /model,
              /reasoning, /voice, /insights, /title, /resume, /retry,
-             /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
+             /undo, /compress, /usage, /reload-mcp, /setnotify, /reset (all
              registered as Discord slash commands) would interrupt the
              agent AND get silently discarded by the slash-command safety
              net, producing a zero-char response. See #5057, #6252, #10370.
@@ -23370,10 +23350,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 execute=_do_undo,
             )
         
-        if canonical == "sethome":
-            return await self._handle_set_home_command(event)
-
-
         if canonical == "sethomeserver":
             return await self._handle_set_home_server_command(event)
         if canonical == "setnotify":
@@ -24878,7 +24854,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # session, keyed by a hash of the exact renderer inputs
         # (_ephemeral_change_key).  A key hit reuses the pinned bytes verbatim
         # so the composed system prompt cannot drift turn-over-turn; a key
-        # miss (thread rename, /sethome, redact_pii flip, ...) re-renders
+        # miss (thread rename, /setnotify, redact_pii flip, ...) re-renders
         # once — the only legitimate cache busts.
         context_prompt = self._pinned_session_context_prompt(
             context, _redact_pii, session_key
@@ -26462,61 +26438,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pb_err,
                 )
                 turn_sidecar_notes.append(_intro_note)
-        
-        # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
-            platform_name = source.platform.value
-            env_key = _home_target_env_var(platform_name)
-            # Multiplex: home channel may live only in the profile secret
-            # scope / PlatformConfig, not process os.environ.
-            home_env = ""
-            try:
-                from agent.secret_scope import get_secret
 
-                home_env = (get_secret(env_key) or "").strip() if env_key else ""
-            except Exception:
-                home_env = ""
-            if not home_env:
-                home_env = (os.getenv(env_key) or "").strip() if env_key else ""
-            # Also honor in-memory / yaml home_channel on this platform.
-            try:
-                if not home_env and self.config.get_home_channel(source.platform):
-                    home_env = "set"
-            except Exception:
-                pass
-            # Secondary-profile platforms (e.g. Slack on yolo) may only exist
-            # under that profile's loaded config — check after scope install.
-            if not home_env:
-                try:
-                    from gateway.config import load_gateway_config as _lgc
-                    prof = (getattr(source, "profile", None) or "").strip()
-                    if prof and prof != "default":
-                        # Already inside profile scope for secondary handlers;
-                        # re-read live config for home_channel.
-                        _pcfg = _lgc()
-                        if _pcfg.get_home_channel(source.platform):
-                            home_env = "set"
-                except Exception:
-                    pass
-            if not home_env:
-                # Slack dispatches all Hermes commands through a single
-                # parent slash command `/hermes`; bare `/sethome` is not
-                # registered and would fail with "app did not respond".
-                sethome_cmd = (
-                    "/hermes sethome"
-                    if source.platform == Platform.SLACK
-                    else "/sethome"
-                )
-                notice = (
-                    f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
-                )
-                await self._deliver_platform_notice(source, notice)
-        
         # -----------------------------------------------------------------
         # Voice channel awareness — deliver current voice channel state so
         # the agent knows who is in the channel and who is speaking, without
@@ -31070,27 +30992,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             _clear_shutdown_notification()
 
-    async def _send_home_channel_startup_notifications(
+    async def _send_notification_channel_startup_notifications(
         self,
         *,
         skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
-        """Notify configured home channels that the gateway is back online.
+        """Notify configured notification channels that the gateway is back online.
 
-        The notification is best-effort and sent once per connected platform
-        home channel. ``skip_targets`` lets startup avoid duplicate messages
+        The notification is best-effort and sent once per configured
+        notification channel. ``skip_targets`` lets startup avoid duplicate messages
         when a more specific restart notification is queued for the same chat.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+        any_channel = any(
+            (cfg.notification_channel and cfg.notification_channel.chat_id)
+            for cfg in self.config.platforms.values()
+        )
+        if not any_channel:
+            logger.info("Gateway online: no notification channel configured — skipping startup broadcast")
 
         for platform, platform_cfg in self.config.platforms.items():
             # Lifecycle broadcasts route to the platform's dedicated
-            # notification channel when one is configured; the home channel
-            # stays free for conversation. Platforms without one keep
-            # home-channel delivery.
-            home = platform_cfg.notification_channel or platform_cfg.home_channel
+            # notification channel (e.g. a Discord "#gateway-restarts"
+            # channel); without one they are skipped.
+            home = platform_cfg.notification_channel
             if not home or not home.chat_id:
                 continue
 
@@ -31100,7 +31027,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    "Startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
@@ -31134,7 +31061,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     result = await transport.adapter.send(str(home.chat_id), message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
-                        "Home-channel startup notification failed for %s:%s: %s",
+                        "Notification-channel startup notification failed for %s:%s: %s",
                         platform.value,
                         home.chat_id,
                         getattr(result, "error", "send returned success=False"),
@@ -31143,14 +31070,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 delivered.add(target)
                 logger.info(
-                    "Sent %s startup notification to %s:%s",
-                    "notification-channel" if platform_cfg.notification_channel else "home-channel",
+                    "Sent notification-channel startup notification to %s:%s",
                     platform.value,
                     home.chat_id,
                 )
             except Exception as exc:
                 logger.warning(
-                    "Home-channel startup notification failed for %s:%s: %s",
+                    "Notification-channel startup notification failed for %s:%s: %s",
                     platform.value,
                     home.chat_id,
                     exc,
@@ -31159,12 +31085,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return delivered
 
     async def _send_session_db_warning_notifications(self) -> None:
-        """Broadcast a state.db failure warning to all home channels (#88235).
+        """Broadcast a state.db failure warning to all notification channels (#88235).
 
         When SessionDB init fails at gateway startup, messages may flow but
         nothing is persisted — /resume, /history, and session_search all
-        silently break.  This sends a one-time warning to each connected
-        platform's home channel so the user knows to investigate before
+        silently break.  This sends a one-time warning to each configured
+        notification channel so the user knows to investigate before
         losing data.  Best-effort: failures are logged, not raised.
         """
         error = getattr(self, "_session_db_init_error", None)
@@ -31206,11 +31132,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         logger.warning(
-            "Broadcasting state.db failure warning to home channels: %s", error
+            "Broadcasting state.db failure warning to notification channels: %s", error
         )
 
         for platform, platform_cfg in self.config.platforms.items():
-            home = platform_cfg.home_channel
+            home = platform_cfg.notification_channel
             if not home or not home.chat_id:
                 continue
             transport = resolve_delivery_transport(platform, self.config, self.adapters)
@@ -33895,7 +33821,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Key hit → the pinned bytes are reused VERBATIM (immunizes the
         composed system prompt against renderer nondeterminism); key miss →
         re-render ``build_session_context_prompt`` and re-pin (a legitimate
-        cache bust: rename, topic edit, /sethome, redact_pii flip, ...).
+        cache bust: rename, topic edit, /setnotify, redact_pii flip, ...).
         """
         _eph_key = self._ephemeral_change_key(context, redact_pii)
         _eph_pin = None
@@ -34013,7 +33939,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     str(getattr(hc, "name", "") or ""),
                     str(getattr(hc, "chat_id", "") or ""),
                 )
-                for p, hc in context.home_channels.items()
+                for p, hc in context.notification_channels.items()
             ),
             bool(redact_pii),
             home_display,

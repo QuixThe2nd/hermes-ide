@@ -11,7 +11,7 @@ but the gateway must not *silently* ask: a destination the gateway has no
 record of is refused HERE, with a visible tool error naming the target.
 :func:`authorize_relay_target` is that guard; :func:`attested_relay_targets`
 is the set of destinations this gateway can show a provenance for (operator
-home channel, channel directory, its own gateway session origins).
+notification channel, channel directory, its own gateway session origins).
 
 **(b) Decline visibility.** The connector answers an unauthorized destination
 with a DEFINITE, non-ambiguous failure whose text is deliberately UNIFORM
@@ -346,12 +346,12 @@ def relay_routed_platform(platform_name: str) -> bool:
     return not _has_live_native_adapter(name)
 
 
-def _home_channel_id(platform_name: str) -> Optional[str]:
+def _notification_channel_id(platform_name: str) -> Optional[str]:
     try:
         from gateway.config import Platform, load_gateway_config
 
-        home = load_gateway_config().get_home_channel(Platform(platform_name))
-        return str(home.chat_id) if home and home.chat_id else None
+        channel = load_gateway_config().get_notification_channel(Platform(platform_name))
+        return str(channel.chat_id) if channel and channel.chat_id else None
     except Exception:  # noqa: BLE001 - config absence must never break a send
         return None
 
@@ -404,7 +404,7 @@ def attested_relay_targets(platform_name: str) -> Set[str]:
     Three provenances, all of them things the gateway already knows rather
     than things a model can invent:
 
-    * the operator-configured home channel,
+    * the operator-configured notification channel,
     * the channel directory built from live adapters/session origins,
     * this gateway's own gateway-session origins.
 
@@ -419,9 +419,9 @@ def attested_relay_targets(platform_name: str) -> Set[str]:
         names |= _relay_fronted()
     attested: Set[str] = set()
     for candidate in names:
-        home = _home_channel_id(candidate)
-        if home:
-            attested.add(home)
+        channel = _notification_channel_id(candidate)
+        if channel:
+            attested.add(channel)
         attested |= _directory_ids(candidate)
         attested |= _session_ids(candidate)
     return attested

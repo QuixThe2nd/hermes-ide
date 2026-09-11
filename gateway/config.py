@@ -1,4 +1,4 @@
-"""Gateway configuration: connected platforms, home channels, session reset
+"""Gateway configuration: connected platforms, session reset
 policies and delivery preferences, loaded from config.yaml / gateway.json / env.
 """
 
@@ -289,8 +289,8 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
 
 @dataclass
 class DeliveryTarget:
-    """Default destination for a platform (``deliver="telegram"`` without a chat ID);
-    ``thread_id`` routes the bare target to the topic where /sethome was run."""
+    """A configured destination for a platform (e.g. the lifecycle-notification
+    channel); ``thread_id`` routes the target to a specific topic."""
     platform: Platform
     chat_id: str
     name: str
@@ -309,24 +309,12 @@ class DeliveryTarget:
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
 
-def persist_home_channel(home: DeliveryTarget, *, enabled_if_new: bool = False) -> None:
-    """Persist a logical home without falsely enabling a Relay-fronted adapter."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
-    platform_config = _dict_slot(_dict_slot(config, "platforms"), home.platform.value)
-    if enabled_if_new:
-        platform_config.setdefault("enabled", True)
-    platform_config["home_channel"] = home.to_dict()
-    save_config(config)
-
-
 def persist_notification_channel(home: DeliveryTarget, *, enabled_if_new: bool = False) -> None:
     """Persist a lifecycle-notification target for ``home.platform``.
 
-    Same shape as :func:`persist_home_channel`, writing the
-    ``notification_channel`` key instead: gateway lifecycle broadcasts
-    (shutdown/startup) route there while the home channel stays free for
-    conversation.
+    Writes the ``notification_channel`` key: gateway lifecycle broadcasts
+    (shutdown/startup) route there, keeping conversation chats free of
+    operator-flavored notices.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -397,8 +385,8 @@ def persist_restart_channel_rename(
 def clear_notification_channel(platform: Platform) -> None:
     """Remove a platform's persisted lifecycle-notification target.
 
-    Lifecycle broadcasts fall back to the home channel. Missing key or
-    missing platform section is a no-op.
+    Lifecycle broadcasts without a notification channel are skipped.
+    Missing key or missing platform section is a no-op.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -482,11 +470,8 @@ class PlatformConfig:
     enabled: bool = False
     token: Optional[str] = None
     api_key: Optional[str] = None  # API key if different from token
-    home_channel: Optional[DeliveryTarget] = None
-    # Dedicated target for gateway lifecycle broadcasts (shutdown/startup).
-    # When set, those broadcasts route here instead of the home channel so
-    # the home channel stays free for conversation (e.g. a Discord
-    # "#gateway-restarts" channel). Same DeliveryTarget shape as home_channel.
+    # Dedicated target for gateway lifecycle broadcasts (shutdown/startup)
+    # (e.g. a Discord "#gateway-restarts" channel).
     notification_channel: Optional[DeliveryTarget] = None
 
     # Reply threading mode (Telegram/Slack)
@@ -530,8 +515,6 @@ class PlatformConfig:
             **({"typing_status_text": self.typing_status_text} if self.typing_status_text is not None else {}),
             **{k: v for k in ("token", "api_key") if (v := getattr(self, k))},
         }
-        if self.home_channel:
-            result["home_channel"] = self.home_channel.to_dict()
         if self.notification_channel:
             result["notification_channel"] = self.notification_channel.to_dict()
         if self.channel_overrides:
@@ -541,9 +524,8 @@ class PlatformConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
-        home_channel = None
-        if isinstance(data.get("home_channel"), dict):
-            home_channel = DeliveryTarget.from_dict(data["home_channel"])
+        # A stale ``home_channel`` key (removed feature) is tolerated: ignored
+        # on load and never re-emitted by to_dict().
 
         notification_channel = None
         if isinstance(data.get("notification_channel"), dict):
@@ -570,7 +552,6 @@ class PlatformConfig:
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
-            home_channel=home_channel,
             notification_channel=notification_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
@@ -791,13 +772,6 @@ class GatewayConfig:
         except Exception:
             pass  # Registry not yet initialised during early import
         return False
-
-    def get_home_channel(self, platform: Platform) -> Optional[DeliveryTarget]:
-        """Get the home channel for a platform."""
-        config = self.platforms.get(platform)
-        if config:
-            return config.home_channel
-        return None
 
     def get_notification_channel(self, platform: Platform) -> Optional[DeliveryTarget]:
         """Get the lifecycle-notification channel for a platform, if any."""

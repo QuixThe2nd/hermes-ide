@@ -752,7 +752,11 @@ class GatewayBusySessionMixin:
         return True
 
     # Slash name → handler method is ``_handle_<name>_command`` (``-`` → ``_``) except these.
-    _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
+    _COMMAND_HANDLER_ALIASES = {
+        "bg": "_handle_background_command",
+        "setnotify": "_handle_set_notify_command",
+        "clearnotify": "_handle_clear_notify_command",
+    }
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
@@ -763,7 +767,7 @@ class GatewayBusySessionMixin:
     _IDLE_COMMANDS = (
         "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
-        "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
+        "setnotify", "clearnotify", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
         "loop", "refine", "review", "voice",
     )
@@ -806,7 +810,7 @@ class GatewayBusySessionMixin:
         Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
         → catch-all reject text. Rejecting is required rather than falling through to
         interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
-        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
+        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify, /reset (all
         registered as Discord slash commands) would interrupt the agent AND get silently
         discarded by the slash-command safety net, producing a zero-char response.
         See #5057, #6252, #10370.

@@ -554,7 +554,7 @@ class GatewayAgentCacheMixin:
             tuple(p.value for p in context.connected_platforms),
             tuple(
                 (p.value, _s(getattr(hc, "name", "")), _s(getattr(hc, "chat_id", "")))
-                for p, hc in context.home_channels.items()
+                for p, hc in context.notification_channels.items()
             ),
             bool(redact_pii), home_display,
         )
