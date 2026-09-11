@@ -909,20 +909,24 @@ def dispatch_async_delegation(
     *, goal: str, context: Optional[str], toolsets: Optional[List[str]], role: str, model: Optional[str],
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
-    max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, progress_fn: Optional[Callable[[], tuple]] = None,
+    max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
+    tool: str = "", result_kind: str = "", progress_fn: Optional[Callable[[], tuple]] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
-    no contextvars) and route the completion back to the spawning session.
+    no contextvars) and route the completion back to the spawning session. A caller-minted
+    ``delegation_id`` (the Cursor receipt spine re-arms under the SAME id) is honored as-is;
+    ``tool``/``result_kind`` stamp the record for delivery routing.
     ``progress_fn() -> (token, in_tool)`` enables stale monitoring; omitted = unmonitored.
     Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}``."""
-    delegation_id = _new_delegation_id()
+    delegation_id = delegation_id or _new_delegation_id()
     handle = _dispatch(
         delegation_id=delegation_id, goal=goal, goals=None, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
-        interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
+        interrupt_fn=interrupt_fn, max_async_children=max_async_children,
+        tool=tool, result_kind=result_kind, progress_fn=progress_fn,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or run this task synchronously (background=false). "
@@ -938,8 +942,8 @@ def dispatch_async_delegation_batch(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
-    progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
-    task_indexes: Optional[List[int]] = None,
+    tool: str = "", result_kind: str = "", progress_fn: Optional[Callable[[], tuple]] = None,
+    slot_key: Optional[str] = None, task_indexes: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -956,7 +960,8 @@ def dispatch_async_delegation_batch(
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
-        interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
+        interrupt_fn=interrupt_fn, max_async_children=max_async_children,
+        tool=tool, result_kind=result_kind, progress_fn=progress_fn, slot_key=slot_key,
         task_indexes=task_indexes,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
@@ -1084,6 +1089,13 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
+    # Uniform lifecycle: run artifacts a cli/cloud delegation finishes with
+    # (the run log, the child session id, cost) ride along additively so the
+    # completion block can point the caller at them. Absent on subagent
+    # results, which is fine — consumers key off presence.
+    for _k in ("log_path", "child_session_id", "cost_usd", "warnings", "models_used"):
+        if result.get(_k):
+            evt[_k] = result[_k]
     _stamp_event_provenance(evt, record)
     _persist_completion(evt, result)
     try:

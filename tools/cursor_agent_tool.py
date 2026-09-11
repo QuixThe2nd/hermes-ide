@@ -100,6 +100,9 @@ STALL_WATCHDOG_SECONDS = 0
 
 CURSOR_API_BASE = "https://api.cursor.com"
 CURSOR_CLOUD_ENV_PATH = Path.home() / ".hermes" / "secrets" / "cursor-cloud.env"
+# Stable My Machines worker name: must match the running systemd worker so
+# machine-routed runs land on this machine instead of Cursor-hosted VMs.
+CURSOR_MACHINE_NAME = "hermes-server"
 SUPPORTED_ORIGIN_HOSTS = frozenset({"github.com"})
 NO_PUSH_PROMPT_PREFIX = (
     "Do not git push, create a pull request, or request reviewers. "
@@ -853,16 +856,16 @@ def build_create_agent_payload(
 ) -> Dict[str, Any]:
     """POST /v1/agents body. ``force`` must not enable pushes or PRs.
 
-    Runs are Cursor-hosted (no ``env`` field): self-hosted ``machine``
-    routing silently queues forever on accounts without self-hosted
-    entitlements, while Cursor-hosted runs execute and expose a live
-    ``cursor.com/agents/<id>`` progress page.
+    Runs are machine-routed (``env.type == "machine"``) so they execute on
+    this machine's My Machines worker — the name must match the running
+    worker for the run to be picked up instead of queueing.
     """
     del force  # reserved; never maps to autoCreatePR / workOnCurrentBranch / pushes
     payload: Dict[str, Any] = {
         "prompt": {"text": f"{NO_PUSH_PROMPT_PREFIX}{DEFAULT_ORCHESTRATION_PROMPT}{task}"},
         "name": machine_name,
         "agentId": agent_id,
+        "env": {"type": "machine", "name": machine_name},
         "repos": [{"url": repo_url}],
         "autoCreatePR": False,
         "skipReviewerRequest": True,
@@ -1607,7 +1610,9 @@ def _execute_cloud_delegation(
     log_path = Path(str(receipt.get("log_path") or ""))
     log_dir = log_path.parent
     log_dir.mkdir(parents=True, exist_ok=True)
-    machine_name = new_machine_name()
+    # Route to the stable My Machines worker on this machine; a per-run name
+    # would never match the long-lived worker and the run would queue.
+    machine_name = CURSOR_MACHINE_NAME
     client_agent_id = str(
         receipt.get("client_agent_id")
         or deterministic_client_agent_id(hermes_session_id, tool_call_id)
