@@ -3734,6 +3734,7 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
+from gateway.run_turn import is_context_overflow_failure_result
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -5174,8 +5175,13 @@ def _normalize_empty_agent_response(
     silent-drop pattern observed after ``/stop`` where the next user
     message hits a stale generation token and returns an empty result,
     leaving the platform with nothing to send. (#31884)
+
+    A failed context-overflow turn whose ``final_response`` is only the raw provider envelope
+    (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a
+    generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
-    if response:
+    is_overflow = is_context_overflow_failure_result(agent_result, history_len)
+    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
 
     if agent_result.get("failed"):
@@ -5206,11 +5212,7 @@ def _normalize_empty_agent_response(
                 "Your message should already be saved — please send it "
                 "again in a moment."
             )
-        is_context_failure = any(
-            p in error_str
-            for p in ("context", "token", "too large", "too long", "exceed", "payload")
-        ) or ("400" in error_str and history_len > 50)
-        if is_context_failure:
+        if is_overflow:
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or "
@@ -9549,6 +9551,84 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
+# Only explicit suspension can replace a routed conversation.
+_AUTO_RESET_CONTEXT_NOTES = {
+    "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
+}
+
+
+def _write_runtime_status_quiet(**fields: Any) -> None:
+    """Best-effort ``gateway_state.json`` write; status persistence must never abort the caller."""
+    try:
+        from gateway.status import write_runtime_status
+        write_runtime_status(**fields)
+    except Exception:
+        pass
+
+
+def _command_origin_for_source(source: Any) -> Optional[dict]:
+    """Delivery origin for a shared CLI/gateway command so its job replies to this chat/thread."""
+    try:
+        platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
+        chat_id = getattr(source, "chat_id", None)
+        if platform and chat_id:
+            return {
+                "platform": platform,
+                "chat_id": str(chat_id),
+                "chat_name": getattr(source, "chat_name", None),
+                "thread_id": getattr(source, "thread_id", None)}
+    except Exception:
+        pass
+    return None
+
+
+def _builtin_adapter_import(module: str, adapter_name: str, requirement: str):
+    """Lazy-import ``(adapter_cls, requirements_ok)`` from ``gateway.platforms.<module>``."""
+    import importlib
+    mod = importlib.import_module(f"gateway.platforms.{module}")
+    return getattr(mod, adapter_name), getattr(mod, requirement)
+
+
+# platform -> (module, adapter class, requirements probe, warning on probe failure).
+_BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
+    Platform.WHATSAPP_CLOUD: ("whatsapp_cloud", "WhatsAppCloudAdapter", "check_whatsapp_cloud_requirements",
+                              "WhatsApp Cloud: aiohttp/httpx missing — reinstall hermes-agent"),
+    Platform.SIGNAL: ("signal", "SignalAdapter", "check_signal_requirements",
+                      "Signal: runtime requirements not met"),
+    Platform.WEIXIN: ("weixin", "WeixinAdapter", "check_weixin_requirements",
+                      "Weixin: aiohttp/cryptography not installed"),
+    Platform.API_SERVER: ("api_server", "APIServerAdapter", "check_api_server_requirements",
+                          "API Server: aiohttp not installed"),
+    Platform.WEBHOOK: ("webhook", "WebhookAdapter", "check_webhook_requirements",
+                       "Webhook: aiohttp not installed"),
+    Platform.MSGRAPH_WEBHOOK: ("msgraph_webhook", "MSGraphWebhookAdapter", "check_msgraph_webhook_requirements",
+                               "MSGraph webhook: aiohttp not installed"),
+    Platform.BLUEBUBBLES: ("bluebubbles", "BlueBubblesAdapter", "check_bluebubbles_requirements",
+                           "BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured"),
+    Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
+                     "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
+    Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
+                       "Yuanbao: websockets not installed. Run: pip install websockets")}
+
+
+def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+    """Instantiate a core (non-plugin) adapter, or None when its requirements are unmet/unknown."""
+    spec = _BUILTIN_ADAPTERS.get(platform)
+    if spec is None:
+        return None
+    module, adapter_name, requirement, warning = spec
+    adapter_cls, requirements_ok = _builtin_adapter_import(module, adapter_name, requirement)
+    if not (requirements_ok() if callable(requirements_ok) else requirements_ok):
+        logger.warning(warning)
+        return None
+    if platform == Platform.SIGNAL:
+        from gateway.platforms.signal import validate_signal_config
+        if not validate_signal_config(config):
+            logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
+            return None
+    return adapter_cls(config)
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -11638,6 +11718,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise
             return 0
 
+    def _retain_background_task(self, task: "asyncio.Task") -> "asyncio.Task":
+        """Register ``task`` in ``_background_tasks`` (created lazily for bare test runners)."""
+        tasks = getattr(self, "_background_tasks", None)
+        if not isinstance(tasks, set):
+            tasks = self._background_tasks = set()
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
     def _pending_background_task_count(self) -> int:
         """Pending ``/bg``-style background tasks the restart must wait out.
 
@@ -13646,6 +13735,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             return True  # handled (silently dropped); do not fall through
+        # Bot loop guard: a steered or queued follow-up never reaches the cold-path
+        # admission, so the budget is charged here.
+        if not self._admit_bot_message_for_source(event.source):
+            return True
+        event._bot_loop_admitted = True
 
         effective_mode = self._effective_busy_input_mode(event.source)
 
@@ -16989,6 +17083,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
 
+    @staticmethod
+    def _start_free_tier_bootstrap() -> None:
+        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
+        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
+        from hermes_cli.free_tier_bootstrap import run_bootstrap
+        run_bootstrap(announce=False)
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -17408,6 +17509,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
+
+        # The gateway is a boot owner of the Nous free tier: every demand-time site (provider
+        # resolution, /login, the connector token) is a read that needs the identity to already
+        # exist. Blocking here, before any adapter connects, is what keeps a fast first DM from
+        # arriving with nothing to resolve. With the launch gate unset this is a local
+        # inventory and no network.
+        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
 
         # Serialize startup restore against inbound dispatch.  Platform
         # adapters can begin receiving messages as soon as they connect, but
@@ -21208,11 +21316,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 allow_adapter_delegation=False,
             )
 
+        return self._under_authorization_profile(source, _check)
+
+    def _admit_bot_message_for_source(self, source: SessionSource) -> bool:
+        """Count a bot message under the profile that authorized it, so the guard's peek, count and
+        config all read the transport profile's ``gateway.bot_loop_guard``."""
+        return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
+
+    @staticmethod
+    def _under_authorization_profile(source: SessionSource, check):
         authorization_home = getattr(source, "_authorization_profile_home", None)
-        if authorization_home is not None:
-            with _profile_runtime_scope(Path(authorization_home)):
-                return _check()
-        return _check()
+        if authorization_home is None:
+            return check()
+        with _profile_runtime_scope(Path(authorization_home)):
+            return check()
 
     def _primary_platform_event_handler(self):
         if getattr(self.config, "multiplex_profiles", False):
@@ -22267,6 +22384,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     # Record rate limit so subsequent messages are silently ignored
                     pairing_store._record_rate_limit(platform_name, source.user_id)
+            return None
+
+        # Bot loop guard: the busy path charged this event on arrival; a drained
+        # follow-up must not pay twice. Internal synthetic events are never charged.
+        if (
+            not is_internal
+            and not getattr(event, "_bot_loop_admitted", False)
+            and not self._admit_bot_message_for_source(source)
+        ):
             return None
 
         # Global emergency stop (`hermes pause`): give new turns a brief
@@ -33271,11 +33397,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _rst_state.conversation.model_override = None
         self._evict_cached_agent(session_key)
 
-    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
-        """Return True if *agent_model* matches an active /model session override."""
+    def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
+        """True when *agent* running a model other than *config_model* is deliberate: a /model session
+        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
+        alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
         _ims_state = self._peek_session_state(session_key)
         override = _ims_state.conversation.model_override if _ims_state else None
-        return override is not None and override.get("model") == agent_model
+        if override is not None and override.get("model") == agent.model:
+            return True
+        # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
+        # ordinary drift and still evicts.
+        return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
     def _release_running_agent_state(
         self,
@@ -36412,7 +36544,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
                 except Exception:
                     pass
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)

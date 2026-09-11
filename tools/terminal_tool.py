@@ -51,6 +51,13 @@ from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
 
+# Upstream split the sandbox lifecycle out of this module (tools/terminal_tool_lifecycle.py)
+# and re-exported the names here. This fork keeps the lifecycle in-file; only
+# _create_configured_env (new upstream, shared with tools/file_tools.py's lazy
+# file-op env bring-up) is re-exported. Its own dependencies resolve lazily
+# against this module at call time.
+from tools.terminal_tool_lifecycle import _create_configured_env  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,12 +68,6 @@ def _redact_terminal_error_text(value: Any) -> str:
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
 
-# ---------------------------------------------------------------------------
-# Global interrupt event: set by the agent when a user interrupt arrives.
-# The terminal tool polls this during command execution so it can kill
-# long-running subprocesses immediately instead of blocking until timeout.
-# ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)

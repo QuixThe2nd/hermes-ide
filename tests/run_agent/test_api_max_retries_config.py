@@ -20,7 +20,7 @@ def _make_agent(api_max_retries=None, retry_base_delay=None, retry_max_delay=Non
     if retry_max_delay is not None:
         cfg["agent"]["retry_max_delay"] = retry_max_delay
 
-    with patch("run_agent.OpenAI"), \
+    with patch("agent.process_bootstrap.OpenAI"), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         return AIAgent(

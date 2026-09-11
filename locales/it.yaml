@@ -359,6 +359,7 @@ Le risincronizzazioni vengono eseguite automaticamente al massimo una volta all'
     last_activity:         "**Ultima attività:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · piano gratuito · nous/welcome · /login per accedere"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
