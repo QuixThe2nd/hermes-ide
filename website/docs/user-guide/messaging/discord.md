@@ -594,9 +594,9 @@ display:
 
 #### `display.long_running_notifications`
 
-**Type:** boolean|string — **Default (Discord):** `"generic"` — **Values:** `true`, `false`, `"generic"`
+**Type:** boolean|string — **Default (Discord):** `"phase"` — **Values:** `true`, `false`, `"generic"`, `"phase"`
 
-Discord heartbeats are clean by default: during a long turn the bubble reads exactly `⏳ still working` — no elapsed time, iteration counter, or provider wait diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line (`⏳ Working — 3 min — iteration 1/256, …`), or `false` to turn heartbeats off. The phrase itself comes from the [status-phrase catalog](/user-guide/messaging#configurable-status-phrases), so you can also customize it via `display.status_phrases`.
+Discord heartbeats are phase lines by default: the bubble names the current wait and how long that wait has lasted — `⏳ terminal 1m42s` while a tool is in flight, `⏳ grok-4.6 38s` while waiting on the next model response, `⏳ packing 12s` once the last tool has returned and the next call is being packed — with no iteration counter or provider wait diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line (`⏳ Working — 3 min — iteration 1/256, …`), `"generic"` for the plain catalog phrase, or `false` to turn heartbeats off. The `"generic"` phrase comes from the [status-phrase catalog](/user-guide/messaging#configurable-status-phrases), so you can also customize it via `display.status_phrases`.
 
 ## Slash Command Access Control
 

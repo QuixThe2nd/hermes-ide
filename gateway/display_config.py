@@ -97,12 +97,14 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Discord has a native "subtext" primitive (-# small grey text) that reads
     # as metadata rather than content, so reasoning summaries default to it
     # here instead of the fenced code block used elsewhere.
-    # Discord's long-running heartbeat defaults to the clean generic phrase
-    # ("⏳ still working") instead of the raw diagnostic join ("⏳ Working —
-    # 3 min — iteration N/M, <provider wait notice>"). Raw detail remains
-    # available via display.platforms.discord.long_running_notifications: true
-    # (plus busy_ack_detail for the iteration counter).
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext", "long_running_notifications": "generic"},
+    # Discord's long-running heartbeat defaults to the phase line ("⏳ terminal
+    # 1m42s" / "⏳ grok-4.6 38s" / "⏳ packing 12s") — the current wait plus its
+    # elapsed time — instead of the raw diagnostic join ("⏳ Working — 3 min —
+    # iteration N/M, <provider wait notice>"). "generic" keeps the catalog
+    # phrase ("⏳ still working"); raw detail remains available via
+    # display.platforms.discord.long_running_notifications: true (plus
+    # busy_ack_detail for the iteration counter).
+    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext", "long_running_notifications": "phase"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
@@ -209,7 +211,11 @@ def _norm_bool(value: Any) -> bool:
 
 
 def _norm_long_running(value: Any) -> Any:
-    return "generic" if isinstance(value, str) and value.strip().lower() == "generic" else _norm_bool(value)
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in {"generic", "phase"}:
+            return val
+    return _norm_bool(value)
 
 
 def _norm_cleanup_progress(value: Any) -> bool:

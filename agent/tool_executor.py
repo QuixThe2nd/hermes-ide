@@ -664,7 +664,7 @@ def _run_with_activity_heartbeat(agent, function_name: str, fn):
         # flight, not just at start/completion. Both the sequential and the concurrent paths funnel through
         # here, so a single heartbeat covers every tool.
         target=_run_tool_activity_heartbeat,
-        args=(agent, stop, f"tool running: {function_name}"),
+        args=(agent, stop, f"executing tool: {function_name}"),
         kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
         daemon=True,
         name=f"tool-activity-hb-{function_name[:24]}",

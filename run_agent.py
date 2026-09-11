@@ -3384,9 +3384,23 @@ class AIAgent(
             self._turn_liveness_activity_generation = (
                 getattr(self, "_turn_liveness_activity_generation", 0) + 1
             )
-            self._last_activity_ts = time.time()
-            self._last_activity_desc = bound_activity_description(desc)
+            now_ts = time.time()
+            bounded_desc = bound_activity_description(desc)
+            prev_desc = getattr(self, "_last_activity_desc", "")
+            self._last_activity_ts = now_ts
+            self._last_activity_desc = bounded_desc
             self._last_activity_provenance = normalize_activity_provenance(provenance)
+            # Phase clock: when the CURRENT wait started. Liveness heartbeats
+            # re-stamp the SAME description every ~30s; those refreshes must
+            # not restart the clock, or the gateway phase heartbeat line
+            # ("⏳ <noun> <elapsed>") shows 0–30s forever. A new phase opens
+            # only when the normalized description changes (cosmetic case /
+            # whitespace differences are the same phase; provenance is not
+            # part of the comparison — any writer can open a new phase).
+            if " ".join(bounded_desc.split()).lower() != " ".join(
+                (prev_desc or "").split()
+            ).lower():
+                self._phase_started_ts = now_ts
             # Real progress invalidates any reserved abort claim. A watchdog
             # interrupt that is still in flight (e.g. parked inside the
             # compression commit fence) must abandon itself at the final
@@ -3464,12 +3478,15 @@ class AIAgent(
         across interrupt-recursive turns (#15654) and between turns. Clears
         description + provenance so idle cached agents / SessionDB listings
         do not keep advertising the last mid-turn stamp (e.g. compression
-        or tool execution) after the turn ended (#72039).
+        or tool execution) after the turn ended (#72039). Also closes the
+        phase clock — the next stamp opens a fresh phase instead of letting
+        the heartbeat keep timing a wait that already ended.
         """
         from agent.session_activity import ActivityProvenance
 
         self._last_activity_desc = ""
         self._last_activity_provenance = ActivityProvenance.UNKNOWN
+        self._phase_started_ts = None
         session_id = getattr(self, "session_id", None)
         session_db = getattr(self, "_session_db", None)
         if not session_id or session_db is None:
@@ -3703,6 +3720,7 @@ class AIAgent(
             last_activity_at=getattr(self, "_last_activity_ts", None),
             last_activity_description=getattr(self, "_last_activity_desc", None) or "",
             last_activity_provenance=provenance if provenance is not None else ActivityProvenance.UNKNOWN,
+            phase_started_at=getattr(self, "_phase_started_ts", None),
             extra={
                 "current_tool": self._current_tool, "api_call_count": self._api_call_count,
                 "max_iterations": self.max_iterations, "budget_used": self.iteration_budget.used,
