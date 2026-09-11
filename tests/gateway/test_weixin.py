@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
+from gateway.config import GatewayConfig, DeliveryTarget, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import weixin

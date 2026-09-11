@@ -163,7 +163,7 @@ def is_connected(config) -> bool:
 def _env_enablement() -> dict | None:
     """Seed ``PlatformConfig.extra`` from env before adapter construction so ``gateway status`` reflects
     env-only setups without the SDK. ``None`` when not minimally configured; ``home_channel`` becomes a
-    ``HomeChannel`` via the core hook."""
+    ``DeliveryTarget`` via the core hook."""
     client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
     client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
     tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()

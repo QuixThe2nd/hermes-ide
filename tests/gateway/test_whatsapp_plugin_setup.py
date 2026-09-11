@@ -38,7 +38,7 @@ _PROMPTS_WHITESPACE = ["", "   "]
 _YES_NO = [True]  # Enable WhatsApp? -> True
 
 
-class TestWhatsAppHomeChannelClear:
+class TestWhatsAppDeliveryTargetClear:
     """Blank home-channel answer must clear WHATSAPP_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):

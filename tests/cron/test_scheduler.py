@@ -388,7 +388,7 @@ class TestDeliverResultWrapping:
         """Persisted Slack home survives restart without native Slack config."""
         from concurrent.futures import Future
 
-        from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+        from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
 
         relay = MagicMock()
         relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
@@ -404,7 +404,7 @@ class TestDeliverResultWrapping:
                 Platform.RELAY: PlatformConfig(enabled=True),
                 Platform.SLACK: PlatformConfig(
                     enabled=False,
-                    home_channel=HomeChannel(
+                    home_channel=DeliveryTarget(
                         platform=Platform.SLACK,
                         chat_id="D123",
                         name="Owner DM",

@@ -23,13 +23,13 @@ import pytest
 from cron import scheduler as sched
 from cron.scheduler import _deliver_result, _resolve_delivery_targets
 from cron.scheduler_delivery import _get_home_target_chat_id, _get_home_target_thread_id
-from gateway.config import HomeChannel, Platform
+from gateway.config import DeliveryTarget, Platform
 
 
 def _gateway_config_with_home(platform=Platform.DISCORD, chat_id="1517373704248758474",
                               thread_id=None):
     """A gateway config whose ONLY home-channel source is config.yaml."""
-    home = HomeChannel(platform=platform, chat_id=chat_id, name="Home",
+    home = DeliveryTarget(platform=platform, chat_id=chat_id, name="Home",
                       thread_id=thread_id)
     config = MagicMock()
     config.platforms = {}
@@ -46,7 +46,7 @@ def _clear_home_env(monkeypatch):
 # Resolution: config.yaml home_channel fallback
 # ---------------------------------------------------------------------------
 
-class TestConfigHomeChannelFallback:
+class TestConfigDeliveryTargetFallback:
     def test_chat_id_falls_back_to_config_home_channel(self, monkeypatch):
         """Env mirror empty → the canonical config.yaml home_channel is used."""
         _clear_home_env(monkeypatch)

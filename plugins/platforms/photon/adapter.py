@@ -280,7 +280,7 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 def _env_enablement() -> Optional[dict]:
     """Seed PlatformConfig.extra from env so env-only setups appear in status
-    (``home_channel`` becomes a ``HomeChannel`` via the core plugin hook)."""
+    (``home_channel`` becomes a ``DeliveryTarget`` via the core plugin hook)."""
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None

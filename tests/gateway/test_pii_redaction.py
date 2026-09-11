@@ -8,7 +8,7 @@ from gateway.session import (
     _hash_sender_id,
     _hash_chat_id,
 )
-from gateway.config import Platform, HomeChannel
+from gateway.config import Platform, DeliveryTarget
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ class TestBuildSessionContextPromptRedaction:
 
     def test_home_channel_id_preserved_without_redaction(self):
         hc = {
-            Platform.TELEGRAM: HomeChannel(
+            Platform.TELEGRAM: DeliveryTarget(
                 platform=Platform.TELEGRAM,
                 chat_id="telegram:99999",
                 name="Home Chat",

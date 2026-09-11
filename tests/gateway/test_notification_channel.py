@@ -1,6 +1,6 @@
 """Notification channels: route lifecycle broadcasts away from the home chat.
 
-A platform's ``notification_channel`` (same HomeChannel shape as
+A platform's ``notification_channel`` (same DeliveryTarget shape as
 ``home_channel``) becomes the destination for gateway shutdown/startup
 broadcasts so the home channel stays free for conversation (e.g. a dedicated
 "#gateway-restarts" channel). Covers the config round-trip, the per-platform
@@ -17,7 +17,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import (
     GatewayConfig,
-    HomeChannel,
+    DeliveryTarget,
     Platform,
     PlatformConfig,
     clear_notification_channel,
@@ -39,8 +39,8 @@ def _notify_channel(
     platform: Platform = Platform.TELEGRAM,
     chat_id: str = "restarts-chat",
     thread_id: str | None = None,
-) -> HomeChannel:
-    return HomeChannel(
+) -> DeliveryTarget:
+    return DeliveryTarget(
         platform=platform,
         chat_id=chat_id,
         name="gateway-restarts",
@@ -48,8 +48,8 @@ def _notify_channel(
     )
 
 
-def _home_channel(chat_id: str = "home-chat") -> HomeChannel:
-    return HomeChannel(
+def _home_channel(chat_id: str = "home-chat") -> DeliveryTarget:
+    return DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id=chat_id,
         name="Telegram Home",

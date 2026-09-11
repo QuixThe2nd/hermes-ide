@@ -23,7 +23,7 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import (
-    HomeChannel,
+    DeliveryTarget,
     Platform,
     PlatformConfig,
     clear_notification_channel,
@@ -635,7 +635,7 @@ class GatewaySlashCommandsMixin(
                 return t("gateway.set_home.save_failed",
                          error="Relay does not authenticate this logical home target")
         thread_id = _home_thread_from_source(source)
-        home = HomeChannel(
+        home = DeliveryTarget(
             platform=source.platform, chat_id=str(chat_id), name=chat_name, thread_id=thread_id,
             user_id=str(source.user_id) if getattr(source, "user_id", None) else None,
             scope_id=str(source.scope_id) if getattr(source, "scope_id", None) else None)

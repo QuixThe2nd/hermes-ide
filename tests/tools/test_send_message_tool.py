@@ -996,7 +996,7 @@ class TestParseTargetRef:
             assert _parse_target_ref(platform, target)[2] is False, f"{platform}:{target}"
 
 
-class TestEmailHomeChannelErrorHint:
+class TestEmailDeliveryTargetErrorHint:
     """The no-home-channel error for email points at the real env var.
 
     Email reads its home channel from EMAIL_HOME_ADDRESS (gateway/config.py),

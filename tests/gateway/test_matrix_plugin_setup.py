@@ -62,7 +62,7 @@ _PROMPTS_WHITESPACE = [
 _YES_NO = [False]
 
 
-class TestMatrixHomeChannelClear:
+class TestMatrixDeliveryTargetClear:
     """Blank home-room answer must clear MATRIX_HOME_ROOM (#12423)."""
 
     def test_blank_removes_existing_home_room(self, monkeypatch, tmp_path):

@@ -323,7 +323,7 @@ def _env_enablement() -> dict | None:
 
     Runs BEFORE adapter construction so ``gateway status`` reflects env-only
     setups without instantiating the HTTP client. ``None`` = not configured.
-    The ``home_channel`` key is lifted by the core hook into a ``HomeChannel``
+    The ``home_channel`` key is lifted by the core hook into a ``DeliveryTarget``
     on the ``PlatformConfig`` instead of being merged into ``extra``.
     """
     topic = _get_scoped_secret("NTFY_TOPIC", "").strip()

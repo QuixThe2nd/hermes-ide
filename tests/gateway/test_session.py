@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from hermes_state import SessionDB
-from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.config import Platform, DeliveryTarget, GatewayConfig, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionEntry,
@@ -93,7 +93,7 @@ class TestBuildSessionContextPrompt:
                 Platform.TELEGRAM: PlatformConfig(
                     enabled=True,
                     token="fake-token",
-                    home_channel=HomeChannel(
+                    home_channel=DeliveryTarget(
                         platform=Platform.TELEGRAM,
                         chat_id="111",
                         name="Home Chat",

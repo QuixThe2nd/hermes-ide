@@ -58,7 +58,7 @@ _PROMPTS_WHITESPACE = [
 _CHOICES = [1, 1]
 
 
-class TestWeComHomeChannelClear:
+class TestWeComDeliveryTargetClear:
     """Blank home-channel answer must clear WECOM_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):

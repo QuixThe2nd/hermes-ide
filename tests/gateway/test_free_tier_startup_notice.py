@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform
+from gateway.config import DeliveryTarget, Platform
 from gateway.platforms.base import SendResult
 from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
@@ -53,7 +53,7 @@ def nous_runner(tmp_path, monkeypatch):
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM, chat_id="home-1", name="Home")
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
     return runner, adapter

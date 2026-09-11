@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from gateway.config import Platform, PlatformConfig, HomeChannel
+from gateway.config import Platform, PlatformConfig, DeliveryTarget
 from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 

@@ -16,7 +16,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from gateway.config import (
     ChannelOverride,
     GatewayConfig,
-    HomeChannel,
+    DeliveryTarget,
     Platform,
     PlatformConfig,
     StreamingConfig,
@@ -26,9 +26,9 @@ from gateway.config import (
 )
 
 
-class TestHomeChannelRoundtrip:
+class TestDeliveryTargetRoundtrip:
     def test_to_dict_from_dict(self):
-        hc = HomeChannel(
+        hc = DeliveryTarget(
             platform=Platform.DISCORD,
             chat_id="999",
             name="general",
@@ -36,7 +36,7 @@ class TestHomeChannelRoundtrip:
             scope_id="guild-456",
         )
         d = hc.to_dict()
-        restored = HomeChannel.from_dict(d)
+        restored = DeliveryTarget.from_dict(d)
 
         assert restored.platform == Platform.DISCORD
         assert restored.chat_id == "999"
@@ -50,7 +50,7 @@ class TestPlatformConfigRoundtrip:
         pc = PlatformConfig(
             enabled=True,
             token="tok_123",
-            home_channel=HomeChannel(
+            home_channel=DeliveryTarget(
                 platform=Platform.TELEGRAM,
                 chat_id="555",
                 name="Home",
@@ -1078,7 +1078,7 @@ class TestWebhookPortBridging:
         assert ms.extra.get("client_state") == "my-client-state"
 
 
-class TestHomeChannelEnvOverrides:
+class TestDeliveryTargetEnvOverrides:
     """Home channel env vars should apply even when the platform was already
     configured via config.yaml (not just when credential env vars create it)."""
 

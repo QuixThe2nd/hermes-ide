@@ -39,7 +39,7 @@ _PROMPTS_BLANK = ["«redacted:discord-bot-token»", "", ""]
 _PROMPTS_WHITESPACE = ["«redacted:discord-bot-token»", "", "   "]
 
 
-class TestDiscordHomeChannelClear:
+class TestDiscordDeliveryTargetClear:
     """Blank home-channel answer must clear DISCORD_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):

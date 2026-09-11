@@ -3,7 +3,7 @@
 Live repro (relay-fronted Slack staging, 2026-08-13): /sethome run as a
 top-level DM message captured source.thread_id — which the relay adapter had
 stamped with the /sethome message's OWN id for session keying — into the
-persisted HomeChannel. Every bare-platform delivery (deliver="slack") then
+persisted DeliveryTarget. Every bare-platform delivery (deliver="slack") then
 resolved home chat + home thread and landed inside the ephemeral thread
 spawned around the old /sethome message.
 

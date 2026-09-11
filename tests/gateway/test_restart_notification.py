@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform, PlatformConfig
+from gateway.config import DeliveryTarget, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
@@ -184,7 +184,7 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="parent-42",
         name="Ops Topic",
@@ -229,7 +229,7 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
         Platform.RELAY: PlatformConfig(enabled=True),
         Platform.SLACK: PlatformConfig(
             enabled=False,
-            home_channel=HomeChannel(
+            home_channel=DeliveryTarget(
                 platform=Platform.SLACK,
                 chat_id="D123",
                 name="Owner DM",
@@ -463,7 +463,7 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled(tmp_pat
     session_key = build_session_key(source)
 
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
         name="Ops Home",
@@ -556,7 +556,7 @@ async def test_shutdown_marker_written_when_drain_suppresses_home_broadcast(
     monkeypatch.setattr(
         "gateway.drain_control.drain_notification_suppressed", lambda: True
     )
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
         name="Ops Home",
@@ -581,7 +581,7 @@ async def test_shutdown_marker_written_for_in_chat_restart(tmp_path, monkeypatch
     runner, adapter = _active_shutdown_runner(tmp_path, monkeypatch, source=source)
     runner._restart_requested = True
     runner._restart_command_source = make_restart_source(chat_id="requester-7")
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
         name="Ops Home",

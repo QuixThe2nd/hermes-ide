@@ -33,7 +33,7 @@ _PROMPTS_BLANK = ["https://mm.example.com", "«redacted:mm-token»", "", ""]
 _PROMPTS_WHITESPACE = ["https://mm.example.com", "«redacted:mm-token»", "", "   "]
 
 
-class TestMattermostHomeChannelClear:
+class TestMattermostDeliveryTargetClear:
     """Blank home-channel answer must clear MATTERMOST_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):

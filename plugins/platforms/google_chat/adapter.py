@@ -1547,7 +1547,7 @@ _ENV_SEED_KEYS = (
 def _env_enablement() -> Optional[Dict[str, Any]]:
     """Seed ``PlatformConfig.extra`` from env during ``_apply_env_overrides`` (before the
     adapter exists, so ``gateway status`` reflects env-only config). None when the minimum
-    inbound settings are absent; ``home_channel`` becomes a ``HomeChannel`` in the core hook."""
+    inbound settings are absent; ``home_channel`` becomes a ``DeliveryTarget`` in the core hook."""
     if not _env_inbound_configured():
         return None
     project, subscription, http_events_url = _env_inbound_settings()

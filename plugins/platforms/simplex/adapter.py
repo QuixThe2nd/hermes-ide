@@ -608,7 +608,7 @@ def is_connected(config) -> bool:
 def _env_enablement() -> Optional[dict]:
     """Seed ``PlatformConfig.extra`` from env BEFORE adapter construction so ``gateway status``
     reflects env-only setups. ``None`` when not minimally configured; ``home_channel`` becomes
-    a ``HomeChannel`` via the core hook."""
+    a ``DeliveryTarget`` via the core hook."""
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL", "").strip()
     if not ws_url:
         return None

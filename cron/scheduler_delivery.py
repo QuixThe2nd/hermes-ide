@@ -387,7 +387,7 @@ def _resolve_home_env_var(platform_name: str) -> str:
 
 
 def _get_config_home_channel(platform_name: str):
-    """Persisted ``HomeChannel`` from gateway config — the canonical store ``/sethome`` writes.
+    """Persisted ``DeliveryTarget`` from gateway config — the canonical store ``/sethome`` writes.
     The ``<PLATFORM>_HOME_CHANNEL`` env var is only a best-effort mirror; relay-fronted platforms
     may exist solely in config.yaml, so reading only the env mirror would drop their delivery."""
     try:

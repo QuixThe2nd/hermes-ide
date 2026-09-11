@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform
+from gateway.config import DeliveryTarget, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
@@ -232,7 +232,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     restart_source.message_id = "restart-command"
     runner._restart_requested = True
     runner._restart_command_source = restart_source
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-chat",
         name="Telegram Home",

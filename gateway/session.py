@@ -96,7 +96,7 @@ from .config import (
     Platform,
     GatewayConfig,
     SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
-    HomeChannel,
+    DeliveryTarget,
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
@@ -360,7 +360,7 @@ class SessionContext:
     """
     source: SessionSource
     connected_platforms: List[Platform]
-    home_channels: Dict[Platform, HomeChannel]
+    home_channels: Dict[Platform, DeliveryTarget]
     shared_multi_user_session: bool = False
     
     # Session metadata

@@ -165,7 +165,7 @@ class TestSetupFeishuGroupPolicy:
 # Home channel (optional clear — Issue #12423)
 # ---------------------------------------------------------------------------
 
-class TestSetupFeishuHomeChannel:
+class TestSetupFeishuDeliveryTarget:
     """Blank home-channel answer must clear FEISHU_HOME_CHANNEL."""
 
     def test_blank_removes_existing_home_channel(self):

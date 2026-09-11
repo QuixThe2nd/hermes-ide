@@ -425,7 +425,7 @@ def is_connected(config) -> bool:
 
 def _env_enablement() -> dict | None:
     """Seed ``PlatformConfig.extra`` from env vars BEFORE adapter construction; ``None`` when IRC isn't
-    minimally configured (caller skips auto-enabling). ``home_channel`` becomes a ``HomeChannel``."""
+    minimally configured (caller skips auto-enabling). ``home_channel`` becomes a ``DeliveryTarget``."""
     server = _get_scoped_secret("IRC_SERVER", "").strip()
     channel = _get_scoped_secret("IRC_CHANNEL", "").strip()
     if not (server and channel):

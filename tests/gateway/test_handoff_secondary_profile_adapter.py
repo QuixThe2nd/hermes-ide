@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry
 
@@ -39,7 +39,7 @@ def _config(chat_id):
     cfg = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
-    cfg.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    cfg.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM, chat_id=chat_id, name=f"home-{chat_id}",
     )
     return cfg

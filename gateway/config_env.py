@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Optional
 
 from gateway.config import (
     GatewayConfig,
-    HomeChannel,
+    DeliveryTarget,
     Platform,
     PlatformConfig,
     _getenv_str,
@@ -156,7 +156,7 @@ def _env_home_channel(config: GatewayConfig, platform: Platform, env_base: str, 
     if strip:
         chat_id = chat_id.strip()
     if chat_id and platform in config.platforms:
-        config.platforms[platform].home_channel = HomeChannel(
+        config.platforms[platform].home_channel = DeliveryTarget(
             platform=platform, chat_id=chat_id,
             name=getenv(f"{env_base}_NAME", "Home"), thread_id=getenv(f"{env_base}_THREAD_ID") or None,
         )
@@ -269,7 +269,7 @@ def _slack_home(config: GatewayConfig) -> None:
     slack_config = config.platforms.setdefault(Platform.SLACK, PlatformConfig(enabled=False))
     existing_home = slack_config.home_channel
     same_home = existing_home is not None and existing_home.chat_id == slack_home
-    slack_config.home_channel = HomeChannel(
+    slack_config.home_channel = DeliveryTarget(
         platform=Platform.SLACK, chat_id=slack_home,
         name=getenv("SLACK_HOME_CHANNEL_NAME"), thread_id=getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
         user_id=existing_home.user_id if same_home else None,
@@ -334,7 +334,7 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
             "in your .env for consistency with the platform key."
         )
     if qq_home:
-        qq_config.home_channel = HomeChannel(
+        qq_config.home_channel = DeliveryTarget(
             platform=Platform.QQBOT, chat_id=qq_home,
             name=getenv("QQBOT_HOME_CHANNEL_NAME") or getenv(name_env, "Home"),
             thread_id=getenv("QQBOT_HOME_CHANNEL_THREAD_ID") or getenv("QQ_HOME_CHANNEL_THREAD_ID") or None,
@@ -411,7 +411,7 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
         home = seed.pop("home_channel", None)
         platform_config.extra.update(seed)
         if isinstance(home, dict) and home.get("chat_id"):
-            platform_config.home_channel = HomeChannel(
+            platform_config.home_channel = DeliveryTarget(
                 platform=platform, chat_id=str(home["chat_id"]), name=str(home.get("name") or "Home"),
                 thread_id=str(home["thread_id"]) if home.get("thread_id") else None,
             )

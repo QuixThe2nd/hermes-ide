@@ -15217,7 +15217,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     """Handoff validation must read the owning session's gateway config."""
     import contextlib
 
-    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
     from hermes_cli.config import get_hermes_home
     from tui_gateway import methods_session
 
@@ -15233,7 +15233,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
         if home == profile_home:
             config.platforms[Platform.DISCORD] = PlatformConfig(
                 enabled=True,
-                home_channel=HomeChannel(
+                home_channel=DeliveryTarget(
                     platform=Platform.DISCORD,
                     chat_id="discord-home",
                     name="Hermes / #chat-coding",

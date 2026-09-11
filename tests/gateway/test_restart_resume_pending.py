@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform
+from gateway.config import GatewayConfig, DeliveryTarget, Platform
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
@@ -883,7 +883,7 @@ async def test_warmup_disabled_by_nonpositive_timeout(monkeypatch):
 async def test_restart_notifies_home_channel_even_without_active_sessions():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
         name="Ops Home",
@@ -909,7 +909,7 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
         )
     )
     runner._running_agents[session_key] = MagicMock()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="999",
         name="Ops Home",

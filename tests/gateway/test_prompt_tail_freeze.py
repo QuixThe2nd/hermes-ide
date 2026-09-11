@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
 from gateway.session import (
     SessionContext,
     SessionSource,
@@ -85,7 +85,7 @@ def _make_context(
     connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
     if home_channels is None:
         home_channels = {
-            Platform.DISCORD: HomeChannel(
+            Platform.DISCORD: DeliveryTarget(
                 platform=Platform.DISCORD, chat_id="111222333", name="general"
             ),
         }
@@ -140,7 +140,7 @@ class TestEphemeralChangeKeyParity:
             "home_channel_renamed",
             dict(
                 home_channels={
-                    Platform.DISCORD: HomeChannel(
+                    Platform.DISCORD: DeliveryTarget(
                         platform=Platform.DISCORD, chat_id="111222333", name="ops-home"
                     )
                 }
@@ -150,10 +150,10 @@ class TestEphemeralChangeKeyParity:
             "home_channel_added",
             dict(
                 home_channels={
-                    Platform.DISCORD: HomeChannel(
+                    Platform.DISCORD: DeliveryTarget(
                         platform=Platform.DISCORD, chat_id="111222333", name="general"
                     ),
-                    Platform.TELEGRAM: HomeChannel(
+                    Platform.TELEGRAM: DeliveryTarget(
                         platform=Platform.TELEGRAM, chat_id="tg1", name="tg-home"
                     ),
                 }

@@ -288,7 +288,7 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
 
 
 @dataclass
-class HomeChannel:
+class DeliveryTarget:
     """Default destination for a platform (``deliver="telegram"`` without a chat ID);
     ``thread_id`` routes the bare target to the topic where /sethome was run."""
     platform: Platform
@@ -304,12 +304,12 @@ class HomeChannel:
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+    def from_dict(cls, data: Dict[str, Any]) -> "DeliveryTarget":
         optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
 
-def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
+def persist_home_channel(home: DeliveryTarget, *, enabled_if_new: bool = False) -> None:
     """Persist a logical home without falsely enabling a Relay-fronted adapter."""
     from hermes_cli.config import load_config, save_config
     config = load_config()
@@ -320,7 +320,7 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
     save_config(config)
 
 
-def persist_notification_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
+def persist_notification_channel(home: DeliveryTarget, *, enabled_if_new: bool = False) -> None:
     """Persist a lifecycle-notification target for ``home.platform``.
 
     Same shape as :func:`persist_home_channel`, writing the
@@ -482,12 +482,12 @@ class PlatformConfig:
     enabled: bool = False
     token: Optional[str] = None
     api_key: Optional[str] = None  # API key if different from token
-    home_channel: Optional[HomeChannel] = None
+    home_channel: Optional[DeliveryTarget] = None
     # Dedicated target for gateway lifecycle broadcasts (shutdown/startup).
     # When set, those broadcasts route here instead of the home channel so
     # the home channel stays free for conversation (e.g. a Discord
-    # "#gateway-restarts" channel). Same HomeChannel shape as home_channel.
-    notification_channel: Optional[HomeChannel] = None
+    # "#gateway-restarts" channel). Same DeliveryTarget shape as home_channel.
+    notification_channel: Optional[DeliveryTarget] = None
 
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
@@ -543,11 +543,11 @@ class PlatformConfig:
         data = _coerce_dict(data)
         home_channel = None
         if isinstance(data.get("home_channel"), dict):
-            home_channel = HomeChannel.from_dict(data["home_channel"])
+            home_channel = DeliveryTarget.from_dict(data["home_channel"])
 
         notification_channel = None
         if isinstance(data.get("notification_channel"), dict):
-            notification_channel = HomeChannel.from_dict(data["notification_channel"])
+            notification_channel = DeliveryTarget.from_dict(data["notification_channel"])
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
@@ -792,14 +792,14 @@ class GatewayConfig:
             pass  # Registry not yet initialised during early import
         return False
 
-    def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
+    def get_home_channel(self, platform: Platform) -> Optional[DeliveryTarget]:
         """Get the home channel for a platform."""
         config = self.platforms.get(platform)
         if config:
             return config.home_channel
         return None
 
-    def get_notification_channel(self, platform: Platform) -> Optional[HomeChannel]:
+    def get_notification_channel(self, platform: Platform) -> Optional[DeliveryTarget]:
         """Get the lifecycle-notification channel for a platform, if any."""
         config = self.platforms.get(platform)
         if config:

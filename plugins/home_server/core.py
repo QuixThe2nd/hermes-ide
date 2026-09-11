@@ -733,11 +733,11 @@ def link_home_channel(guild_id: str, channel_id: str) -> str:
     if existing_discord_home_channel() is not None:
         return "kept"
 
-    from gateway.config import HomeChannel, persist_home_channel
+    from gateway.config import DeliveryTarget, persist_home_channel
     from gateway.platforms.base import Platform
 
     persist_home_channel(
-        HomeChannel(
+        DeliveryTarget(
             platform=Platform.DISCORD,
             chat_id=str(channel_id),
             name="other",
@@ -775,11 +775,11 @@ def link_notification_channel(guild_id: str, channel_id: str) -> str:
     if existing_discord_notification_channel() is not None:
         return "kept"
 
-    from gateway.config import HomeChannel, persist_notification_channel
+    from gateway.config import DeliveryTarget, persist_notification_channel
     from gateway.platforms.base import Platform
 
     persist_notification_channel(
-        HomeChannel(
+        DeliveryTarget(
             platform=Platform.DISCORD,
             chat_id=str(channel_id),
             name="gateway-restarts",

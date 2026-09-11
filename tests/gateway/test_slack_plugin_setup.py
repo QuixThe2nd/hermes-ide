@@ -52,7 +52,7 @@ def test_interactive_setup_saves_home_channel(monkeypatch, tmp_path):
     assert "SLACK_HOME_CHANNEL" not in removed
 
 
-class TestSlackHomeChannelClear:
+class TestSlackDeliveryTargetClear:
     """Blank home-channel answer must clear SLACK_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):

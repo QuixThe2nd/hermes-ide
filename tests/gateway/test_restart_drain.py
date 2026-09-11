@@ -968,14 +968,14 @@ async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, mo
     "your task was interrupted, message me to resume" hint). This is the core
     drain-notification-suppression contract.
     """
-    from gateway.config import HomeChannel, Platform
+    from gateway.config import DeliveryTarget, Platform
     import gateway.drain_control as dc
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     runner, adapter = make_restart_runner()
     # A home channel distinct from the active session's chat.
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
         name="Ops Home",
