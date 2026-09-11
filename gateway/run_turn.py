@@ -1817,7 +1817,7 @@ class GatewayTurnMixin:
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
-        # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
+        # the system prompt cannot drift turn-over-turn; a miss (thread rename, title edit) re-renders.
         context_prompt = self._pinned_session_context_prompt(context, _redact_pii, session_key)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt

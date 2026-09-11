@@ -1187,8 +1187,8 @@ class RelayAdapter(BasePlatformAdapter):
         guild_id = payload.get("guild_id")
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
-            # capability binding (platform="discord"), /sethome must file under the
-            # logical platform, and _capture_scope skips the generic "relay".
+            # capability binding (platform="discord"), slash commands must file under
+            # the logical platform, and _capture_scope skips the generic "relay".
             platform=Platform.DISCORD,
             chat_id=str(payload.get("channel_id") or ""),
             # "group", not "channel": both the connector's capability binding and the
@@ -1199,7 +1199,7 @@ class RelayAdapter(BasePlatformAdapter):
             scope_id=str(guild_id) if guild_id else None,
             message_id=str(payload.get("id")) if payload.get("id") else None,
             # Same upstream-trust marker the relay text lane stamps. Set locally, never
-            # read off the wire (engages /sethome's via_relay guard).
+            # read off the wire (authz and delivery logic trust relay provenance).
             delivered_via_upstream_relay=True,
             # Profile routing (multiplex mode), mirroring _event_from_wire.
             # The HERMES profile this interaction is routed to (multiplex mode) — mirrors _event_from_wire's
