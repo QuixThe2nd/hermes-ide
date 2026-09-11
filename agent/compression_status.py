@@ -15,6 +15,11 @@ send-once/edit-in-place episode semantics without touching the
 Telegram/Slack ``send_or_update_status`` path.
 
 Coupling notes:
+- Gateway session hygiene (``gateway/run.py``) drives the SAME line builders
+  directly for its Discord episode card — the detached hygiene agent keeps a
+  deliberately stale platform and no ``status_callback``, so the gateway calls
+  the episode rail itself instead of going through
+  :func:`emit_compression_tool_status` (whose platform gate stays agent-only).
 - ``COMPRESSION_ABORT_WARNING_PREFIX`` and
   ``CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX`` MUST stay byte-identical with
   the emission sites (``agent/conversation_compression.py`` abort notice and
@@ -277,6 +282,24 @@ def compression_tool_aborted_line(
     return (
         f"{COMPRESSION_TOOL_FAILURE_PREFIX} stopped before finishing{why}{preserved} "
         "· /compress to retry"
+    )
+
+
+def compression_tool_deferred_line() -> str:
+    """Non-terminal "still running in the background" edit for a deferred attempt.
+
+    Gateway session hygiene bounds how long it holds the user's TURN
+    (``hygiene_max_turn_hold_seconds``): when the summary worker is still
+    streaming at expiry, the turn proceeds on the uncompressed transcript
+    while the watermark-fenced worker keeps running toward adoption. The open
+    episode is edited ONCE to this state — deliberately not a terminal and
+    not a success; the adoption (or did-not-commit) boundary later replaces
+    it with the real terminal line.
+    """
+    return (
+        f"{COMPRESSION_TOOL_START_PREFIX} still compressing in the "
+        "background — this reply used the full conversation; the summary "
+        "will be applied when it finishes"
     )
 
 
