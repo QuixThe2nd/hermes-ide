@@ -141,11 +141,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
                busy_policy="dispatch", execute="profile"),
-    CommandDef("sethome", "Set this chat as the home channel", "Session",
-               gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("setnotify", "Set this chat as the gateway lifecycle-notification channel", "Session",
                gateway_only=True, aliases=("set-notify",)),
-    CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel (back to home)", "Session",
+    CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel", "Session",
                gateway_only=True, aliases=("clear-notify",)),
     CommandDef("sethomeserver", "Provision and wire the Discord home server", "Session",
                gateway_only=True, args_hint="[confirm]"),
@@ -412,7 +410,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
     (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset)
+    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /reset)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue
     #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
     explicit Level-2 handlers; the rest fall through to the catch-all.

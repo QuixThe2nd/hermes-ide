@@ -29,7 +29,8 @@ def _fmt_pending(pending: list) -> str:
 
 def _resolve_origin() -> Optional[Dict[str, Any]]:
     """Best-effort current-chat origin from session env (mirrors cron's ``_origin_from_env``) so an
-    accepted job delivers back to the accepting chat; None lets create_job use the home channel."""
+    accepted job delivers back to the accepting chat; None means no captured origin, so the job
+    must carry an explicit deliver target."""
     try:
         from gateway.session_context import get_session_env
         platform = get_session_env("HERMES_SESSION_PLATFORM")

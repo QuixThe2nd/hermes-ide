@@ -160,8 +160,8 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 def _platform_enablement(
     platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
-) -> tuple[bool, bool, dict | None]:
-    """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
+) -> tuple[bool, bool]:
+    """(enabled, configured). Profile-scoped: derive from the profile's
     config.yaml + .env only — load_gateway_config()'s env-override layer reads
     os.environ and would leak the root install's tokens into the profile's state."""
     required = entry["required_env"]
@@ -170,14 +170,12 @@ def _platform_enablement(
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
-            hc = plat_cfg.get("home_channel")
             # Setup writes credentials without a platforms entry; explicit disable wins.
             raw_enabled = plat_cfg.get("enabled")
             enabled = False if raw_enabled is False else bool(raw_enabled) or configured
-            home_channel = hc if isinstance(hc, dict) else None
         except Exception:
-            enabled, home_channel = False, None
-        return enabled, configured, home_channel
+            enabled = False
+        return enabled, configured
     try:
         from gateway.config import Platform, load_gateway_config
 
@@ -186,11 +184,10 @@ def _platform_enablement(
         platform_config = gateway_config.platforms.get(platform)
         enabled = bool(platform_config and platform_config.enabled)
         configured = bool(platform_config and gateway_config._is_platform_connected(platform, platform_config))
-        home_channel = platform_config.home_channel.to_dict() if platform_config and platform_config.home_channel else None
     except Exception:
-        enabled, home_channel = False, None
+        enabled = False
         configured = all(env_on_disk.get(key) or os.getenv(key, "") for key in required)
-    return enabled, configured, home_channel
+    return enabled, configured
 
 
 def _messaging_platform_payload(
@@ -234,7 +231,7 @@ def _messaging_platform_payload(
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured = _platform_enablement(platform_id, entry, env_on_disk, scoped)
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -257,14 +254,13 @@ def _messaging_platform_payload(
         "docs_url": entry["docs_url"], "enabled": enabled, "configured": configured,
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
-        "home_channel": home_channel, "env_vars": env_vars,
+        "env_vars": env_vars,
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
         payload["whatsapp_setup"] = {
             "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
             "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
-            "home_channel_set": bool(home_channel),
         }
     return payload
 

@@ -517,9 +517,9 @@ class CLIInfoMixin:
             for platform, (name, env_var) in platform_status.items():
                 pconfig = config.platforms.get(platform)
                 if pconfig and pconfig.enabled:
-                    home = config.get_home_channel(platform)
-                    home_str = f" → {home.name}" if home else ""
-                    print(f"    ✓ {name:<12} Enabled{home_str}")
+                    channel = config.get_notification_channel(platform)
+                    channel_str = f" → {channel.name}" if channel else ""
+                    print(f"    ✓ {name:<12} Enabled{channel_str}")
                 else:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
 
