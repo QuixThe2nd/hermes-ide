@@ -384,8 +384,37 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
-def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
-    """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
+def _wrap_usage_routed_mounts(
+    mounts: dict,
+    *,
+    base_url: str,
+    verify: Any,
+    async_mode: bool,
+) -> dict:
+    """Loopback usage-route seam for the llm_usage_proxy plugin.
+
+    No-op (same mounts, direct traffic) unless that plugin registered a route
+    table covering this base URL under default TLS/proxy policy — see
+    ``hermes_cli/llm_usage_routes.wrap_mounts_for_usage_routing``. Kept as a
+    lazy local so a missing module or any routing failure can never break
+    client construction; unaffected traffic simply stays unmetered.
+    """
+    try:
+        from hermes_cli.llm_usage_routes import wrap_mounts_for_usage_routing
+    except ImportError:
+        return mounts
+    return wrap_mounts_for_usage_routing(
+        mounts, base_url=base_url, verify=verify, async_mode=async_mode
+    )
+
+
+def build_keepalive_http_client(
+    base_url: str = "",
+    *,
+    async_mode: bool = False,
+    verify: Any = True,
+) -> Optional[Any]:
+    """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
 
     Explicit no-proxy mounts disable httpx's ``trust_env`` path so macOS system
     proxies (which omit the ExceptionsList) are never applied. ``keepalive_expiry``
@@ -428,6 +457,9 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
 
             if async_mode:
                 mounts = {"http://": _build_direct(), "https://": _build_direct()}
+                mounts = _wrap_usage_routed_mounts(
+                    mounts, base_url=base_url, verify=verify, async_mode=True
+                )
             else:
                 key = _shared_transport_key(base_url, verify, proxy)
                 view_cls = _shared_transport_cls()
@@ -435,10 +467,24 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                     f"{scheme}://": view_cls(_get_shared_transport((scheme, *key), _build_direct))
                     for scheme in ("http", "https")
                 }
-                # Default transport = the https view; otherwise httpx builds a third, never-used
-                # direct transport (pool + SSL context) per client.
-                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
-        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
+                mounts = _wrap_usage_routed_mounts(
+                    mounts, base_url=base_url, verify=verify, async_mode=False
+                )
+                # Without this httpx builds a third, never-used direct
+                # transport (and pool + SSL context) per client.
+                return client_cls(
+                    limits=limits,
+                    timeout=timeout,
+                    transport=mounts["https://"],
+                    mounts=mounts,
+                )
+        return client_cls(
+            limits=limits,
+            timeout=timeout,
+            proxy=proxy,
+            mounts=mounts or None,
+            verify=verify,
+        )
     except Exception:
         return None
 

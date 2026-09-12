@@ -349,7 +349,33 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     request; clear it whenever we intentionally authenticated via auth_token."""
     if headers:
         kwargs["default_headers"] = headers
+
+    # Loopback usage-route seam (llm_usage_proxy plugin): when this base URL
+    # is covered by a registered route table, send through an httpx client
+    # whose transport reroutes matching requests to the loopback proxy.
+    # Everything decided above — auth style, betas, base_url, timeouts — is
+    # untouched; only the final destination of matching requests changes, and
+    # ``None`` (the common case, no routing configured) keeps the SDK's own
+    # default client so behaviour is byte-for-byte what it was.
+    if kwargs.get("base_url"):
+        try:
+            from hermes_cli.llm_usage_routes import build_sync_routed_client
+
+            routed_http_client = build_sync_routed_client(
+                str(kwargs["base_url"]), timeout=kwargs.get("timeout")
+            )
+        except ImportError:
+            routed_http_client = None
+        if routed_http_client is not None:
+            kwargs["http_client"] = routed_http_client
+
     client = sdk.Anthropic(**kwargs)
+    # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
+    # from ``ANTHROPIC_API_KEY`` (Hermes loads that into the process env from
+    # ``~/.hermes/.env``). The result is dual auth —
+    # ``X-Api-Key: sk-ant-…`` *and* ``Authorization: Bearer <portal-jwt>`` —
+    # on every Portal / MiniMax / OAuth Messages request. Clear the env-filled
+    # key whenever we intentionally authenticated via auth_token alone.
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None
     return client
