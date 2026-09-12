@@ -187,7 +187,7 @@ class TestMissedSteerRetention:
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_agent(goal="race test", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="race test", parent_agent=parent, background=False))
             entry = result["results"][0]
 
         assert entry["missed_steer"] == "focus on pricing instead"
@@ -221,7 +221,7 @@ class TestMissedSteerRetention:
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_agent(goal="clean run", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="clean run", parent_agent=parent, background=False))
             entry = result["results"][0]
 
         assert "missed_steer" not in entry

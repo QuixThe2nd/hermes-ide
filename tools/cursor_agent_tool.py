@@ -2804,15 +2804,23 @@ CURSOR_AGENT_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
+                # No static "default": the omitted-arg behavior is
+                # capability-conditional (see resolve_background_arg), so a
+                # plain schema default would lie on half the sessions.
                 "description": (
-                    "Blocking by default: omitted or false waits for the cloud "
-                    "run to finish and returns its final report inline. Pass "
-                    "true to return a background handle immediately and keep "
-                    "working; the terminal result re-enters the conversation "
-                    "as a new message when the run finishes. The mode depends "
-                    "only on this argument."
+                    "Delivery mode for this run. Omitted: runs in the "
+                    "background and the result is delivered later — the call "
+                    "returns a handle immediately and the terminal result "
+                    "re-enters the conversation as a new message when the "
+                    "run finishes; on sessions that cannot receive a late "
+                    "completion (one-shot runs, cron jobs, workers, "
+                    "stateless HTTP endpoints) an omitted argument instead "
+                    "blocks to completion and returns the final report "
+                    "inline this turn. false: always block inline this "
+                    "turn. true: detach; rejected up front — with no work "
+                    "started — on sessions that cannot receive a late "
+                    "completion."
                 ),
-                "default": False,
             },
         },
         "required": ["task", "workdir"],
@@ -2821,6 +2829,8 @@ CURSOR_AGENT_SCHEMA = {
 
 
 def _handle_delegate_cursor_agent(args, **kw):
+    from tools.async_delegation import resolve_background_arg
+
     return delegate_cursor_agent(
         task=args.get("task", ""),
         workdir=args.get("workdir", ""),
@@ -2830,7 +2840,7 @@ def _handle_delegate_cursor_agent(args, **kw):
         session_id=kw.get("session_id"),
         tool_call_id=kw.get("tool_call_id"),
         task_id=kw.get("task_id"),
-        background=is_truthy_value(args.get("background"), default=False),
+        background=resolve_background_arg(args),
     )
 
 

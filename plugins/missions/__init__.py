@@ -1170,13 +1170,13 @@ DELEGATE_ASSISTANT_SCHEMA = {
         "Delegate a goal to a messaging assistant: the contact's chat (WhatsApp "
         "DM, or a group JID ending @g.us) is answered by the locked-down "
         "assistant profile until the goal is hit, then the outcome comes back "
-        "here. Blocking by default: THIS tool call waits — possibly for hours "
-        "or days, since the other side is a human — and returns the mission's "
-        "final outcome inline. Pass background=true to get a handle "
-        "immediately instead and keep working; the outcome then re-enters the "
-        "conversation as a new message later. The mode depends only on this "
-        "argument. Do not put the contact on WHATSAPP_ALLOWED_USERS. One "
-        "active mission per chat."
+        "here. Async by default: the call returns a handle immediately and the "
+        "outcome re-enters the conversation as a new message later — the other "
+        "side is a human, so a mission can take hours or days. Pass "
+        "background=false to wait for the final outcome inline instead; on "
+        "sessions that cannot receive a late completion (cron jobs, one-shot "
+        "runs, workers) the default waits inline. Do not put the contact on "
+        "WHATSAPP_ALLOWED_USERS. One active mission per chat."
     ),
     "parameters": {
         "type": "object",
@@ -1206,18 +1206,23 @@ DELEGATE_ASSISTANT_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
+                # No static "default": the omitted-arg behavior is
+                # capability-conditional (see resolve_background_arg), so a
+                # plain schema default would lie on half the sessions.
                 "description": (
-                    "Blocking by default: omitted or false creates the "
-                    "mission and waits — possibly for hours or days — until "
-                    "it completes or is cancelled, then returns the outcome "
-                    "inline. Pass true to return a background handle "
-                    "immediately and keep working; the outcome re-enters the "
-                    "conversation as a new message when the mission "
-                    "finishes. The mode depends only on this argument. "
-                    "Fails before creating anything when this session cannot "
+                    "Delivery mode for the outcome. Omitted: runs in the "
+                    "background — a handle returns immediately and the "
+                    "outcome re-enters the conversation as a new message "
+                    "when the mission finishes (possibly hours or days "
+                    "later); on sessions that cannot receive a late "
+                    "completion (one-shot runs, cron jobs, workers, "
+                    "stateless HTTP endpoints) an omitted argument instead "
+                    "creates the mission and waits inline until it "
+                    "completes or is cancelled. false: always create the "
+                    "mission and wait inline this turn. true: detach; fails "
+                    "before creating anything when this session cannot "
                     "receive a late completion."
                 ),
-                "default": False,
             },
         },
         "required": ["chat_id", "goal"],
@@ -2039,23 +2044,30 @@ def _rollback_mission(mission: Optional[Dict[str, Any]]) -> None:
 def handle_delegate_assistant(args: Dict[str, Any], **kwargs: Any) -> str:
     """Origin-side start under the uniform delegation lifecycle.
 
-    The mode comes ONLY from the explicit ``background`` argument — never
-    from platform, session type, nesting, or delivery capability:
+    An explicit ``background`` argument decides the mode exactly as written.
+    Only the OMITTED case takes the shared capability-aware default
+    (``resolve_background_arg``):
 
-    - omitted/false creates the mission and then BLOCKS this tool thread
-      until the mission is terminal, returning the outcome inline (see
+    - omitted detaches when this session can receive a late completion
+      (async-by-default), returning the shared background acceptance
+      envelope immediately; where it cannot (cron jobs, one-shot runs,
+      workers, stateless endpoints) or when
+      ``delegation.default_background=false`` is configured, omitted
+      silently falls back to the foreground wait;
+    - false creates the mission and then BLOCKS this tool thread until the
+      mission is terminal, returning the outcome inline (see
       ``_wait_for_mission_terminal``);
     - true fails clearly BEFORE the mission exists when this session cannot
       receive a late completion, and otherwise returns the shared background
       acceptance envelope immediately.
 
-    In both cases the mission itself is identical; only the delivery of its
+    In every case the mission itself is identical; only the delivery of its
     outcome differs, and exactly one channel is ever used.
     """
-    from utils import is_truthy_value
+    from tools.async_delegation import resolve_background_arg
 
     args = dict(args or {})
-    background = is_truthy_value(args.get("background"), default=False)
+    background = resolve_background_arg(args)
 
     if background:
         from tools.async_delegation import background_delivery_supported
