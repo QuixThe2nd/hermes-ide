@@ -1116,6 +1116,14 @@ def _live_send_media(
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
         routed_media_metadata["_relay_logical_platform"] = t.platform.value
+        # Parity with the text lane (gateway/delivery.py): a relay egress to the
+        # platform's notification channel rides its authenticated-user metadata.
+        channel = t.config.get_notification_channel(t.platform)
+        if channel is not None and channel.chat_id == t.chat_id:
+            if channel.user_id:
+                routed_media_metadata["user_id"] = channel.user_id
+            if channel.scope_id:
+                routed_media_metadata["scope_id"] = channel.scope_id
     _media_errors = _send_media_via_adapter(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
         platform=t.platform,
