@@ -299,7 +299,7 @@ HERMES_LOG_LEVEL=debug hermes gateway
 /cron "0 */4 * * *" Report system health
 ```
 
-结果将投递到你的主频道。
+通过元宝聊天中的 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。
 
 ### 后台任务
 

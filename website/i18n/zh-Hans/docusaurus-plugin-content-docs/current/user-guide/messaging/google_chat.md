@@ -131,7 +131,6 @@ GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=/home/you/.hermes/google-chat-sa.json
 GOOGLE_CHAT_ALLOWED_USERS=you@yourdomain.com,coworker@yourdomain.com
 
 # 可选
-GOOGLE_CHAT_HOME_CHANNEL=spaces/AAAA...         # cron 任务的默认投递目标
 GOOGLE_CHAT_MAX_MESSAGES=1                      # Pub/Sub FlowControl；1 表示每个会话串行执行命令
 GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节上限
 ```

@@ -134,8 +134,6 @@ teams app get <teamsAppId> --install-link
 | `TEAMS_TENANT_ID` | Azure AD 租户 ID |
 | `TEAMS_ALLOWED_USERS` | 允许使用机器人的 AAD 对象 ID，逗号分隔 |
 | `TEAMS_ALLOW_ALL_USERS` | 设为 `true` 可跳过白名单，允许所有人使用 |
-| `TEAMS_HOME_CHANNEL` | 用于 cron/主动消息投递的会话 ID |
-| `TEAMS_HOME_CHANNEL_NAME` | 主频道的显示名称 |
 | `TEAMS_PORT` | Webhook 端口（默认：`3978`） |
 
 ### config.yaml
