@@ -68,10 +68,6 @@ YUANBAO_API_DOMAIN=https://api.yuanbao.example.com
 # 可选：内部路由环境（如 test/staging/production）
 # YUANBAO_ROUTE_ENV=production
 
-# 可选：cron/通知的主频道（格式：direct:<account> 或 group:<group_code>）
-YUANBAO_HOME_CHANNEL=direct:bot_account_id
-YUANBAO_HOME_CHANNEL_NAME="Bot Notifications"
-
 # 可选：限制访问（旧版，细粒度策略请参见下方访问控制）
 YUANBAO_ALLOWED_USERS=user_account_1,user_account_2
 ```
@@ -98,7 +94,6 @@ hermes gateway
 - **自动重连** — 以指数退避方式处理 WebSocket 断线
 - **群组信息查询** — 获取群组详情和成员列表
 - **表情/Emoji 支持** — 在会话中发送 TIMFaceElem 表情和 emoji
-- **自动设置主频道** — 第一个向机器人发消息的用户自动成为主频道所有者
 - **慢响应通知** — 当 agent 处理时间超出预期时发送等待提示
 
 ## 配置选项
@@ -122,29 +117,19 @@ hermes gateway
 
 媒体 URL 在上传前会自动验证并下载，以防止 SSRF 攻击。
 
-## 主频道
+## 定时投递
 
-在任意元宝聊天（单聊或群聊）中使用 `/sethome` 命令，将其指定为**主频道**。定时任务（cron job）的结果将发送到该频道。
-
-:::tip 自动设置主频道
-如果未配置主频道，第一个向机器人发消息的用户将自动成为主频道所有者。如果当前主频道是群聊，第一条单聊消息将把主频道升级为直接频道。
-:::
-
-也可以在 `~/.hermes/.env` 中手动设置：
+在元宝聊天中使用 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。要投递到其他位置 — 或任务没有捕获 origin 时 — 设置显式目标：
 
 ```bash
-YUANBAO_HOME_CHANNEL=direct:user_account_id
+hermes cron edit <id> --deliver yuanbao:direct:user_account_id
 # 或者设置为群组：
-# YUANBAO_HOME_CHANNEL=group:group_code
-YUANBAO_HOME_CHANNEL_NAME="My Bot Updates"
+# hermes cron edit <id> --deliver yuanbao:group:group_code
 ```
 
-### 示例：设置主频道
+`deliver` 值无法解析到目标的任务会记录一条投递错误，提示你设置显式的 `platform:chat_id[:thread_id]` 目标；输出永远不会被静默丢弃。
 
-1. 在元宝中与机器人开始对话
-2. 发送命令：`/sethome`
-3. 机器人回复："Home channel set to [chat_name] with ID [chat_id]. Cron jobs will deliver to this location."
-4. 后续 cron job 和通知将发送到该频道
+Gateway 生命周期通知（重启/关机）是独立的：它们发送到你在目标聊天中运行 `/setnotify` 指定的通知频道。
 
 ### 示例：Cron Job 投递
 
@@ -154,7 +139,7 @@ YUANBAO_HOME_CHANNEL_NAME="My Bot Updates"
 /cron "0 9 * * *" Check server status
 ```
 
-定时输出将在每天上午 9 点发送到你的元宝主频道。
+定时输出将在每天上午 9 点投递回该聊天。
 
 ## 使用技巧
 
@@ -176,7 +161,6 @@ hello
 |------|------|
 | `/new` | 开始新对话 |
 | `/model [provider:model]` | 查看或切换模型 |
-| `/sethome` | 将当前聊天设为主频道 |
 | `/status` | 显示会话信息 |
 | `/help` | 显示可用命令 |
 
@@ -226,13 +210,13 @@ Please analyze this document
 3. 确保媒体文件可访问且未损坏
 4. 联系平台管理员检查 COS bucket 配置
 
-### 消息未投递到主频道
+### 定时输出未投递
 
-**原因**：主频道 ID 格式不正确或 cron job 尚未触发。
+**原因**：cron 任务没有可解析的投递目标（例如 `deliver: "origin"` 但未捕获 origin 聊天）。
 
 **解决方法**：
-1. 验证 YUANBAO_HOME_CHANNEL 格式是否正确
-2. 使用 `/sethome` 命令自动检测正确格式
+1. 使用 `/status` 或 `hermes cron list` 检查任务的投递错误
+2. 设置显式目标：`hermes cron edit <id> --deliver yuanbao:direct:<account>`（或 `yuanbao:group:<group_code>`）
 3. 使用 `/status` 检查 cron job 计划
 4. 验证机器人在目标聊天中是否有发送权限
 
@@ -315,7 +299,7 @@ HERMES_LOG_LEVEL=debug hermes gateway
 /cron "0 */4 * * *" Report system health
 ```
 
-结果将投递到你的主频道。
+通过元宝聊天中的 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。
 
 ### 后台任务
 

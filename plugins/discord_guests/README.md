@@ -3,7 +3,7 @@
 **Invite a bot or a friend, and they get a private lounge of their own.**
 
 Adding a guest auto-creates a private text channel `#<guest>-<host>-lounge`
-(e.g. bot "Big Steve" + guest "Winnie" → `#winnie-big-steve-lounge`) under the
+(e.g. bot "Atlas" + guest "Rover" → `#rover-atlas-lounge`) under the
 server's **Lounges** category. Only that member — plus the people who already
 see Lounges, i.e. the owner and bots with admin — can view it. `@everyone`
 stays view-denied everywhere. Access is per-channel overwrites only; nothing

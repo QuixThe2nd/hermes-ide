@@ -129,15 +129,15 @@ import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
     _redact_sensitive,
-    card_spec_to_cards_v2,
     check_google_chat_requirements,
 )
+from plugins.platforms.google_chat.cards import card_spec_to_cards_v2  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +254,6 @@ class TestEnvConfigLoading:
         "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
         "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         "GOOGLE_APPLICATION_CREDENTIALS",
-        "GOOGLE_CHAT_HOME_CHANNEL",
-        "GOOGLE_CHAT_HOME_CHANNEL_NAME",
     )
 
     def _clean_env(self, monkeypatch):
@@ -1573,9 +1571,6 @@ class TestGoogleChatInteractiveSetup:
             ),
             "Path to Service Account JSON (or inline JSON)": "/tmp/sa.json",
             "Allowed user emails (comma-separated)": "alice@example.com, bob@example.com",
-            "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)": (
-                "spaces/AAAA"
-            ),
         }
 
         def fake_get_env_value(key):
@@ -1612,7 +1607,6 @@ class TestGoogleChatInteractiveSetup:
         )
         assert saved["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"] == "/tmp/sa.json"
         assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com,bob@example.com"
-        assert saved["GOOGLE_CHAT_HOME_CHANNEL"] == "spaces/AAAA"
 
 
 # ===========================================================================
@@ -1691,12 +1685,11 @@ class TestAuthorizationEmailMatch:
 # ===========================================================================
 # Cron scheduler registry (regression guard from /review)
 #
-# After the generic-plugin-interface migration, Google Chat no longer lives in
-# the hardcoded ``_KNOWN_DELIVERY_PLATFORMS`` / ``_HOME_TARGET_ENV_VARS`` sets
-# in ``cron/scheduler.py``.  It earns cron delivery via
-# ``PlatformEntry.cron_deliver_env_var``, which the scheduler consults through
-# ``_is_known_delivery_platform`` and ``_resolve_home_env_var``.  The tests
-# below check that public resolver behavior, not the hardcoded sets.
+# Google Chat earns cron delivery by being a registered plugin platform:
+# ``_is_known_delivery_platform`` consults the plugin registry rather than a
+# hardcoded set.  (``PlatformEntry.cron_deliver_env_var`` is a deprecated
+# no-op kept only for source compatibility.)  The test below checks that
+# resolver behavior.
 # ===========================================================================
 
 
@@ -1707,7 +1700,7 @@ class TestCronSchedulerRegistry:
         The adapter's ``register(ctx)`` is only invoked during plugin
         discovery; module-level import alone does not register it.  We call
         discover + manually invoke the register hook so the resolver sees
-        ``cron_deliver_env_var``.
+        the platform entry.
         """
         from gateway.platform_registry import platform_registry
         if platform_registry.get("google_chat") is not None:
@@ -1735,7 +1728,7 @@ class TestCronSchedulerRegistry:
 
     def test_google_chat_is_known_delivery_platform(self):
         self._ensure_registered()
-        from cron.scheduler import _is_known_delivery_platform
+        from cron.scheduler_delivery import _is_known_delivery_platform
 
         assert _is_known_delivery_platform("google_chat") is True
 

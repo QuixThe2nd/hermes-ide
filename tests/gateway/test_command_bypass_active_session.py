@@ -17,7 +17,8 @@ import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -289,7 +290,7 @@ class TestCommandBypassActiveSession:
 # instead of interrupting + being discarded.  Regression for the Discord
 # ghost-slash-command bug where /model, /reasoning, /voice, /insights, /title,
 # /resume, /retry, /undo, /compress, /usage, /reload-mcp,
-# /sethome, /reset silently interrupted the running agent.
+# /reset silently interrupted the running agent.
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +316,6 @@ class TestAllResolvableCommandsBypassGuard:
             ("/compress", "compress"),
             ("/usage", "usage"),
             ("/reload-mcp", "reload-mcp"),
-            ("/sethome", "sethome"),
         ],
     )
     @pytest.mark.asyncio
@@ -342,7 +342,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
+            "reload-mcp", "reset",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"

@@ -42,11 +42,3 @@ optional_env:
     description: "Allow any Teams user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
     password: false
-  - name: TEAMS_HOME_CHANNEL
-    description: "Default chat/channel ID for cron / notification delivery"
-    prompt: "Home channel (or empty)"
-    password: false
-  - name: TEAMS_HOME_CHANNEL_NAME
-    description: "Display name for the Teams home channel"
-    prompt: "Home channel display name"
-    password: false

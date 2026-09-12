@@ -46,11 +46,3 @@ optional_env:
     description: "Allow any topic to talk to the bot (dev only — disables allowlist)"
     prompt: "Allow all topics? (true/false)"
     password: false
-  - name: NTFY_HOME_CHANNEL
-    description: "Default topic for cron / notification delivery"
-    prompt: "Home channel topic (or empty)"
-    password: false
-  - name: NTFY_HOME_CHANNEL_NAME
-    description: "Human label for the home channel (defaults to the topic name)"
-    prompt: "Home channel display name (or empty)"
-    password: false

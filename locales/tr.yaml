@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Değişiklik yok."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Ana kanal kaydedilemedi: {error}"
-    success:               "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
-    discord_pointer:       "💡 Tam kurulumu mu istiyorsunuz? `/sethomeserver` tüm ana sunucuyu — sohbet, bellek, kotalar ve hızlar — tamamen bağlanmış şekilde hazırlar."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` yalnızca Discord'da çalışır — Discord kategorileri, kanalları ve webhook'ları oluşturur."
     relay_blocked:        "⚠️ Bu mesaj, Discord sunucu hedeflerini doğrulayamayan bir aktarıcı üzerinden geldi. `/sethomeserver` komutunu yerel bir Discord mesajından çalıştırın."
@@ -324,7 +319,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **Yayınlanan hoş geldin mesajları:** {embeds_count}
 **Bağlanan:** {wired_list} ({wired_count})
 **Etkin modüller:** {modules_count}/5
-Ana kanal: {home_channel_state} — mevcut ana kanallar asla üzerine yazılmaz.
+Mevcut bildirim kanalları asla üzerine yazılmaz.
 Yeniden eşitleme en fazla saatte bir otomatik çalışır."
   context:
     header:                "🧠 **Context Window**"
@@ -359,6 +354,7 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     last_activity:         "**Son etkinlik:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · ücretsiz plan · nous/welcome · /login ile giriş yapın"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

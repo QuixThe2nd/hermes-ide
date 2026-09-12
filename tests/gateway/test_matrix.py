@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 def _make_fake_mautrix():
@@ -283,22 +283,6 @@ class TestMatrixConfigLoading:
         mc = config.platforms[Platform.MATRIX]
         assert mc.extra.get("encryption") is True
         assert mc.extra.get("e2ee_mode") == "optional"
-
-
-    def test_matrix_home_room(self, monkeypatch):
-        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")
-        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org")
-        monkeypatch.setenv("MATRIX_HOME_ROOM_NAME", "Bot Room")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        home = config.get_home_channel(Platform.MATRIX)
-        assert home is not None
-        assert home.chat_id == "!room123:example.org"
-        assert home.name == "Bot Room"
 
 
 # ---------------------------------------------------------------------------
@@ -1854,7 +1838,7 @@ class TestMatrixReactions:
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+        from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._reaction_redaction_delay_seconds = 0.01

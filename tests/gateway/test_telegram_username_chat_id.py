@@ -1,10 +1,10 @@
 """Tests for Telegram username (non-numeric) chat_id handling (#13206).
 
-When ``TELEGRAM_HOME_CHANNEL`` is an ``@username`` rather than a numeric chat
-ID, webhook/cron deliveries that fall back to the home channel used to crash
-with ``ValueError: invalid literal for int()`` because the adapter coerced
-every chat_id with ``int()``. Telegram's Bot API accepts both forms, so the
-adapter now normalizes instead of force-casting.
+When a delivery target is an ``@username`` rather than a numeric chat ID,
+webhook/cron deliveries used to crash with ``ValueError: invalid literal for
+int()`` because the adapter coerced every chat_id with ``int()``. Telegram's
+Bot API accepts both forms, so the adapter now normalizes instead of
+force-casting.
 """
 
 import sys
@@ -18,7 +18,6 @@ from plugins.platforms.telegram.telegram_ids import (
     looks_like_telegram_username,
     normalize_telegram_chat_id,
     parse_telegram_username_target,
-    telegram_chat_id_key,
 )
 
 

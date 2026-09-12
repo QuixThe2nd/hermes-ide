@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -259,50 +259,6 @@ async def test_tasks_alias_routes_to_agents_command(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source(Platform.SLACK)),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.SLACK,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry, platform=Platform.SLACK)
-    runner.session_store.load_transcript.return_value = []
-    runner.session_store.has_any_sessions.return_value = False
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ok",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "model": "openai/test-model",
-        }
-    )
-
-    monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello", platform=Platform.SLACK))
-
-    assert result == "ok"
-    runner.adapters[Platform.SLACK].send.assert_awaited_once()
-    onboarding = runner.adapters[Platform.SLACK].send.await_args.args[1]
-    assert "/hermes sethome" in onboarding
-    assert "Type /sethome" not in onboarding
-
-
-@pytest.mark.asyncio
 async def test_handle_message_stale_result_keeps_newer_generation_callback(monkeypatch):
     import gateway.run as gateway_run
 
@@ -376,7 +332,8 @@ async def test_status_command_bypasses_active_session_guard():
     """When an agent is running, /status must be dispatched immediately via
     base.handle_message — not queued or treated as an interrupt (#5046)."""
     import asyncio
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import build_session_key
     from gateway.config import Platform, PlatformConfig
 

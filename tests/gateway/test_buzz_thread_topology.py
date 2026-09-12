@@ -49,7 +49,7 @@ MID_EVT = "c" * 64
 @pytest.fixture(autouse=True)
 def _no_ambient_env(monkeypatch, tmp_path):
     for var in (
-        "BUZZ_RELAY_URL", "BUZZ_CHANNELS", "BUZZ_HOME_CHANNEL",
+        "BUZZ_RELAY_URL", "BUZZ_CHANNELS",
         "BUZZ_POLL_INTERVAL", "BUZZ_CLI_PATH", "BUZZ_CREDENTIALS_FILE",
         "BUZZ_ALLOWED_USERS", "BUZZ_ALLOW_ALL_USERS", "BUZZ_PRIVATE_KEY",
         "BUZZ_REQUIRE_MENTION", "BUZZ_REPLY_IN_THREAD", "BUZZ_REPLY_TO_MODE",

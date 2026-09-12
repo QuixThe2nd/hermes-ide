@@ -145,12 +145,12 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     # LOGICAL platform + native-parity chat_type: the session key must match
     # the connector's capability-vault binding (interactionSessionSource →
     # buildSessionKey: platform "discord", chat_type "group") and the relay
-    # text lane. Platform.RELAY / "channel" here forked the session and made
-    # /sethome file the home channel under platforms.relay (invisible to cron).
+    # text lane. Platform.RELAY / "channel" here forked the session and filed
+    # platform-keyed state under platforms.relay (invisible to cron).
     assert ev.source.platform == Platform.DISCORD
     assert ev.source.chat_type == "group"
     # Authenticated upstream-trust marker, parity with the relay text lane
-    # (ws_transport._event_from_wire) — /sethome's via_relay guard keys on it.
+    # (ws_transport._event_from_wire) — relay egress provenance keys on it.
     assert ev.source.delivered_via_upstream_relay is True
     # Scope captured so the agent's reply re-asserts scope_id for egress.
     assert adapter._scope_by_chat.get("chan-9") == "guild-7"
@@ -237,8 +237,8 @@ async def test_application_command_subcommand_nesting_renders_names_then_values(
 @pytest.mark.asyncio
 async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
     """A guild-less (DM) interaction keys as a Discord DM: logical platform,
-    chat_type 'dm', and the authenticated relay marker — the /sethome-in-DM
-    shape must file under platforms.discord, never platforms.relay."""
+    chat_type 'dm', and the authenticated relay marker — a DM command must
+    file under platforms.discord, never platforms.relay."""
     await adapter.connect()
     stub = adapter._transport
     seen = []
@@ -252,7 +252,7 @@ async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
             "id": "i-dm",
             "type": 2,
             "channel_id": "dm-chan-1",
-            "data": {"name": "sethome"},
+            "data": {"name": "setnotify"},
             "user": {"id": "u9", "username": "ben"},
         }
     )

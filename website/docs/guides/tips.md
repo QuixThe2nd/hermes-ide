@@ -157,9 +157,9 @@ Run `/usage` periodically to see your token consumption. Run `/insights` for a b
 
 ## Messaging Tips
 
-### Set a Home Channel
+### Name Explicit Delivery Targets
 
-Use `/sethome` in your preferred Telegram or Discord chat to designate it as the home channel. Cron job results and scheduled task outputs are delivered here. Without it, the agent has nowhere to send proactive messages.
+Cron job results and scheduled task outputs go to an explicit `platform:chat_id` target you set when creating the job (`--deliver telegram:-1001234567890`). For gateway shutdown/startup broadcasts, set a notification channel with `/setnotify` in the chat that should receive them.
 
 ### Use /title to Organize Sessions
 
@@ -174,7 +174,7 @@ Instead of manually collecting user IDs for allowlists, enable DM pairing. When 
 Use `/verbose` to control how much tool activity you see. In messaging platforms, less is usually more — keep it on "new" to see just new tool calls. In the CLI, "all" gives you a satisfying live view of everything the agent does.
 
 :::tip
-By default, messaging sessions never auto-reset — context lives until you `/reset` or compression kicks in. If you want sessions to reset automatically (after idle time or daily at a fixed hour), opt in via the `session_reset` section in `~/.hermes/config.yaml`.
+Messaging sessions persist until an explicit `/new` or `/reset`. Context compression manages long conversations without an idle or daily reset.
 :::
 
 ## Security

@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.platforms.base import CachedMedia, MessageType
+from gateway.platforms.base import CachedMedia
+from gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
@@ -24,6 +25,7 @@ hex_to_npub = _buzz_mod.hex_to_npub
 npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
+_MAX_CLI_MESSAGE_CHARS = _buzz_mod._MAX_CLI_MESSAGE_CHARS
 _resolve_private_key = _buzz_mod._resolve_private_key
 _resolve_auth_tag = _buzz_mod._resolve_auth_tag
 _event_reply_parent_id = _buzz_mod._event_reply_parent_id
@@ -48,7 +50,6 @@ _ENV_VARS = (
     "BUZZ_RELAY_URL",
     "BUZZ_PRIVATE_KEY",
     "BUZZ_CHANNELS",
-    "BUZZ_HOME_CHANNEL",
     "BUZZ_ALLOWED_USERS",
     "BUZZ_REACTION_ONLY_USERS",
     "BUZZ_ALLOW_ALL_USERS",
@@ -142,14 +143,12 @@ class TestBuzzAdapterInit:
                 "relay_url": "https://cfg.relay",
                 "channels": ["ccc"],
                 "poll_interval": 2,
-                "home_channel": "ccc",
             },
         )
         adapter = BuzzAdapter(cfg)
         assert adapter.relay_url == "https://cfg.relay"
         assert adapter.channels == ["ccc"]
         assert adapter.poll_interval == 2.0
-        assert adapter.home_channel == "ccc"
 
     def test_env_overrides_config(self, monkeypatch):
         monkeypatch.setenv("BUZZ_RELAY_URL", "https://env.relay")
@@ -188,7 +187,6 @@ def default_profile_env(monkeypatch):
     """The default profile's YAML-to-env bridge output in os.environ."""
     monkeypatch.setenv("BUZZ_RELAY_URL", "https://default.relay")
     monkeypatch.setenv("BUZZ_CHANNELS", "chan-a,chan-b,chan-c")
-    monkeypatch.setenv("BUZZ_HOME_CHANNEL", "chan-a")
     monkeypatch.setenv("BUZZ_POLL_INTERVAL", "9")
     monkeypatch.setenv("BUZZ_CLI_PATH", "/default/bin/buzz")
     monkeypatch.setenv("BUZZ_TRANSPORT", "poll")
@@ -214,7 +212,6 @@ class TestMultiplexProfileScope:
             extra={
                 "relay_url": "https://profile.relay",
                 "channels": ["pchan"],
-                "home_channel": "pchan",
                 "poll_interval": 2,
                 "cli_path": str(cli),
                 "transport": "websocket",
@@ -224,7 +221,6 @@ class TestMultiplexProfileScope:
         adapter = BuzzAdapter(cfg)
         assert adapter.relay_url == "https://profile.relay"
         assert adapter.channels == ["pchan"]
-        assert adapter.home_channel == "pchan"
         assert adapter.poll_interval == 2.0
         assert adapter.cli_path == str(cli)
         assert adapter.transport == "websocket"
@@ -242,7 +238,6 @@ class TestMultiplexProfileScope:
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={}))
         assert adapter.relay_url == ""
         assert adapter.channels == []
-        assert adapter.home_channel == ""
         assert adapter.poll_interval == _buzz_mod._DEFAULT_POLL_INTERVAL
         assert adapter.transport == "auto"
         assert adapter._allowed_pubkeys == set()
@@ -342,17 +337,16 @@ class TestMultiplexProfileScope:
     ):
         """A secondary profile's YAML values must not be pinned into the
         process env for every other profile (first-writer-wins)."""
-        for var in ("BUZZ_RELAY_URL", "BUZZ_HOME_CHANNEL", "BUZZ_CHANNELS"):
+        for var in ("BUZZ_RELAY_URL", "BUZZ_CHANNELS"):
             monkeypatch.delenv(var, raising=False)
         multiplex_scope()
         _buzz_mod._apply_yaml_config(
             {},
-            {"extra": {"relay_url": "https://profile.relay", "home_channel": "pchan"}},
+            {"extra": {"relay_url": "https://profile.relay", "channels": ["pchan"]}},
         )
         import os as _os
 
         assert "BUZZ_RELAY_URL" not in _os.environ
-        assert "BUZZ_HOME_CHANNEL" not in _os.environ
         assert "BUZZ_CHANNELS" not in _os.environ
 
     def test_standalone_send_scoped_uses_profile_extra(
@@ -399,7 +393,6 @@ class TestMultiplexProfileScope:
         )
         assert adapter.relay_url == "https://profile.relay"
         assert adapter.channels == []
-        assert adapter.home_channel == ""
         assert adapter.poll_interval == _buzz_mod._DEFAULT_POLL_INTERVAL
         assert adapter.transport == "auto"
         assert adapter._allowed_pubkeys == set()
@@ -532,48 +525,10 @@ class TestMultiplexProfileScope:
 
         assert validate_config(PlatformConfig(enabled=True, extra={})) is True
 
-    def test_standalone_send_scoped_target_falls_back_to_profile_home(
-        self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
-    ):
-        """With no explicit chat_id, the scoped standalone send targets the
-        profile's own home_channel — never the default profile's env one."""
-        multiplex_scope()
-        from gateway.config import PlatformConfig
-
-        cli = tmp_path / "buzz"
-        cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        calls = {}
-
-        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
-            calls["args"] = args
-            return 0, '{"accepted": true, "event_id": "e1"}', ""
-
-        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
-        monkeypatch.setattr(
-            _buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1profile"
-        )
-        result = asyncio.run(
-            _standalone_send(
-                PlatformConfig(
-                    enabled=True,
-                    extra={
-                        "relay_url": "https://profile.relay",
-                        "cli_path": str(cli),
-                        "home_channel": "pchan",
-                    },
-                ),
-                "",
-                "hello",
-            )
-        )
-        assert result.get("success") is True
-        assert calls["args"][calls["args"].index("--channel") + 1] == "pchan"
-
     def test_standalone_send_scoped_without_target_fails_closed(
         self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
     ):
-        """No chat_id and no profile home_channel: the error is returned —
-        the default profile's env BUZZ_HOME_CHANNEL must not be borrowed."""
+        """No explicit chat_id: the error is returned — the CLI never runs."""
         multiplex_scope()
         from gateway.config import PlatformConfig
 
@@ -598,7 +553,7 @@ class TestMultiplexProfileScope:
             )
         )
         assert result == {
-            "error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"
+            "error": "Buzz standalone send: no target channel (pass an explicit chat_id)"
         }
 
 
@@ -3061,14 +3016,19 @@ class TestInboundMediaAuthorizationGate:
 
     @pytest.mark.asyncio
     async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
+        # Invariant: the host path is redacted BEFORE the 900-char bound is applied,
+        # so a path long enough to straddle the cut never leaks in fragments. The
+        # path must therefore exceed the bound, but stay under PATH_MAX (1024 on
+        # macOS; 4096 on Linux) so the directory can actually be created.
         parent = tmp_path
         private_parts = []
-        for index in range(6):
-            part = f"private-{index}-" + ("x" * 150)
+        while len(str(parent)) < _MAX_CLI_MESSAGE_CHARS:
+            part = f"private-{len(private_parts)}-" + ("x" * 80)
             private_parts.append(part)
             parent = parent / part
             parent.mkdir()
         media = parent / "handoff.txt"
+        assert _MAX_CLI_MESSAGE_CHARS < len(str(media)) < 1024
         media.write_text("safe handoff", encoding="utf-8")
         adapter = _make_adapter()
         adapter._run_cli = AsyncMock(
@@ -3275,7 +3235,6 @@ class TestBuzzPluginRegistration:
         ctx.register_platform.assert_called_once()
         kwargs = ctx.register_platform.call_args.kwargs
         assert kwargs["name"] == "buzz"
-        assert kwargs["cron_deliver_env_var"] == "BUZZ_HOME_CHANNEL"
         assert kwargs["allowed_users_env"] == "BUZZ_ALLOWED_USERS"
         assert kwargs["allow_all_env"] == "BUZZ_ALLOW_ALL_USERS"
         assert callable(kwargs["standalone_sender_fn"])

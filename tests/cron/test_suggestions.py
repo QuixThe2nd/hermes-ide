@@ -206,6 +206,24 @@ class TestCatalog:
         assert classify_items_script_path() not in monitor.job_spec["prompt"]
         assert Path(classify_items_script_path()).name == "classify_items.py"
 
+    def test_gateway_log_scout_entry_shape(self):
+        from cron.suggestion_catalog import CATALOG
+
+        scout = next(e for e in CATALOG if e.key == "catalog:gateway-log-scout")
+        assert scout.title == "Gateway log scout"
+        spec = scout.job_spec
+        assert spec["schedule"] == "every 6h"
+        assert spec["name"] == "Gateway log scout"
+        assert spec["deliver"] == "origin"
+        prompt = spec["prompt"]
+        # The prompt must be self-contained and profile-agnostic: it names
+        # the shared log directory (never a baked-in absolute path) and
+        # follows the [SILENT] clean-run convention so quiet runs never
+        # deliver anything.
+        assert "~/.hermes/logs/" in prompt
+        assert "[SILENT]" in prompt
+        assert ".log-scout-state.json" in prompt
+
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):

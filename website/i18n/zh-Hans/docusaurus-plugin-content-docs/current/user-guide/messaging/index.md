@@ -139,7 +139,6 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | `/stop` | 停止正在运行的 agent |
 | `/approve` | 批准待执行的危险命令 |
 | `/deny` | 拒绝待执行的危险命令 |
-| `/sethome` | 将此聊天设为主频道 |
 | `/compress` | 手动压缩对话上下文 |
 | `/title [name]` | 设置或显示会话标题 |
 | `/resume [name]` | 恢复之前命名的会话 |
@@ -161,34 +160,13 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 
 会话在消息之间持续保留，直到重置。Agent 会记住你的对话上下文。
 
-### 重置策略
+### 会话连续性
 
-**默认情况下会话永不自动重置** —— 上下文会一直保留，直到你手动 `/reset` 或触发上下文压缩。如果你希望会话自动重置，可在 `~/.hermes/config.yaml` 的 `session_reset` 部分选择启用：
+Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`
+或 `/reset`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
+重置计时环境变量均被忽略。缓存中的 agent 可以释放资源，但不会替换持久化对话。
+重启恢复的新鲜度限制仅约束自动继续执行，不会清除用户发送消息时加载的历史。
 
-```yaml
-session_reset:
-  mode: idle        # "idle"、"daily"、"both" 或 "none"（默认）
-  idle_minutes: 1440  # idle/both 模式：空闲多少分钟后重置
-  at_hour: 4          # daily/both 模式：每天的重置时间（0-23，本地时间）
-```
-
-| 模式 | 说明 |
-|------|-------------|
-| `none` | 永不自动重置（默认） |
-| `daily` | 每天在指定时间重置 |
-| `idle` | 空闲 N 分钟后重置 |
-| `both` | 以先触发者为准 |
-
-在 `~/.hermes/gateway.json` 中配置各平台的覆盖设置：
-
-```json
-{
-  "reset_by_platform": {
-    "telegram": { "mode": "idle", "idle_minutes": 240 },
-    "discord": { "mode": "idle", "idle_minutes": 60 }
-  }
-}
-```
 
 ## 安全
 
@@ -474,7 +452,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 ### 自动熔断器
 
-每个适配器都包裹在熔断器中。反复出现的可重试失败（网络抖动、限流回复、上游 5xx 响应、websocket 断开）会导致熔断器触发——适配器被自动暂停，当配置了主频道时向另一个存活平台的主频道发送运营通知，并输出结构化日志行。
+每个适配器都包裹在熔断器中。反复出现的可重试失败（网络抖动、限流回复、上游 5xx 响应、websocket 断开）会导致熔断器触发——适配器被自动暂停，并输出结构化日志行。
 
 熔断器**不会自动恢复**——它保持断开状态，直到你手动运行 `/platform resume <name>`。这是有意为之：如果某个平台持续故障，你不希望网关不断重试重连。
 
@@ -490,16 +468,14 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 ### 重启通知
 
-当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的主频道发送一条"agent 已恢复"/"agent 被中断"的一次性消息。这由 `gateway-config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
+当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的**通知频道**——即你通过在该聊天中运行 `/setnotify` 指定的目的地——发送一条"agent 已恢复"/"agent 被中断"的一次性消息。未设置通知频道的平台会直接跳过该广播。这由 `config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
 
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
       gateway_restart_notification: false   # 为此平台关闭
     discord:
-      home_chat_id: "987654321"
       # gateway_restart_notification 未设置 → 默认为 true
 ```
 

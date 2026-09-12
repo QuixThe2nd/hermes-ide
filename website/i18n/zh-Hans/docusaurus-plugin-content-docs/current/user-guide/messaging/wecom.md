@@ -58,7 +58,6 @@ hermes gateway setup
 选择 **WeCom** 并按照提示操作。向导将引导你完成：
 - 机器人凭据（通过二维码扫描或手动输入）
 - 访问控制设置（白名单、配对模式或开放访问）
-- 用于通知的主频道
 
 #### 方式 B：手动配置
 
@@ -70,9 +69,6 @@ WECOM_SECRET=your-secret
 
 # 可选：限制访问
 WECOM_ALLOWED_USERS=user_id_1,user_id_2
-
-# 可选：用于定时任务/通知的主频道
-WECOM_HOME_CHANNEL=chat_id
 ```
 
 ### 第三步：启动网关
@@ -267,7 +263,6 @@ WeCom 对部分入站媒体附件使用 AES-256-CBC 加密。适配器会自动�
 | `WECOM_BOT_ID` | ✅ | — | WeCom AI Bot ID |
 | `WECOM_SECRET` | ✅ | — | WeCom AI Bot Secret |
 | `WECOM_ALLOWED_USERS` | — | _（空）_ | 网关级白名单的逗号分隔用户 ID |
-| `WECOM_HOME_CHANNEL` | — | — | 定时任务/通知输出的聊天 ID |
 | `WECOM_WEBSOCKET_URL` | — | `wss://openws.work.weixin.qq.com` | WebSocket 网关 URL |
 | `WECOM_DM_POLICY` | — | `open` | 私聊访问策略 |
 | `WECOM_GROUP_POLICY` | — | `open` | 群组访问策略 |

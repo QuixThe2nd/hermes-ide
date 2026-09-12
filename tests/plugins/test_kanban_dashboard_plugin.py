@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
         json={"title": "wait for indexed data", "assignee": "ops"},
     ).json()["task"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         with kb.write_txn(conn):
             conn.execute(
@@ -242,7 +243,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "review"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         run = kb.latest_run(conn, task["id"])
         assert run is not None
         assert run.outcome == "review_requested"
@@ -266,7 +267,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "ready"
     assert response.json()["task"]["assignee"] == "builder"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert any(
             event.kind == "review_reopened"
             for event in kb.list_events(conn, task["id"])
@@ -311,7 +312,7 @@ def test_reopening_parent_demotes_ready_child(client):
 
 
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
         assert kb.complete_task(conn, parent_id)
         child_id = kb.create_task(
@@ -343,7 +344,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
         assert child.status == "todo"
@@ -362,7 +363,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
         assert child.status == "review"
@@ -380,7 +381,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 
 
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
         assert kb.complete_task(conn, parent_id)
         child_id = kb.create_task(
@@ -405,7 +406,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         grandchild = kb.get_task(conn, grandchild_id)
         assert child is not None and child.status == "todo"
@@ -421,7 +422,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
         json={"status": "done"},
     )
     assert response.status_code == 200, response.text
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         grandchild = kb.get_task(conn, grandchild_id)
         assert child is not None and child.status == "ready"
@@ -429,7 +430,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
 
 
 def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="active review", assignee="reviewer")
         implementation = kb.claim_task(conn, task_id)
         assert implementation is not None
@@ -449,7 +450,7 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "review"
     assert response.json()["task"]["assignee"] == "reviewer"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         run = kb.latest_run(conn, task_id)
         assert run is not None
         assert run.outcome == "reclaimed"
@@ -538,7 +539,7 @@ def test_dispatch_dry_run(client):
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     """Loopback mode: a missing or wrong ?token= must be rejected with
     policy-violation; the correct token is accepted. The kanban WS now
-    delegates to web_server._ws_auth_ok, so we stub that with the real
+    delegates to web_server_chat._ws_auth_ok, so we stub that with the real
     loopback-token semantics (auth_required False → constant-time token
     compare)."""
     home = tmp_path / ".hermes"
@@ -547,7 +548,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Stub web_server with a loopback-mode _ws_auth_ok (auth_required False →
+    # Stub web_server_chat with a loopback-mode _ws_auth_ok (auth_required False →
     # accept only the correct ?token=). Mirrors the real gate's loopback path.
     import hermes_cli
     import types
@@ -559,8 +560,8 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         _SESSION_TOKEN="secret-xyz",
         _ws_auth_ok=_fake_ws_auth_ok,
     )
-    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
-    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
@@ -640,7 +641,7 @@ def test_bulk_review_assignment_preserves_implementer_provenance(client):
     )
     assert response.status_code == 200, response.text
     assert all(item["ok"] for item in response.json()["results"])
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         for task in tasks:
             current = kb.get_task(conn, task["id"])
             assert current is not None
@@ -672,7 +673,7 @@ def test_bulk_status_done_forwards_completion_summary(client):
 
     assert r.status_code == 200
     assert all(r["ok"] for r in r.json()["results"])
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         for tid in (a["id"], b["id"]):
             task = kb.get_task(conn, tid)
@@ -977,7 +978,8 @@ def test_event_dict_includes_run_id(client):
     r = client.post("/api/plugins/kanban/tasks", json={"title": "e", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         kb.claim_task(conn, tid)
         run_id = kb.latest_run(conn, tid).id
@@ -1030,39 +1032,48 @@ _FALLBACK_AGE = {
 
 
 # ---------------------------------------------------------------------------
-# Home-channel subscription endpoints (#19534 follow-up: GUI opt-in)
+# Notification-channel subscription endpoints (#19534 follow-up: GUI opt-in)
 # ---------------------------------------------------------------------------
 #
 # Dashboard surface for per-task, per-platform notification toggles. The
-# backend endpoints read the live GatewayConfig, so tests set env vars
-# (BOT_TOKEN + HOME_CHANNEL) to simulate a user who has run /sethome on
-# telegram and discord.
+# backend endpoints read the live GatewayConfig, so tests seed
+# notification_channel entries there to simulate an operator who has run
+# /setnotify on telegram and discord.
 
 
 @pytest.fixture
-def with_home_channels(monkeypatch):
-    """Simulate a user with home channels set on telegram and discord."""
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc:fake")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1234567")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "42")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_NAME", "Main TG")
-    monkeypatch.setenv("DISCORD_BOT_TOKEN", "disc_fake")
-    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "9999999")
-    monkeypatch.setenv("DISCORD_HOME_CHANNEL_NAME", "Main Discord")
-    # Slack has a token but NO home — should be excluded from the list.
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "slack_fake")
+def with_notification_channels(monkeypatch):
+    """Simulate a gateway with notification channels set on telegram and discord."""
+    from types import SimpleNamespace
 
+    from gateway.config import Platform
 
-def test_home_channels_lists_only_platforms_with_home(client, with_home_channels):
-    """GET /home-channels returns entries only for platforms where the
-    user has set a home; untoggled-subscribed bool is false by default."""
-    r = client.get("/api/plugins/kanban/home-channels")
-    assert r.status_code == 200
-    platforms = {h["platform"] for h in r.json()["home_channels"]}
-    assert platforms == {"telegram", "discord"}, (
-        f"slack has a token but no home — must not appear. got {platforms}"
+    def _channel(chat_id, name, thread_id=None):
+        return SimpleNamespace(chat_id=chat_id, thread_id=thread_id, name=name)
+
+    fake = SimpleNamespace(
+        platforms={
+            Platform.TELEGRAM: SimpleNamespace(
+                notification_channel=_channel("1234567", "Main TG", "42")),
+            Platform.DISCORD: SimpleNamespace(
+                notification_channel=_channel("9999999", "Main Discord")),
+            # Slack is connected but has NO notification channel — excluded.
+            Platform.SLACK: SimpleNamespace(notification_channel=None),
+        }
     )
-    for h in r.json()["home_channels"]:
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
+
+
+def test_notification_channels_lists_only_configured_platforms(client, with_notification_channels):
+    """GET /notification-channels returns entries only for platforms with a
+    configured notification channel; untoggled-subscribed bool is false by default."""
+    r = client.get("/api/plugins/kanban/notification-channels")
+    assert r.status_code == 200
+    platforms = {h["platform"] for h in r.json()["notification_channels"]}
+    assert platforms == {"telegram", "discord"}, (
+        f"slack is connected but has no notification channel — must not appear. got {platforms}"
+    )
+    for h in r.json()["notification_channels"]:
         assert h["subscribed"] is False
 
 
@@ -1075,7 +1086,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
     """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
     a manual reclaimed event."""
     import secrets
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="running", assignee="x")
         lock = secrets.token_hex(8)
@@ -1106,7 +1117,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
     assert body["task_id"] == t
 
     # Confirm the task is back to ready.
-    conn2 = kb.connect()
+    conn2 = kbc.connect()
     try:
         row = conn2.execute(
             "SELECT status, claim_lock FROM tasks WHERE id=?", (t,),
@@ -1119,7 +1130,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
 
 def test_reassign_endpoint_switches_profile(client):
     """POST /tasks/<id>/reassign changes the assignee field."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="task", assignee="orig")
     finally:
@@ -1132,7 +1143,7 @@ def test_reassign_endpoint_switches_profile(client):
     assert r.status_code == 200, r.text
     assert r.json()["assignee"] == "newbie"
 
-    conn2 = kb.connect()
+    conn2 = kbc.connect()
     try:
         row = conn2.execute(
             "SELECT assignee FROM tasks WHERE id=?", (t,),
@@ -1148,7 +1159,7 @@ def test_reassign_endpoint_switches_profile(client):
 
 
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="parent", assignee="alice")
         real = kb.create_task(conn, title="real", assignee="x", created_by="alice")

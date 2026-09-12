@@ -1,22 +1,10 @@
-"""Per-platform display/verbosity configuration resolver.
+"""Per-platform display/verbosity resolver (``resolve_display_setting``).
 
-Provides ``resolve_display_setting()`` — the single entry-point for reading
-display settings with platform-specific overrides and sensible defaults.
-
-Resolution order (first non-None wins):
-    1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
-    2. ``display.<key>``                       — global user setting
-    3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
-    4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
-
-Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
-top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
-sets an explicit per-platform override.
-
-Backward compatibility: ``display.tool_progress_overrides`` is still read as a
-fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
-config migration (version bump) automatically moves the old format into the new
-``display.platforms`` structure.
+Resolution order, first non-None wins: ``display.platforms.<platform>.<key>`` →
+``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` → ``_GLOBAL_DEFAULTS[key]``.
+Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-level
+``streaming`` config unless a per-platform override sets it. Legacy
+``display.tool_progress_overrides`` is still read as a ``tool_progress`` fallback.
 """
 
 from __future__ import annotations
@@ -46,8 +34,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
-    # Gateway-only assistant/status chatter controls. These default on for
-    # back-compat, but mobile platforms can opt down to final-answer-first.
+    # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
@@ -67,15 +54,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
-    # Live working-state status on platforms whose typing indicator renders
-    # text (Slack's assistant status line). Values:
-    #   "full" / true  -> verb + argument preview ("is running pytest…")
-    #   "verb"         -> verb only ("is running…") — keeps file paths and
-    #                     commands out of shared channels
-    #   "off" / false  -> static text (typing_status_text or "is thinking...")
-    # Independent of tool_progress: works even when progress bubbles are off
-    # (Slack's default), and costs no extra API calls — the existing typing
-    # refresh cadence just renders different text.
+    # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
+    # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
     # Opt-in LIVE retry/fallback progress. Retry chatter is buffered by design
     # (dropped on recovery, flushed only on terminal failure) so a transient
@@ -86,53 +66,19 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "retry_progress": False,
 }
 
-# ---------------------------------------------------------------------------
-# Sensible per-platform defaults — tiered by platform capability
-# ---------------------------------------------------------------------------
-# Tier 1 (high): Supports message editing, typically personal/team use
-# Tier 2 (medium): Supports editing but often workspace/customer-facing
-# Tier 3 (low): No edit support — each progress msg is permanent
-# Tier 4 (minimal): Batch/non-interactive delivery
-
+# Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
+# LOW = no edit support (progress messages are permanent); MINIMAL = batch delivery.
 _TIER_HIGH = {
-    "tool_progress": "all",
-    "show_reasoning": False,
-    "tool_preview_length": 40,
+    "tool_progress": "all", "show_reasoning": False, "tool_preview_length": 40,
     "streaming": None,  # follow global
-    "interim_assistant_messages": True,
-    "long_running_notifications": True,
-    "busy_ack_detail": True,
+    "interim_assistant_messages": True, "long_running_notifications": True, "busy_ack_detail": True,
 }
-
-_TIER_MEDIUM = {
-    "tool_progress": "new",
-    "show_reasoning": False,
-    "tool_preview_length": 40,
-    "streaming": None,
-    "interim_assistant_messages": True,
-    "long_running_notifications": True,
-    "busy_ack_detail": True,
-}
-
+_TIER_MEDIUM = {**_TIER_HIGH, "tool_progress": "new"}
 _TIER_LOW = {
-    "tool_progress": "off",
-    "show_reasoning": False,
-    "tool_preview_length": 40,
-    "streaming": False,
-    "interim_assistant_messages": False,
-    "long_running_notifications": False,
-    "busy_ack_detail": False,
+    **_TIER_HIGH, "tool_progress": "off", "streaming": False,
+    "interim_assistant_messages": False, "long_running_notifications": False, "busy_ack_detail": False,
 }
-
-_TIER_MINIMAL = {
-    "tool_progress": "off",
-    "show_reasoning": False,
-    "tool_preview_length": 0,
-    "streaming": False,
-    "interim_assistant_messages": False,
-    "long_running_notifications": False,
-    "busy_ack_detail": False,
-}
+_TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
@@ -151,7 +97,14 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Discord has a native "subtext" primitive (-# small grey text) that reads
     # as metadata rather than content, so reasoning summaries default to it
     # here instead of the fenced code block used elsewhere.
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
+    # Discord's long-running heartbeat defaults to the phase line ("⏳ terminal
+    # 1m42s" / "⏳ grok-4.6 38s" / "⏳ packing 12s") — the current wait plus its
+    # elapsed time — instead of the raw diagnostic join ("⏳ Working — 3 min —
+    # iteration N/M, <provider wait notice>"). "generic" keeps the catalog
+    # phrase ("⏳ still working"); raw detail remains available via
+    # display.platforms.discord.long_running_notifications: true (plus
+    # busy_ack_detail for the iteration counter).
+    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext", "long_running_notifications": "phase"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
@@ -211,74 +164,99 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 
-def resolve_display_setting(
-    user_config: dict,
-    platform_key: str,
-    setting: str,
-    fallback: Any = None,
-) -> Any:
-    """Resolve a display setting with per-platform override support.
+def resolve_display_setting(user_config: dict, platform_key: str, setting: str, fallback: Any = None) -> Any:
+    """Resolve a display setting with per-platform override support (see module docstring for order).
 
-    Parameters
-    ----------
-    user_config : dict
-        The full parsed config.yaml dict.
-    platform_key : str
-        Platform config key (e.g. ``"telegram"``, ``"slack"``).  Use
-        ``_platform_config_key(source.platform)`` from gateway/run.py.
-    setting : str
-        Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
-    fallback : Any
-        Fallback value when the setting isn't found anywhere.
-
-    Returns
-    -------
-    The resolved value, or *fallback* if nothing is configured.
+    ``platform_key`` is the platform config key (``"telegram"``; see ``_platform_config_key`` in
+    gateway/run.py). Returns *fallback* when nothing is configured.
     """
     display_cfg = user_config.get("display") or {}
-
-    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
-    platforms = display_cfg.get("platforms") or {}
-    plat_overrides = platforms.get(platform_key)
-    if isinstance(plat_overrides, dict):
-        val = plat_overrides.get(setting)
-        if val is not None:
-            return _normalise(setting, val)
-
-    # 1b. Backward compat: display.tool_progress_overrides.<platform>
-    if setting == "tool_progress":
+    plat_overrides = (display_cfg.get("platforms") or {}).get(platform_key)
+    if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
+        return _normalise(setting, plat_overrides[setting])
+    if setting == "tool_progress":  # legacy display.tool_progress_overrides.<platform>
         legacy = display_cfg.get("tool_progress_overrides")
-        if isinstance(legacy, dict):
-            val = legacy.get(platform_key)
-            if val is not None:
-                return _normalise(setting, val)
+        if isinstance(legacy, dict) and legacy.get(platform_key) is not None:
+            return _normalise(setting, legacy[platform_key])
+    if setting != "streaming" and display_cfg.get(setting) is not None:  # display.streaming is CLI-only
+        return _normalise(setting, display_cfg[setting])
+    val = _PLATFORM_DEFAULTS.get(platform_key, {}).get(setting)
+    if val is None:
+        val = _GLOBAL_DEFAULTS.get(setting)
+    return fallback if val is None else val
 
-    # 2. Global user setting (display.<key>).  Skip display.streaming because
-    # that key controls only CLI terminal streaming; gateway token streaming is
-    # governed by the top-level streaming config plus per-platform overrides.
-    if setting != "streaming":
-        val = display_cfg.get(setting)
-        if val is not None:
-            return _normalise(setting, val)
 
-    # 3. Built-in platform default
-    plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
-    if plat_defaults:
-        val = plat_defaults.get(setting)
-        if val is not None:
+# --- Normalisation of YAML quirks (bare ``off`` → False in YAML 1.1, etc.) ---
+
+_TRUTHY = {"true", "1", "yes", "on"}
+_FALSY = {"false", "0", "no"}
+
+
+def _norm_tristate(on: str, off: str, choices: set, extra_truthy: set = frozenset()):
+    """Normaliser for bool-or-keyword settings: bools/truthy tokens → *on*, falsy → *off*, else a known choice or *on*."""
+    def norm(value: Any) -> str:
+        if isinstance(value, bool):
+            return on if value else off
+        val = str(value).strip().lower()
+        if val in _FALSY:
+            return off
+        if val in _TRUTHY | extra_truthy:
+            return on
+        return val if val in choices else on
+    return norm
+
+
+def _norm_bool(value: Any) -> bool:
+    return value.strip().lower() in _TRUTHY | {"raw", "verbose"} if isinstance(value, str) else bool(value)
+
+
+def _norm_long_running(value: Any) -> Any:
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in {"generic", "phase"}:
             return val
-
-    # 4. Built-in global default
-    val = _GLOBAL_DEFAULTS.get(setting)
-    if val is not None:
-        return val
-
-    return fallback
+    return _norm_bool(value)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _norm_cleanup_progress(value: Any) -> bool:
+    return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
+
+
+def _norm_choice(choices: tuple[str, ...]) -> Any:
+    def norm(value: Any) -> str:
+        val = str(value).lower()
+        return val if val in choices else choices[0]
+
+    return norm
+
+
+def _norm_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+_NORMALISERS: dict[str, Any] = {
+    "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
+    "show_reasoning": _norm_bool,
+    "streaming": _norm_bool,
+    "interim_assistant_messages": _norm_bool,
+    "long_running_notifications": _norm_long_running,
+    "busy_ack_detail": _norm_bool,
+    "busy_steer_ack_enabled": _norm_bool,
+    # Fork additions: the second steer ack + live retry-progress rail.
+    "busy_steer_delivered_ack_enabled": _norm_bool,
+    "retry_progress": _norm_bool,
+    "thinking_progress": _norm_bool,
+    "cleanup_progress": _norm_cleanup_progress,
+    "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
+    "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
+    # "compact" (fork): single "💭 thought for Xs" duration line, no CoT text.
+    "reasoning_style": _norm_choice(("code", "blockquote", "subtext", "compact")),
+    "tool_preview_length": _norm_int,
+}
+
 
 def format_reasoning_prefix(
     style: str,
@@ -332,7 +310,7 @@ def format_reasoning_prefix(
         return f"> 💭 **Reasoning:**\n{quoted}"
     # Default "code" style: escape ``` inside reasoning so inner fences don't
     # break the outer code block used to render it.
-    from gateway.stream_consumer import escape_code_fences_for_display
+    from gateway.stream_consumer_fences import escape_code_fences_for_display
 
     return (
         f"💭 **Reasoning:**\n"
@@ -341,60 +319,6 @@ def format_reasoning_prefix(
 
 
 def _normalise(setting: str, value: Any) -> Any:
-    """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
-    if setting == "tool_progress":
-        if value is False:
-            return "off"
-        if value is True:
-            return "all"
-        val = str(value).strip().lower()
-        if val in {"false", "0", "no"}:
-            return "off"
-        if val in {"true", "1", "yes", "on"}:
-            return "all"
-        return val if val in {"off", "new", "all", "verbose", "log"} else "all"
-    if setting in {
-        "show_reasoning",
-        "streaming",
-        "interim_assistant_messages",
-        "long_running_notifications",
-        "busy_ack_detail",
-        "busy_steer_ack_enabled",
-        "busy_steer_delivered_ack_enabled",
-        "thinking_progress",
-        "retry_progress",
-    }:
-        if isinstance(value, str):
-            val = value.strip().lower()
-            if val == "generic" and setting == "long_running_notifications":
-                return "generic"
-            return val in {"true", "1", "yes", "on", "raw", "verbose"}
-        return bool(value)
-    if setting == "cleanup_progress":
-        if isinstance(value, str):
-            return value.lower() in {"true", "1", "yes", "on"}
-        return bool(value)
-    if setting == "live_status":
-        # Tri-state: "full" (verb + preview), "verb" (verb only), "off".
-        if value is True:
-            return "full"
-        if value is False:
-            return "off"
-        val = str(value).strip().lower()
-        if val in {"true", "1", "yes", "on", "all"}:
-            return "full"
-        if val in {"false", "0", "no"}:
-            return "off"
-        return val if val in {"full", "verb", "off"} else "full"
-    if setting == "tool_progress_grouping":
-        val = str(value).lower()
-        return val if val in ("accumulate", "separate") else "accumulate"
-    if setting == "reasoning_style":
-        val = str(value).lower()
-        return val if val in ("code", "blockquote", "subtext", "compact") else "code"
-    if setting == "tool_preview_length":
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-    return value
+    """Normalise a user-supplied value for *setting*; unknown settings pass through."""
+    norm = _NORMALISERS.get(setting)
+    return norm(value) if norm else value

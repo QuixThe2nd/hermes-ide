@@ -10,7 +10,7 @@ empty.
 The fix adds:
 1. _session_db_init_error attribute on GatewayRunner, set when init fails
 2. _send_session_db_warning_notifications() — broadcasts a recovery-guidance
-   message to all home channels after the gateway connects
+   message to all notification channels after the gateway connects
 3. Improved "corrupt" cause wording in _format_turn_completion_explanation
    with the full recovery path (hermes doctor, sqlite3 .recover, backups)
 """
@@ -29,6 +29,49 @@ def test_format_turn_completion_corrupt_includes_recovery_options():
     assert ".recover" in explanation
     assert "backups" in explanation
     assert "Freeing disk space will not help" in explanation
+
+
+def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
+    """The gateway broadcast's step 3 must name the live backups dir, not ~/.hermes (#104250).
+
+    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_cli/backup.py``); a
+    custom-HERMES_HOME gateway must not be told to restore from a directory that never
+    held its backups.
+    """
+    import asyncio
+
+    import gateway.run as gateway_run
+    from gateway.config import DeliveryTarget, GatewayConfig, Platform, PlatformConfig
+
+    custom_home = tmp_path / "custom-hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "database disk image is malformed"
+    config = GatewayConfig()
+    config.platforms[Platform.TELEGRAM] = PlatformConfig(
+        enabled=True,
+        notification_channel=DeliveryTarget(
+            platform=Platform.TELEGRAM, chat_id="ops-chat", name="Ops"
+        ),
+    )
+    runner.config = config
+    sent = []
+
+    class _Adapter:
+        async def send(self, chat_id, message, metadata=None):
+            sent.append(message)
+
+    # The real gateway.delivery resolver returns a transport for a live native
+    # adapter — no monkeypatch needed, and no dependence on the gateway.run
+    # plugin-compat re-export of resolve_delivery_transport (gateway.run binds
+    # the name at import, so patching gateway.delivery would never be seen).
+    runner.adapters = {Platform.TELEGRAM: _Adapter()}
+    asyncio.run(runner._send_session_db_warning_notifications())
+
+    assert sent, "warning must be broadcast to notification channels"
+    assert f"{custom_home / 'backups'}" in sent[0]
+    assert "~/.hermes/backups" not in sent[0]
 
 
 def test_format_turn_completion_corrupt_never_names_the_live_db():

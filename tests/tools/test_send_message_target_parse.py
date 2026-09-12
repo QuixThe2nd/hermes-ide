@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _parse_target_ref, _send_to_platform, send_message_tool
+from tools.send_message_tool import _send_to_platform, send_message_tool
+from tools.send_message_targets import _parse_target_ref
 
 
 def _run_async_immediately(coro):
@@ -265,12 +266,11 @@ def test_live_buzz_adapter_exception_is_bounded() -> None:
     assert len(result["error"]) <= 1024
 
 
-def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:
+def test_send_message_routes_buzz_uuid_as_explicit_target() -> None:
     buzz_platform = Platform("buzz")
     buzz_cfg = SimpleNamespace(enabled=True, token=None, extra={})
     config = SimpleNamespace(
         platforms={buzz_platform: buzz_cfg},
-        get_home_channel=lambda _platform: SimpleNamespace(chat_id="home-channel"),
     )
     channel_id = "31b543d5-80d4-4df5-8a5c-cefca1a58fdd"
 
@@ -315,11 +315,10 @@ def test_e164_target_still_requires_phone_platform() -> None:
     assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
-def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
+def test_send_message_routes_whatsapp_group_jid_as_explicit_target() -> None:
     whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"api_url": "http://bridge"})
     config = SimpleNamespace(
         platforms={Platform.WHATSAPP: whatsapp_cfg},
-        get_home_channel=lambda _platform: SimpleNamespace(chat_id="15551234567@s.whatsapp.net"),
     )
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -366,7 +365,6 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
     pconfig = SimpleNamespace(enabled=True, token=None, extra={})
     config = SimpleNamespace(
         platforms={platform: pconfig},
-        get_home_channel=lambda _platform: None,
     )
     try:
         with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -424,7 +422,6 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
     pconfig = SimpleNamespace(enabled=True, token=None, extra={})
     config = SimpleNamespace(
         platforms={platform: pconfig},
-        get_home_channel=lambda _platform: None,
     )
     try:
         with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -467,7 +464,6 @@ def test_unresolved_builtin_target_keeps_directory_error() -> None:
     telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
     config = SimpleNamespace(
         platforms={Platform.TELEGRAM: telegram_cfg},
-        get_home_channel=lambda _platform: None,
     )
 
     with patch("gateway.config.load_gateway_config", return_value=config), \

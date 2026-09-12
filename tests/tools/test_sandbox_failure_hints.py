@@ -16,11 +16,11 @@ class TestSandboxFailureHint:
         assert "read_file" in h and "terminal" in h
         assert "normal tool call" in h
 
-    def test_helper_import_error_recommends_supported_import(self):
+    def test_helper_import_failure_reports_module_skew(self):
         err = "ImportError: cannot import name 'json_parse' from 'hermes_tools'"
         h = _sandbox_failure_hint(err)
-        assert h is not None
         assert "from hermes_tools import json_parse" in h
+        assert "sys.path" in h
 
     def test_helper_name_error_recommends_supported_import(self):
         err = "NameError: name 'json_parse' is not defined"

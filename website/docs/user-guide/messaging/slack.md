@@ -211,10 +211,6 @@ Add the following to your `~/.hermes/.env` file:
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_ALLOWED_USERS=U01ABC2DEF3              # Comma-separated Member IDs
-
-# Optional
-SLACK_HOME_CHANNEL=C01234567890              # Default channel for cron/scheduled messages
-SLACK_HOME_CHANNEL_NAME=general              # Human-readable name for the home channel (optional)
 ```
 
 Or run the interactive setup:
@@ -886,30 +882,28 @@ platforms:
 ---
 
 
-## Home Channel
+## Scheduled Delivery
 
-Set `SLACK_HOME_CHANNEL` to a channel ID where Hermes will deliver scheduled messages,
-cron job results, and other proactive notifications. To find a channel ID:
+Cron jobs and other proactive output are delivered to an explicit Slack target you configure per job. To find a channel ID:
 
 1. Right-click the channel name in Slack
 2. Click **View channel details**
 3. Scroll to the bottom — the Channel ID is shown there
 
-```bash
-SLACK_HOME_CHANNEL=C01234567890
-```
-
 Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
+
+Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination channel to designate it.
 
 ### Cron delivery targeting
 
-Cron jobs (see the [cron guide](../features/cron.md#delivery-options)) can target Slack three ways:
+Cron jobs (see the [cron guide](../features/cron.md#delivery-options)) can target Slack these ways:
 
 | `deliver:` value | Where it lands |
 |------------------|----------------|
-| `slack` | The home channel (`SLACK_HOME_CHANNEL`) |
 | `slack:C0123456789` | A specific channel by ID |
 | `slack:U0123456789` | That user's **DM** — the bare user ID is resolved to a DM conversation automatically (requires the `im:write` scope) |
+
+A bare `deliver: slack` (no channel ID) resolves to nothing — the job records a delivery error telling you to set an explicit `platform:chat_id[:thread_id]` target.
 
 Delivery works even when the cron process isn't co-located with the gateway — Hermes falls back to a standalone Web API sender using `SLACK_BOT_TOKEN`. `MEDIA:` attachments in the cron output are uploaded as native Slack file shares to the same target.
 
@@ -1024,7 +1018,7 @@ slack:
 
 Notes:
 - The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
-- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 
 ## Troubleshooting

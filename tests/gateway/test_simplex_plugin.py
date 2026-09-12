@@ -24,7 +24,6 @@ is_connected = _simplex.is_connected
 register = _simplex.register
 _env_enablement = _simplex._env_enablement
 _standalone_send = _simplex._standalone_send
-_guess_extension = _simplex._guess_extension
 _is_image_ext = _simplex._is_image_ext
 _is_audio_ext = _simplex._is_audio_ext
 _CORR_PREFIX = _simplex._CORR_PREFIX
@@ -83,12 +82,10 @@ def test_is_connected_mirrors_validate(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_env_enablement_seeds_home_channel(monkeypatch):
+def test_env_enablement_seeds_ws_url(monkeypatch):
     monkeypatch.setenv("SIMPLEX_WS_URL", "ws://127.0.0.1:5225")
-    monkeypatch.setenv("SIMPLEX_HOME_CHANNEL", "42")
-    monkeypatch.setenv("SIMPLEX_HOME_CHANNEL_NAME", "Personal")
     seed = _env_enablement()
-    assert seed["home_channel"] == {"chat_id": "42", "name": "Personal"}
+    assert seed == {"ws_url": "ws://127.0.0.1:5225"}
 
 
 # ---------------------------------------------------------------------------
@@ -102,14 +99,6 @@ def test_adapter_init_custom_url():
     assert adapter.ws_url == "ws://localhost:5225"
     assert adapter._running is False
     assert adapter._ws is None
-
-
-# ---------------------------------------------------------------------------
-# 5. Helper functions (magic-byte detection)
-# ---------------------------------------------------------------------------
-
-def test_guess_extension_png():
-    assert _guess_extension(b"\x89PNG\r\n\x1a\n") == ".png"
 
 
 # ---------------------------------------------------------------------------

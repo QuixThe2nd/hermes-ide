@@ -231,6 +231,16 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
+On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+rescans the live tree before signalling descendants and their parent, including
+children in separate sessions with no inherited output pipes. This closes the
+fork-after-snapshot race. The stop wait is bounded; discovery or permission
+failures still use best-effort group cleanup, not a sandbox guarantee. Any target
+stopped by cleanup is resumed if termination fails; already-stopped targets keep
+their original state. Explicit graceful signals do not suspend their recipients.
+Windows continues to use `taskkill /F /T`.
+
 ### Provider Recovery
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
@@ -244,7 +254,7 @@ This mirrors the gateway's behavior — without it, cron agents would fail on ra
 
 Cron job results can be delivered to any supported platform.
 
-A bare platform name (`slack`, `telegram`, …) delivers to that platform's configured **home channel**. To target a **specific** destination instead, append a target after a colon: `platform:<target>`. The target is resolved at fire time (not when the job is created), so a job can name a destination on a platform that isn't connected yet and start delivering once it comes online.
+A delivery target must be **explicit**: `platform:<target>` names the destination directly. A bare platform name (`slack`, `telegram`, …) resolves to nothing — there is no per-platform default destination — and the job records a delivery error telling the operator to set an explicit target. Targets are resolved at fire time (not when the job is created), so a job can name a destination on a platform that isn't connected yet and start delivering once it comes online.
 
 Most platforms also accept an optional thread/topic as a third segment: `platform:<chat_id>:<thread_id>`.
 
@@ -252,31 +262,31 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 |--------|--------|---------|
 | Origin chat | `origin` | Deliver to the chat where the job was created |
 | Local file | `local` | Save to `~/.hermes/cron/output/` |
-| Telegram | `telegram`, `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
-| Discord | `discord`, `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
-| Slack | `slack`, `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
-| Matrix | `matrix`, `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
-| Feishu | `feishu`, `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
-| WhatsApp | `whatsapp`, `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
-| Signal | `signal`, `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
-| SMS | `sms`, `sms:+<E.164>` | `sms:+<E.164 number>` |
-| Email | `email`, `email:<address>` | `email:alerts@example.com` |
-| Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
-| Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
-| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
-| DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
-| WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
-| BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
-| QQ Bot | `qqbot` or `qqbot:<chat_id>` | Bare name delivers to QQ (Tencent) via Official API v2 |
+| Telegram | `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
+| Discord | `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
+| Slack | `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
+| Matrix | `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
+| Feishu | `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
+| WhatsApp | `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
+| Signal | `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
+| SMS | `sms:+<E.164>` | `sms:+15551234567` |
+| Email | `email:<address>` | `email:alerts@example.com` |
+| Weixin | `weixin:<wxid>` | `weixin:wxid_abc123` |
+| Mattermost | `mattermost:<channel_id>` | Specific Mattermost channel |
+| Home Assistant | `homeassistant:<conversation>` | Specific HA conversation |
+| DingTalk | `dingtalk:<chat_id>` | Specific DingTalk chat |
+| WeCom | `wecom:<chat_id>` | Specific WeCom chat |
+| BlueBubbles | `bluebubbles:<chat_guid>` | iMessage chat via BlueBubbles |
+| QQ Bot | `qqbot:<chat_id>` | QQ (Tencent) chat via Official API v2 |
 | Bot Chat | `bot-chat` or `bot-chat:<profile>` | Inject into a local profile's canonical Bot Chat (the bot responds) |
 
-Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID); a bare platform name always delivers to the home channel.
+Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID). Every messaging target names its destination explicitly; a bare platform name is not a valid delivery target.
 
 **Named channels** (`slack:#engineering`, `discord:#engineering`, or a friendly name like `slack:engineering`) are resolved against the channel directory the gateway builds from connected adapters, so the gateway must have discovered the channel for name resolution to succeed; raw IDs (`slack:C0123ABCD45`) always work.
 
 For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
 
-**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter: the scheduler delivers by running `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` — the same lane Bot Mode agent-to-agent messages use — so the output arrives as a real inbound turn in the profile's canonical Bot Chat and the bot runs a full agent turn on it (alternation-safe by construction; this is the chat command lane, not a transcript mirror). The bare token targets the job's own profile; the named form is validated against `~/.hermes/profiles/` at create time and again at fire time, and never resolves across machines. Bot-chat targets are excluded from the `all` routing token and from delivery preflight (no gateway credentials involved). The per-delivery subprocess timeout is `cron.bot_chat_delivery_timeout_seconds` (default 600).
+**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. An existing receipt never permits CLI fallback. Without a mailbox owner it retains `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` and normal ownership fencing. Both lanes deliver a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. Historical cron status does not automatically track later receipt completion. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff. `cron.bot_chat_delivery_timeout_seconds` (default 600) bounds only the legacy subprocess lane.
 
 ### Response Wrapping
 

@@ -146,7 +146,6 @@ platforms:
 支持的目标：
 - `chat_id`
 - `team_id` + `channel_id`
-- 现有 Teams 平台的 `team_id` + `home_channel` 回退
 
 示例：
 

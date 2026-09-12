@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -82,6 +84,44 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_available", [False, True], ids=["missing", "available"])
+async def test_startup_tolerates_optional_home_server_sync(
+    monkeypatch, tmp_path, sync_available
+):
+    """An absent optional sync must not strand connected adapters mid-startup."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: adapter)
+    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", AsyncMock(return_value=0))
+    # This notification runs after the sync is scheduled. Checking it prevents
+    # an early clean-exit return from masquerading as completed startup.
+    notification = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "_send_update_notification", notification)
+    sync = AsyncMock()
+    if sync_available:
+        monkeypatch.setattr(runner, "_sync_home_server_if_due", sync, raising=False)
+    else:
+        monkeypatch.delattr(GatewayRunner, "_sync_home_server_if_due", raising=False)
+
+    try:
+        assert await runner.start() is True
+        await asyncio.sleep(0)
+        notification.assert_awaited_once()
+        assert runner.should_exit_cleanly is False
+        assert runner.adapters[Platform.DISCORD] is adapter
+        assert read_runtime_status()["gateway_state"] == "running"
+        if sync_available:
+            sync.assert_awaited_once()
+    finally:
+        await runner.stop()
 
 
 @pytest.mark.asyncio

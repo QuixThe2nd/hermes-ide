@@ -56,8 +56,8 @@ requires_env:
     prompt: "Channel"
     password: false
 optional_env:
-  - name: MY_PLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery"
+  - name: MY_PLATFORM_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
     password: false
 ```
 
@@ -93,9 +93,8 @@ be granted its own outbound tools.
 
 ```python
 import os
-from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, MessageEvent, MessageType,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 
 
@@ -135,11 +134,7 @@ def _env_enablement() -> dict | None:
     channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
     if not (token and channel):
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": "Home"}
-    return seed
+    return {"token": token, "channel": channel}
 
 
 def register(ctx):
@@ -164,10 +159,10 @@ def register(ctx):
         # env vars before adapter construction. See "Env-Driven Auto-
         # Configuration" section below.
         env_enablement_fn=_env_enablement,
-        # Cron home-channel delivery support. Lets deliver=my_platform cron
-        # jobs route without editing cron/scheduler.py. See "Cron Delivery"
+        # Out-of-process cron delivery. Lets deliver=my_platform:chat_id
+        # jobs send without a co-resident gateway. See "Cron Delivery"
         # section below.
-        cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
         # Per-platform user authorization env vars
         allowed_users_env="MY_PLATFORM_ALLOWED_USERS",
         allow_all_env="MY_PLATFORM_ALLOW_ALL_USERS",
@@ -213,13 +208,13 @@ When you call `ctx.register_platform()`, the following integration points are ha
 
 | Integration point | How it works |
 |---|---|
-| Gateway adapter creation | Registry checked before built-in if/elif chain |
+| Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
-| Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
+| Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` |
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
-| Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
+| Cron delivery | `standalone_sender_fn` sends explicit `deliver=<name>:<chat_id>` targets out-of-process |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
 | send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
@@ -302,24 +297,14 @@ def _env_enablement() -> dict | None:
 
     Called by the platform registry during load_gateway_config().
     Return None when the platform isn't minimally configured — the
-    caller then skips auto-enabling. Return a dict to seed extras.
-
-    The special 'home_channel' key is extracted and becomes a proper
-    HomeChannel dataclass on the PlatformConfig; every other key is
-    merged into PlatformConfig.extra.
+    caller then skips auto-enabling. Return a dict to seed extras;
+    every key is merged into PlatformConfig.extra.
     """
     token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
     channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
     if not (token and channel):
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": os.getenv("MY_PLATFORM_HOME_CHANNEL_NAME", "Home"),
-        }
-    return seed
+    return {"token": token, "channel": channel}
 
 
 def register(ctx):
@@ -376,21 +361,11 @@ Exceptions raised by the hook are swallowed and logged at debug level — a misb
 
 ## Cron Delivery
 
-To let `deliver=my_platform` cron jobs route to a configured home channel, set `cron_deliver_env_var` to the env var name that holds the default chat/room/channel ID:
+Cron jobs address your platform with an explicit `deliver=my_platform:<chat_id>` target (optionally `:<thread_id>`). Registering the platform in the plugin registry already makes `my_platform` a recognized `deliver=` platform. A bare `deliver=my_platform` resolves to no target — the job records a delivery error telling the operator to set an explicit `platform:chat_id[:thread_id]` target instead of silently dropping the output.
 
-```python
-ctx.register_platform(
-    name="my_platform",
-    ...
-    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
-)
-```
+The legacy `PlatformEntry.cron_deliver_env_var` field is deprecated and ignored: passing it to `ctx.register_platform()` still registers the platform (with a once-per-process warning), but cron delivery no longer reads any per-platform default destination env var. Migrate by removing the kwarg and pointing jobs at explicit `platform:chat_id[:thread_id]` targets.
 
-The scheduler reads this env var when resolving the home target for `deliver=my_platform` jobs, and also treats the platform as a valid cron target in `_KNOWN_DELIVERY_PLATFORMS`-style checks. If your `env_enablement_fn` seeds a `home_channel` dict (see above), that takes precedence — `cron_deliver_env_var` is the fallback for cron jobs that run before env seeding.
-
-### Out-of-process cron delivery
-
-`cron_deliver_env_var` makes your platform a recognized `deliver=` target. To make the actual send succeed when the cron job runs in a separate process from the gateway (i.e., `hermes cron run` separate from `hermes gateway`), register a `standalone_sender_fn`:
+To make the send succeed when the cron job runs in a separate process from the gateway (i.e., `hermes cron run` separate from `hermes gateway`), register a `standalone_sender_fn`:
 
 ```python
 async def _standalone_send(
@@ -410,7 +385,6 @@ async def _standalone_send(
 ctx.register_platform(
     name="my_platform",
     ...
-    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
     standalone_sender_fn=_standalone_send,
 )
 ```
@@ -443,10 +417,6 @@ requires_env:
     prompt: "Channel"
     password: false
 optional_env:
-  - name: MY_PLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery (defaults to MY_PLATFORM_CHANNEL)"
-    prompt: "Home channel (or empty)"
-    password: false
   - name: MY_PLATFORM_ALLOWED_USERS
     description: "Comma-separated user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
@@ -574,9 +544,8 @@ Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """Return True if dependencies are available."""
@@ -633,21 +602,21 @@ Three touchpoints:
 2. **`load_gateway_config()`** — Add token env map entry: `Platform.NEWPLAT: "NEWPLAT_TOKEN"`
 3. **`_apply_env_overrides()`** — Map all `NEWPLAT_*` env vars to config
 
-### 4. Gateway Runner (`gateway/run.py`)
+### 4. Gateway Runner (`gateway/run.py` + `gateway/run_*.py` siblings)
 
 Six touchpoints:
 
-1. **`_instantiate_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
+1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
-4. **Early env check `_any_allowlist` tuple** — Add `"NEWPLAT_ALLOWED_USERS"`
-5. **Early env check `_allow_all` tuple** — Add `"NEWPLAT_ALLOW_ALL_USERS"`
+4. **Startup access-policy check** (`gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)
+5. **Startup `_BUILTIN_ALLOW_ALL_VARS`** (`gateway/run_startup.py`) — derived from the same `_ALLOWLIST_ENV_PLATFORMS` tuple; nothing extra to add
 6. **`_UPDATE_ALLOWED_PLATFORMS` frozenset** — Add `Platform.NEWPLAT`
 
 ### 5. Cross-Platform Delivery
 
 1. **`gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
-2. **`cron/scheduler.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
+2. **`cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
 
 ### 6. CLI Integration
 
@@ -655,7 +624,7 @@ Six touchpoints:
 2. **`hermes_cli/gateway.py`** — Add entry to `_PLATFORMS` list with key, label, emoji, token_var, setup_instructions, and vars
 3. **`hermes_cli/platforms.py`** — Add `PlatformInfo` entry with label and default_toolset (used by `skills_config` and `tools_config` TUIs)
 4. **`hermes_cli/setup.py`** — Add `_setup_newplat()` function (can delegate to `gateway.py`) and add tuple to the messaging platforms list
-5. **`hermes_cli/status.py`** — Add platform detection entry: `"NewPlat": ("NEWPLAT_TOKEN", "NEWPLAT_HOME_CHANNEL")`
+5. **`hermes_cli/status.py`** — Add platform detection entry: `"NewPlat": "NEWPLAT_TOKEN"`
 6. **`hermes_cli/dump.py`** — Add `"newplat": "NEWPLAT_TOKEN"` to platform detection dict
 
 ### 7. Tools

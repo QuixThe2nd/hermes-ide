@@ -67,6 +67,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
+from agent.compression_status import (
+    COMPRESSION_ABORT_WARNING_PREFIX,
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX,
+    compression_tool_aborted_line,
+    compression_tool_failure_line,
+    compression_tool_start_line,
+    compression_tool_success_line,
+    emit_compression_tool_status,
+)
 from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
@@ -195,8 +204,8 @@ COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
 # (_TELEGRAM_NOISY_STATUS_RE); it is pinned un-swallowed in
 # tests/gateway/test_telegram_noise_filter.py::VISIBLE_COMPRESSION_MESSAGES.
 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
-    "⚠ Context is over the compression threshold "
-    "(~{tokens:,} tokens >= {threshold:,}) "
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX
+    + " (~{tokens:,} tokens >= {threshold:,}) "
     "but compression is currently blocked ({reason}). "
     "The model may stop responding. Run /new to start a fresh "
     "session or /compress to retry immediately."
@@ -2570,6 +2579,91 @@ class _CompressionLockLeaseRefresher:
                 break
 
 
+def _lower_threshold_to_aux_context(
+    agent: Any, *, aux_model: str, aux_context: int, aux_provider: str, aux_base_url: str
+) -> None:
+    """Lower the live threshold to the aux model's window and tell the user how to fix config.
+    The summariser sends one user prompt (no system/tools), so threshold == aux_context is safe.
+    Retention is recalibrated through its selected policy: lean is window-relative;
+    only legacy follows the lowered threshold."""
+    compressor = agent.context_compressor
+    old_threshold = compressor.threshold_tokens
+    new_threshold = compressor.threshold_tokens = aux_context
+    summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
+    if getattr(compressor, "tail_mode", None) == "lean":
+        # Keep the window-relative policy owned by the compressor property.
+        compressor._tail_token_budget = None
+    elif isinstance(summary_target_ratio, (int, float)):
+        compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
+    main_ctx = compressor.context_length
+    if main_ctx:
+        compressor.threshold_percent = new_threshold / main_ctx
+    safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+    # Mirror the compressor's threshold math (percent floor, output reservation, 64K floor): a suggestion it
+    # would override is silently ignored and this warning reappears every session. External engines: keep it plain.
+    # The "lower the threshold" suggestion must survive the built-in trigger recomputation (#67422):
+    # _effective_threshold_percent() raises sub-75% values back up for main windows under 512K, and
+    # _compute_threshold_tokens() further applies the output-token reservation, the 64K floor, and the
+    # degenerate-window guard. Recommending a value those would override is silently ignored and this
+    # warning would reappear every session — so mirror the compressor's own math and only offer the option
+    # when the recomputed trigger actually fits the auxiliary model's context.
+    from agent.context_compressor import ContextCompressor as _CC
+    recomputed_threshold = None
+    if main_ctx and isinstance(compressor, _CC):
+        recomputed_threshold = _CC._compute_threshold_tokens(
+            main_ctx, _CC._effective_threshold_percent(main_ctx, safe_pct / 100),
+            getattr(compressor, "max_tokens", None),
+        )
+    threshold_suggestion_viable = recomputed_threshold is None or recomputed_threshold <= aux_context
+    # "model (provider)" labels for both sides; empty/"auto" provider falls back to the client's base_url hostname.
+    _main_model = getattr(agent, "model", "") or "?"
+    _main_provider = getattr(agent, "provider", "") or ""
+    _aux_provider_label = aux_provider if aux_provider and aux_provider != "auto" else ""
+    if not _aux_provider_label:
+        try:
+            from urllib.parse import urlparse
+            _aux_provider_label = urlparse(aux_base_url).hostname or aux_base_url
+        except Exception:
+            _aux_provider_label = aux_base_url or "auto"
+    _main_label = f"{_main_model} ({_main_provider})" if _main_provider else _main_model
+    _aux_label = f"{aux_model} ({_aux_provider_label})"
+    msg = (
+        f"⚠ Compression model {_aux_label} context is {aux_context:,} tokens, but the main model "
+        f"{_main_label}'s compression threshold was {old_threshold:,} tokens. "
+        f"Auto-lowered this session's threshold to {new_threshold:,} tokens so compression can run.\n"
+    )
+    if threshold_suggestion_viable:
+        msg += (
+            f"  To make this permanent, edit config.yaml — either:\n  1. Use a larger compression model:\n"
+            f"       auxiliary:\n         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
+            f"  2. Lower the compression threshold:\n       compression:\n         threshold: 0.{safe_pct:02d}"
+        )
+    else:
+        msg += (
+            f"  To make this permanent, use a larger compression model in config.yaml:\n       auxiliary:\n"
+            f"         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
+            f"  (Lowering compression.threshold cannot help here — with {_main_label}'s {main_ctx:,}-token window, "
+            f"Hermes's small-context floor and output reservation would recompute the trigger to "
+            f"{recomputed_threshold:,} tokens, still above the compression model's {aux_context:,}.)"
+        )
+    agent._compression_warning = msg
+    agent._emit_status(msg)
+    logger.warning(
+        "Auxiliary compression model %s has %d token context, below the main model's compression threshold of %d "
+        "tokens — auto-lowered session threshold to %d to keep compression working.", aux_model, aux_context,
+        old_threshold, new_threshold,
+    )
+
+
+def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
+    """True when the auxiliary compression client is the main model on the main endpoint."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
+        return False
+    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
+    return not main_base or normalize_route_base_url(aux_base_url) == main_base
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the auxiliary compression model's context
     window is smaller than the main model's compression threshold.
@@ -2651,19 +2745,22 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # than minting a bearer JWT just to look up a context length.
         _raw_aux_key = getattr(client, "api_key", "")
         aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
-
-        aux_context = get_model_context_length(
-            aux_model,
-            base_url=aux_base_url,
-            api_key=aux_api_key,
-            config_context_length=getattr(agent, "_aux_compression_context_length_config", None),
-            # Each model must be resolved with its own provider so that
-            # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
-            # are invoked for the correct client, not inherited from the main model.
-            provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")),
-            custom_providers=agent._custom_providers,
+        # Resolve each model with its own provider so provider-specific paths (Bedrock table, OpenRouter API)
+        # hit the correct client, not the main model's.
+        _aux_provider = (
+            _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")
         )
-
+        _aux_cfg_ctx = getattr(agent, "_aux_compression_context_length_config", None)
+        if _aux_cfg_ctx is None and _aux_inherits_main_route(agent, aux_model, aux_base_url):
+            # Same model on the same route: reuse the main model's already-resolved window (which honours
+            # model.context_length / provider pins). Re-resolving from scratch lost the pin and auto-lowered
+            # the session threshold to a catch-all catalog value (#89500, #45519).
+            aux_context = int(agent.context_compressor.context_length)
+        else:
+            aux_context = get_model_context_length(
+                aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
+                provider=_aux_provider, custom_providers=agent._custom_providers,
+            )
         # Hard floor: the auxiliary compression model must have at least
         # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
         # is already required to meet this floor (checked earlier in
@@ -2682,135 +2779,10 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"detected value if it is wrong."
             )
 
-        threshold = agent.context_compressor.threshold_tokens
-        if aux_context < threshold:
-            # Auto-correct: lower the live session threshold so
-            # compression actually works this session.  The hard floor
-            # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
-            # so the new threshold is always >= 64K.
-            #
-            # The compression summariser sends a single user-role
-            # prompt (no system prompt, no tools) to the aux model, so
-            # new_threshold == aux_context is safe: the request is
-            # the raw messages plus a small summarisation instruction.
-            old_threshold = threshold
-            new_threshold = aux_context
-            agent.context_compressor.threshold_tokens = new_threshold
-            # ``tail_token_budget`` is derived from the trigger threshold, not
-            # directly from the model window. Keep it in lockstep with this
-            # just-in-time correction exactly as ContextCompressor.update_model()
-            # does. Leaving the old budget behind can make the tail's 1.5x soft
-            # ceiling wider than the lowered trigger, so compression preserves
-            # nearly the entire request and repeatedly re-fires.
-            summary_target_ratio = getattr(
-                agent.context_compressor, "summary_target_ratio", None
-            )
-            if isinstance(summary_target_ratio, (int, float)):
-                agent.context_compressor.tail_token_budget = int(
-                    new_threshold * summary_target_ratio
-                )
-            # Keep threshold_percent in sync so future main-model
-            # context_length changes (update_model) re-derive from a
-            # sensible number rather than the original too-high value.
-            main_ctx = agent.context_compressor.context_length
-            if main_ctx:
-                agent.context_compressor.threshold_percent = (
-                    new_threshold / main_ctx
-                )
-            safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
-            # The "lower the threshold" suggestion must survive the built-in
-            # trigger recomputation (#67422): _effective_threshold_percent()
-            # raises sub-75% values back up for main windows under 512K, and
-            # _compute_threshold_tokens() further applies the output-token
-            # reservation, the 64K floor, and the degenerate-window guard.
-            # Recommending a value those would override is silently ignored
-            # and this warning would reappear every session — so mirror the
-            # compressor's own math and only offer the option when the
-            # recomputed trigger actually fits the auxiliary model's context.
-            # External engines own compaction policy (#44439); the built-in
-            # floor doesn't apply to them, so keep the plain suggestion.
-            from agent.context_compressor import ContextCompressor as _CC
-
-            recomputed_threshold = None
-            if main_ctx and isinstance(agent.context_compressor, _CC):
-                recomputed_threshold = _CC._compute_threshold_tokens(
-                    main_ctx,
-                    _CC._effective_threshold_percent(main_ctx, safe_pct / 100),
-                    getattr(agent.context_compressor, "max_tokens", None),
-                )
-            threshold_suggestion_viable = (
-                recomputed_threshold is None or recomputed_threshold <= aux_context
-            )
-            # Build human-readable "model (provider)" labels for both
-            # the main model and the compression model so users can
-            # tell at a glance which provider each side is actually
-            # using. When the configured provider is empty or "auto",
-            # fall back to the client's base_url hostname.
-            _main_model = getattr(agent, "model", "") or "?"
-            _main_provider = getattr(agent, "provider", "") or ""
-            _aux_provider_label = (
-                _aux_cfg_provider
-                if _aux_cfg_provider and _aux_cfg_provider != "auto"
-                else ""
-            )
-            if not _aux_provider_label:
-                try:
-                    from urllib.parse import urlparse
-                    _aux_provider_label = (
-                        urlparse(aux_base_url).hostname or aux_base_url
-                    )
-                except Exception:
-                    _aux_provider_label = aux_base_url or "auto"
-            _main_label = (
-                f"{_main_model} ({_main_provider})"
-                if _main_provider
-                else _main_model
-            )
-            _aux_label = f"{aux_model} ({_aux_provider_label})"
-            msg = (
-                f"⚠ Compression model {_aux_label} context is "
-                f"{aux_context:,} tokens, but the main model "
-                f"{_main_label}'s compression threshold was "
-                f"{old_threshold:,} tokens. "
-                f"Auto-lowered this session's threshold to "
-                f"{new_threshold:,} tokens so compression can run.\n"
-            )
-            if threshold_suggestion_viable:
-                msg += (
-                    f"  To make this permanent, edit config.yaml — either:\n"
-                    f"  1. Use a larger compression model:\n"
-                    f"       auxiliary:\n"
-                    f"         compression:\n"
-                    f"           model: <model-with-{old_threshold:,}+-context>\n"
-                    f"  2. Lower the compression threshold:\n"
-                    f"       compression:\n"
-                    f"         threshold: 0.{safe_pct:02d}"
-                )
-            else:
-                msg += (
-                    f"  To make this permanent, use a larger compression "
-                    f"model in config.yaml:\n"
-                    f"       auxiliary:\n"
-                    f"         compression:\n"
-                    f"           model: <model-with-{old_threshold:,}+-context>\n"
-                    f"  (Lowering compression.threshold cannot help here — "
-                    f"with {_main_label}'s {main_ctx:,}-token window, "
-                    f"Hermes's small-context floor and output reservation "
-                    f"would recompute the trigger to "
-                    f"{recomputed_threshold:,} tokens, still above the "
-                    f"compression model's {aux_context:,}.)"
-                )
-            agent._compression_warning = msg
-            agent._emit_status(msg)
-            logger.warning(
-                "Auxiliary compression model %s has %d token context, "
-                "below the main model's compression threshold of %d "
-                "tokens — auto-lowered session threshold to %d to "
-                "keep compression working.",
-                aux_model,
-                aux_context,
-                old_threshold,
-                new_threshold,
+        if aux_context < agent.context_compressor.threshold_tokens:
+            _lower_threshold_to_aux_context(
+                agent, aux_model=aux_model, aux_context=aux_context, aux_provider=_aux_cfg_provider,
+                aux_base_url=aux_base_url,
             )
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate
@@ -3273,6 +3245,38 @@ def _messages_match_scoped_identity(left: Any, right: Any) -> bool:
     return True
 
 
+def _stamp_scoped_twins(targets: list, source: dict, *, exact_counts_stamped: bool = False) -> None:
+    """Stamp ``_db_persisted`` on every unstamped scoped twin of ``source`` in ``targets``.
+    Exact-timestamp twins are preferred: when the source carries a timestamp and any exact twin was stamped
+    (or, with ``exact_counts_stamped``, merely exists), the broad scoped pass is skipped so a content-equal
+    old duplicate is left alone."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    source_timestamp = source.get("timestamp")
+    exact_hit = False
+    if source_timestamp is not None:
+        for target in targets:
+            if (
+                not isinstance(target, dict)
+                or target.get("timestamp") != source_timestamp
+                or not _messages_match_scoped_identity(target, source)
+            ):
+                continue
+            if target.get(_DB_PERSISTED_MARKER):
+                exact_hit = exact_hit or exact_counts_stamped
+                continue
+            target[_DB_PERSISTED_MARKER] = True
+            exact_hit = True
+        if exact_hit:
+            return
+    for target in targets:
+        if (
+            isinstance(target, dict)
+            and not target.get(_DB_PERSISTED_MARKER)
+            and _messages_match_scoped_identity(target, source)
+        ):
+            target[_DB_PERSISTED_MARKER] = True
+
+
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = (
     "_pending_context_engine_compression_notification"
 )
@@ -3573,6 +3577,12 @@ def compress_context(
     # closure reads it at call time, so any abort/exception path that skips
     # that rebind keeps the terminal edge suppressed.
     _commit_status = "aborted"
+    # Tool-style episode state (agent/compression_status.py). Initialized
+    # here — BEFORE any gate/except path can reach the terminal emitters —
+    # and opened just ahead of the expensive summary work below.
+    _tool_episode_open = False
+    _tool_terminal_sent = False
+    _tool_attempt_token: Optional[str] = None
 
     def _complete_compaction_lifecycle(*, force_terminal: bool = False) -> None:
         nonlocal _compaction_done_emitted
@@ -4198,6 +4208,68 @@ def compress_context(
                     engine_name,
                 )
 
+        # ── Tool-style lifecycle status (presentation-only) ──────────────
+        # One ``context_compress`` line posted BEFORE the expensive summary
+        # work below; the Discord gateway updates the same message in place
+        # as the attempt resolves (see agent/compression_status.py). Rules:
+        # automatic attempts only (manual /compress keeps its existing
+        # feedback), Discord sessions only (emit_compression_tool_status
+        # no-ops elsewhere), and only when a visible compaction phase was
+        # opened (quiet context engines emit neither, mirroring
+        # _complete_compaction_lifecycle). The aux route is resolved inside
+        # call_llm at call time, so the start line says "selecting
+        # compressor" unless a stall-fallback retry actually pinned a route
+        # for THIS attempt — never a guess at the chat model/primary. When
+        # call_llm records the route it really selected, the compressor's
+        # route observer edits the open episode to name it mid-flight.
+        if not force and _compaction_status_emitted:
+            _pinned_route: Optional[dict] = None
+            try:
+                from agent.context_compressor import _SUMMARY_ROUTE_PIN
+
+                _candidate_route = _SUMMARY_ROUTE_PIN.get()
+                if isinstance(_candidate_route, dict):
+                    _pinned_route = _candidate_route
+            except Exception:
+                _pinned_route = None
+            _tool_attempt_token = uuid.uuid4().hex
+            _tool_episode_open = emit_compression_tool_status(
+                agent,
+                compression_tool_start_line(
+                    (_pinned_route or {}).get("label")
+                    or (_pinned_route or {}).get("provider"),
+                    (_pinned_route or {}).get("model"),
+                ),
+                attempt_token=_tool_attempt_token,
+            )
+            if _tool_episode_open:
+                def _publish_selected_route(provider: str, model: str) -> None:
+                    # Mid-flight route update for the open episode. Guarded
+                    # like every terminal edge: a superseded attempt must not
+                    # speak for its successor.
+                    if (
+                        _tool_episode_open
+                        and not _tool_terminal_sent
+                        and _compressor_attempt_is_current(
+                            agent.context_compressor, _attempt_generation
+                        )
+                    ):
+                        emit_compression_tool_status(
+                            agent,
+                            compression_tool_start_line(provider, model),
+                            attempt_token=_tool_attempt_token,
+                        )
+
+                try:
+                    agent.context_compressor._summary_route_observer = (
+                        _publish_selected_route
+                    )
+                    agent.context_compressor._summary_route_observer_generation = (
+                        _attempt_generation
+                    )
+                except Exception:
+                    pass
+
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
             agent,
@@ -4333,6 +4405,23 @@ def compress_context(
                 _activity_heartbeat.stop("context compression rollback failed")
                 _activity_heartbeat = None
             _release_lock()
+            if (
+                _tool_episode_open
+                and not _tool_terminal_sent
+                and _compressor_attempt_is_current(
+                    agent.context_compressor, _attempt_generation
+                )
+            ):
+                # Rollback FAILED: the in-memory list was force-restored but
+                # durable/session restoration did not complete — no
+                # preservation claim the engine cannot prove.
+                _tool_terminal_sent = emit_compression_tool_status(
+                    agent,
+                    compression_tool_aborted_line(
+                        "rollback failed", context_preservation=None
+                    ),
+                    attempt_token=_tool_attempt_token,
+                )
             _emit_compression_attempt_telemetry(
                 agent,
                 started_at=_attempt_started_at,
@@ -4359,6 +4448,24 @@ def compress_context(
             _activity_heartbeat.stop("context compression cancelled")
             _activity_heartbeat = None
         _release_lock()
+        # Close the tool-style episode honestly — but only when THIS attempt
+        # still owns the compressor. A stall-fallback retry claims the attempt
+        # generation before this late unwind runs; its terminal must come from
+        # the retry, not from the zombie attempt it replaced. The cancel path
+        # restored the pre-attempt snapshot above, so the preservation claim
+        # holds here.
+        if (
+            _tool_episode_open
+            and not _tool_terminal_sent
+            and _compressor_attempt_is_current(
+                agent.context_compressor, _attempt_generation
+            )
+        ):
+            _tool_terminal_sent = emit_compression_tool_status(
+                agent,
+                compression_tool_aborted_line("cancelled"),
+                attempt_token=_tool_attempt_token,
+            )
         _emit_compression_attempt_telemetry(
             agent,
             started_at=_attempt_started_at,
@@ -4382,6 +4489,35 @@ def compress_context(
             _activity_heartbeat.stop("context compression failed")
             _activity_heartbeat = None
         _release_lock()
+        # Mid-flight exception: no boundary committed, but the in-memory list
+        # may have been mutated — close the episode WITHOUT the preservation
+        # claim. Suppressed when superseded (the successor owns the episode).
+        # The route is named only when call_llm actually recorded one
+        # (aux_route_known) — telemetry's provider/model fallbacks are config
+        # guesses, not proof of which summarizer failed.
+        if (
+            _tool_episode_open
+            and not _tool_terminal_sent
+            and _compressor_attempt_is_current(
+                agent.context_compressor, _attempt_generation
+            )
+        ):
+            _exc_telemetry = getattr(
+                agent.context_compressor, "_last_compression_telemetry", None
+            )
+            if not isinstance(_exc_telemetry, dict):
+                _exc_telemetry = {}
+            _exc_route_known = bool(_exc_telemetry.get("aux_route_known"))
+            _tool_terminal_sent = emit_compression_tool_status(
+                agent,
+                compression_tool_failure_line(
+                    _compress_exc,
+                    _exc_telemetry.get("aux_provider") if _exc_route_known else None,
+                    _exc_telemetry.get("aux_model") if _exc_route_known else None,
+                    context_preservation=None,
+                ),
+                attempt_token=_tool_attempt_token,
+            )
         _emit_compression_attempt_telemetry(
             agent,
             started_at=_attempt_started_at,
@@ -4393,6 +4529,18 @@ def compress_context(
     finally:
         if _activity_heartbeat is not None:
             _activity_heartbeat.stop("context compression completed")
+        # The route observer only matters while the summary call runs.
+        # Clear it here (owner-checked) so a later attempt — e.g. a manual
+        # /compress that never opens an episode — cannot trip a stale hook.
+        try:
+            _observer_compressor = agent.context_compressor
+            if getattr(
+                _observer_compressor, "_summary_route_observer_generation", None
+            ) == _attempt_generation:
+                _observer_compressor._summary_route_observer = None
+                _observer_compressor._summary_route_observer_generation = None
+        except Exception:
+            pass
 
     _commit_fence_entered = False
     try:
@@ -4421,10 +4569,50 @@ def compress_context(
                 if getattr(agent, "_last_compression_summary_warning", None) != _err:
                     agent._last_compression_summary_warning = _err
                     agent._emit_warning(
-                        f"⚠ Compression aborted: {_err}. "
+                        f"{COMPRESSION_ABORT_WARNING_PREFIX} {_err}. "
                         "No messages were dropped — conversation continues unchanged. "
                         "Run /compress to retry, or /new to start a fresh session."
                     )
+                # Close the tool-style episode as a FAILURE with the sanitized
+                # reason and the route the attempt actually used — named only
+                # when call_llm recorded it (aux_route_known); telemetry's
+                # provider/model fallbacks are config guesses, not proof.
+                # (Telemetry is recorded in the aux call's finally, so it
+                # survives the failure.) The abort path returns the transcript
+                # unchanged and never rotates, so the preservation claim holds.
+                if _tool_episode_open and not _tool_terminal_sent:
+                    try:
+                        _abort_telemetry = getattr(
+                            agent.context_compressor,
+                            "_last_compression_telemetry",
+                            None,
+                        )
+                        if not isinstance(_abort_telemetry, dict):
+                            _abort_telemetry = {}
+                        _abort_route_known = bool(
+                            _abort_telemetry.get("aux_route_known")
+                        )
+                        _tool_terminal_sent = emit_compression_tool_status(
+                            agent,
+                            compression_tool_failure_line(
+                                _err,
+                                (
+                                    _abort_telemetry.get("aux_provider")
+                                    if _abort_route_known
+                                    else None
+                                ),
+                                (
+                                    _abort_telemetry.get("aux_model")
+                                    if _abort_route_known
+                                    else None
+                                ),
+                            ),
+                            attempt_token=_tool_attempt_token,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "compression tool failure status failed", exc_info=True
+                        )
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:
                     _existing_sp = agent._build_system_prompt(system_message)
@@ -5651,6 +5839,55 @@ def compress_context(
             f"{_compressed_est:,}",
         )
         _commit_status = "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
+        # Tool-style terminal edge: success ONLY when the boundary actually
+        # committed. The route is named only when call_llm actually recorded
+        # it (aux_route_known) — telemetry's provider/model fallbacks are
+        # config guesses, not proof of summarizer identity. When the engine
+        # inserted its deterministic LOCAL summary (fallback flag), no route
+        # is shown: the failed/skipped provider must not be credited with a
+        # summary it did not produce.
+        if (
+            _tool_episode_open
+            and not _tool_terminal_sent
+            and _commit_status == "committed"
+        ):
+            try:
+                _ok_telemetry = getattr(
+                    agent.context_compressor, "_last_compression_telemetry", None
+                )
+                if not isinstance(_ok_telemetry, dict):
+                    _ok_telemetry = {}
+                _ok_route_known = bool(_ok_telemetry.get("aux_route_known"))
+                _local_summary: Optional[str] = None
+                if _compression_used_fallback:
+                    _local_summary = (
+                        "skipped" if _compression_feasibility_skip else "unavailable"
+                    )
+                _tool_terminal_sent = emit_compression_tool_status(
+                    agent,
+                    compression_tool_success_line(
+                        (
+                            _ok_telemetry.get("aux_provider")
+                            if _ok_route_known and not _local_summary
+                            else None
+                        ),
+                        (
+                            _ok_telemetry.get("aux_model")
+                            if _ok_route_known and not _local_summary
+                            else None
+                        ),
+                        before_messages=_pre_msg_count,
+                        after_messages=len(compressed),
+                        before_tokens=approx_tokens or None,
+                        after_tokens=_compressed_est or None,
+                        local_summary=_local_summary,
+                    ),
+                    attempt_token=_tool_attempt_token,
+                )
+            except Exception:
+                logger.debug(
+                    "compression tool success status failed", exc_info=True
+                )
         _emit_compression_attempt_telemetry(
             agent,
             started_at=_attempt_started_at,
@@ -5665,6 +5902,30 @@ def compress_context(
         )
         return compressed, new_system_prompt
     finally:
+        # Tool-style episode catch-all: every exit from the commit phase that
+        # neither committed nor emitted a specific terminal (no-progress,
+        # empty transcript, commit-fence cancellation, split failure, or an
+        # exception raised mid-rotation) closes the episode as stopped —
+        # never as success. These exits mix provably-unchanged transcripts
+        # with mid-rotation unwinds the engine cannot prove safe, so the line
+        # makes NO preservation claim. A superseded attempt stays silent: the
+        # newer attempt that claimed the generation owns the terminal.
+        try:
+            if (
+                _tool_episode_open
+                and not _tool_terminal_sent
+                and _commit_status != "committed"
+                and _compressor_attempt_is_current(
+                    agent.context_compressor, _attempt_generation
+                )
+            ):
+                _tool_terminal_sent = emit_compression_tool_status(
+                    agent,
+                    compression_tool_aborted_line(context_preservation=None),
+                    attempt_token=_tool_attempt_token,
+                )
+        except Exception:
+            logger.debug("compression tool episode catch-all failed", exc_info=True)
         # Release the lock on the OLD session_id only AFTER rotation completed
         # and all post-rotation bookkeeping (memory manager, context engine,
         # file dedup) ran. A concurrent path that wakes up the moment we

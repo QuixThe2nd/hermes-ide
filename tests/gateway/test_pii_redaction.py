@@ -8,7 +8,7 @@ from gateway.session import (
     _hash_sender_id,
     _hash_chat_id,
 )
-from gateway.config import Platform, HomeChannel
+from gateway.config import Platform, DeliveryTarget
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def _make_context(
     user_name=None,
     chat_id="telegram:99999",
     platform=Platform.TELEGRAM,
-    home_channels=None,
+    notification_channels=None,
 ):
     source = SessionSource(
         platform=platform,
@@ -50,7 +50,7 @@ def _make_context(
     return SessionContext(
         source=source,
         connected_platforms=[platform],
-        home_channels=home_channels or {},
+        notification_channels=notification_channels or {},
     )
 
 
@@ -74,15 +74,15 @@ class TestBuildSessionContextPromptRedaction:
         assert "user-123" not in prompt
 
 
-    def test_home_channel_id_preserved_without_redaction(self):
-        hc = {
-            Platform.TELEGRAM: HomeChannel(
+    def test_notification_channel_id_preserved_without_redaction(self):
+        channel = {
+            Platform.TELEGRAM: DeliveryTarget(
                 platform=Platform.TELEGRAM,
                 chat_id="telegram:99999",
-                name="Home Chat",
+                name="Gateway Restarts",
             )
         }
-        ctx = _make_context(home_channels=hc)
+        ctx = _make_context(notification_channels=channel)
         prompt = build_session_context_prompt(ctx, redact_pii=False)
         assert "99999" in prompt
 

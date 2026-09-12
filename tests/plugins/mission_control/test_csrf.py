@@ -292,7 +292,10 @@ class TestForgeryRejected(ForgeryCase):
                               "application/json", token=token)
         self.assertIn(status, (202, 409))
         deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and self.call_count() < 1:
+        # Poll for the ADMISSION itself, not raw call volume: the
+        # sidebar's batch waiting-status GET also lands on this stub.
+        while (time.monotonic() < deadline
+               and self.core_calls.count(("POST", "/v1/runs")) < 1):
             time.sleep(0.05)
         # exactly one admission for the launch (status polls aside)
         self.assertEqual(

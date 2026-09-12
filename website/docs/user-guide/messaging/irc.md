@@ -15,9 +15,9 @@ IRC is plain text: there is no voice, image, file, thread, reaction, typing, or 
 
 ## Configure Hermes
 
-You can configure IRC two ways — environment variables (for a quick env-only setup) or the `gateway` block in `~/.hermes/gateway-config.yaml`.
+You can configure IRC two ways — environment variables (for a quick env-only setup) or the `gateway` block in `~/.hermes/config.yaml`.
 
-### Option A — gateway-config.yaml
+### Option A — config.yaml
 
 ```yaml
 gateway:
@@ -49,7 +49,6 @@ gateway:
 | `IRC_NICKSERV_PASSWORD` | — | NickServ password for automatic IDENTIFY on connect |
 | `IRC_ALLOWED_USERS` | — | Comma-separated nicks allowed to talk to the bot |
 | `IRC_ALLOW_ALL_USERS` | — | Allow anyone in the channel to talk to the bot (dev only) |
-| `IRC_HOME_CHANNEL` | — | Channel for cron / notification delivery (defaults to `IRC_CHANNEL`) |
 
 ## Access control
 
@@ -62,7 +61,7 @@ If your network registers nicks, set `IRC_NICKSERV_PASSWORD` (or `nickserv_passw
 - Messages in a joined channel are treated as a **group** conversation.
 - Private messages to the bot are treated as **direct messages**.
 
-Cron jobs and notifications are delivered to the **home channel** — `IRC_HOME_CHANNEL` if set, otherwise the first `IRC_CHANNEL`.
+Cron jobs deliver to an explicit target — for example `deliver: irc:#hermes` or a `nick` for a DM.
 
 ## Run the gateway
 

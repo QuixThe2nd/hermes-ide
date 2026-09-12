@@ -9,7 +9,8 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -132,8 +133,6 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
         "agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
-    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
-
     adapter.set_message_handler(runner._handle_message)
     adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
 

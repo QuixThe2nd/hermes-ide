@@ -47,7 +47,6 @@ _PHOTON_ENV = (
     "PHOTON_DASHBOARD_PROJECT_ID",
     "PHOTON_SPECTRUM_HOST",
     "PHOTON_ALLOWED_USERS",
-    "PHOTON_HOME_CHANNEL",
 )
 
 
@@ -106,12 +105,12 @@ def test_store_project_credentials_round_trip(
     assert photon_auth.load_dashboard_project_id() == "sp-123"
 
 
-def test_load_user_numbers_falls_back_to_home_channel(
+def test_load_user_numbers_falls_back_to_allowed_users(
     tmp_hermes_home: Path,
 ) -> None:
     from hermes_cli.config import save_env_value
 
-    save_env_value("PHOTON_HOME_CHANNEL", "+15551234567")
+    save_env_value("PHOTON_ALLOWED_USERS", "+15551234567")
 
     phone, assigned = photon_auth.load_user_numbers()
     assert phone == "+15551234567"
@@ -340,16 +339,17 @@ def test_credential_summary_no_secret_leak(
         project_secret="secret-bbbbbbbbbbb",
         dashboard_project_id="dash-uuid",
     )
-    summary = photon_auth.credential_summary()
-    blob = "\n".join(summary.values())
+    lines: list[str] = []
+    photon_auth.print_credential_summary(lines.append)
+    blob = "\n".join(lines)
     assert "token-aaaa" not in blob
     assert "secret-bbbb" not in blob
-    assert summary["device_token"].startswith("✓")
-    assert summary["project_key"].startswith("✓")
+    assert "device token        : ✓" in blob
+    assert "project secret      : ✓" in blob
     # Unified id: dashboard id == Spectrum id, surfaced as one project id.
-    assert summary["project_id"] == "sp-uuid"
-    assert summary["phone_number"].startswith("✗ missing")
-    assert summary["assigned_phone_number"].startswith("✗ missing")
+    assert "project id          : sp-uuid" in blob
+    assert "my number           : ✗ missing" in blob
+    assert "assigned number     : ✗ missing" in blob
 
 
 # ---------------------------------------------------------------------------

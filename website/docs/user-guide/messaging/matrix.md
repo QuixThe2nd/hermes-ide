@@ -24,6 +24,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
+| **LaTeX math** | `$...$` (inline) and `$$...$$` (display) in replies are sent as Element `data-mx-maths` markup, so clients with **Settings → Labs → Render LaTeX maths in messages** typeset them with KaTeX. Unpaired dollars (`$5 or $10`) stay literal, and the plain-text `body` keeps the raw TeX for other clients. |
 
 :::tip
 The bot automatically joins rooms when invited. Just invite the bot's Matrix user to any room and it will join and start responding.
@@ -499,23 +500,6 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 :::info
 If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
-
-## Home Room
-
-You can designate a "home room" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
-
-### Using the Slash Command
-
-Type `/sethome` in any Matrix room where the bot is present. That room becomes the home room.
-If your Matrix client intercepts slash commands, type `!sethome` instead.
-
-### Manual Configuration
-
-Add this to your `~/.hermes/.env`:
-
-```bash
-MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
-```
 
 ## Room allowlist (`allowed_rooms`)
 

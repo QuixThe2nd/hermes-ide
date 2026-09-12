@@ -225,7 +225,7 @@ webhooks:
         message_thread_id: "42"
 ```
 
-If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
+If `chat_id` is not provided in `deliver_extra`, the delivery fails with a "no delivery target" error — always set an explicit `chat_id` for the target platform.
 
 ---
 
@@ -303,23 +303,23 @@ The `deliver` field controls where the agent's response goes after processing th
 |-------------|-------------|
 | `log` | Logs the response to the gateway log output. This is the default and is useful for testing. |
 | `github_comment` | Posts the response as a PR/issue comment via the `gh` CLI. Requires `deliver_extra.repo` and `deliver_extra.pr_number`. The `gh` CLI must be installed and authenticated on the gateway host (`gh auth login`). |
-| `telegram` | Routes the response to Telegram. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `discord` | Routes the response to Discord. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `slack` | Routes the response to Slack. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `signal` | Routes the response to Signal. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `sms` | Routes the response to SMS via Twilio. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `whatsapp` | Routes the response to WhatsApp. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `matrix` | Routes the response to Matrix. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `mattermost` | Routes the response to Mattermost. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `homeassistant` | Routes the response to Home Assistant. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `email` | Routes the response to Email. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `dingtalk` | Routes the response to DingTalk. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `feishu` | Routes the response to Feishu/Lark. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `wecom` | Routes the response to WeCom. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `weixin` | Routes the response to Weixin (WeChat). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
-| `bluebubbles` | Routes the response to BlueBubbles (iMessage). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `telegram` | Routes the response to Telegram. Specify the destination `chat_id` in `deliver_extra`. |
+| `discord` | Routes the response to Discord. Specify the destination `chat_id` in `deliver_extra`. |
+| `slack` | Routes the response to Slack. Specify the destination `chat_id` in `deliver_extra`. |
+| `signal` | Routes the response to Signal. Specify the destination `chat_id` in `deliver_extra`. |
+| `sms` | Routes the response to SMS via Twilio. Specify the destination `chat_id` in `deliver_extra`. |
+| `whatsapp` | Routes the response to WhatsApp. Specify the destination `chat_id` in `deliver_extra`. |
+| `matrix` | Routes the response to Matrix. Specify the destination `chat_id` in `deliver_extra`. |
+| `mattermost` | Routes the response to Mattermost. Specify the destination `chat_id` in `deliver_extra`. |
+| `homeassistant` | Routes the response to Home Assistant. Specify the destination `chat_id` in `deliver_extra`. |
+| `email` | Routes the response to Email. Specify the destination `chat_id` in `deliver_extra`. |
+| `dingtalk` | Routes the response to DingTalk. Specify the destination `chat_id` in `deliver_extra`. |
+| `feishu` | Routes the response to Feishu/Lark. Specify the destination `chat_id` in `deliver_extra`. |
+| `wecom` | Routes the response to WeCom. Specify the destination `chat_id` in `deliver_extra`. |
+| `weixin` | Routes the response to Weixin (WeChat). Specify the destination `chat_id` in `deliver_extra`. |
+| `bluebubbles` | Routes the response to BlueBubbles (iMessage). Specify the destination `chat_id` in `deliver_extra`. |
 
-For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
+For cross-platform delivery, the target platform must also be enabled and connected in the gateway. The destination `chat_id` in `deliver_extra` is required — without it the delivery fails with a "no delivery target" error.
 
 ---
 
@@ -498,6 +498,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
+- **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
 
@@ -529,7 +530,7 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 
 ### Idempotency
 
-Delivery IDs (from `X-GitHub-Delivery`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
+Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
 
 ### Body size limits
 
@@ -588,7 +589,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 
 ### Duplicate responses
 
-- The idempotency cache should prevent this — check that the webhook source is sending a delivery ID header (`X-GitHub-Delivery` or `X-Request-ID`)
+- The idempotency cache should prevent this — check that the webhook source is sending a delivery ID header (`X-GitHub-Delivery`, `svix-id`, `webhook-id`, or `X-Request-ID`)
 - Delivery IDs are cached for 1 hour
 
 ### `gh` CLI errors (GitHub comment delivery)

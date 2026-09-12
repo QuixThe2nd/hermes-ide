@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Nessuna modifica."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Salvataggio del canale home non riuscito: {error}"
-    success:               "✅ Canale home impostato su **{name}** (ID: {chat_id}).\nI cron job e i messaggi cross-platform verranno consegnati qui."
-    discord_pointer:       "💡 Vuoi la configurazione completa? `/sethomeserver` provisiona un intero home server — chat, memoria, quote e velocità — tutto collegato."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` funziona solo su Discord — crea categorie, canali e webhook Discord."
     relay_blocked:        "⚠️ Questo messaggio è arrivato tramite un relay che non può autenticare destinazioni di guild Discord. Esegui `/sethomeserver` da un messaggio Discord nativo."
@@ -324,7 +319,7 @@ Esegui `/sethomeserver confirm` per spostarlo sulla guild `{guild_id}`. Nulla vi
 **Messaggi di benvenuto pubblicati:** {embeds_count}
 **Collegato:** {wired_list} ({wired_count})
 **Moduli attivati:** {modules_count}/5
-Canale home: {home_channel_state} — i canali home esistenti non vengono mai sovrascritti.
+I canali di notifica esistenti non vengono mai sovrascritti.
 Le risincronizzazioni vengono eseguite automaticamente al massimo una volta all'ora."
   context:
     header:                "🧠 **Context Window**"
@@ -359,6 +354,7 @@ Le risincronizzazioni vengono eseguite automaticamente al massimo una volta all'
     last_activity:         "**Ultima attività:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · piano gratuito · nous/welcome · /login per accedere"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

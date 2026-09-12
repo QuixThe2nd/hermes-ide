@@ -33,52 +33,41 @@ logger = logging.getLogger(__name__)
 # How many recent chat messages (user + assistant turns) the reviewer gets.
 DEFAULT_CONTEXT_MESSAGES = 10
 
-# Per-message excerpt cap. Generous — a PR summary or diff excerpt the primary
-# agent just printed is exactly what the reviewer needs — but bounded so a
-# pathological turn can't blow up the child's opening context.
+# Per-message excerpt cap: generous (a PR summary/diff excerpt is exactly what the
+# reviewer needs) but bounded against a pathological turn.
 _MESSAGE_CHAR_CAP = 12_000
+
+_REVIEW_GOAL = (
+    "Act as an independent senior reviewer. Thoroughly review the work presented in the conversation excerpt "
+    "provided in your context: investigate any code, pull request, branch, commit, documentation, design, or other "
+    "artifact it references (open the PR, read the diff, run the code or tests where feasible) rather than judging "
+    "from the excerpt alone. Produce a full, structured review: what the work does, whether it is correct and "
+    "complete, concrete defects or risks found (with file/line references where possible), what was verified vs. "
+    "only read, and a clear final verdict with recommended next steps."
+)
 
 
 def _message_text(message: Dict[str, Any]) -> str:
-    """Extract display text from a conversation message dict.
-
-    Handles both plain-string content and OpenAI-style multimodal content
-    lists (text parts joined; non-text parts noted).
-    """
+    """Display text of a message; multimodal parts are joined, non-text parts noted."""
     content = message.get("content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts: List[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                if part.get("type") == "text":
-                    parts.append(str(part.get("text") or ""))
-                else:
-                    parts.append(f"[{part.get('type', 'attachment')}]")
+        parts = [str(part.get("text") or "") if part.get("type") == "text" else f"[{part.get('type', 'attachment')}]"
+                 for part in content if isinstance(part, dict)]
         return "\n".join(p for p in parts if p)
     return ""
 
 
-def snapshot_recent_messages(
-    messages: List[Dict[str, Any]],
-    limit: int = DEFAULT_CONTEXT_MESSAGES,
-) -> List[Dict[str, str]]:
-    """Return the last ``limit`` user/assistant messages as {role, text} dicts.
-
-    System messages and tool results are excluded — the chat turns are what
-    the user and their primary agent actually said (the PR link, the summary,
-    the diff excerpt). Empty-text messages (pure tool-call assistant stubs)
-    are skipped.
-    """
+def snapshot_recent_messages(messages: List[Dict[str, Any]], limit: int = DEFAULT_CONTEXT_MESSAGES) -> List[Dict[str, str]]:
+    """Last ``limit`` user/assistant messages with text as {role, text}, oldest first (system, tool and
+    pure tool-call stubs excluded)."""
     out: List[Dict[str, str]] = []
     for message in reversed(list(messages or [])):
         if not isinstance(message, dict):
             continue
         role = str(message.get("role") or "")
-        if role not in ("user", "assistant"):
-            continue
-        text = _message_text(message).strip()
+        text = _message_text(message).strip() if role in ("user", "assistant") else ""
         if not text:
             continue
         if len(text) > _MESSAGE_CHAR_CAP:
@@ -90,148 +79,92 @@ def snapshot_recent_messages(
     return out
 
 
-def collect_parent_loaded_skills(
-    parent_agent,
-    messages: List[Dict[str, Any]],
-    limit: int = 8,
-) -> List[str]:
-    """Names of skills the parent agent was operating under.
-
-    Two sources, both surface-independent:
-
-    * Launch-preloaded skills (``hermes -s``, kanban lanes, TUI skills env):
-      their activation notes are embedded in the parent's
-      ``ephemeral_system_prompt`` with a stable marker
-      (see ``agent.skill_commands.build_preloaded_skills_prompt``).
-    * Mid-session loads: ``skill_view`` tool calls in the parent's
-      conversation history (assistant ``tool_calls`` entries).
-
-    Order: preloaded first, then history loads, deduped, capped at ``limit``
-    (a reviewer told to load 30 skills would burn its budget before working).
-    """
+def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], limit: int = 8) -> List[str]:
+    """Skills the parent was operating under: launch-preloaded (marker in ``ephemeral_system_prompt``)
+    first, then ``skill_view`` loads from history, deduped, capped at ``limit`` (a reviewer told to load 30
+    skills would burn its budget before working)."""
     names: List[str] = []
-    seen: set = set()
-
-    def _add(name: str) -> None:
-        cleaned = (name or "").strip()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            names.append(cleaned)
-
     prompt = str(getattr(parent_agent, "ephemeral_system_prompt", "") or "")
-    for match in re.finditer(r'with the "([^"]+)" skill\s+preloaded', prompt):
-        _add(match.group(1))
-
+    candidates = [m.group(1) for m in re.finditer(r'with the "([^"]+)" skill\s+preloaded', prompt)]
     for message in messages or []:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         for tool_call in message.get("tool_calls") or []:
-            if not isinstance(tool_call, dict):
-                continue
-            fn = tool_call.get("function") or {}
+            fn = tool_call.get("function") or {} if isinstance(tool_call, dict) else {}
             if fn.get("name") != "skill_view":
                 continue
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except Exception:
                 continue
-            # Only whole-skill loads seed the reviewer; a reference-file read
-            # (file_path=...) is a detail of the parent's task, and the
-            # reviewer loading the main SKILL.md covers it.
+            # Only whole-skill loads seed the reviewer; a reference-file read is a detail
+            # of the parent's task covered by loading the SKILL.md.
             if isinstance(args, dict) and not args.get("file_path"):
-                _add(str(args.get("name") or ""))
-
+                candidates.append(str(args.get("name") or ""))
+    for name in candidates:
+        cleaned = name.strip()
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
     return names[:limit]
 
 
-def build_review_task(
-    snapshot: List[Dict[str, str]],
-    user_prompt: str = "",
-    loaded_skills: Optional[List[str]] = None,
-) -> tuple:
-    """Compose the reviewer subagent's (goal, context) pair."""
-    goal = (
-        "Act as an independent senior reviewer. Thoroughly review the work "
-        "presented in the conversation excerpt provided in your context: "
-        "investigate any code, pull request, branch, commit, documentation, "
-        "design, or other artifact it references (open the PR, read the "
-        "diff, run the code or tests where feasible) rather than judging "
-        "from the excerpt alone. Produce a full, structured review: what "
-        "the work does, whether it is correct and complete, concrete "
-        "defects or risks found (with file/line references where possible), "
-        "what was verified vs. only read, and a clear final verdict with "
-        "recommended next steps."
-    )
-
+def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loaded_skills: Optional[List[str]] = None) -> tuple:
+    """Compose a viewer-friendly goal and the complete reviewer briefing."""
+    focus = " ".join(user_prompt.split())
+    goal = f"Review: {focus}" if focus else "Review recent work"
+    if len(goal) > 80:
+        goal = goal[:79].rstrip() + "…"
+    # The goal is also the live worker label; keep the full instructions in context.
     lines = [
-        "You were spawned by the /review command. The following is an "
-        "excerpt of the most recent conversation between the user and "
-        "their primary agent. It is your starting evidence — the work to "
+        _REVIEW_GOAL,
+        "",
+        "You were spawned by the /review command. The following is an excerpt of the most recent conversation "
+        "between the user and their primary agent. It is your starting evidence — the work to "
         "review is referenced in it.",
         "",
         "--- Recent conversation (oldest first) ---",
     ]
     for message in snapshot:
-        label = "USER" if message["role"] == "user" else "PRIMARY AGENT"
-        lines.append(f"[{label}]")
-        lines.append(message["text"])
-        lines.append("")
+        lines += [f"[{'USER' if message['role'] == 'user' else 'PRIMARY AGENT'}]", message["text"], ""]
     lines.append("--- End of conversation excerpt ---")
     if loaded_skills:
         skill_list = ", ".join(loaded_skills)
-        lines.append("")
-        lines.append(
+        lines += [
+            "",
             "The primary agent was operating under these loaded skills: "
             f"{skill_list}. Before reviewing, load each with "
             "skill_view(name=...) and treat their conventions, invariants, "
             "and review standards as binding for your assessment — the work "
-            "was produced under them and must be judged against them."
-        )
+            "was produced under them and must be judged against them.",
+        ]
     if user_prompt.strip():
-        lines.append("")
-        lines.append("Additional review instructions from the user:")
-        lines.append(user_prompt.strip())
-    lines.append("")
-    lines.append(
+        lines += ["", "Additional review instructions from the user:", user_prompt.strip()]
+    lines += [
+        "",
         "Your review is delivered back into that conversation, addressed to "
         "the primary agent and its user. Be direct and specific; do not "
-        "soften findings."
-    )
+        "soften findings.",
+    ]
     return goal, "\n".join(lines)
 
 
 def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
-    """Read ``auxiliary.review`` into a delegation-credentials-shaped dict.
-
-    Returns None when the user configured nothing (provider=auto/empty and no
-    model/base_url), which makes the reviewer inherit the parent agent's
-    credentials — the main-model-first default.
-    """
+    """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
+    and no model/base_url) so the reviewer inherits the parent's credentials."""
     try:
         from hermes_cli.config import load_config_readonly
-
-        full = load_config_readonly()
-        aux = full.get("auxiliary") or {}
-        review = aux.get("review") or {}
-        if not isinstance(review, dict):
-            return None
+        review = (load_config_readonly().get("auxiliary") or {}).get("review") or {}
     except Exception:
         return None
-
-    provider = str(review.get("provider") or "").strip()
-    if provider.lower() == "auto":
-        provider = ""
-    model = str(review.get("model") or "").strip()
-    base_url = str(review.get("base_url") or "").strip()
-    if not (provider or model or base_url):
+    if not isinstance(review, dict):
         return None
-    return {
-        "provider": provider,
-        "model": model,
-        "base_url": base_url,
-        "api_key": str(review.get("api_key") or "").strip(),
-        "api_mode": str(review.get("api_mode") or "").strip(),
-    }
+
+    cfg = {k: str(review.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key", "api_mode")}
+    if cfg["provider"].lower() == "auto":
+        cfg["provider"] = ""
+    if not (cfg["provider"] or cfg["model"] or cfg["base_url"]):
+        return None
+    return cfg
 
 
 def start_review(
@@ -250,13 +183,10 @@ def start_review(
     """
     if parent_agent is None:
         raise ValueError("No active agent — send a message first.")
-
     snapshot = snapshot_recent_messages(messages)
     if not snapshot:
         raise ValueError("Nothing to review yet — the conversation is empty.")
-
-    loaded_skills = collect_parent_loaded_skills(parent_agent, messages)
-    goal, context = build_review_task(snapshot, user_prompt, loaded_skills)
+    goal, context = build_review_task(snapshot, user_prompt, collect_parent_loaded_skills(parent_agent, messages))
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_agent
@@ -271,7 +201,7 @@ def start_review(
     try:
         result = json.loads(raw)
     except Exception:
-        raise ValueError(f"Review dispatch failed: {raw!r}")
+        result = None
     if isinstance(result, dict) and result.get("error"):
         raise ValueError(str(result["error"]))
     if not isinstance(result, dict):
@@ -282,16 +212,11 @@ def start_review(
 
 def format_dispatch_note(result: Dict[str, Any], user_prompt: str = "") -> str:
     """Human-facing one-liner for a successful dispatch. Shared by surfaces."""
+    if result.get("status") == "dispatched":
+        return "Review started. Results will return here."
     model = str(result.get("review_model") or "").strip()
     model_note = f" on {model}" if model else ""
     focus_note = f" (focus: {user_prompt.strip()})" if user_prompt.strip() else ""
-    if result.get("status") == "dispatched":
-        return (
-            f"⚖ Review subagent dispatched{model_note}{focus_note} — it is "
-            f"investigating the last {DEFAULT_CONTEXT_MESSAGES} messages in "
-            f"the background and its full review will re-enter this "
-            f"conversation when it finishes."
-        )
     # Synchronous fallback (channels that cannot route async completions).
     return (
         f"⚖ Review completed synchronously{model_note}{focus_note} — "

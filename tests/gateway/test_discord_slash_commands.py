@@ -143,9 +143,9 @@ async def test_registers_native_thread_slash_command(adapter):
 
 @pytest.mark.asyncio
 async def test_registers_native_sethomeserver_slash_command(adapter):
-    # /sethomeserver must sit on the native tree next to /sethome (Discord-only
-    # provisioning), forwarding its optional confirm arg verbatim so the
-    # dispatcher's canonical routing decides what it means.
+    # /sethomeserver must sit on the native tree (Discord-only provisioning),
+    # forwarding its optional confirm arg verbatim so the dispatcher's
+    # canonical routing decides what it means.
     adapter._run_simple_slash = AsyncMock()
     adapter._register_slash_commands()
 
@@ -549,7 +549,7 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
+        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
         return_value=(mock_categories, mock_uncategorized, 0),
     ):
         adapter._register_slash_commands()
@@ -599,7 +599,7 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
+        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
         return_value=(large_categories, [], 0),
     ):
         adapter._register_slash_commands()

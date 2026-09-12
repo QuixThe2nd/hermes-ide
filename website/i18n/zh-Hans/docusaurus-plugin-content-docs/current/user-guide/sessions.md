@@ -147,7 +147,7 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
 
 ## 跨平台切换
 
-在 CLI session 中使用 `/handoff <platform>` 将实时对话转移到消息平台的主频道。Agent 会从 CLI 停止的地方精确接续——相同的 session id、完整的角色感知对话记录、工具调用一并保留。
+在 CLI session 中使用 `/handoff <platform>` 将实时对话转移到消息平台的通知频道。Agent 会从 CLI 停止的地方精确接续——相同的 session id、完整的角色感知对话记录、工具调用一并保留。
 
 ```bash
 # 在 CLI session 内
@@ -156,13 +156,13 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
 
 执行过程：
 
-1. CLI 验证 `<platform>` 已启用且已设置主频道（在目标聊天中运行一次 `/sethome` 即可配置）。
+1. CLI 验证 `<platform>` 已启用且已设置通知频道（在目标聊天中运行一次 `/setnotify` 即可配置）。
 2. CLI 将 session 标记为待处理并**阻塞轮询 gateway**。如果 agent 正在处理轮次，则拒绝操作——请等待当前响应完成后再执行。
 3. Gateway 监视器认领切换请求，并向目标适配器请求新线程：
    - **Telegram** — 开启新的论坛话题（如果在聊天中启用了 Bot API 9.4+ Topics 模式则为私信话题，或论坛超级群组话题）。
-   - **Discord** — 在主文字频道下创建 1440 分钟自动归档的线程。
+   - **Discord** — 在通知频道下创建 1440 分钟自动归档的线程。
    - **Slack** — 发布一条种子消息并使用其 `ts` 作为线程锚点。
-   - **WhatsApp / Signal / Matrix / SMS** — 无原生线程，回退到直接使用主频道。
+   - **WhatsApp / Signal / Matrix / SMS** — 无原生线程，直接投递到通知频道。
 4. Gateway 将目标键重新绑定到你现有的 CLI session id，然后伪造一个合成用户轮次，要求 agent 确认并总结。回复会出现在新线程中。
 5. Gateway 确认成功后，CLI 打印 `/resume` 提示并干净退出：
 
@@ -176,9 +176,9 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
 **恢复到 CLI：** 当你想回到桌面时，只需运行 `/resume <title>`（或在 shell 中运行 `hermes -r "<title>"`），从平台停止的地方继续。
 
 **故障模式：**
-- 未配置主频道 → CLI 拒绝并提示 `/sethome`。
+- 未配置通知频道 → CLI 拒绝并提示 `/setnotify`。
 - 平台未启用/gateway 未运行 → CLI 在 60 秒后超时并显示明确消息，CLI session 保持完整。
-- 线程创建失败（权限不足、话题模式未开启）→ 直接回退到主频道并仍然完成切换；没有线程隔离，但切换本身有效。
+- 线程创建失败（权限不足、话题模式未开启）→ 直接投递到通知频道并仍然完成切换；没有线程隔离，但切换本身有效。
 - `adapter.send` 失败（速率限制、临时 API 错误）→ 切换标记为失败并附带原因；行被清除以便重试。
 
 **值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack——这是最常见的情况——因此大多数设置不会遇到此问题。
@@ -535,18 +535,13 @@ group_sessions_per_user: false
 
 这会将群组/频道恢复为每个房间一个共享 session，保留共享的对话上下文，但也共享 token 费用、中断状态和上下文增长。
 
-### Session 重置策略
+### 会话连续性
 
-**默认情况下 Gateway session 永不自动重置**（`mode: none`）。你可以通过 `config.yaml` 中的 `session_reset` 部分选择启用自动重置：
+Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`
+或 `/reset`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
+重置计时环境变量均被忽略。缓存中的 agent 可以释放资源，但不会替换持久化对话。
+重启恢复的新鲜度限制仅约束自动继续执行，不会清除用户发送消息时加载的历史。
 
-- **none** — 永不自动重置（默认；上下文由 `/reset` 和压缩管理）
-- **idle** — 在 N 分钟不活跃后重置
-- **daily** — 每天在特定时间重置
-- **both** — 以先到者为准（idle 或 daily）
-
-在 session 自动重置之前，agent 会有一轮机会保存对话中的重要记忆或技能。
-
-有**活跃后台进程**的 session 永远不会自动重置，无论策略如何。
 
 ## 存储位置
 
@@ -576,7 +571,7 @@ state.db 后可安全删除。
 
 ### 自动清理
 
-- Gateway session 根据配置的重置策略自动重置
+- Gateway 会话会持续保留；请使用 `/new` 或 `/reset` 显式开始新会话
 - 重置前，agent 保存即将过期 session 中的记忆和技能
 - 可选自动清理：当 `sessions.auto_prune` 为 `true` 时，在 CLI/gateway 启动时清理早于 `sessions.retention_days`（默认 90）天的已结束 session
 - 实际删除了行的清理操作完成后，如果距离上次成功执行 `VACUUM` 已达到 `sessions.min_vacuum_interval_days`（默认 30）天，`state.db` 会执行 `VACUUM` 以回收磁盘空间（SQLite 在普通 DELETE 后不会缩小文件）

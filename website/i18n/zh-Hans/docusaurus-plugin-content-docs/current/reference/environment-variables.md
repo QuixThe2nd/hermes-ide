@@ -242,9 +242,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TELEGRAM_ALLOWED_USERS` | 允许使用 bot 的逗号分隔用户 ID（适用于私聊、群组和论坛） |
 | `TELEGRAM_GROUP_ALLOWED_USERS` | 仅在群组/论坛中授权的逗号分隔发送者用户 ID（**不**授予私聊权限）。以 `-` 开头的聊天 ID 形式值仍作为聊天 ID 处理，以向后兼容 #17686 之前的配置，并显示弃用警告。 |
 | `TELEGRAM_GROUP_ALLOWED_CHATS` | 逗号分隔的群组/论坛聊天 ID；任意成员均可授权 |
-| `TELEGRAM_HOME_CHANNEL` | cron 投递的默认 Telegram 聊天/频道 |
-| `TELEGRAM_HOME_CHANNEL_NAME` | Telegram 主频道的显示名称 |
-| `TELEGRAM_CRON_THREAD_ID` | 接收 cron 投递的论坛话题 ID；仅对 cron 覆盖 `TELEGRAM_HOME_CHANNEL_THREAD_ID`。在话题模式下使用，使 cron 消息的回复开启新会话而非进入系统大厅（#24409）。 |
 | `TELEGRAM_WEBHOOK_URL` | webhook 模式的公共 HTTPS URL（启用 webhook 而非轮询） |
 | `TELEGRAM_WEBHOOK_PORT` | webhook 服务器本地监听端口（默认：`8443`） |
 | `TELEGRAM_WEBHOOK_SECRET` | Telegram 在每次更新中回传的密钥 token，用于验证。**设置 `TELEGRAM_WEBHOOK_URL` 时必填**——未设置时 gateway 拒绝启动（GHSA-3vpc-7q5r-276h）。使用 `openssl rand -hex 32` 生成。 |
@@ -252,6 +249,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TELEGRAM_REQUIRE_MENTION` | 在 Telegram 群组中响应前要求显式触发。等同于 `config.yaml` 中的 `telegram.require_mention`。 |
 | `TELEGRAM_MENTION_PATTERNS` | 启用 Telegram 群组 mention 门控时接受的正则唤醒词模式，JSON 数组、换行分隔列表或逗号分隔列表。等同于 `telegram.mention_patterns`。 |
 | `TELEGRAM_EXCLUSIVE_BOT_MENTIONS` | 启用后，Telegram 群组中的显式 `@...bot` mention 仅路由到被 mention 的 bot 用户名，然后再执行回复或唤醒词回退。默认：`true`。等同于 `telegram.exclusive_bot_mentions`。 |
+| `TELEGRAM_BOTS_REQUIRE_MENTION` | 启用后，其他 bot 发送的消息必须显式 `@本bot` 才会触发回复——仅引用回复会被忽略，从而避免两个 bot 互相回复形成死循环。人类用户的回复不受影响。默认：`false`。等同于 `telegram.bots_require_mention`。 |
 | `TELEGRAM_REPLY_TO_MODE` | 回复引用行为：`off`、`first`（默认）或 `all`。与 Discord 模式一致。 |
 | `TELEGRAM_IGNORED_THREADS` | bot 永不响应的逗号分隔 Telegram 论坛话题/线程 ID |
 | `TELEGRAM_PROXY` | Telegram 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
@@ -260,8 +258,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `DISCORD_ALLOWED_ROLES` | 允许使用 bot 的逗号分隔 Discord 角色 ID（与 `DISCORD_ALLOWED_USERS` 取 OR）。自动启用 Members intent。适用于管理团队频繁变动的场景——角色授权自动传播。 |
 | `DISCORD_ALLOWED_CHANNELS` | 逗号分隔的 Discord 频道 ID。设置后，bot 仅在这些频道（以及允许的私聊）中响应。覆盖 `config.yaml` 中的 `discord.allowed_channels`。 |
 | `DISCORD_PROXY` | Discord 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
-| `DISCORD_HOME_CHANNEL` | cron 投递的默认 Discord 频道 |
-| `DISCORD_HOME_CHANNEL_NAME` | Discord 主频道的显示名称 |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord 斜杠命令启动同步策略：`safe`（差异对比并协调）、`bulk`（旧版 `tree.sync()`）或 `off` |
 | `DISCORD_REQUIRE_MENTION` | 在服务器频道中响应前要求 @mention |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 不需要 mention 的逗号分隔频道 ID |
@@ -279,15 +275,11 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `SLACK_BOT_TOKEN` | Slack bot token（`xoxb-...`） |
 | `SLACK_APP_TOKEN` | Slack 应用级 token（`xapp-...`，Socket Mode 必需） |
 | `SLACK_ALLOWED_USERS` | 逗号分隔的 Slack 用户 ID |
-| `SLACK_HOME_CHANNEL` | cron 投递的默认 Slack 频道 |
-| `SLACK_HOME_CHANNEL_NAME` | Slack 主频道的显示名称 |
 | `GOOGLE_CHAT_PROJECT_ID` | 托管 Pub/Sub 话题的 GCP 项目（回退到 `GOOGLE_CLOUD_PROJECT`） |
 | `GOOGLE_CHAT_SUBSCRIPTION_NAME` | 完整 Pub/Sub 订阅路径，`projects/{proj}/subscriptions/{sub}`（旧版别名：`GOOGLE_CHAT_SUBSCRIPTION`） |
 | `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | Service Account JSON 文件路径，或内联 JSON（回退到 `GOOGLE_APPLICATION_CREDENTIALS`） |
 | `GOOGLE_CHAT_ALLOWED_USERS` | 允许与 bot 聊天的逗号分隔用户邮箱 |
 | `GOOGLE_CHAT_ALLOW_ALL_USERS` | 允许任意 Google Chat 用户触发 bot（仅用于开发） |
-| `GOOGLE_CHAT_HOME_CHANNEL` | cron 投递的默认空间（例如 `spaces/AAAA...`） |
-| `GOOGLE_CHAT_HOME_CHANNEL_NAME` | Google Chat 主空间的显示名称 |
 | `GOOGLE_CHAT_MAX_MESSAGES` | Pub/Sub FlowControl 最大在途消息数（默认：`1`） |
 | `GOOGLE_CHAT_MAX_BYTES` | Pub/Sub FlowControl 最大在途字节数（默认：`16777216`，16 MiB） |
 | `GOOGLE_CHAT_BOOTSTRAP_SPACES` | 启动时探测以解析 bot 自身 `users/{id}` 的逗号分隔额外空间 ID |
@@ -301,7 +293,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `SIGNAL_ACCOUNT` | E.164 格式的 bot 手机号码 |
 | `SIGNAL_ALLOWED_USERS` | 逗号分隔的 E.164 手机号码或 UUID |
 | `SIGNAL_GROUP_ALLOWED_USERS` | 逗号分隔的群组 ID，或 `*` 表示所有群组 |
-| `SIGNAL_HOME_CHANNEL_NAME` | Signal 主频道的显示名称 |
 | `SIGNAL_IGNORE_STORIES` | 忽略 Signal 故事/状态更新 |
 | `SIGNAL_ALLOW_ALL_USERS` | 无需白名单允许所有 Signal 用户 |
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID（与电话技能共享） |
@@ -313,8 +304,6 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `SMS_INSECURE_NO_SIGNATURE` | 设为 `true` 可禁用 Twilio 签名验证（仅用于本地开发——不适用于生产环境） |
 | `SMS_ALLOWED_USERS` | 允许聊天的逗号分隔 E.164 手机号码 |
 | `SMS_ALLOW_ALL_USERS` | 无需白名单允许所有 SMS 发送者 |
-| `SMS_HOME_CHANNEL` | cron 任务/通知投递的手机号码 |
-| `SMS_HOME_CHANNEL_NAME` | SMS 主频道的显示名称 |
 | `EMAIL_ADDRESS` | Email gateway 适配器的邮箱地址 |
 | `EMAIL_PASSWORD` | 邮箱账户的密码或应用密码 |
 | `EMAIL_IMAP_HOST` | 邮件适配器的 IMAP 主机名 |
@@ -338,12 +327,10 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `FEISHU_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔飞书用户 ID |
 | `FEISHU_ALLOW_BOTS` | `none`（默认）/`mentions`/`all`——接受来自其他 bot 的入站消息。参见 [bot 间消息传递](../user-guide/messaging/feishu.md#bot-to-bot-messaging) |
 | `FEISHU_REQUIRE_MENTION` | `true`（默认）/`false`——群组消息是否必须 @mention bot。可通过 `group_rules.<chat_id>.require_mention` 按聊天覆盖。 |
-| `FEISHU_HOME_CHANNEL` | cron 投递和通知的飞书聊天 ID |
 | `WECOM_BOT_ID` | 来自管理控制台的企业微信 AI Bot ID |
 | `WECOM_SECRET` | 企业微信 AI Bot 密钥 |
 | `WECOM_WEBSOCKET_URL` | 自定义 WebSocket URL（默认：`wss://openws.work.weixin.qq.com`） |
 | `WECOM_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔企业微信用户 ID |
-| `WECOM_HOME_CHANNEL` | cron 投递和通知的企业微信聊天 ID |
 | `WECOM_CALLBACK_CORP_ID` | 企业微信回调自建应用的企业 Corp ID |
 | `WECOM_CALLBACK_CORP_SECRET` | 自建应用的企业密钥 |
 | `WECOM_CALLBACK_AGENT_ID` | 自建应用的 Agent ID |
@@ -361,14 +348,11 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `WEIXIN_GROUP_POLICY` | 群消息策略：`open`、`allowlist`、`disabled`（默认：`disabled`） |
 | `WEIXIN_ALLOWED_USERS` | 允许私信 bot 的逗号分隔微信用户 ID |
 | `WEIXIN_GROUP_ALLOWED_USERS` | 允许与 bot 互动的逗号分隔微信**群聊 ID**（非成员用户 ID）。变量名为历史遗留——期望传入群 ID。仅当 iLink 实际投递群事件时生效；扫码登录的 iLink bot 身份（`...@im.bot`）通常不接收普通微信群消息。 |
-| `WEIXIN_HOME_CHANNEL` | cron 投递和通知的微信聊天 ID |
-| `WEIXIN_HOME_CHANNEL_NAME` | 微信主频道的显示名称 |
 | `WEIXIN_ALLOW_ALL_USERS` | 无需白名单允许所有微信用户（`true`/`false`） |
 | `BLUEBUBBLES_SERVER_URL` | BlueBubbles 服务器 URL（例如 `http://192.168.1.10:1234`） |
 | `BLUEBUBBLES_PASSWORD` | BlueBubbles 服务器密码 |
 | `BLUEBUBBLES_WEBHOOK_HOST` | webhook 监听绑定地址（默认：`127.0.0.1`） |
 | `BLUEBUBBLES_WEBHOOK_PORT` | webhook 监听端口（默认：`8645`） |
-| `BLUEBUBBLES_HOME_CHANNEL` | cron/通知投递的手机/邮箱 |
 | `BLUEBUBBLES_ALLOWED_USERS` | 逗号分隔的授权用户 |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | 允许所有用户（`true`/`false`） |
 | `QQ_APP_ID` | 来自 [q.qq.com](https://q.qq.com) 的 QQ Bot App ID |
@@ -379,13 +363,10 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `QQ_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔 QQ 用户 openID |
 | `QQ_GROUP_ALLOWED_USERS` | 群 @消息访问的逗号分隔 QQ 群 ID |
 | `QQ_ALLOW_ALL_USERS` | 允许所有用户（`true`/`false`，覆盖 `QQ_ALLOWED_USERS`） |
-| `QQBOT_HOME_CHANNEL` | cron 投递和通知的 QQ 用户/群 openID |
-| `QQBOT_HOME_CHANNEL_NAME` | QQ 主频道的显示名称 |
 | `QQ_PORTAL_HOST` | 覆盖 QQ portal 主机（设为 `sandbox.q.qq.com` 可通过沙箱 gateway 路由；默认：`q.qq.com`）。 |
 | `MATTERMOST_URL` | Mattermost 服务器 URL（例如 `https://mm.example.com`） |
 | `MATTERMOST_TOKEN` | Mattermost 的 bot token 或个人访问 token |
 | `MATTERMOST_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔 Mattermost 用户 ID |
-| `MATTERMOST_HOME_CHANNEL` | 主动消息投递（cron、通知）的频道 ID |
 | `MATTERMOST_REQUIRE_MENTION` | 在频道中要求 `@mention`（默认：`true`）。设为 `false` 可响应所有消息。 |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | bot 无需 `@mention` 即可响应的逗号分隔频道 ID |
 | `MATTERMOST_REPLY_MODE` | 回复风格：`thread`（线程回复）或 `off`（平铺消息，默认） |
@@ -472,12 +453,12 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `LINE_ALLOWED_GROUPS` | bot 将在其中响应的逗号分隔群组 ID（`C` 前缀）。 |
 | `LINE_ALLOWED_ROOMS` | bot 将在其中响应的逗号分隔房间 ID（`R` 前缀）。 |
 | `LINE_ALLOW_ALL_USERS` | 仅用于开发的逃生舱——接受任意来源。默认：`false`。 |
-| `LINE_HOME_CHANNEL` | `deliver: line` 的 cron 任务的默认投递目标。 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 慢速 LLM Template Buttons postback 触发前的等待秒数（默认：`45`）。设为 `0` 可禁用并始终使用 Push 回退。 |
 | `LINE_PENDING_TEXT` | 与 postback 按钮一起显示的气泡文本。 |
 | `LINE_BUTTON_LABEL` | Postback 按钮标签（默认：`Get answer`）。 |
 | `LINE_DELIVERED_TEXT` | 再次点击已投递 postback 时的回复（默认：`Already replied ✅`）。 |
 | `LINE_INTERRUPTED_TEXT` | 点击 `/stop` 孤立 postback 按钮时的回复（默认：`Run was interrupted before completion.`）。 |
+| `LINE_EXPIRED_TEXT` | 点击缓存答案已失效（过期 / 随进程状态丢失）的 postback 按钮时的回复（默认：`That request has expired — send your message again.`）。 |
 
 ### ntfy（推送通知）
 
@@ -492,8 +473,6 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `NTFY_MARKDOWN` | 设为 `true` 可使用 `X-Markdown: true` 头发送回复。默认：`false`。 |
 | `NTFY_ALLOWED_USERS` | 白名单（视为用户 ID；在 ntfy 中即话题名称）。通常设为与 `NTFY_TOPIC` 相同的值。 |
 | `NTFY_ALLOW_ALL_USERS` | 仅用于开发的逃生舱——仅在访问控制的私有话题上安全。默认：`false`。 |
-| `NTFY_HOME_CHANNEL` | `deliver: ntfy` 的 cron 任务的默认投递目标。 |
-| `NTFY_HOME_CHANNEL_NAME` | 主频道的人类可读标签（默认为话题名称）。 |
 
 在使用不受信任的话题部署前，请参阅 [ntfy 消息指南](/user-guide/messaging/ntfy)——特别是**身份模型**部分。
 
@@ -611,8 +590,6 @@ export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 
 | 变量 | 描述 |
 |----------|-------------|
-| `SESSION_IDLE_MINUTES` | 不活动 N 分钟后重置会话（默认：1440） |
-| `SESSION_RESET_HOUR` | 24 小时制每日重置时间（默认：4 = 凌晨 4 点） |
 | `HERMES_SESSION_ID` | **自动导出到 Hermes 生成的每个工具子进程**（`terminal`、`execute_code`、持久 shell、Docker/Singularity 后端、委托子 agent 运行）。由 agent 设置为当前会话 ID；从工具调用的用户脚本可读取它，以将其输出、遥测或副作用与原始 Hermes 会话关联。**不应手动设置**——从父 shell 覆盖仅在 agent 运行外生效，且 agent 启动会话时会被覆盖。 |
 
 ## 上下文压缩（仅 config.yaml）

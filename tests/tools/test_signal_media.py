@@ -92,7 +92,6 @@ class TestSendSignalMediaRestrictions:
         with patch("tools.send_message_tool._send_signal", new=AsyncMock(return_value=mock_result)):
             config = MagicMock()
             config.platforms = {Platform.SIGNAL: MagicMock(enabled=True)}
-            config.get_home_channel.return_value = None
 
             result = asyncio.run(
                 _send_to_platform(
@@ -115,7 +114,6 @@ class TestSendSignalMediaRestrictions:
 
         config = MagicMock()
         config.platforms = {Platform.SLACK: MagicMock(enabled=True)}
-        config.get_home_channel.return_value = None
 
         # Empty message with media_files should trigger restriction block
         result = asyncio.run(
@@ -146,7 +144,6 @@ class TestSendSignalMediaWarningMessages:
 
         config = MagicMock()
         config.platforms = {Platform.SLACK: MagicMock(enabled=True)}
-        config.get_home_channel.return_value = None
 
         # Slack migrated to a bundled plugin (#41112) — delivery now flows
         # through the registry's standalone_sender_fn instead of the old

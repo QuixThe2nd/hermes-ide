@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
@@ -58,28 +58,6 @@ class TestMattermostDisplayHygiene:
             require_platform_override_for={Platform.MATTERMOST},
         ) is True
 
-
-# ---------------------------------------------------------------------------
-# Platform & Config
-# ---------------------------------------------------------------------------
-
-class TestMattermostConfigLoading:
-
-
-    def test_mattermost_home_channel(self, monkeypatch):
-        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
-        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-        monkeypatch.setenv("MATTERMOST_HOME_CHANNEL", "ch_abc123")
-        monkeypatch.setenv("MATTERMOST_HOME_CHANNEL_NAME", "General")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        home = config.get_home_channel(Platform.MATTERMOST)
-        assert home is not None
-        assert home.chat_id == "ch_abc123"
-        assert home.name == "General"
 
 
 # ---------------------------------------------------------------------------

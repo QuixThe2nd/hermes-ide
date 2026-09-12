@@ -106,8 +106,6 @@ export interface HandoffRequestResponse {
   queued?: boolean
   session_key?: string
   platform?: string
-  // Human-readable home channel name for the destination platform.
-  home_name?: string
 }
 
 export interface HandoffStateResponse {

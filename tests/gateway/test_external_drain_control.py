@@ -21,7 +21,7 @@ import pytest
 import gateway.drain_control as dc
 from gateway.run import GatewayRunner
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -53,7 +53,7 @@ class TestMarkerContract:
 class TestSuppressNotification:
     """The generic suppress_notification flag on the drain marker.
 
-    Gates ONLY the gateway's home-channel shutdown broadcast (NAS auto-update
+    Gates ONLY the gateway's notification-channel shutdown broadcast (NAS auto-update
     sets it true). Default-false so legacy/operator drains behave as before.
     The reader reuses the NS-570 epoch-staleness check so an orphaned marker
     can never silence a fresh gateway.
