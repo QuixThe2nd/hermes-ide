@@ -570,7 +570,7 @@ async def test_shutdown_comeback_notice_sent_and_marker_unlinked(tmp_path, monke
 async def test_shutdown_comeback_notice_skips_targets_notified_this_boot(
     tmp_path, monkeypatch
 ):
-    """/restart or a home-channel notice that just fired suppresses the second ping."""
+    """/restart or a notification-channel notice that just fired suppresses the second ping."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     marker = tmp_path / ".shutdown_notify.json"
     marker.write_text(
@@ -693,7 +693,7 @@ async def test_relay_shutdown_comeback_notice_preserves_owner_metadata(
 async def test_boot_sends_wire_comeback_dedup_against_restart_and_home_notices(
     tmp_path, monkeypatch
 ):
-    """skip_targets flows restart → home-channel send → comeback, never double-pinging."""
+    """skip_targets flows restart → notification-channel send → comeback, never double-pinging."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_startup_restore_drain_timeout_secs", lambda: 0)
 

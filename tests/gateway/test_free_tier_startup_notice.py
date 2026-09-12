@@ -1,4 +1,4 @@
-"""Home-channel startup notice names the free tier only when a guest carries the gateway's inference."""
+"""Notification-channel startup notice names the free tier only when a guest carries the gateway's inference."""
 
 import base64
 import json
