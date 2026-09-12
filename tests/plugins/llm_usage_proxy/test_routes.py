@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 
 import httpx
 import pytest
+
+from agent.secret_scope import current_secret_scope, set_multiplex_active
 
 from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.llm_usage_routes import (
@@ -422,3 +425,81 @@ def test_pool_entry_bases_are_read_from_disk_without_mutating_credentials(
         assert not list(prof_a.glob("*.corrupt"))
 
     _under_override(prof_a, _discover)
+
+
+# ── scope-less gateway boot ─────────────────────────────────────────────────
+# The production repro: reconcile_proxy_on_load builds the route table during
+# gateway boot, where multiplexing is on but no per-turn set_secret_scope is
+# installed yet. Base-URL discovery is routing metadata, not a credential
+# read, so it must stand down (skip the env-override base), never raise.
+
+KIMI_ENV_BASE = "https://kimi-env-override.example/v1"
+EXPLICIT_UPSTREAM_BASE = "https://explicit-upstream.example/v1"
+
+
+@contextlib.contextmanager
+def _scope_less_boot():
+    """Multiplexing on, no profile secret scope — gateway-boot conditions."""
+    assert current_secret_scope() is None
+    set_multiplex_active(True)
+    try:
+        yield
+    finally:
+        set_multiplex_active(False)
+
+
+def _build_table(home, **kwargs):
+    """build_route_table under *home* at scope-less boot, explicit upstream in cfg."""
+    from plugins.llm_usage_proxy.routes import build_route_table
+
+    cfg = {"upstreams": {"explicit": EXPLICIT_UPSTREAM_BASE}}
+    with _scope_less_boot():
+        return _under_override(home, lambda: build_route_table(cfg, **kwargs))
+
+
+def test_build_route_table_survives_scope_less_boot(two_profiles, monkeypatch):
+    """Multiplexed boot + var only in os.environ → no raise, base skipped.
+
+    This is exactly the value the fail-closed resolver refuses to serve
+    scope-lessly: raising here (pre-fix behavior) meant register_route_table
+    never ran and ALL provider traffic stayed direct and unmetered.
+    """
+    prof_a, _ = two_profiles
+    monkeypatch.setenv("KIMI_BASE_URL", KIMI_ENV_BASE)
+
+    routes = _build_table(prof_a)
+
+    assert isinstance(routes, dict)
+    # Well-known bases still register: the table builds, just without the
+    # env-override base.
+    assert "https://api.kimi.com/coding" in routes.values()
+    assert KIMI_ENV_BASE not in routes.values()
+    # Explicit operator-authored config is authoritative and survives.
+    assert EXPLICIT_UPSTREAM_BASE in routes.values()
+
+
+def test_scope_less_boot_still_resolves_profile_dotenv_base(two_profiles):
+    """Var in the profile's own .env joins the table even at scope-less boot.
+
+    get_env_value_prefer_dotenv answers from the .env before ever touching
+    the secret scope, so that path never raises.
+    """
+    prof_a, _ = two_profiles
+    (prof_a / ".env").write_text(
+        f"KIMI_BASE_URL={KIMI_ENV_BASE}\n", encoding="utf-8"
+    )
+
+    routes = _build_table(prof_a)
+
+    assert KIMI_ENV_BASE in routes.values()
+    assert EXPLICIT_UPSTREAM_BASE in routes.values()
+
+
+def test_environ_pinned_override_has_no_secret_scope_interaction(two_profiles):
+    """An explicitly pinned environ mapping short-circuits the resolver."""
+    prof_a, _ = two_profiles
+
+    routes = _build_table(prof_a, environ={"KIMI_BASE_URL": KIMI_ENV_BASE})
+
+    assert KIMI_ENV_BASE in routes.values()
+    assert EXPLICIT_UPSTREAM_BASE in routes.values()

@@ -78,9 +78,13 @@ def _env_override_base(provider_id: str, environ: Optional[Mapping[str, str]]) -
     Resolution is profile-scoped: the process ``os.environ`` may carry a
     stale shell export or a sibling profile's value under the multiplexed
     gateway, so the unset case reads through the credential layer's scoped
-    resolver (profile ``.env`` first, then the secret scope). Pass
-    ``environ`` explicitly to pin the mapping — nothing here writes to the
-    environment.
+    resolver (profile ``.env`` first, then the secret scope). At scope-less
+    gateway boot (multiplexing on, no per-turn scope installed yet) that
+    resolver fails closed with ``UnscopedSecretError`` — correct for a
+    credential read, but base-URL discovery is routing metadata and must
+    never crash reconcile, so the var counts as unset here and joins the
+    table once a scoped context reconciles. Pass ``environ`` explicitly to
+    pin the mapping — nothing here writes to the environment.
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
@@ -94,10 +98,19 @@ def _env_override_base(provider_id: str, environ: Optional[Mapping[str, str]]) -
         value = str(environ.get(var) or "").strip().rstrip("/")
     else:
         try:
+            from agent.secret_scope import UnscopedSecretError
             from hermes_cli.config import get_env_value_prefer_dotenv
         except Exception:  # pragma: no cover - config layer always present
             return []
-        value = str(get_env_value_prefer_dotenv(var) or "").strip().rstrip("/")
+        try:
+            raw = get_env_value_prefer_dotenv(var)
+        except UnscopedSecretError:
+            logger.debug(
+                "env override %s unavailable without a profile secret scope; skipping",
+                var,
+            )
+            return []
+        value = str(raw or "").strip().rstrip("/")
     return [value] if value else []
 
 
