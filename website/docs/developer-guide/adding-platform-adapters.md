@@ -363,6 +363,8 @@ Exceptions raised by the hook are swallowed and logged at debug level — a misb
 
 Cron jobs address your platform with an explicit `deliver=my_platform:<chat_id>` target (optionally `:<thread_id>`). Registering the platform in the plugin registry already makes `my_platform` a recognized `deliver=` platform. A bare `deliver=my_platform` resolves to no target — the job records a delivery error telling the operator to set an explicit `platform:chat_id[:thread_id]` target instead of silently dropping the output.
 
+The legacy `PlatformEntry.cron_deliver_env_var` field is deprecated and ignored: passing it to `ctx.register_platform()` still registers the platform (with a once-per-process warning), but cron delivery no longer reads any per-platform default destination env var. Migrate by removing the kwarg and pointing jobs at explicit `platform:chat_id[:thread_id]` targets.
+
 To make the send succeed when the cron job runs in a separate process from the gateway (i.e., `hermes cron run` separate from `hermes gateway`), register a `standalone_sender_fn`:
 
 ```python

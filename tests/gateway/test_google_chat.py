@@ -1685,12 +1685,11 @@ class TestAuthorizationEmailMatch:
 # ===========================================================================
 # Cron scheduler registry (regression guard from /review)
 #
-# After the generic-plugin-interface migration, Google Chat no longer lives in
-# the hardcoded ``_KNOWN_DELIVERY_PLATFORMS`` / ``_HOME_TARGET_ENV_VARS`` sets
-# in ``cron/scheduler.py``.  It earns cron delivery via
-# ``PlatformEntry.cron_deliver_env_var``, which the scheduler consults through
-# ``_is_known_delivery_platform`` and ``_resolve_home_env_var``.  The tests
-# below check that public resolver behavior, not the hardcoded sets.
+# Google Chat earns cron delivery by being a registered plugin platform:
+# ``_is_known_delivery_platform`` consults the plugin registry rather than a
+# hardcoded set.  (``PlatformEntry.cron_deliver_env_var`` is a deprecated
+# no-op kept only for source compatibility.)  The test below checks that
+# resolver behavior.
 # ===========================================================================
 
 
@@ -1701,7 +1700,7 @@ class TestCronSchedulerRegistry:
         The adapter's ``register(ctx)`` is only invoked during plugin
         discovery; module-level import alone does not register it.  We call
         discover + manually invoke the register hook so the resolver sees
-        ``cron_deliver_env_var``.
+        the platform entry.
         """
         from gateway.platform_registry import platform_registry
         if platform_registry.get("google_chat") is not None:

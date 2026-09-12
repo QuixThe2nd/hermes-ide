@@ -809,16 +809,6 @@ def build_session_context_prompt(
 
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
 
-    # Notification channels (gateway lifecycle broadcast destinations)
-    if context.notification_channels:
-        lines.append("")
-        lines.append("**Notification Channels:**")
-        for platform, channel in context.notification_channels.items():
-            nc_id = _hash_chat_id(channel.chat_id) if redact_pii else channel.chat_id
-            safe_name = _format_untrusted_prompt_value(channel.name)
-            safe_id = _format_untrusted_prompt_value(nc_id)
-            lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
-
     # Delivery options for scheduled tasks
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")

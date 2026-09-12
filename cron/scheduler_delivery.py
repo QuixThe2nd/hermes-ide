@@ -658,18 +658,30 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     chat_id, thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices,
     drift/preflight alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
     ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``."""
+    return _resolve_delivery_targets_detailed(job, for_failure=for_failure)[0]
+
+
+def _resolve_delivery_targets_detailed(
+    job: dict, *, for_failure: bool = False
+) -> tuple[List[dict], List[str]]:
+    """``_resolve_delivery_targets`` plus the deliver tokens that resolved to nothing. A mixed
+    list (one token resolved, another skipped — e.g. ``discord,telegram:123``) must not report
+    success just because some target resolved: the caller (``_deliver_result``) folds the
+    unresolved tokens into the delivery error alongside the per-target send errors."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
-        return []
+        return [], []
 
     seen = {}
     targets = []
+    unresolved_tokens: List[str] = []
     for raw in deliver.split(","):
         raw = raw.strip()
         if not raw:
             continue
         target = _resolve_single_delivery_target(job, raw, for_failure=for_failure)
         if not target:
+            unresolved_tokens.append(raw)
             continue
         key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
         kept = seen.get(key)
@@ -688,7 +700,7 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
             if target.get("_thread_auto") and not kept.get("_thread_auto"):
                 kept["_thread_auto"] = True
                 kept["_deliver_token"] = target.get("_deliver_token")
-    return targets
+    return targets, unresolved_tokens
 
 
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
@@ -1485,12 +1497,18 @@ def _prepare_target_delivery(
         thread_auto=thread_auto, deliver_token=target.get("_deliver_token"))
 
 
-def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
+def _unresolved_delivery_outcome(
+    job: dict, for_failure: bool, unresolved_tokens: Optional[List[str]] = None
+) -> Optional[str]:
     """``_deliver_result`` outcome when no target resolved: None (not a failure) for ``local``,
     else a delivery error telling the operator to set an explicit
     ``platform:chat_id[:thread_id]`` target. ``deliver=origin`` with no captured origin errors
     too — there is no default destination to fall back to, and a silent drop would lose the
-    job's output without trace (the output is still persisted in ``last_output``)."""
+    job's output without trace (the output is still persisted in ``last_output``).
+
+    ``unresolved_tokens`` is the mixed-list variant: some OTHER token resolved and receives the
+    output, but the named token(s) resolved to nothing — the outcome still errors so a partial
+    resolution can never report success (the resolved target(s) are still sent to)."""
     deliver_value = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver_value == "local":
         return None
@@ -1498,7 +1516,12 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
     edit_hint = (
         f"set an explicit delivery target with `hermes cron edit {job_id} "
         "--deliver platform:chat_id[:thread_id]`")
-    if deliver_value == "origin":
+    if unresolved_tokens:
+        msg = (
+            f"unresolved delivery token(s) in deliver={deliver_value}: "
+            f"{', '.join(unresolved_tokens)} — {edit_hint}"
+        )
+    elif deliver_value == "origin":
         msg = f"deliver=origin but the job has no captured origin chat — {edit_hint}"
     else:
         msg = f"no delivery target resolved for deliver={deliver_value} — {edit_hint}"
@@ -1514,10 +1537,16 @@ def _deliver_result(
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
-    targets = _resolve_delivery_targets(job, for_failure=for_failure)
+    targets, unresolved_tokens = _resolve_delivery_targets_detailed(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
         return _unresolved_delivery_outcome(job, for_failure)
+    # Mixed deliver list: some token(s) resolved, other(s) did not. The resolved target(s)
+    # still receive the output below, but the outcome must name the skipped token(s) so a
+    # partial resolution can never read as success.
+    unresolved_error = (
+        _unresolved_delivery_outcome(job, for_failure, unresolved_tokens=unresolved_tokens)
+        if unresolved_tokens else None)
 
     # Restart-safe workers have no live gateway adapters: hand the send back through a durable
     # queue so the current or replacement gateway performs it with relay/E2EE parity. The execution
@@ -1535,7 +1564,7 @@ def _deliver_result(
         from cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
-        return error
+        return "; ".join(e for e in (unresolved_error, error) if e) or None
 
     from gateway.config import load_gateway_config
 
@@ -1595,9 +1624,9 @@ def _deliver_result(
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
         logger.error("Job '%s': %s", job["id"], msg)
-        return msg
+        return "; ".join(e for e in (unresolved_error, msg) if e)
 
-    delivery_errors = []
+    delivery_errors = [unresolved_error] if unresolved_error else []
     for target in targets:
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:

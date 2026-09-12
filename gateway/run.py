@@ -33946,14 +33946,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             discord_tools,
             slack_tools,
             tuple(p.value for p in context.connected_platforms),
-            tuple(
-                (
-                    p.value,
-                    str(getattr(hc, "name", "") or ""),
-                    str(getattr(hc, "chat_id", "") or ""),
-                )
-                for p, hc in context.notification_channels.items()
-            ),
             bool(redact_pii),
             home_display,
             mission_digest,

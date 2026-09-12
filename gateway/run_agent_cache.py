@@ -552,10 +552,6 @@ class GatewayAgentCacheMixin:
             _s(src.user_name), _s(src.user_id), _s(getattr(src, "profile", None)),
             bool(context.shared_multi_user_session), discord_ids, discord_tools, slack_tools,
             tuple(p.value for p in context.connected_platforms),
-            tuple(
-                (p.value, _s(getattr(hc, "name", "")), _s(getattr(hc, "chat_id", "")))
-                for p, hc in context.notification_channels.items()
-            ),
             bool(redact_pii), home_display,
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()

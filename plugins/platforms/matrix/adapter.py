@@ -6,7 +6,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
-  (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
+  (regexes for bridge ghosts), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
@@ -2949,7 +2949,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Interactive credential setup (setup_fn); CLI helpers are lazy-imported."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
     print_header("Matrix")
     existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
@@ -3002,16 +3002,6 @@ def interactive_setup() -> None:
             print_success("Matrix allowlist configured")
         else:
             print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
-        for line in ("📬 Home Room: where Hermes delivers cron job results and notifications.",
-                     "   Room IDs look like !abc123:server (shown in Element room settings)",
-                     "   You can also set this later by typing /set-home in a Matrix room.",
-                     "Leave blank to clear a previously saved home room (cron / notifications)."):
-            print_info(line)
-        home_room = prompt("Home room ID (leave empty to set later with /set-home)").strip()
-        if home_room:
-            save_env_value("MATRIX_HOME_ROOM", home_room)
-        elif remove_env_value("MATRIX_HOME_ROOM"):
-            print_info("Home room cleared.")
 
 
 _YAML_LOWER_KEYS = (

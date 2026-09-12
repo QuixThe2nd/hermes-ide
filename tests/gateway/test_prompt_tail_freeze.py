@@ -136,38 +136,19 @@ class TestEphemeralChangeKeyParity:
         ("chat_id", dict(chat_id="999999999", parent_chat_id="999999999")),
         ("platform", dict(platform=Platform.TELEGRAM)),
         ("connected_platforms", dict(connected=[Platform.DISCORD])),
-        (
-            "notification_channel_renamed",
-            dict(
-                notification_channels={
-                    Platform.DISCORD: DeliveryTarget(
-                        platform=Platform.DISCORD, chat_id="111222333", name="ops-restarts"
-                    )
-                }
-            ),
-        ),
-        (
-            "notification_channel_added",
-            dict(
-                notification_channels={
-                    Platform.DISCORD: DeliveryTarget(
-                        platform=Platform.DISCORD, chat_id="111222333", name="general"
-                    ),
-                    Platform.TELEGRAM: DeliveryTarget(
-                        platform=Platform.TELEGRAM, chat_id="tg1", name="tg-restarts"
-                    ),
-                }
-            ),
-        ),
         ("message_id_cleared", dict(message_id=None)),
     ]
 
 
     def test_redact_pii_flip_changes_key(self):
         # PII redaction only rewrites bytes on pii-safe platforms; the key
-        # must react wherever the render does.
+        # must react wherever the render does. user_name=None so the User ID
+        # line renders (and gets hashed) — with notification channels gone
+        # from the prompt, IDs here are the redaction-sensitive bytes.
         runner = _make_runner()
-        ctx = _make_context(platform=Platform.TELEGRAM, thread_id=None, parent_chat_id=None)
+        ctx = _make_context(
+            platform=Platform.TELEGRAM, thread_id=None, parent_chat_id=None, user_name=None
+        )
         assert _render(ctx, False) != _render(ctx, True)
         assert _key(runner, ctx, False) != _key(runner, ctx, True)
 
