@@ -978,7 +978,7 @@ class GatewayShutdownMixin:
             from gateway.drain_control import drain_notification_suppressed
             if drain_notification_suppressed():
                 logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
+                    "Notification-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
         # Snapshot adapters: adapter.send() can hit a fatal path (_handle_fatal) that pops the adapter

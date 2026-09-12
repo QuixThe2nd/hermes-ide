@@ -14385,7 +14385,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # same dedup key as ``notified`` and populated only after a
         # successful send — a chat that never got the warning is owed no
         # comeback. Persisted at every exit of this method, including the
-        # two that skip the home-channel broadcast below.
+        # two that skip the notification-channel broadcast below.
         warned_targets: dict[tuple[str, str, Optional[str]], Dict[str, Any]] = {}
         for session_key in active:
             source = None
@@ -14510,14 +14510,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if self._restart_requested and restart_source is not None:
-            logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
+            logger.debug("Skipping notification-channel shutdown notices for in-chat restart")
             # Active sessions above still got the ⚠️ and are owed the ♻️ pair;
             # the /restart requester itself is deduped at boot against
             # .restart_notify.json.
             await _write_shutdown_notification_marker(list(warned_targets.values()))
             return
 
-        # Suppress ONLY the home-channel broadcast when the drain that is ending
+        # Suppress ONLY the notification-channel broadcast when the drain that is ending
         # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
         # migration — drain-gated, then the machine is recreated). On the
         # always-on Hermes Cloud fleet that broadcast would otherwise fire on
@@ -14534,12 +14534,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.drain_control import drain_notification_suppressed
             if drain_notification_suppressed():
                 logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker "
+                    "Notification-channel shutdown broadcast suppressed by drain marker "
                     "(suppress_notification=true)"
                 )
-                # Only the home-channel broadcast is suppressed — the
+                # Only the notification-channel broadcast is suppressed — the
                 # active-session ⚠️ pings above still went out, so their ♻️
-                # pair is still owed. No home-channel comeback targets are
+                # pair is still owed. No notification-channel comeback targets are
                 # invented here; only what was actually warned gets one.
                 await _write_shutdown_notification_marker(list(warned_targets.values()))
                 return
@@ -16275,7 +16275,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         async def _boot_sends() -> None:
             # Collect every chat a boot notice already reached, so the
             # shutdown comeback notice never double-pings a target that just
-            # heard "we're back" from /restart or the home-channel send.
+            # heard "we're back" from /restart or the notification-channel send.
             skip_targets: set[tuple[str, str, Optional[str]]] = set()
             restart_target = await self._send_restart_notification()
             if restart_target is not None:
@@ -16286,7 +16286,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         skip_targets=skip_targets,
                     )
                     # Fresh set, never an in-place |= : the object handed to
-                    # the home-channel send stays exactly what it saw.
+                    # the notification-channel send stays exactly what it saw.
                     skip_targets = skip_targets | delivered_home
                 finally:
                     _clear_planned_restart_notification()
@@ -17978,7 +17978,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # of a restart cycle (see _is_stale_restart_redelivery).
         if chat_restart_notification_pending:
             self._booted_from_restart = True
-        # Restart notification, home-channel startup notice, shutdown
+        # Restart notification, notification-channel startup notice, shutdown
         # comeback notice, and obligation redelivery all call adapter.send().
         # Those sends must not pin the inbound restore gate — a Telegram
         # flood-control sleep on this path froze every platform for the full
@@ -30888,7 +30888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         after raw SIGTERM/systemd restarts, which no other marker covers.
         Deterministic adapter send, never an LLM turn.
 
-        ``skip_targets`` dedups against the /restart and home-channel startup
+        ``skip_targets`` dedups against the /restart and notification-channel startup
         notices that may have just fired for the same chat, so no chat gets
         two "we're back" messages in one boot. Best-effort: the marker is
         unlinked after delivery is attempted (success or failure), so a dead

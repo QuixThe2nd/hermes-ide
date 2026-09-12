@@ -230,13 +230,13 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
                 continue
             # thread:<parent> — resolve through the same machinery real delivery uses
-            # (_resolve_thread_delivery_target: home-channel match for bare ids, explicit
+            # (_resolve_thread_delivery_target: bare-id parent-chat match, explicit
             # platform otherwise) and validate the PARENT chat target; the naive split below
             # would read platform "thread" and block a perfectly runnable job. The thread id
             # does not exist yet — first delivery creates it and persists the concrete
             # target back onto the job — so no thread segment is required here. A token
             # that resolves to nothing (missing parent id, unknown platform, no
-            # home-channel match) is genuinely broken and still blocks. Resolution
+            # parent-chat match) is genuinely broken and still blocks. Resolution
             # validates only: it creates nothing and leaves the job untouched.
             thread_parsed = _sched._parse_thread_deliver_token(part)
             if thread_parsed is not None:

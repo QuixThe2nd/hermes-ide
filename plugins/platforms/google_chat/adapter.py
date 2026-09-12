@@ -345,7 +345,7 @@ def _create_kwargs(chat_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 class GoogleChatAdapter(BasePlatformAdapter):
     """Google Chat bot adapter: Pub/Sub pull (or HTTP callbacks) + Chat REST API. Env vars
     are documented in gateway/config.py (GOOGLE_CHAT_PROJECT_ID, GOOGLE_CHAT_SUBSCRIPTION_NAME,
-    GOOGLE_CHAT_SERVICE_ACCOUNT_JSON + optional allowlist/home-channel/flow-control keys)."""
+    GOOGLE_CHAT_SERVICE_ACCOUNT_JSON + optional allowlist/notification/flow-control keys)."""
 
     MAX_MESSAGE_LENGTH = _MAX_TEXT_LENGTH
     # Pub/Sub supervisor configuration.

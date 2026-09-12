@@ -1212,7 +1212,7 @@ class PhotonAdapter(BasePlatformAdapter):
             _bounded_put(self._sent_message_ids, message_id, time.time(), self._SENT_IDS_MAX)
 
     # A DM space is addressable as the chat GUID (`any;-;+1555...`) inbound events carry, or
-    # the bare E.164 phone home-channel config uses; the sidecar's resolveSpace treats them
+    # the bare E.164 phone default-destination config used; the sidecar's resolveSpace treats them
     # as one space, so normalize to the bare phone (mirrors phoneTargetFromSpaceId in index.mjs).
     _DM_CHAT_GUID_RE = re.compile(r"^any;-;(\+\d{6,})$")
 
