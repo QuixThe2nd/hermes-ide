@@ -1428,7 +1428,7 @@ def _bind_session_via_the_gateway_bridge(runner, source, session_key="discord-55
         SessionContext(
             source=source,
             connected_platforms=list(runner.adapters),
-            home_channels={},
+            notification_channels={},
             session_key=session_key,
         )
     )

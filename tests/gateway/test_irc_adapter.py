@@ -414,13 +414,13 @@ class TestIRCStandaloneSend:
 #
 # __init__'s server/port/nickname/channel/use_tls, check_requirements/
 # validate_config/is_connected's server/channel, and _env_enablement's
-# server/channel/port/nickname/use_tls/home_channel, all previously read raw
+# server/channel/port/nickname/use_tls, all previously read raw
 # os.getenv unconditionally (only IRC_SERVER_PASSWORD/IRC_NICKSERV_PASSWORD
 # were already scoped). Under multiplex, os.environ holds the DEFAULT
 # profile's YAML-to-env bridge output -- a secondary profile with its own
 # (different or absent) IRC config would silently connect to the default
-# profile's server/channel, or (for _env_enablement) get auto-enabled using
-# the default's channel as its cron home_channel -- a real message-
+# profile's server/channel, or (for _env_enablement) get auto-enabled with
+# the default's channel -- a real message-
 # misdelivery risk, not just cosmetic. Mirrors the LINE/Buzz/SimpleX fix for
 # #98738.
 

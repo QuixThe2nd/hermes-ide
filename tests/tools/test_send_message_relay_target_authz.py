@@ -511,7 +511,7 @@ def test_attested_lookup_normalises_before_querying_the_sources(relay_env, monke
     """
     import gateway.relay.egress as eg
 
-    monkeypatch.setattr(eg, "_home_channel_id", lambda n: None)
+    monkeypatch.setattr(eg, "_notification_channel_id", lambda n: None)
     monkeypatch.setattr(eg, "_directory_ids", lambda n: {"999"} if n == "discord" else set())
     monkeypatch.setattr(eg, "_session_ids", lambda n: set())
 
