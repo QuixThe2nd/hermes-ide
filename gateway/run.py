@@ -31108,6 +31108,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not error:
             return
 
+        from hermes_constants import get_default_hermes_root
         from hermes_state import (
             _default_db_path,
             classify_persistence_error,
@@ -31120,6 +31121,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Copy-pasteable, so name the real store (profiles / HERMES_HOME
             # do not live under ~/.hermes).
             db_path = _default_db_path()
+            backups_dir = get_default_hermes_root() / "backups"
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
@@ -31132,7 +31134,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "   — recovery snapshots the damaged file first; do NOT run "
                 "`sqlite3 ... \".recover\"` against the live state.db, a "
                 "vulnerable sqlite3 CLI can corrupt it further\n"
-                "3. Restore from a backup in ~/.hermes/backups/\n"
+                f"3. Restore from a backup in {backups_dir}/\n"
                 "Run `hermes doctor` for sanitized diagnostics."
             )
         else:
