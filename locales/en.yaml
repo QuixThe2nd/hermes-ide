@@ -317,11 +317,6 @@ gateway:
     no_changes:            "No changes."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Failed to save home channel: {error}"
-    success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
-    discord_pointer:       "💡 Want the full setup? `/sethomeserver` provisions a whole home server — chat, notifications, memory, quotas, and speeds — all wired up."
-
   set_home_server:
     discord_only:          "⚠️ `/sethomeserver` only works on Discord — it provisions Discord categories, channels, and webhooks."
     relay_blocked:         "⚠️ This message arrived through a relay that can't authenticate Discord guild targets. Run `/sethomeserver` from a native Discord message."
@@ -334,11 +329,11 @@ gateway:
 
   set_notify:
     save_failed:           "Failed to save notification channel: {error}"
-    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here instead of the home channel."
+    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here."
 
   clear_notify:
     failed:                "Failed to clear notification channel: {error}"
-    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts return to the home channel."
+    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts are skipped until a notification channel is set."
 
   context:
     header:                "🧠 **Context Window**"

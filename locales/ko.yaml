@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "변경 사항이 없습니다."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "홈 채널 저장에 실패했습니다: {error}"
-    success:               "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."
-    discord_pointer:       "💡 전체 설정을 원하시나요? `/sethomeserver`가 채팅, 메모리, 쿼터, 속도를 갖춘 홈 서버 전체를 프로비저닝합니다."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver`는 Discord 전용입니다 — Discord 카테고리, 채널, 웹훅을 프로비저닝합니다."
     relay_blocked:        "⚠️ 이 메시지는 Discord 길드 대상을 인증할 수 없는 릴레이를 통해 도착했습니다. 네이티브 Discord 메시지에서 `/sethomeserver`를 실행하세요."

@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Nessuna modifica."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Salvataggio del canale home non riuscito: {error}"
-    success:               "✅ Canale home impostato su **{name}** (ID: {chat_id}).\nI cron job e i messaggi cross-platform verranno consegnati qui."
-    discord_pointer:       "💡 Vuoi la configurazione completa? `/sethomeserver` provisiona un intero home server — chat, memoria, quote e velocità — tutto collegato."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` funziona solo su Discord — crea categorie, canali e webhook Discord."
     relay_blocked:        "⚠️ Questo messaggio è arrivato tramite un relay che non può autenticare destinazioni di guild Discord. Esegui `/sethomeserver` da un messaggio Discord nativo."

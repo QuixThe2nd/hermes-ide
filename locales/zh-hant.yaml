@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "沒有變更。"
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "無法儲存主頻道：{error}"
-    success:               "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
-    discord_pointer:       "💡 想要完整設定？`/sethomeserver` 一鍵部署整個主伺服器——聊天、記憶、配額、速率，全部接好。"
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` 僅在 Discord 上可用——它建立 Discord 分類、頻道和 Webhook。"
     relay_blocked:        "⚠️ 這條訊息經由無法認證 Discord 伺服器目標的中繼送達。請在原生 Discord 訊息中執行 `/sethomeserver`。"

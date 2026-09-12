@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "没有更改。"
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "无法保存主频道：{error}"
-    success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
-    discord_pointer:       "💡 想要完整配置？`/sethomeserver` 一键部署整个主服务器——聊天、记忆、配额、速率，全部接好。"
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` 仅在 Discord 上可用——它创建 Discord 分类、频道和 Webhook。"
     relay_blocked:        "⚠️ 这条消息经由无法认证 Discord 服务器目标的中转送达。请在原生 Discord 消息中运行 `/sethomeserver`。"
