@@ -1032,39 +1032,48 @@ _FALLBACK_AGE = {
 
 
 # ---------------------------------------------------------------------------
-# Home-channel subscription endpoints (#19534 follow-up: GUI opt-in)
+# Notification-channel subscription endpoints (#19534 follow-up: GUI opt-in)
 # ---------------------------------------------------------------------------
 #
 # Dashboard surface for per-task, per-platform notification toggles. The
-# backend endpoints read the live GatewayConfig, so tests set env vars
-# (BOT_TOKEN + HOME_CHANNEL) to simulate a user who has run /sethome on
-# telegram and discord.
+# backend endpoints read the live GatewayConfig, so tests seed
+# notification_channel entries there to simulate an operator who has run
+# /setnotify on telegram and discord.
 
 
 @pytest.fixture
-def with_home_channels(monkeypatch):
-    """Simulate a user with home channels set on telegram and discord."""
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc:fake")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1234567")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "42")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_NAME", "Main TG")
-    monkeypatch.setenv("DISCORD_BOT_TOKEN", "disc_fake")
-    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "9999999")
-    monkeypatch.setenv("DISCORD_HOME_CHANNEL_NAME", "Main Discord")
-    # Slack has a token but NO home — should be excluded from the list.
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "slack_fake")
+def with_notification_channels(monkeypatch):
+    """Simulate a gateway with notification channels set on telegram and discord."""
+    from types import SimpleNamespace
 
+    from gateway.config import Platform
 
-def test_home_channels_lists_only_platforms_with_home(client, with_home_channels):
-    """GET /home-channels returns entries only for platforms where the
-    user has set a home; untoggled-subscribed bool is false by default."""
-    r = client.get("/api/plugins/kanban/home-channels")
-    assert r.status_code == 200
-    platforms = {h["platform"] for h in r.json()["home_channels"]}
-    assert platforms == {"telegram", "discord"}, (
-        f"slack has a token but no home — must not appear. got {platforms}"
+    def _channel(chat_id, name, thread_id=None):
+        return SimpleNamespace(chat_id=chat_id, thread_id=thread_id, name=name)
+
+    fake = SimpleNamespace(
+        platforms={
+            Platform.TELEGRAM: SimpleNamespace(
+                notification_channel=_channel("1234567", "Main TG", "42")),
+            Platform.DISCORD: SimpleNamespace(
+                notification_channel=_channel("9999999", "Main Discord")),
+            # Slack is connected but has NO notification channel — excluded.
+            Platform.SLACK: SimpleNamespace(notification_channel=None),
+        }
     )
-    for h in r.json()["home_channels"]:
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
+
+
+def test_notification_channels_lists_only_configured_platforms(client, with_notification_channels):
+    """GET /notification-channels returns entries only for platforms with a
+    configured notification channel; untoggled-subscribed bool is false by default."""
+    r = client.get("/api/plugins/kanban/notification-channels")
+    assert r.status_code == 200
+    platforms = {h["platform"] for h in r.json()["notification_channels"]}
+    assert platforms == {"telegram", "discord"}, (
+        f"slack is connected but has no notification channel — must not appear. got {platforms}"
+    )
+    for h in r.json()["notification_channels"]:
         assert h["subscribed"] is False
 
 
