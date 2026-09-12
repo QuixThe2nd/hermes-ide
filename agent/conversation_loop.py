@@ -104,15 +104,21 @@ from utils import base_url_host_matches
 from agent import empty_response_guard as _empty_guard  # noqa: F401
 from agent.context_engine import automatic_compaction_status_message  # noqa: F401
 from agent.conversation_compression import (  # noqa: F401
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE, COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression)
 from agent.display import KawaiiSpinner  # noqa: F401
-from agent.error_classifier import FailoverReason  # noqa: F401
+from agent.error_classifier import FailoverReason, classify_api_error  # noqa: F401
 from agent.provider_projection import splice_provider_projection  # noqa: F401
 from agent.repetition_guard import is_repetition_dominated  # noqa: F401
-from agent.retry_utils import jittered_backoff  # noqa: F401
+from agent.retry_utils import (  # noqa: F401
+    adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff,
+    zai_coding_overload_retry_ceiling)
 from agent.trajectory import has_incomplete_scratchpad  # noqa: F401
+from agent.turn_recovery import (
+    _image_error_max_dimension, _try_refresh_nous_paid_entitlement_credentials)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage  # noqa: F401
 from hermes_constants import PARTIAL_STREAM_STUB_ID  # noqa: F401
 from utils import env_var_enabled  # noqa: F401

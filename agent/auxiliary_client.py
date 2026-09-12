@@ -6068,6 +6068,7 @@ def _project_provider_profile(
 
 def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
@@ -6081,7 +6082,7 @@ def _merge_aux_extra_body(
                 _reasoning_config_for_model as _clamp_aux_reasoning,
             )
 
-            clamped = _clamp_aux_reasoning(model, reasoning_config) or {}
+            clamped = _clamp_aux_reasoning(model or "", reasoning_config) or {}
             effort = clamped.get("effort") or reasoning_config.get("effort") or "medium"
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
     # Portal product tags + sticky session_id. The provider profile usually
@@ -6133,7 +6134,7 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback.
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm, model=model):
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
