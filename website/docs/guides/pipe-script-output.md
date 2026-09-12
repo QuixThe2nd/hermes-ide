@@ -29,8 +29,8 @@ maintain.
 ## Quick Start
 
 ```bash
-# Plain text to the home channel for a platform
-hermes send --to telegram "deploy finished"
+# Plain text to a specific chat
+hermes send --to telegram:-1001234567890 "deploy finished"
 
 # Pipe in stdout from anything
 echo "RAM 92%" | hermes send --to telegram:-1001234567890
@@ -70,7 +70,6 @@ hermes send --list telegram
 
 | Format | Example | Meaning |
 |--------|---------|---------|
-| `platform` | `telegram` | Send to the platform's configured home channel |
 | `platform:chat_id` | `telegram:-1001234567890` | Specific numeric chat / group / user |
 | `platform:chat_id:thread_id` | `telegram:-1001234567890:17585` | Specific thread or Telegram forum topic |
 | `platform:#channel` | `discord:#ops` | Human-friendly channel name (resolved against the channel directory) |

@@ -254,20 +254,11 @@ DM pairing is ideal for teams because you don't need to restart the gateway when
 
 ## Step 5: Configure the Bot
 
-### Set a Home Channel
+### Pick a Delivery Target for Scheduled Tasks
 
-A **home channel** is where the bot delivers cron job results and proactive messages. Without one, scheduled tasks have nowhere to send output.
+Cron job results go to an explicit `telegram:<chat_id>` target, so decide which group or chat should receive them (for example the team-updates group). Each cron job names its target when you create it — see [Automate with Cron](/guides/automate-with-cron).
 
-**Option 1:** Use the `/sethome` command in any Telegram group or chat where the bot is a member.
-
-**Option 2:** Set it manually in `~/.hermes/.env`:
-
-```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="Team Updates"
-```
-
-To find a channel ID, add [@userinfobot](https://t.me/userinfobot) to the group — it will report the group's chat ID.
+To find a chat ID, add [@userinfobot](https://t.me/userinfobot) to the group — it will report the group's chat ID.
 
 ### Configure Tool Progress Display
 
@@ -338,7 +329,7 @@ github.com/myorg/myproject for:
 Format as a brief standup-style summary.
 ```
 
-The agent creates a cron job automatically and delivers results to the chat where you asked (or the home channel).
+The agent creates a cron job automatically and delivers results to the chat where you asked.
 
 ### Server Health Check
 

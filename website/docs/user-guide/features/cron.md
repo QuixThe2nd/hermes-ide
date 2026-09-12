@@ -572,18 +572,15 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
 Only the job's **own conversation** is ever touched:
 
 - the **origin chat** the job was created in;
-- the **home-channel fallback** when `deliver: origin` captured no origin (jobs
-  created by scripts or the API rather than from a live gateway chat) — the
-  user's primary conversation standing in for the origin;
 - a job's **single explicit `platform:chat` target**, but only when the job
   itself opts in with `attach_to_session: true` — the job author declares that
   target a conversation. The global `mirror_delivery` flag alone never makes an
   explicitly-addressed chat continuable.
 
-Broadcast expansions (`all`) are never made continuable. A user-written bare
-platform name (`deliver: slack`) addresses that platform's home channel
-deliberately and follows the same rules as the home-channel fallback above.
-After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery: true`
+Broadcast expansions (`all`) are never made continuable. A job whose `deliver:
+origin` captured no origin (jobs created by scripts or the API rather than from
+a live gateway chat) records a delivery error instead of guessing a chat.
+After upgrading, existing jobs with `cron.mirror_delivery: true`
 can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
 on a job to opt out of this thread-per-run behaviour.
 
