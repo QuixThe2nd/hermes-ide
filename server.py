@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Read-only live web UI for the Hermes usage-proxy SQLite ledger.
+"""Live, dark-themed dashboard for the Hermes usage-proxy SQLite ledger.
 
-Single file, Python stdlib only (http.server + sqlite3):
+Single file, Python stdlib only (http.server + sqlite3 + json):
 
-* the ledger is opened read-only per request (``mode=ro``), so the dashboard
-  can never block the proxy's writers;
-* the page polls ``/api/summary`` and ``/api/events`` every 5 s and re-renders
-  in place — no full page reloads;
+* the ledger is opened read-only per request (``mode=ro``): the dashboard can
+  never block the proxy's writers and can never modify the ledger;
+* ``GET /`` serves the single-page dark dashboard.  Its JavaScript polls
+  ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s and
+  updates the stat cards, the per-harness bars, the canvas chart and the
+  event table in place — no full page reloads.  The first paint is
+  server-rendered from the same data, so the page is meaningful even with
+  JavaScript disabled (the chart then shows as an accessible data table);
+* every SQL statement is a fully static literal; request-supplied values are
+  only ever bound ``?`` parameters, never spliced into the SQL text;
 * any database failure (missing file, locked, corrupt) degrades to a soft
-  error card at HTTP 200, so the poll loop never crashes.
+  error payload at HTTP 200, so the poll loop never crashes;
+* nothing is written to stdout while serving (access logs are suppressed;
+  the startup banner and real errors go to stderr).
 
 Launch flags are unchanged — see ``usage-proxy-webui.service``.
 """
@@ -17,6 +25,7 @@ import argparse
 import html
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -31,30 +40,117 @@ DEFAULT_DB = "/root/.hermes/usage-proxy/usage.sqlite"
 
 POLL_SECONDS = 5
 FETCH_TIMEOUT_MS = 4500
-DASHBOARD_EVENTS = 50
+DASHBOARD_EVENTS = 50       # rows shown in the recent-events table
 API_EVENTS_DEFAULT = 200
 API_EVENTS_MAX = 1000
 HOURS = 24
+DAYS_7D = 7
 
-# Status colours (dots paired with text labels; never the only carrier of meaning)
-TONE_GOOD = "good"        # completed / final
-TONE_WARN = "warn"        # usage partial / missing
-TONE_SERIOUS = "serious"  # aborted
-TONE_CRIT = "crit"        # rejected / upstream_error / HTTP >= 400
+# Muted harness colours, assigned to callers by name hash (see
+# harness_color_idx) so the same harness always lands on the same hue in the
+# bars, the chips and the chart — on both the server and the browser.
+HARNESS_COLOR_COUNT = 6
 
-OUTCOME_TONE = {
-    "completed": TONE_GOOD,
-    "aborted": TONE_SERIOUS,
-    "rejected": TONE_CRIT,
-    "upstream_error": TONE_CRIT,
-}
+# Outcome badge: green when usage is final, red for auth/rate-limit
+# rejections, grey for everything else.
+RATE_LIMIT_CODES = (401, 429)
+TONE_GOOD = "good"
+TONE_CRIT = "crit"
+TONE_NONE = "none"
 
-EMPTY_SUMMARY: dict[str, Any] = {
-    "total_requests": 0,
-    "total_tokens": 0,
-    "per_model": [],
-    "per_caller": [],
-    "per_route": [],
+# ---------------------------------------------------------------------------
+# SQL — every statement below is a fully static literal.  Request-supplied
+# values are only ever passed as bound "?" parameters (the *_SINCE variants).
+# Nothing here is built by concatenation or f-string.
+# ---------------------------------------------------------------------------
+
+SQL_WINDOW_ALL = """
+    SELECT COUNT(*)                          AS requests,
+           COALESCE(SUM(total_tokens), 0)    AS tokens,
+           COALESCE(SUM(prompt_tokens), 0)   AS input_tokens,
+           COALESCE(SUM(completion_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cached_tokens), 0)   AS cached_tokens,
+           MIN(ts)                           AS first_ts
+    FROM usage_events
+"""
+SQL_WINDOW_SINCE = """
+    SELECT COUNT(*)                          AS requests,
+           COALESCE(SUM(total_tokens), 0)    AS tokens,
+           COALESCE(SUM(prompt_tokens), 0)   AS input_tokens,
+           COALESCE(SUM(completion_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cached_tokens), 0)   AS cached_tokens,
+           MIN(ts)                           AS first_ts
+    FROM usage_events
+    WHERE ts >= ?
+"""
+
+SQL_CALLER_ALL = """
+    SELECT caller, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+    FROM usage_events
+    GROUP BY caller
+    ORDER BY tokens DESC, requests DESC, caller ASC
+"""
+SQL_CALLER_SINCE = """
+    SELECT caller, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+    FROM usage_events
+    WHERE ts >= ?
+    GROUP BY caller
+    ORDER BY tokens DESC, requests DESC, caller ASC
+"""
+
+SQL_ROUTE_ALL = """
+    SELECT path, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+    FROM usage_events
+    GROUP BY path
+    ORDER BY tokens DESC, requests DESC, path ASC
+"""
+SQL_ROUTE_SINCE = """
+    SELECT path, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+    FROM usage_events
+    WHERE ts >= ?
+    GROUP BY path
+    ORDER BY tokens DESC, requests DESC, path ASC
+"""
+
+SQL_MODEL_ALL = """
+    SELECT model, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+    FROM usage_events
+    GROUP BY model
+    ORDER BY tokens DESC, requests DESC, model ASC
+"""
+SQL_MODEL_SINCE = """
+    SELECT model, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+    FROM usage_events
+    WHERE ts >= ?
+    GROUP BY model
+    ORDER BY tokens DESC, requests DESC, model ASC
+"""
+
+# Every ts is a UTC ISO-8601 string written by the proxy, so a plain
+# strftime bucket on the raw text is the UTC hour key ("YYYY-MM-DDTHH").
+# The buckets themselves are labelled in Sydney time (see hour_buckets).
+SQL_PER_HOUR = """
+    SELECT strftime('%Y-%m-%dT%H', ts) AS hour_key,
+           COUNT(*)                    AS requests,
+           SUM(total_tokens)           AS tokens
+    FROM usage_events
+    WHERE ts >= ?
+    GROUP BY hour_key
+"""
+
+SQL_EVENTS = """
+    SELECT id, ts, upstream, model, path, status_code, latency_ms,
+           prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens,
+           cache_creation_tokens, total_tokens, outcome, usage_complete, caller
+    FROM usage_events
+    ORDER BY id DESC
+    LIMIT ?
+"""
+
+_BREAKDOWN_SQL = {
+    "caller": (SQL_CALLER_ALL, SQL_CALLER_SINCE),
+    "route": (SQL_ROUTE_ALL, SQL_ROUTE_SINCE),
+    "model": (SQL_MODEL_ALL, SQL_MODEL_SINCE),
 }
 
 
@@ -73,24 +169,26 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def cutoff_24h_iso() -> str:
-    return (utc_now() - timedelta(hours=24)).isoformat(timespec="milliseconds")
+def cutoff_iso(hours: float) -> str:
+    """UTC ISO cutoff in the same format the proxy writes into ``ts``."""
+    return (utc_now() - timedelta(hours=hours)).isoformat(timespec="milliseconds")
 
 
-def to_sydney(ts: str | None) -> str:
+def to_sydney_datetime(ts: str | None) -> datetime | None:
     if not ts:
-        return "—"
+        return None
     try:
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(SYDNEY).strftime("%Y-%m-%d %H:%M:%S")
+        return dt.astimezone(SYDNEY)
     except (TypeError, ValueError):
-        return html.escape(str(ts))
+        return None
 
 
-def sydney_hour_label(hour_utc: datetime) -> str:
-    return hour_utc.astimezone(SYDNEY).strftime("%a %H:%M")
+def to_sydney(ts: str | None) -> str:
+    local = to_sydney_datetime(ts)
+    return local.strftime("%b %d %H:%M:%S") if local else "—"
 
 
 def caller_label(caller: Any) -> str:
@@ -98,179 +196,149 @@ def caller_label(caller: Any) -> str:
     return UNATTRIBUTED if not caller else str(caller)
 
 
-def query_summary(conn: sqlite3.Connection, since_ts: str | None = None) -> dict[str, Any]:
-    where = ""
-    params: tuple[Any, ...] = ()
-    if since_ts is not None:
-        where = " WHERE ts >= ?"
-        params = (since_ts,)
+def harness_color_idx(name: str) -> int:
+    """djb2 — mirrored exactly in the browser JS so colours agree."""
+    value = 5381
+    for ch in name:
+        value = (value * 33 + ord(ch)) % 2147483647
+    return value % HARNESS_COLOR_COUNT
 
-    row = conn.execute(
-        f"SELECT COUNT(*), SUM(total_tokens) FROM usage_events{where}",
-        params,
-    ).fetchone()
-    total_requests = row[0] or 0
-    total_tokens = row[1] if row[1] is not None else 0
 
-    models = conn.execute(
-        f"""
-        SELECT
-            model,
-            COUNT(*) AS requests,
-            SUM(prompt_tokens) AS prompt_tokens,
-            SUM(completion_tokens) AS completion_tokens,
-            SUM(total_tokens) AS total_tokens
-        FROM usage_events{where}
-        GROUP BY model
-        ORDER BY total_tokens DESC
-        """,
-        params,
-    ).fetchall()
+def harness_class_name(name: str | None) -> str:
+    if not name or name == UNATTRIBUTED:
+        return "h-unattr"
+    return "h" + str(harness_color_idx(name))
 
-    per_model = [
-        {
-            "model": m[0] if m[0] is not None else "(null)",
-            "requests": m[1] or 0,
-            "prompt_tokens": m[2] if m[2] is not None else 0,
-            "completion_tokens": m[3] if m[3] is not None else 0,
-            "total_tokens": m[4] if m[4] is not None else 0,
-        }
-        for m in models
-    ]
 
-    callers = conn.execute(
-        f"""
-        SELECT
-            caller,
-            COUNT(*) AS requests,
-            SUM(total_tokens) AS total_tokens
-        FROM usage_events{where}
-        GROUP BY caller
-        ORDER BY total_tokens DESC
-        """,
-        params,
-    ).fetchall()
+def _pick(sql_all: str, sql_since: str, since_ts: str | None) -> tuple[str, tuple[Any, ...]]:
+    """Choose the static statement for this window and bind its parameter."""
+    if since_ts is None:
+        return sql_all, ()
+    return sql_since, (since_ts,)
 
-    per_caller = [
-        {
-            "caller": caller_label(c[0]),
-            "requests": c[1] or 0,
-            "total_tokens": c[2] if c[2] is not None else 0,
-        }
-        for c in callers
-    ]
 
-    routes = conn.execute(
-        f"""
-        SELECT
-            path,
-            COUNT(*) AS requests,
-            SUM(total_tokens) AS total_tokens
-        FROM usage_events{where}
-        GROUP BY path
-        ORDER BY total_tokens DESC
-        """,
-        params,
-    ).fetchall()
-
-    per_route = [
-        {
-            "route": r[0] if r[0] is not None else "—",
-            "requests": r[1] or 0,
-            "total_tokens": r[2] if r[2] is not None else 0,
-        }
-        for r in routes
-    ]
-
+def query_window(conn: sqlite3.Connection, since_ts: str | None) -> dict[str, Any]:
+    """Request/token totals (input, output, cached) for one window."""
+    sql, params = _pick(SQL_WINDOW_ALL, SQL_WINDOW_SINCE, since_ts)
+    requests, tokens, input_t, output_t, cached_t, first_ts = conn.execute(sql, params).fetchone()
     return {
-        "total_requests": total_requests,
-        "total_tokens": total_tokens,
-        "per_model": per_model,
-        "per_caller": per_caller,
-        "per_route": per_route,
+        "requests": requests or 0,
+        "tokens": tokens or 0,
+        "input_tokens": input_t or 0,
+        "output_tokens": output_t or 0,
+        "cached_tokens": cached_t or 0,
+        "first_ts": first_ts,
     }
 
 
+def query_breakdown(
+    conn: sqlite3.Connection,
+    key: str,
+    since_ts: str | None,
+) -> list[dict[str, Any]]:
+    sql_all, sql_since = _BREAKDOWN_SQL[key]
+    sql, params = _pick(sql_all, sql_since, since_ts)
+    rows = conn.execute(sql, params).fetchall()
+    if key == "caller":
+        return [
+            {
+                "caller": caller_label(r[0]),
+                "unattributed": not r[0],
+                "requests": r[1] or 0,
+                "total_tokens": r[2] or 0,
+            }
+            for r in rows
+        ]
+    if key == "route":
+        return [
+            {"route": r[0] if r[0] else "—", "requests": r[1] or 0, "total_tokens": r[2] or 0}
+            for r in rows
+        ]
+    return [
+        {"model": r[0] if r[0] is not None else "(null)", "requests": r[1] or 0, "total_tokens": r[2] or 0}
+        for r in rows
+    ]
+
+
 def hour_buckets() -> list[dict[str, Any]]:
-    """24 empty hourly buckets ending with the current (just-started) hour."""
+    """24 empty hourly buckets (UTC) ending with the current, just-started hour."""
     current = utc_now().replace(minute=0, second=0, microsecond=0)
     buckets = []
     for i in range(HOURS - 1, -1, -1):
         start = current - timedelta(hours=i)
+        local = start.astimezone(SYDNEY)
         buckets.append(
             {
-                "hour_utc": start.isoformat(),
-                "label_sydney": sydney_hour_label(start),
+                "hour_bucket": start.isoformat(),
+                "label_sydney": local.strftime("%H:%M"),
+                "day_sydney": local.strftime("%a") if local.hour == 0 else None,
                 "requests": 0,
                 "tokens": 0,
+                # The first bucket is truncated by the rolling cutoff and the
+                # last is still in progress — both drawn at half strength.
+                "partial": i in (0, HOURS - 1),
             }
         )
     return buckets
 
 
-def query_per_hour(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Tokens per hour over the last 24 h, bucketed on the ts column."""
-    # Every recorded ts is a UTC ISO string, so its first 13 characters
-    # ("YYYY-MM-DDTHH") are the hour bucket key.
-    rows = conn.execute(
-        """
-        SELECT substr(ts, 1, 13) AS hour_key,
-               COUNT(*) AS requests,
-               SUM(total_tokens) AS tokens
-        FROM usage_events
-        WHERE ts >= ?
-        GROUP BY hour_key
-        """,
-        (cutoff_24h_iso(),),
-    ).fetchall()
+def query_timeseries(conn: sqlite3.Connection, since_ts: str) -> list[dict[str, Any]]:
+    """Tokens and requests per hour over the last 24 h (this is /api/timeseries)."""
+    rows = conn.execute(SQL_PER_HOUR, (since_ts,)).fetchall()
+    by_key = {r[0]: (r[1] or 0, r[2] or 0) for r in rows}
 
-    by_key = {r[0]: (r[1] or 0, r[2] if r[2] is not None else 0) for r in rows}
     buckets = hour_buckets()
     for bucket in buckets:
-        requests, tokens = by_key.get(bucket["hour_utc"][:13], (0, 0))
+        requests, tokens = by_key.get(bucket["hour_bucket"][:13], (0, 0))
         bucket["requests"] = requests
         bucket["tokens"] = tokens
     return buckets
 
 
-def query_events(conn: sqlite3.Connection, limit: int = API_EVENTS_DEFAULT) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
-        SELECT
-            id, ts, upstream, model, path, status_code, latency_ms,
-            prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens,
-            cache_creation_tokens, total_tokens, outcome, usage_complete, caller
-        FROM usage_events
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
+def _event_row(r: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": r[0],
+        "ts": r[1],
+        "ts_sydney": to_sydney(r[1]),
+        "upstream": r[2],
+        "model": r[3],
+        "path": r[4],
+        "route": r[4],
+        "status_code": r[5],
+        "latency_ms": r[6],
+        "prompt_tokens": r[7],
+        "completion_tokens": r[8],
+        "cached_tokens": r[9],
+        "reasoning_tokens": r[10],
+        "cache_creation_tokens": r[11],
+        "total_tokens": r[12],
+        "outcome": r[13],
+        "usage_complete": r[14],
+        "caller": caller_label(r[15]),
+        "unattributed": not r[15],
+    }
 
-    events = []
-    for r in rows:
-        events.append(
-            {
-                "id": r[0],
-                "ts": r[1],
-                "ts_sydney": to_sydney(r[1]),
-                "upstream": r[2],
-                "model": r[3],
-                "path": r[4],
-                "status_code": r[5],
-                "latency_ms": r[6],
-                "prompt_tokens": r[7],
-                "completion_tokens": r[8],
-                "cached_tokens": r[9],
-                "reasoning_tokens": r[10],
-                "cache_creation_tokens": r[11],
-                "total_tokens": r[12],
-                "outcome": r[13],
-                "usage_complete": r[14],
-                "caller": caller_label(r[15]),
-            }
-        )
-    return events
+
+def query_events(conn: sqlite3.Connection, limit: int = API_EVENTS_DEFAULT) -> list[dict[str, Any]]:
+    rows = conn.execute(SQL_EVENTS, (limit,)).fetchall()
+    return [_event_row(r) for r in rows]
+
+
+def badge_parts(e: dict[str, Any]) -> tuple[str, str]:
+    """Outcome badge: final = green, 401/429 = red, everything else grey."""
+    status = e.get("status_code")
+    if status in RATE_LIMIT_CODES:
+        return TONE_CRIT, str(status)
+    if e.get("usage_complete") == "final":
+        return TONE_GOOD, "final"
+    label = e.get("outcome")
+    if not label:
+        label = str(status) if status is not None else "—"
+    return TONE_NONE, label
+
+
+def empty_window() -> dict[str, Any]:
+    return {"requests": 0, "tokens": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 
 def error_snapshot(message: str) -> dict[str, Any]:
@@ -278,11 +346,17 @@ def error_snapshot(message: str) -> dict[str, Any]:
     return {
         "error": message,
         "generated_at_utc": utc_now().isoformat(timespec="seconds"),
-        "cutoff_24h_utc": cutoff_24h_iso(),
-        "last_24h": dict(EMPTY_SUMMARY),
-        "all_time": dict(EMPTY_SUMMARY),
+        "generated_at_sydney": to_sydney(utc_now().isoformat(timespec="seconds")),
+        "cutoff_24h_utc": cutoff_iso(HOURS),
         "total": {"requests": 0, "tokens": 0},
+        "total_requests": 0,
+        "total_tokens": 0,
+        "first_event_day": None,
+        "last_24h": {**empty_window(), "per_route": [], "per_caller": []},
+        "last_7d": {"requests": 0, "tokens": 0},
+        "all_time": {**empty_window(), "per_model": [], "per_route": []},
         "per_caller": [],
+        "per_caller_24h": [],
         "per_route": [],
         "per_hour": hour_buckets(),
         "events": [],
@@ -300,25 +374,51 @@ def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[
         return error_snapshot(f"cannot open ledger read-only: {exc}")
 
     try:
-        cutoff = cutoff_24h_iso()
-        last_24h = query_summary(conn, cutoff)
-        all_time = query_summary(conn)
-        per_hour = query_per_hour(conn)
+        cutoff_24h = cutoff_iso(HOURS)
+        cutoff_7d = cutoff_iso(HOURS * DAYS_7D)
+        last_24h = query_window(conn, cutoff_24h)
+        last_24h["per_route"] = query_breakdown(conn, "route", cutoff_24h)
+        last_24h["per_caller"] = query_breakdown(conn, "caller", cutoff_24h)
+        last_7d = query_window(conn, cutoff_7d)
+        all_time = query_window(conn, None)
+        per_hour = query_timeseries(conn, cutoff_24h)
         events = query_events(conn, event_limit) if event_limit > 0 else []
+        caller_rows = query_breakdown(conn, "caller", None)
+        route_rows = query_breakdown(conn, "route", None)
+        model_rows = query_breakdown(conn, "model", None)
     except (sqlite3.Error, OSError) as exc:
         return error_snapshot(f"ledger query failed: {exc}")
     finally:
         conn.close()
 
+    first_event_day = None
+    if all_time["first_ts"]:
+        local = to_sydney_datetime(all_time["first_ts"])
+        first_event_day = local.strftime("%Y-%m-%d") if local else None
+
     return {
         "error": None,
         "generated_at_utc": utc_now().isoformat(timespec="seconds"),
-        "cutoff_24h_utc": cutoff,
+        "generated_at_sydney": to_sydney(utc_now().isoformat(timespec="seconds")),
+        "cutoff_24h_utc": cutoff_24h,
+        "total": {"requests": all_time["requests"], "tokens": all_time["tokens"]},
+        "total_requests": all_time["requests"],
+        "total_tokens": all_time["tokens"],
+        "first_event_day": first_event_day,
         "last_24h": last_24h,
-        "all_time": all_time,
-        "total": {"requests": all_time["total_requests"], "tokens": all_time["total_tokens"]},
-        "per_caller": all_time["per_caller"],
-        "per_route": all_time["per_route"],
+        "last_7d": {"requests": last_7d["requests"], "tokens": last_7d["tokens"]},
+        "all_time": {
+            "requests": all_time["requests"],
+            "tokens": all_time["tokens"],
+            "input_tokens": all_time["input_tokens"],
+            "output_tokens": all_time["output_tokens"],
+            "cached_tokens": all_time["cached_tokens"],
+            "per_model": model_rows,
+            "per_route": route_rows,
+        },
+        "per_caller": caller_rows,
+        "per_caller_24h": last_24h["per_caller"],
+        "per_route": route_rows,
         "per_hour": per_hour,
         "events": events,
     }
@@ -331,15 +431,14 @@ def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[
 def fmt_int(value: Any) -> str:
     if value is None:
         return "—"
-    return f"{value:,}"
+    return f"{int(value):,}"
 
 
 def fmt_compact(value: Any) -> str:
     n = float(value or 0)
     for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
         if abs(n) >= divisor:
-            text = f"{n / divisor:.1f}".rstrip("0").rstrip(".")
-            return text + suffix
+            return f"{n / divisor:.1f}".rstrip("0").rstrip(".") + suffix
     return str(int(n))
 
 
@@ -348,136 +447,294 @@ def fmt_stat(value: Any) -> str:
     return f"{n:,}" if abs(n) < 10_000 else fmt_compact(n)
 
 
+def fmt_opt(value: Any) -> str:
+    """Table numeral; unknown totals (usage missing) read as a dash, not 0."""
+    return "—" if value is None else fmt_stat(value)
+
+
+def fmt_avg(tokens: Any, requests: Any) -> str:
+    if not requests:
+        return "no requests"
+    return f"avg {fmt_compact(float(tokens) / requests)} / request"
+
+
+def fmt_cached_hint(cached: Any) -> str:
+    return f"incl. {fmt_compact(cached)} cached" if cached else "prompt tokens"
+
+
+def bucket_label(bucket: dict[str, Any]) -> str:
+    day = bucket.get("day_sydney")
+    return (day + " " if day else "") + (bucket.get("label_sydney") or "")
+
+
 def esc(value: Any) -> str:
     return html.escape(str(value if value is not None else "—"))
 
 
 # --------------------------------------------------------------------------
-# HTML rendering (initial paint; the browser re-renders from JSON afterwards)
+# HTML fragments
+# --------------------------------------------------------------------------
+
+def stat_card(value_id: str, hint_id: str, label: str, value: Any, hint: str) -> str:
+    return (
+        '<div class="card stat">'
+        f'<div class="label">{esc(label)}</div>'
+        f'<div class="value" id="{value_id}">{esc(fmt_stat(value))}</div>'
+        f'<div class="hint" id="{hint_id}">{esc(hint)}</div>'
+        "</div>"
+    )
+
+
+def render_cards(snapshot: dict[str, Any]) -> str:
+    last_24h = snapshot.get("last_24h") or {}
+    req = last_24h.get("requests") or 0
+    return "".join(
+        [
+            stat_card("c-req-24h", "h-req-24h", "Requests · 24 h", last_24h.get("requests"), "rolling window"),
+            stat_card("c-tok-24h", "h-tok-24h", "Total tokens · 24 h", last_24h.get("tokens"), fmt_avg(last_24h.get("tokens"), req)),
+            stat_card("c-in-24h", "h-in-24h", "Input tokens · 24 h", last_24h.get("input_tokens"), fmt_cached_hint(last_24h.get("cached_tokens"))),
+            stat_card("c-out-24h", "h-out-24h", "Output tokens · 24 h", last_24h.get("output_tokens"), fmt_avg(last_24h.get("output_tokens"), req)),
+        ]
+    )
+
+
+def harness_table_body(rows: list[dict[str, Any]]) -> str:
+    """One row per harness: chip, requests, tokens and a share-of-max bar."""
+    if not rows:
+        return '<tbody id="harness-body"><tr><td colspan="4" class="muted">No requests in the last 24 h</td></tr></tbody>'
+    peak = max((float(r.get("total_tokens") or 0) for r in rows), default=0.0)
+    out = []
+    for r in rows:
+        tokens = float(r.get("total_tokens") or 0)
+        tr_class = "h-unattr" if r.get("unattributed") else harness_class_name(r.get("caller"))
+        fill = ""
+        if peak > 0 and tokens > 0:
+            width = max(1.5, tokens / peak * 100)
+            fill = f'<div class="bar-fill" style="width:{width:.1f}%"></div>'
+        out.append(
+            f'<tr class="{tr_class}">'
+            f'<td><span class="chip">{esc(r.get("caller") or UNATTRIBUTED)}</span></td>'
+            f'<td class="num">{fmt_int(r.get("requests"))}</td>'
+            f'<td class="num">{esc(fmt_stat(tokens))}</td>'
+            f'<td class="bar-cell"><div class="bar-track" aria-hidden="true">{fill}</div></td>'
+            "</tr>"
+        )
+    return '<tbody id="harness-body">' + "".join(out) + "</tbody>"
+
+
+def events_table_body(events: list[dict[str, Any]]) -> str:
+    if not events:
+        return '<tr><td colspan="8" class="muted">No events yet</td></tr>'
+    out = []
+    for e in events:
+        tone, label = badge_parts(e)
+        row_cls = ' class="row-crit"' if tone == TONE_CRIT else ""
+        chip_cls = "h-unattr" if e.get("unattributed") else harness_class_name(e.get("caller"))
+        out.append(
+            f"<tr{row_cls}>"
+            f'<td class="num" title="{esc(e.get("ts"))}">{esc(e.get("ts_sydney"))}</td>'
+            f'<td><span class="chip {chip_cls}">{esc(e.get("caller") or UNATTRIBUTED)}</span></td>'
+            f"<td>{esc(e.get('model'))}</td>"
+            f"<td>{esc(e.get('route'))}</td>"
+            f'<td class="num">{esc(fmt_opt(e.get("prompt_tokens")))}</td>'
+            f'<td class="num">{esc(fmt_opt(e.get("completion_tokens")))}</td>'
+            f'<td class="num total">{esc(fmt_opt(e.get("total_tokens")))}</td>'
+            f'<td><span class="badge"><span class="dot-s tone-{tone}"></span><span>{esc(label)}</span></span></td>'
+            "</tr>"
+        )
+    return "".join(out)
+
+
+def chart_data_table(buckets: list[dict[str, Any]]) -> str:
+    """Screen-reader table twin of the canvas chart."""
+    rows = "".join(
+        "<tr>"
+        f"<td>{esc(bucket_label(b))}</td>"
+        f'<td class="num">{fmt_int(b.get("requests"))}</td>'
+        f'<td class="num">{fmt_int(b.get("tokens"))}</td>'
+        "</tr>"
+        for b in buckets
+    )
+    return (
+        '<table class="sr-only"><caption>Tokens per hour, last 24 hours (Australia/Sydney)</caption>'
+        '<thead><tr><th scope="col">Hour</th><th scope="col">Requests</th><th scope="col">Tokens</th></tr></thead>'
+        f'<tbody id="chart-table-body">{rows}</tbody></table>'
+    )
+
+
+# --------------------------------------------------------------------------
+# Styling — dark, near-black, one accent hue, system font stack, no external
+# assets of any kind (no CDN links, no webfonts).
 # --------------------------------------------------------------------------
 
 CSS = """
 :root {
   color-scheme: dark;
-  --bg: #0b1220;
-  --surface: #101a2b;
-  --surface-2: #0d1524;
-  --border: #1e293b;
-  --border-strong: #2a3a52;
-  --grid: #1b2740;
-  --text: #e7eef8;
-  --text-2: #9fb2c9;
-  --muted: #64748b;
+  --bg: #0a0d12;
+  --surface: #11151c;
+  --surface-2: #171c25;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --grid: #1f2531;
+  --text: #e8edf4;
+  --text-2: #a7b2c3;
+  --muted: #6d7889;
   --accent: #3987e5;
-  --accent-soft: rgba(57, 135, 229, 0.13);
-  --good: #0ca30c;
-  --warn: #fab219;
-  --serious: #ec835a;
-  --crit: #e05252;
-  --unattr: #7c8aa0;
+  --accent-bright: #6aa6ee;
+  --good: #2ea043;
+  --bad: #e5534b;
+  --stale: #d29922;
+  --unattr: #8b95a6;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--sans);
   font-size: 15px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 26px 20px 56px; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; color: var(--text-2); }
 
-.topbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
-h1 { margin: 0; font-size: 1.35rem; font-weight: 650; letter-spacing: -0.01em; }
-.subtitle { margin: 3px 0 0; color: var(--text-2); font-size: 0.84rem; }
-.live { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px rgba(12, 163, 12, 0.15); }
-.live.stale .dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(250, 178, 25, 0.15); }
-.live.error .dot { background: var(--crit); box-shadow: 0 0 0 3px rgba(224, 82, 82, 0.15); }
+.wrap { max-width: 1400px; margin: 0 auto; padding: 26px 28px 56px; }
+
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+h1 { margin: 0; font-size: 1.32rem; font-weight: 650; letter-spacing: -0.015em; }
+h1 .accent { color: var(--accent-bright); }
+.subtitle { margin: 3px 0 0; color: var(--text-2); font-size: 0.83rem; }
+
+.live {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+  padding: 6px 14px; font-size: 0.78rem; color: var(--text-2); white-space: nowrap;
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+}
+.live .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.live.ok .dot { background: var(--good); box-shadow: 0 0 0 3px rgba(46, 160, 67, 0.18); }
+.live.error .dot { background: var(--bad); box-shadow: 0 0 0 3px rgba(229, 83, 75, 0.2); }
+.live.stale .dot { background: var(--stale); box-shadow: 0 0 0 3px rgba(210, 153, 34, 0.18); }
+.live .sep { color: var(--muted); }
+.live .updated { color: var(--text); }
 @media (prefers-reduced-motion: no-preference) {
-  .live .dot { animation: pulse 2.4s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity: 0.45; } }
+  .live.ok .dot, .live.stale .dot { animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
 }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 14px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; min-width: 0; }
-.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-.card h2 { margin: 0; font-size: 0.95rem; font-weight: 600; }
-.card .win { color: var(--muted); font-size: 0.75rem; }
-.stat .label { color: var(--muted); font-size: 0.78rem; margin-bottom: 6px; }
-.stat .value { font-size: 1.9rem; font-weight: 650; line-height: 1.1; }
-.stat .hint { color: var(--muted); font-size: 0.74rem; margin-top: 6px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 15px 17px; min-width: 0; }
+.card h2 { margin: 0; font-size: 0.92rem; font-weight: 600; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-meta { display: flex; gap: 14px; flex-wrap: wrap; }
+.win { color: var(--muted); font-size: 0.73rem; }
+.stat .label { color: var(--muted); font-size: 0.71rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
+.stat .value { font-family: var(--mono); font-size: 1.78rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin-top: 9px; font-variant-numeric: tabular-nums; }
+.stat .hint { color: var(--muted); font-size: 0.74rem; margin-top: 7px; font-variant-numeric: tabular-nums; }
 
-.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.mid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+@media (min-width: 1080px) { .mid { grid-template-columns: minmax(0, 1.9fr) minmax(330px, 1fr); align-items: start; } }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
-th { text-align: left; color: var(--muted); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; padding: 7px 10px; border-bottom: 1px solid var(--border); }
-td { padding: 8px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
-tr.row-bad td { background: rgba(224, 82, 82, 0.05); }
-th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
-td.bar-cell { width: 34%; min-width: 90px; }
-.muted { color: var(--muted); }
-.caller { font-weight: 550; }
-.unattr { color: var(--unattr); font-style: italic; }
-
-.bar-track { height: 8px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
-.bar-fill { height: 100%; min-width: 3px; background: var(--accent); border-radius: 0 4px 4px 0; }
-.bar-fill.unattr { background: var(--unattr); }
-
-.spark-wrap { position: relative; outline: none; }
-.spark-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
-.spark-wrap svg { display: block; width: 100%; height: 150px; }
-.spark-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.spark-area { fill: var(--accent); opacity: 0.1; stroke: none; }
-.spark-base { stroke: var(--grid); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.spark-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.spark-cross { position: absolute; top: 12px; bottom: 20px; width: 1px; background: var(--border-strong); pointer-events: none; }
-.spark-axis { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 0.72rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
-
-.tooltip { position: absolute; z-index: 5; transform: translate(-50%, 0); background: rgba(13, 21, 36, 0.97); border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 10px; font-size: 0.78rem; pointer-events: none; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45); white-space: nowrap; }
-.tooltip .tv { font-weight: 650; font-variant-numeric: tabular-nums; }
-.tooltip .tl { color: var(--text-2); margin-top: 2px; }
-
-.badge { display: inline-flex; align-items: center; gap: 7px; }
-.dot-s { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.tone-good { background: var(--good); }
-.tone-warn { background: var(--warn); }
-.tone-serious { background: var(--serious); }
-.tone-crit { background: var(--crit); }
-.badge .code { font-variant-numeric: tabular-nums; }
-
-.error-card { display: none; margin-bottom: 14px; border-color: rgba(224, 82, 82, 0.4); background: rgba(224, 82, 82, 0.07); }
+.error-card { display: none; margin-bottom: 12px; border-color: rgba(229, 83, 75, 0.45); background: rgba(229, 83, 75, 0.07); }
 .error-card.show { display: block; }
 .error-card h2 { color: #f1a1a1; }
 .error-card p { margin: 6px 0 0; color: var(--text-2); font-size: 0.82rem; overflow-wrap: anywhere; }
 
 .scroll-x { overflow-x: auto; }
-footer { margin-top: 22px; color: var(--muted); font-size: 0.75rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+th {
+  text-align: left; color: var(--muted); font-size: 0.68rem; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; padding: 6px 10px;
+  border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+td { padding: 7px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--surface-2); }
+th.num, td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+td.total { font-weight: 600; }
+td.bar-cell { width: 34%; min-width: 96px; }
+th:first-child, td:first-child { padding-left: 2px; }
+th:last-child, td:last-child { padding-right: 2px; }
+
+.events th { position: sticky; top: 0; background: var(--surface); border-bottom: none; box-shadow: inset 0 -1px 0 var(--border-strong); z-index: 2; }
+tr.row-crit td { background: rgba(229, 83, 75, 0.10); }
+tr.row-crit:hover td { background: rgba(229, 83, 75, 0.16); }
+tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
+
+.muted { color: var(--muted); }
+
+/* harness palette — muted, one hue per caller, applied via these classes */
+.h0 { --hc: #5b8def; }
+.h1 { --hc: #3fb0a3; }
+.h2 { --hc: #9a7be0; }
+.h3 { --hc: #d9a13b; }
+.h4 { --hc: #d9708f; }
+.h5 { --hc: #7fae83; }
+.h-unattr { --hc: #66738a; }
+.chip { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
+.chip::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--hc, var(--muted)); }
+.h-unattr .chip { color: var(--unattr); font-style: italic; }
+
+.bar-track { height: 6px; background: rgba(255, 255, 255, 0.05); border-radius: 3px; overflow: hidden; }
+.bar-fill { height: 100%; min-width: 3px; background: var(--hc, var(--accent)); border-radius: 0 3px 3px 0; }
+
+.chart-wrap { position: relative; outline: none; border-radius: 8px; }
+.chart-wrap:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.chart-wrap canvas { display: block; width: 100%; }
+
+.tooltip {
+  position: absolute; z-index: 5; transform: translate(-50%, 0);
+  background: rgba(9, 12, 17, 0.96); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 7px 10px; font-size: 0.78rem; pointer-events: none;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45); white-space: nowrap;
+}
+.tooltip .tv { font-weight: 650; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.tooltip .tl { color: var(--text-2); margin-top: 2px; }
+
+.badge { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
+.dot-s { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.tone-good { background: var(--good); }
+.tone-crit { background: var(--bad); }
+.tone-none { background: #66738a; }
+
+footer { margin-top: 20px; color: var(--muted); font-size: 0.75rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-@media (max-width: 560px) {
+@media (max-width: 600px) {
   body { font-size: 14px; }
   .wrap { padding: 18px 12px 44px; }
-  h1 { font-size: 1.15rem; }
-  .stat .value { font-size: 1.55rem; }
+  h1 { font-size: 1.12rem; }
+  .stat .value { font-size: 1.5rem; }
   .card { padding: 13px 14px; }
-  th, td { padding: 7px 8px; }
+  th, td { padding: 6px 8px; }
 }
 """
 
-JS = """
+
+# --------------------------------------------------------------------------
+# Client layer — polls /api/summary, /api/timeseries and /api/events every
+# POLL_SECONDS and re-renders cards / harness bars / canvas chart / event
+# table in place.  All DB-derived strings are inserted with textContent,
+# never innerHTML.
+# --------------------------------------------------------------------------
+
+JS = r"""
 (function () {
   'use strict';
 
   var POLL_MS = __POLL_MS__;
   var FETCH_TIMEOUT_MS = __FETCH_TIMEOUT_MS__;
-  var EVENTS_URL = '/api/events?limit=__DASHBOARD_EVENTS__';
+  var DASHBOARD_EVENTS = __DASHBOARD_EVENTS__;
+  var N_COLORS = __HARNESS_COLOR_COUNT__;
   var UNATTR = 'unattributed';
-  var OUTCOME_TONE = { completed: 'good', aborted: 'serious', rejected: 'crit', upstream_error: 'crit' };
+  var RATE_LIMIT_CODES = [401, 429];
+  var CH = { H: 260, padL: 50, padR: 12, padT: 24, padB: 26, barMax: 30 };
+  var C = {
+    bar: '#3987e5', barHot: '#6aa6ee', barPartial: 'rgba(57, 135, 229, 0.45)',
+    grid: '#1f2531', axis: '#2b3342', text: '#6d7889', textStrong: '#a7b2c3',
+    peak: '#e8edf4'
+  };
 
   function $(id) { return document.getElementById(id); }
 
@@ -488,88 +745,114 @@ JS = """
     return node;
   }
 
+  function setText(id, text) { var node = $(id); if (node) node.textContent = text; }
+
   function fmtCompact(value) {
     var n = Number(value) || 0;
     var steps = [[1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
     for (var i = 0; i < steps.length; i++) {
       if (Math.abs(n) >= steps[i][0]) {
-        var v = n / steps[i][0];
-        var text = Math.abs(v) >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\\.0$/, '');
-        return text + steps[i][1];
+        return (n / steps[i][0]).toFixed(1).replace(/\.0$/, '') + steps[i][1];
       }
     }
     return String(Math.round(n));
   }
 
-  function fmtTok(value) { return (value === null || value === undefined) ? '\\u2014' : fmtCompact(value); }
-
   function fmtInt(value) {
-    if (value === null || value === undefined) return '\\u2014';
+    if (value === null || value === undefined) return '—';
     return Number(value).toLocaleString('en-US');
   }
 
   function fmtStat(value) {
     var n = Number(value) || 0;
-    return Math.abs(n) < 10000 ? n.toLocaleString('en-US') : fmtCompact(n);
+    return Math.abs(n) < 10000 ? fmtInt(n) : fmtCompact(n);
   }
 
-  var sydFmt = null;
+  function fmtOpt(value) { return (value === null || value === undefined) ? '—' : fmtStat(value); }
+
+  function fmtAvg(tokens, requests) {
+    if (!requests) return 'no requests';
+    return 'avg ' + fmtCompact(tokens / requests) + ' / request';
+  }
+
+  function fmtCachedHint(cached) {
+    return (Number(cached) || 0) > 0 ? 'incl. ' + fmtCompact(cached) + ' cached' : 'prompt tokens';
+  }
+
+  /* same djb2 as the server's harness_color_idx, so chip colours agree */
+  function harnessClass(caller) {
+    if (!caller || caller === UNATTR) return 'h-unattr';
+    var h = 5381;
+    for (var i = 0; i < caller.length; i++) h = (h * 33 + caller.charCodeAt(i)) % 2147483647;
+    return 'h' + (h % N_COLORS);
+  }
+
+  function bucketLabel(b) {
+    if (!b) return '';
+    return (b.day_sydney ? b.day_sydney + ' ' : '') + (b.label_sydney || '');
+  }
+
+  var sydFmt = null, sydTime = null;
   try {
-    sydFmt = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit',
+    sydFmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Australia/Sydney', month: 'short', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
     });
-  } catch (e) { /* no ICU tz data: fall back to UTC below */ }
+    sydTime = new Intl.DateTimeFormat('en-AU', {
+      timeZone: 'Australia/Sydney', hour: '2-digit', minute: '2-digit',
+      second: '2-digit', hourCycle: 'h23'
+    });
+  } catch (e) { /* no ICU tz data: server-provided strings are used instead */ }
 
-  function fmtSydney(ts) {
-    if (!ts) return '\\u2014';
-    var d = new Date(/(?:Z|[+-]\\d\\d:\\d\\d)$/.test(ts) ? ts : ts + 'Z');
-    if (isNaN(d.getTime())) return ts;
-    if (!sydFmt) return d.toISOString().replace('T', ' ').slice(0, 19);
-    return sydFmt.format(d).replace(', ', ' ');
+  function fmtSydneyTime(ms) {
+    if (!sydTime) return new Date(ms).toISOString().slice(11, 19) + 'Z';
+    return sydTime.format(new Date(ms));
   }
-
-  function isUnattributed(caller) { return !caller || caller === UNATTR; }
 
   /* ---- stat cards ---- */
 
-  function renderCards(summary) {
-    var last24 = summary.last_24h || {}, all = summary.all_time || {};
-    $('s-req-24h').textContent = fmtStat(last24.total_requests);
-    $('s-tok-24h').textContent = fmtStat(last24.total_tokens);
-    $('s-req-all').textContent = fmtStat(all.total_requests);
-    $('s-tok-all').textContent = fmtStat(all.total_tokens);
+  function renderCards(s) {
+    var l24 = s.last_24h || {};
+    var req = Number(l24.requests) || 0;
+    setText('c-req-24h', fmtStat(l24.requests));
+    setText('h-req-24h', 'rolling window');
+    setText('c-tok-24h', fmtStat(l24.tokens));
+    setText('h-tok-24h', fmtAvg(Number(l24.tokens) || 0, req));
+    setText('c-in-24h', fmtStat(l24.input_tokens));
+    setText('h-in-24h', fmtCachedHint(l24.cached_tokens));
+    setText('c-out-24h', fmtStat(l24.output_tokens));
+    setText('h-out-24h', fmtAvg(Number(l24.output_tokens) || 0, req));
   }
 
-  /* ---- bar tables (per harness / per route) ---- */
+  /* ---- per-harness share bars ---- */
 
-  function renderBarTable(tbodyId, rows, labelKey, unattrCheck) {
-    var tbody = $(tbodyId);
+  function renderHarness(rows) {
+    var tbody = $('harness-body');
+    if (!tbody) return;
     tbody.textContent = '';
     if (!rows || !rows.length) {
-      var empty = el('tr');
-      var cell = el('td', 'muted', 'No events');
+      var emptyRow = el('tr');
+      var cell = el('td', 'muted', 'No requests in the last 24 h');
       cell.colSpan = 4;
-      empty.appendChild(cell);
-      tbody.appendChild(empty);
+      emptyRow.appendChild(cell);
+      tbody.appendChild(emptyRow);
       return;
     }
     var max = 0;
     rows.forEach(function (r) { max = Math.max(max, Number(r.total_tokens) || 0); });
     rows.forEach(function (r) {
       var tokens = Number(r.total_tokens) || 0;
-      var un = unattrCheck(r);
-      var tr = el('tr');
+      var tr = el('tr', r.unattributed ? 'h-unattr' : harnessClass(r.caller));
       var tdLabel = el('td');
-      tdLabel.appendChild(el('span', un ? 'unattr' : 'caller', r[labelKey] || UNATTR));
+      tdLabel.appendChild(el('span', 'chip', r.caller || UNATTR));
       tr.appendChild(tdLabel);
       tr.appendChild(el('td', 'num', fmtInt(r.requests)));
-      tr.appendChild(el('td', 'num', fmtTok(r.total_tokens)));
+      tr.appendChild(el('td', 'num', fmtStat(tokens)));
       var tdBar = el('td', 'bar-cell');
       var track = el('div', 'bar-track');
       track.setAttribute('aria-hidden', 'true');
       if (max > 0 && tokens > 0) {
-        var fill = el('div', un ? 'bar-fill unattr' : 'bar-fill');
+        var fill = el('div', 'bar-fill');
         fill.style.width = Math.max(1.5, (tokens / max) * 100) + '%';
         track.appendChild(fill);
       }
@@ -579,108 +862,204 @@ JS = """
     });
   }
 
-  /* ---- sparkline ---- */
+  /* ---- 24 h column chart on a canvas ---- */
 
-  var sparkGeom = null;
-  var H = 150, PAD_L = 6, PAD_R = 12, PAD_T = 12, PAD_B = 20;
+  function niceStep(rough) {
+    if (!(rough > 0) || !isFinite(rough)) return 1;
+    var mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    var factors = [1, 2, 2.5, 5, 10];
+    for (var i = 0; i < factors.length; i++) {
+      if (rough <= factors[i] * mag) return factors[i] * mag;
+    }
+    return 10 * mag;
+  }
 
-  function renderSparkline(buckets) {
-    var wrap = $('spark-wrap');
-    var svg = $('spark-svg');
-    var width = wrap.clientWidth || 720;
-    var tokens = buckets.map(function (b) { return Number(b.tokens) || 0; });
-    var max = Math.max.apply(null, tokens.concat([0]));
+  var chartGeom = null;
+  var hoverIdx = -1;
+
+  function barTopPath(ctx, x, y, w, h) {
+    var r = Math.min(3, w / 2, h);
+    var x2 = x + w, yb = y + h;
+    ctx.beginPath();
+    ctx.moveTo(x, yb);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.lineTo(x2 - r, y);
+    ctx.quadraticCurveTo(x2, y, x2, y + r);
+    ctx.lineTo(x2, yb);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function renderChart(buckets) {
+    var canvas = $('chart'), wrap = $('chart-wrap');
+    if (!canvas || !wrap || !buckets) return;
     var n = buckets.length;
-    var base = H - PAD_B, top = PAD_T;
+    var cssW = Math.max(320, wrap.clientWidth || 800);
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(CH.H * dpr);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = CH.H + 'px';
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, CH.H);
 
-    function x(i) { return PAD_L + (n < 2 ? 0 : i * (width - PAD_L - PAD_R) / (n - 1)); }
-    function y(v) { return max > 0 ? top + (1 - v / max) * (base - top) : base; }
+    var padL = CH.padL, padT = CH.padT;
+    var plotW = cssW - padL - CH.padR;
+    var plotH = CH.H - padT - CH.padB;
+    var baseY = padT + plotH;
+    var band = n ? plotW / n : plotW;
+    var barW = Math.max(2, Math.min(CH.barMax, band - 6));
 
-    var line = '', area = 'M ' + x(0).toFixed(1) + ' ' + base;
-    for (var i = 0; i < n; i++) {
-      var px = x(i).toFixed(1), py = y(tokens[i]).toFixed(1);
-      line += (i === 0 ? 'M ' : ' L ') + px + ' ' + py;
-      area += ' L ' + px + ' ' + py;
+    var tokens = buckets.map(function (b) { return Number(b.tokens) || 0; });
+    var peak = 0;
+    tokens.forEach(function (t) { if (t > peak) peak = t; });
+
+    /* y gridlines + tick labels */
+    ctx.font = '11px ' + 'ui-monospace, Menlo, Consolas, monospace';
+    ctx.textBaseline = 'middle';
+    if (peak > 0) {
+      ctx.strokeStyle = C.grid;
+      ctx.fillStyle = C.text;
+      ctx.lineWidth = 1;
+      var step = niceStep(peak / 4);
+      for (var tick = step; tick <= peak; tick += step) {
+        var gy = Math.round(baseY - (tick / peak) * plotH) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(padL, gy);
+        ctx.lineTo(cssW - CH.padR, gy);
+        ctx.stroke();
+        ctx.textAlign = 'right';
+        ctx.fillText(fmtCompact(tick), padL - 8, gy);
+      }
     }
-    area += ' L ' + x(n - 1).toFixed(1) + ' ' + base + ' Z';
 
-    var markup = '<path class="spark-base" d="M ' + PAD_L + ' ' + base + ' H ' + (width - PAD_R) + '"/>' +
-      '<path class="spark-area" d="' + area + '"/>' +
-      '<path class="spark-line" d="' + line + '"/>';
-    if (max > 0) {
-      markup += '<circle class="spark-dot" cx="' + x(n - 1).toFixed(1) + '" cy="' + y(tokens[n - 1]).toFixed(1) + '" r="4.5"/>';
-    }
-    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + H);
-    svg.setAttribute('width', width);
-    svg.setAttribute('height', H);
-    svg.innerHTML = markup;
+    /* baseline */
+    ctx.strokeStyle = C.axis;
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY + 0.5);
+    ctx.lineTo(cssW - CH.padR, baseY + 0.5);
+    ctx.stroke();
 
-    var peakIdx = 0;
-    for (var k = 1; k < n; k++) { if (tokens[k] > tokens[peakIdx]) peakIdx = k; }
-    $('spark-peak').textContent = max > 0
-      ? 'peak ' + fmtCompact(tokens[peakIdx]) + ' tokens \\u00b7 ' + buckets[peakIdx].label_sydney
-      : 'no traffic in the last 24h';
-    $('spark-first').textContent = buckets.length ? buckets[0].label_sydney : '';
-
-    sparkGeom = { width: width, n: n, buckets: buckets, max: max };
-    hideSparkHover();
-  }
-
-  function bucketAt(px) {
-    if (!sparkGeom || sparkGeom.n < 2) return 0;
-    var step = (sparkGeom.width - PAD_L - PAD_R) / (sparkGeom.n - 1);
-    return Math.max(0, Math.min(sparkGeom.n - 1, Math.round((px - PAD_L) / step)));
-  }
-
-  function showSparkHover(i) {
-    if (!sparkGeom || !sparkGeom.n) return;
-    var b = sparkGeom.buckets[i];
-    var step = sparkGeom.n < 2 ? 0 : (sparkGeom.width - PAD_L - PAD_R) / (sparkGeom.n - 1);
-    var x = PAD_L + i * step;
-    var cross = $('spark-cross'), tip = $('spark-tip');
-    cross.hidden = false;
-    cross.style.left = x + 'px';
-    tip.textContent = '';
-    tip.appendChild(el('div', 'tv', fmtCompact(b.tokens) + ' tokens'));
-    tip.appendChild(el('div', 'tl', b.label_sydney + ' \\u00b7 ' + fmtInt(b.requests) + ' req'));
-    tip.hidden = false;
-    var half = tip.offsetWidth / 2 + 6;
-    tip.style.left = Math.max(half, Math.min(sparkGeom.width - half, x)) + 'px';
-    tip.style.top = '10px';
-  }
-
-  function hideSparkHover() {
-    $('spark-cross').hidden = true;
-    $('spark-tip').hidden = true;
-  }
-
-  function wireSparkline() {
-    var wrap = $('spark-wrap');
-    var focusIdx = -1;
-
-    wrap.addEventListener('pointermove', function (ev) {
-      focusIdx = bucketAt(ev.clientX - wrap.getBoundingClientRect().left);
-      showSparkHover(focusIdx);
+    /* columns + x axis (Sydney time: day name at midnight, time every 4 h) */
+    var peakIdx = tokens.indexOf(peak);
+    buckets.forEach(function (b, i) {
+      var v = tokens[i];
+      if (v > 0) {
+        var h = (v / peak) * plotH;
+        var x = padL + i * band + (band - barW) / 2;
+        ctx.fillStyle = i === hoverIdx ? C.barHot : (b.partial ? C.barPartial : C.bar);
+        barTopPath(ctx, x, baseY - h, barW, h);
+      }
+      var centre = padL + i * band + band / 2;
+      var hour = parseInt(b.label_sydney, 10) || 0;
+      if (b.day_sydney || hour % 4 === 0) {
+        ctx.strokeStyle = C.axis;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(centre) + 0.5, baseY);
+        ctx.lineTo(Math.round(centre) + 0.5, baseY + 4);
+        ctx.stroke();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = b.day_sydney ? C.textStrong : C.text;
+        ctx.font = (b.day_sydney ? '600 ' : '') + '11px ui-monospace, Menlo, Consolas, monospace';
+        ctx.fillText(b.day_sydney || b.label_sydney, centre, baseY + 16);
+        ctx.font = '11px ui-monospace, Menlo, Consolas, monospace';
+      }
     });
-    wrap.addEventListener('pointerleave', function () { focusIdx = -1; hideSparkHover(); });
+
+    /* one selective direct label — the peak */
+    if (peak > 0 && peakIdx >= 0) {
+      ctx.fillStyle = C.peak;
+      ctx.textAlign = 'center';
+      ctx.font = '600 11px ui-monospace, Menlo, Consolas, monospace';
+      ctx.fillText(fmtCompact(peak), padL + peakIdx * band + band / 2, Math.max(8, padT - 10));
+    }
+
+    chartGeom = { cssW: cssW, n: n, band: band, padL: padL, peak: peak, plotH: plotH, baseY: baseY, buckets: buckets, tokens: tokens };
+    if (hoverIdx >= n) hoverIdx = -1;
+    setText('chart-peak', peak > 0
+      ? 'peak ' + fmtCompact(peak) + ' · ' + bucketLabel(buckets[peakIdx])
+      : 'no traffic in the last 24 h');
+    renderChartTable(buckets);
+  }
+
+  function renderChartTable(buckets) {
+    var tbody = $('chart-table-body');
+    if (!tbody) return;
+    tbody.textContent = '';
+    buckets.forEach(function (b) {
+      var tr = el('tr');
+      tr.appendChild(el('td', '', bucketLabel(b)));
+      tr.appendChild(el('td', 'num', fmtInt(b.requests)));
+      tr.appendChild(el('td', 'num', fmtInt(b.tokens)));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function showChartHover(i) {
+    if (!chartGeom || !chartGeom.n) return;
+    var b = chartGeom.buckets[i];
+    if (!b) return;
+    hoverIdx = i;
+    renderChart(buckets());
+    var tip = $('chart-tip');
+    tip.textContent = '';
+    tip.appendChild(el('div', 'tv', fmtCompact(chartGeom.tokens[i]) + ' tokens'));
+    tip.appendChild(el('div', 'tl',
+      bucketLabel(b) + ' · ' + fmtInt(b.requests) + ' req' + (b.partial ? ' · partial' : '')));
+    tip.hidden = false;
+    var centre = chartGeom.padL + i * chartGeom.band + chartGeom.band / 2;
+    var h = chartGeom.tokens[i] > 0 ? (chartGeom.tokens[i] / chartGeom.peak) * chartGeom.plotH : 0;
+    tip.style.left = Math.max(tip.offsetWidth / 2 + 4,
+      Math.min(chartGeom.cssW - tip.offsetWidth / 2 - 4, centre)) + 'px';
+    tip.style.top = Math.max(2, chartGeom.baseY - h - tip.offsetHeight - 8) + 'px';
+  }
+
+  function hideChartHover() {
+    hoverIdx = -1;
+    var tip = $('chart-tip');
+    if (tip) tip.hidden = true;
+    if (chartGeom) renderChart(buckets());
+  }
+
+  var lastSeries = null;
+  function buckets() { return lastSeries || bootBuckets; }
+
+  function wireChart() {
+    var canvas = $('chart'), wrap = $('chart-wrap');
+    if (!canvas || !wrap) return;
+    canvas.addEventListener('pointermove', function (ev) {
+      if (!chartGeom || !chartGeom.n) return;
+      var rect = canvas.getBoundingClientRect();
+      var i = Math.floor((ev.clientX - rect.left - chartGeom.padL) / chartGeom.band);
+      i = Math.max(0, Math.min(chartGeom.n - 1, i));
+      if (i !== hoverIdx) showChartHover(i);
+    });
+    canvas.addEventListener('pointerleave', hideChartHover);
     wrap.addEventListener('keydown', function (ev) {
-      var n = sparkGeom ? sparkGeom.n : 0;
+      var n = chartGeom ? chartGeom.n : 0;
       if (!n) return;
       if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
-        focusIdx = focusIdx < 0 ? n - 1 : Math.max(0, Math.min(n - 1, focusIdx + (ev.key === 'ArrowRight' ? 1 : -1)));
-        showSparkHover(focusIdx);
+        var next = hoverIdx < 0 ? n - 1 : Math.max(0, Math.min(n - 1, hoverIdx + (ev.key === 'ArrowRight' ? 1 : -1)));
+        showChartHover(next);
         ev.preventDefault();
-      } else if (ev.key === 'Home') { focusIdx = 0; showSparkHover(0); ev.preventDefault(); }
-      else if (ev.key === 'End') { focusIdx = n - 1; showSparkHover(n - 1); ev.preventDefault(); }
-      else if (ev.key === 'Escape') { focusIdx = -1; hideSparkHover(); }
+      } else if (ev.key === 'Escape') { hideChartHover(); }
     });
-    wrap.addEventListener('blur', function () { focusIdx = -1; hideSparkHover(); });
   }
 
-  /* ---- events ---- */
+  /* ---- recent events ---- */
+
+  function badgeTone(e) {
+    var status = (e.status_code === null || e.status_code === undefined) ? null : Number(e.status_code);
+    if (status !== null && RATE_LIMIT_CODES.indexOf(status) !== -1) return ['crit', String(status)];
+    if (e.usage_complete === 'final') return ['good', 'final'];
+    return ['none', e.outcome || (status === null ? '—' : String(status))];
+  }
 
   function renderEvents(events) {
     var tbody = $('events-body');
+    if (!tbody) return;
     tbody.textContent = '';
     if (!events || !events.length) {
       var tr = el('tr');
@@ -691,49 +1070,34 @@ JS = """
       return;
     }
     events.forEach(function (e) {
-      var un = isUnattributed(e.caller);
-      var tr = el('tr');
-      if (e.outcome && e.outcome !== 'completed') tr.className = 'row-bad';
+      var toneLabel = badgeTone(e);
+      var tr = el('tr', toneLabel[0] === 'crit' ? 'row-crit' : '');
 
-      var tdTime = el('td', 'num', e.ts_sydney || fmtSydney(e.ts));
+      var tdTime = el('td', 'num', e.ts_sydney || '—');
       tdTime.title = e.ts || '';
       tr.appendChild(tdTime);
 
       var tdCaller = el('td');
-      tdCaller.appendChild(el('span', un ? 'unattr' : 'caller', e.caller || UNATTR));
+      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), e.caller || UNATTR));
       tr.appendChild(tdCaller);
 
-      tr.appendChild(el('td', '', e.path || '\\u2014'));
-      tr.appendChild(el('td', '', e.model || '\\u2014'));
+      tr.appendChild(el('td', '', e.model || '—'));
+      tr.appendChild(el('td', '', e.route || e.path || '—'));
+      tr.appendChild(el('td', 'num', fmtOpt(e.prompt_tokens)));
+      tr.appendChild(el('td', 'num', fmtOpt(e.completion_tokens)));
+      tr.appendChild(el('td', 'num total', fmtOpt(e.total_tokens)));
 
-      var tdStatus = el('td');
+      var tdBadge = el('td');
       var badge = el('span', 'badge');
-      var tone = OUTCOME_TONE[e.outcome] ||
-        (e.status_code !== null && e.status_code !== undefined && e.status_code >= 400 ? 'crit' : null);
-      if (tone) badge.appendChild(el('span', 'dot-s tone-' + tone));
-      badge.appendChild(el('span', 'code', (e.status_code === null || e.status_code === undefined) ? '\\u2014' : e.status_code));
-      if (e.outcome) badge.appendChild(el('span', 'muted', e.outcome));
-      tdStatus.appendChild(badge);
-      tr.appendChild(tdStatus);
-
-      tr.appendChild(el('td', 'num', fmtTok(e.prompt_tokens)));
-      tr.appendChild(el('td', 'num', fmtTok(e.completion_tokens)));
-
-      var tdTotal = el('td', 'num');
-      tdTotal.appendChild(document.createTextNode(fmtTok(e.total_tokens)));
-      if (e.usage_complete === 'partial' || e.usage_complete === 'missing') {
-        var warn = el('span', 'dot-s tone-warn');
-        warn.style.marginLeft = '6px';
-        warn.title = 'usage ' + e.usage_complete;
-        tdTotal.appendChild(warn);
-      }
-      tr.appendChild(tdTotal);
-
+      badge.appendChild(el('span', 'dot-s tone-' + toneLabel[0]));
+      badge.appendChild(el('span', '', toneLabel[1]));
+      tdBadge.appendChild(badge);
+      tr.appendChild(tdBadge);
       tbody.appendChild(tr);
     });
   }
 
-  /* ---- error card, live tick, polling ---- */
+  /* ---- error card, live pill, polling ---- */
 
   function showError(message) {
     $('error-card').classList.add('show');
@@ -748,17 +1112,16 @@ JS = """
 
   function setLive(state) {
     var live = $('live');
-    live.classList.remove('stale', 'error');
-    if (state === 'error') live.classList.add('error');
-    else if (state === 'stale') live.classList.add('stale');
+    live.classList.remove('ok', 'stale', 'error');
+    if (state !== 'connecting') live.classList.add(state);
   }
 
   function tick() {
     var live = $('live');
-    if (live.classList.contains('error')) { $('tick').textContent = 'update failed \\u00b7 retrying'; return; }
-    if (lastOkAt === null) { $('tick').textContent = 'loading\\u2026'; return; }
+    if (live.classList.contains('error')) { setText('tick', 'retrying…'); return; }
+    if (lastOkAt === null) { setText('tick', 'connecting…'); return; }
     var age = Math.max(0, Math.round((Date.now() - lastOkAt) / 1000));
-    $('tick').textContent = age < 2 ? 'updated just now' : 'updated ' + age + 's ago';
+    setText('tick', 'live');
     if (age >= POLL_MS / 1000 + 4) setLive('stale');
   }
 
@@ -774,29 +1137,37 @@ JS = """
   }
 
   var inFlight = false;
-  var lastSummary = null;
 
   async function poll() {
     if (inFlight) return;
     inFlight = true;
     try {
-      var results = await Promise.all([fetchJson('/api/summary'), fetchJson(EVENTS_URL)]);
-      var summary = results[0], events = results[1];
+      var results = await Promise.all([
+        fetchJson('/api/summary'),
+        fetchJson('/api/timeseries'),
+        fetchJson('/api/events?limit=' + DASHBOARD_EVENTS),
+      ]);
+      var summary = results[0], series = results[1], events = results[2];
 
       var errors = [];
       if (summary && summary.error) errors.push(summary.error);
+      if (series && series.error) errors.push(series.error);
       if (events && events.error) errors.push(events.error);
-      if (errors.length) showError(errors.join(' \\u00b7 '));
+      if (errors.length) showError(errors.join(' · '));
       else hideError();
 
-      if (summary && !summary.error) {
-        lastSummary = summary;
-        renderSummary(summary);
-      }
+      /* Refetch keeps the frame: previous renders hold until new data lands. */
+      if (summary && !summary.error) renderSummary(summary);
+      if (Array.isArray(series)) { lastSeries = series; renderChart(series); }
       if (Array.isArray(events)) renderEvents(events);
 
-      if (!errors.length) { lastOkAt = Date.now(); setLive('ok'); }
-      else setLive('error');
+      if (!errors.length) {
+        lastOkAt = Date.now();
+        setLive('ok');
+        setText('updated', fmtSydneyTime(lastOkAt));
+      } else {
+        setLive('error');
+      }
     } catch (err) {
       showError('fetch failed: ' + err);
       setLive('error');
@@ -808,27 +1179,36 @@ JS = """
 
   function renderSummary(summary) {
     renderCards(summary);
-    renderBarTable('harness-body', summary.per_caller, 'caller', function (r) { return isUnattributed(r.caller); });
-    var last24 = summary.last_24h || {};
-    renderBarTable('route-body', last24.per_route, 'route', function () { return false; });
-    renderSparkline(summary.per_hour || []);
+    renderHarness(summary.per_caller_24h && summary.per_caller_24h.length ? summary.per_caller_24h : summary.per_caller);
   }
 
+  var bootBuckets = [];
   var boot = {};
   try { boot = JSON.parse($('bootstrap').textContent); } catch (e) { boot = {}; }
 
   if (boot.error) showError(boot.error);
   renderSummary(boot);
+  bootBuckets = boot.per_hour || [];
+  lastSeries = bootBuckets;
+  renderChart(bootBuckets);
   renderEvents(boot.events || []);
-  wireSparkline();
+  wireChart();
   tick();
 
   var resizeTimer = null;
   window.addEventListener('resize', function () {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
-      renderSparkline((lastSummary || boot).per_hour || []);
+      var tip = $('chart-tip');
+      if (tip) tip.hidden = true;
+      hoverIdx = -1;
+      renderChart(buckets());
     }, 150);
+  });
+
+  /* refresh immediately when the tab becomes visible again */
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) poll();
   });
 
   setInterval(poll, POLL_MS);
@@ -837,156 +1217,48 @@ JS = """
 """
 
 
-def sparkline_svg_fallback(buckets: list[dict[str, Any]]) -> str:
-    """Static sparkline for the initial (no-JS) paint. The browser rebuilds
-    this from JSON on every poll with pixel-exact geometry."""
-    width, height = 720, 150
-    pad_l, pad_r, pad_t, pad_b = 6, 12, 12, 20
-    base = height - pad_b
-    top = pad_t
-    n = len(buckets)
-    tokens = [float(b.get("tokens") or 0) for b in buckets]
-    peak = max(tokens) if tokens else 0.0
+# --------------------------------------------------------------------------
+# HTML rendering (initial paint; the browser re-renders from JSON afterwards)
+# --------------------------------------------------------------------------
 
-    def x(i: int) -> float:
-        return pad_l if n < 2 else pad_l + i * (width - pad_l - pad_r) / (n - 1)
-
-    def y(v: float) -> float:
-        return base if peak <= 0 else top + (1 - v / peak) * (base - top)
-
-    line = " ".join(f"{'M' if i == 0 else 'L'} {x(i):.1f} {y(v):.1f}" for i, v in enumerate(tokens))
-    area = (
-        f"M {x(0):.1f} {base} "
-        + " ".join(f"L {x(i):.1f} {y(v):.1f}" for i, v in enumerate(tokens))
-        + f" L {x(n - 1):.1f} {base} Z"
-    )
-
-    parts = [
-        f'<path class="spark-base" d="M {pad_l} {base} H {width - pad_r}"/>',
-        f'<path class="spark-area" d="{area}"/>',
-        f'<path class="spark-line" d="{line}"/>',
-    ]
-    if peak > 0:
-        parts.append(f'<circle class="spark-dot" cx="{x(n - 1):.1f}" cy="{y(tokens[-1]):.1f}" r="4.5"/>')
-    return (
-        f'<svg id="spark-svg" viewBox="0 0 {width} {height}" preserveAspectRatio="none" role="img" '
-        f'aria-label="Tokens per hour over the last 24 hours">' + "".join(parts) + "</svg>"
-    )
+FAVICON = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E"
+    "%3Crect width='16' height='16' rx='3' fill='%230a0d12'/%3E"
+    "%3Cpath d='M3.5 11.5v-4M7 11.5v-7M10.5 11.5v-3M13.5 11.5v-5' stroke='%233987e5' "
+    "stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E"
+)
 
 
-def bar_table_body(tbody_id: str, rows: list[dict[str, Any]], label_key: str) -> str:
-    if not rows:
-        return f'<tbody id="{tbody_id}"><tr><td colspan="4" class="muted">No events</td></tr></tbody>'
-    peak = max((float(r.get("total_tokens") or 0) for r in rows), default=0.0)
-    out = []
-    for r in rows:
-        tokens = float(r.get("total_tokens") or 0)
-        unattr = label_key == "caller" and not r.get(label_key)
-        label = r.get(label_key) or UNATTRIBUTED
-        fill = ""
-        if peak > 0 and tokens > 0:
-            width = max(1.5, tokens / peak * 100)
-            fill = f'<div class="bar-fill{" unattr" if unattr else ""}" style="width:{width:.1f}%"></div>'
-        out.append(
-            "<tr>"
-            f'<td><span class="{"unattr" if unattr else "caller"}">{esc(label)}</span></td>'
-            f'<td class="num">{fmt_int(r.get("requests"))}</td>'
-            f'<td class="num">{esc(fmt_compact(tokens))}</td>'
-            f'<td class="bar-cell"><div class="bar-track" aria-hidden="true">{fill}</div></td>'
-            "</tr>"
-        )
-    return f'<tbody id="{tbody_id}">' + "".join(out) + "</tbody>"
-
-
-def events_table_body(events: list[dict[str, Any]]) -> str:
-    if not events:
-        return '<tr><td colspan="8" class="muted">No events yet</td></tr>'
-    out = []
-    for e in events:
-        unattr = not e.get("caller") or e.get("caller") == UNATTRIBUTED
-        outcome = e.get("outcome")
-        status_code = e.get("status_code")
-        tone = OUTCOME_TONE.get(outcome)
-        if tone is None and isinstance(status_code, int) and status_code >= 400:
-            tone = TONE_CRIT
-        dot = f'<span class="dot-s tone-{tone}"></span>' if tone else ""
-        outcome_txt = f'<span class="muted">{esc(outcome)}</span>' if outcome else ""
-        row_cls = ' class="row-bad"' if outcome and outcome != "completed" else ""
-        warn = ""
-        if e.get("usage_complete") in ("partial", "missing"):
-            warn = f'<span class="dot-s tone-{TONE_WARN}" title="usage {esc(e["usage_complete"])}"></span>'
-        out.append(
-            f"<tr{row_cls}>"
-            f'<td class="num" title="{esc(e.get("ts"))}">{esc(e.get("ts_sydney"))}</td>'
-            f'<td><span class="{"unattr" if unattr else "caller"}">{esc(e.get("caller") or UNATTRIBUTED)}</span></td>'
-            f"<td>{esc(e.get('path'))}</td>"
-            f"<td>{esc(e.get('model'))}</td>"
-            f'<td><span class="badge">{dot}<span class="code">{fmt_int(status_code)}</span>{outcome_txt}</span></td>'
-            f'<td class="num">{esc(fmt_compact(e.get("prompt_tokens")))}</td>'
-            f'<td class="num">{esc(fmt_compact(e.get("completion_tokens")))}</td>'
-            f'<td class="num">{esc(fmt_compact(e.get("total_tokens")))}{warn}</td>'
-            "</tr>"
-        )
-    return "".join(out)
-
-
-def stat_card(label: str, value: Any, hint: str) -> str:
-    return (
-        '<div class="card stat">'
-        f'<div class="label">{esc(label)}</div>'
-        f'<div class="value">{esc(fmt_stat(value))}</div>'
-        f'<div class="hint">{esc(hint)}</div>'
-        "</div>"
-    )
-
-
-def render_page(snapshot: dict[str, Any], db_path: str) -> bytes:
-    events = snapshot.get("events") or []
-    last_24h = snapshot.get("last_24h") or dict(EMPTY_SUMMARY)
-    all_time = snapshot.get("all_time") or dict(EMPTY_SUMMARY)
+def render_page(snapshot: dict[str, Any]) -> bytes:
     per_hour = snapshot.get("per_hour") or hour_buckets()
-
-    cards = "".join(
-        [
-            stat_card("Requests · last 24h", last_24h["total_requests"], "rolling 24-hour window"),
-            stat_card("Tokens · last 24h", last_24h["total_tokens"], "prompt + completion"),
-            stat_card("Requests · all time", all_time["total_requests"], "since first event"),
-            stat_card("Tokens · all time", all_time["total_tokens"], db_path.rsplit("/", 1)[-1]),
-        ]
-    )
+    events = snapshot.get("events") or []
+    harness_rows = snapshot.get("per_caller_24h")
+    if not harness_rows:
+        harness_rows = snapshot.get("per_caller") or []
 
     if snapshot.get("error"):
         error_class = " error-card show"
         error_msg = esc(snapshot["error"])
     else:
-        error_class = " error-card"
+        error_class = ""
         error_msg = "The usage ledger is temporarily unavailable; the page will keep retrying."
 
-    bootstrap = json.dumps(
-        {
-            "error": snapshot.get("error"),
-            "last_24h": last_24h,
-            "all_time": all_time,
-            "per_caller": snapshot.get("per_caller") or [],
-            "per_route": snapshot.get("per_route") or [],
-            "per_hour": per_hour,
-            "events": events,
-        },
-        separators=(",", ":"),
-    ).replace("</", "<\\/")
-
-    peak_bucket = max(per_hour, key=lambda b: float(b.get("tokens") or 0), default=None)
-    peak_tokens = float(peak_bucket.get("tokens") or 0) if peak_bucket else 0.0
+    tokens = [float(b.get("tokens") or 0) for b in per_hour]
+    peak = max(tokens) if tokens else 0.0
     peak_note = (
-        f"peak {fmt_compact(peak_tokens)} tokens · {peak_bucket['label_sydney']}"
-        if peak_tokens > 0 and peak_bucket
-        else "no traffic in the last 24h"
+        "peak " + fmt_compact(peak) + " · " + bucket_label(per_hour[tokens.index(peak)])
+        if peak > 0
+        else "no traffic in the last 24 h"
     )
 
+    bootstrap = json.dumps(snapshot, separators=(",", ":")).replace("</", "<\\/")
+
     js = (
-        JS.replace("__POLL_MS__", str(POLL_SECONDS * 1000))
+        JS
+        .replace("__POLL_MS__", str(POLL_SECONDS * 1000))
         .replace("__FETCH_TIMEOUT_MS__", str(FETCH_TIMEOUT_MS))
         .replace("__DASHBOARD_EVENTS__", str(DASHBOARD_EVENTS))
+        .replace("__HARNESS_COLOR_COUNT__", str(HARNESS_COLOR_COUNT))
     )
 
     page = (
@@ -996,7 +1268,10 @@ def render_page(snapshot: dict[str, Any], db_path: str) -> bytes:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Usage Proxy Ledger</title>
+<title>Harness Usage — Live</title>
+<link rel="icon" href=\""""
+        + FAVICON
+        + """\">
 <style>"""
         + CSS
         + """</style>
@@ -1006,80 +1281,76 @@ def render_page(snapshot: dict[str, Any], db_path: str) -> bytes:
 
 <header class="topbar">
   <div>
-    <h1>Usage Proxy Ledger</h1>
-    <p class="subtitle">Read-only view of the usage-proxy ledger · harness attribution from <code>caller</code></p>
+    <h1>Harness <span class="accent">Usage</span></h1>
+    <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney</p>
   </div>
-  <div class="live" id="live" aria-live="polite">
+  <div class="live" id="live" role="status">
     <span class="dot" aria-hidden="true"></span>
-    <span id="tick">updated just now</span>
+    <span id="tick">connecting&hellip;</span>
+    <span class="sep" aria-hidden="true">&middot;</span>
+    <span class="updated" id="updated">&mdash;</span>
   </div>
 </header>
 
-<div class="card"""
+<div class="card error-card"""
         + error_class
-        + """>
+        + """\" id="error-card">
   <h2>Ledger unavailable</h2>
   <p id="error-msg">"""
         + error_msg
         + """</p>
 </div>
 
-<section class="cards" aria-label="Totals">"""
-        + cards
+<section class="cards" aria-label="Last 24 hours">"""
+        + render_cards(snapshot)
         + """</section>
 
-<section class="grid-2" aria-label="Breakdowns">
-  <div class="card" id="per-harness">
-    <div class="card-head"><h2>Per-harness usage</h2><span class="win">all time</span></div>
-    <div class="scroll-x">
-    <table>
-      <thead><tr><th scope="col">Harness</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Tokens</th><th scope="col"><span class="sr-only">Share of tokens</span></th></tr></thead>
-      """
-        + bar_table_body("harness-body", snapshot.get("per_caller") or [], "caller")
-        + """
-    </table>
-    </div>
-  </div>
-  <div class="card" id="routes">
-    <div class="card-head"><h2>Per-route usage</h2><span class="win">last 24h</span></div>
-    <div class="scroll-x">
-    <table>
-      <thead><tr><th scope="col">Route</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Tokens</th><th scope="col"><span class="sr-only">Share of tokens</span></th></tr></thead>
-      """
-        + bar_table_body("route-body", last_24h.get("per_route") or [], "route")
-        + """
-    </table>
-    </div>
-  </div>
-</section>
-
-<section class="card" style="margin-bottom:14px" aria-label="Tokens per hour">
-  <div class="card-head"><h2>Tokens per hour</h2><span class="win" id="spark-peak">"""
+<div class="mid">
+<section class="card chart-card" aria-label="Tokens per hour">
+  <div class="card-head">
+    <h2>Tokens per hour</h2>
+    <div class="card-meta">
+      <span class="win" id="chart-peak">"""
         + esc(peak_note)
-        + """</span></div>
-  <div class="spark-wrap" id="spark-wrap" tabindex="0" aria-label="Tokens per hour, last 24 hours. Use the left and right arrow keys to read values.">
-    """
-        + sparkline_svg_fallback(per_hour)
-        + """
-    <div class="spark-cross" id="spark-cross" hidden></div>
-    <div class="tooltip" id="spark-tip" hidden></div>
+        + """</span>
+      <span class="win">last 24 h &middot; 1 h buckets &middot; axis in Sydney time</span>
+    </div>
   </div>
-  <div class="spark-axis"><span id="spark-first">"""
-        + esc(per_hour[0]["label_sydney"] if per_hour else "")
-        + """</span><span>24h · times in Australia/Sydney</span><span>now</span></div>
+  <div class="chart-wrap" id="chart-wrap" tabindex="0" role="group" aria-label="Column chart of tokens per hour over the last 24 hours. Use the left and right arrow keys to read values.">
+    <canvas id="chart" width="800" height="260"></canvas>
+    <div class="tooltip" id="chart-tip" hidden></div>
+  </div>
+  """
+        + chart_data_table(per_hour)
+        + """
 </section>
 
-<section class="card" id="events" aria-label="Recent events">
-  <div class="card-head"><h2>Recent events</h2><span class="win">last """
+<section class="card" aria-label="Per-harness usage">
+  <div class="card-head"><h2>Per-harness usage</h2><span class="win">last 24 h &middot; bar = share of top harness</span></div>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th scope="col">Harness</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Tokens</th><th scope="col"><span class="sr-only">Share of tokens</span></th></tr></thead>
+    """
+        + harness_table_body(harness_rows)
+        + """
+  </table>
+  </div>
+</section>
+</div>
+
+<section class="card" aria-label="Recent events">
+  <div class="card-head">
+    <h2>Recent events</h2>
+    <span class="win">last """
         + str(len(events))
-        + """</span></div>
+        + """ &middot; newest first &middot; <span class="dot-s tone-good"></span> final &middot; <span class="dot-s tone-crit"></span> 401/429 &middot; <span class="dot-s tone-none"></span> other</span>
+  </div>
   <div class="scroll-x">
   <table class="events">
     <thead>
       <tr>
-        <th scope="col">Time</th><th scope="col">Harness</th><th scope="col">Route</th>
-        <th scope="col">Model</th><th scope="col">Status</th>
-        <th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col" class="num">Total</th>
+        <th scope="col">Time</th><th scope="col">Harness</th><th scope="col">Model</th><th scope="col">Route</th>
+        <th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col" class="num">Total</th><th scope="col">Outcome</th>
       </tr>
     </thead>
     <tbody id="events-body">"""
@@ -1090,10 +1361,10 @@ def render_page(snapshot: dict[str, Any], db_path: str) -> bytes:
 </section>
 
 <footer>
-  Polls /api/summary and /api/events every """
+  Polls /api/summary, /api/timeseries and /api/events every """
         + str(POLL_SECONDS)
-        + """ s · read-only SQLite access · LAN-only, no authentication.
-  <noscript>Live updates need JavaScript — showing the snapshot from page load.</noscript>
+        + """ s &middot; SQLite opened read-only (mode=ro) &middot; LAN only, no authentication.
+  <noscript>Live updates need JavaScript &mdash; showing the snapshot from page load.</noscript>
 </footer>
 </div>
 
@@ -1115,9 +1386,15 @@ def render_page(snapshot: dict[str, Any], db_path: str) -> bytes:
 
 class UsageProxyHandler(BaseHTTPRequestHandler):
     db_path: str = DEFAULT_DB
+    server_version = "usage-proxy-webui/2"
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[{self.log_date_time_string()}] {self.address_string()} {format % args}")
+        """Access logs are suppressed — a LAN dashboard must not spam stdout."""
+
+    def log_error(self, format: str, *args: Any) -> None:
+        sys.stderr.write(f"[{self.log_date_time_string()}] {format % args}\n")
 
     def _send(self, status: int, content_type: str, body: bytes) -> None:
         self.send_response(status)
@@ -1127,39 +1404,14 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        route = parsed.path
-
-        if route == "/":
-            self._handle_dashboard()
-        elif route == "/api/summary":
-            self._handle_api_summary()
-        elif route == "/api/events":
-            self._handle_api_events(parsed)
-        else:
-            self.send_error(404, "Not Found")
-
-    def _handle_dashboard(self) -> None:
-        # Always render the shell at HTTP 200 — even when the ledger is
-        # unreachable — so the browser keeps a page that can keep polling.
-        snapshot = fetch_snapshot(self.db_path, DASHBOARD_EVENTS)
-        self._send(200, "text/html; charset=utf-8", render_page(snapshot, self.db_path))
-
-    def _handle_api_summary(self) -> None:
-        snapshot = fetch_snapshot(self.db_path, event_limit=0)
-        payload = {k: v for k, v in snapshot.items() if k != "events"}
-        self._send(200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8"))
-
-    def _handle_api_events(self, parsed) -> None:
+    def _events_body(self, parsed) -> tuple[int, str, bytes]:
         qs = parse_qs(parsed.query)
         limit = API_EVENTS_DEFAULT
-        if "limit" in qs and qs["limit"]:
+        if "limit" in qs:
             try:
                 limit = min(max(1, int(qs["limit"][0])), API_EVENTS_MAX)
-            except ValueError:
-                self.send_error(400, "Invalid limit")
-                return
+            except (ValueError, IndexError):
+                return 400, "text/plain; charset=utf-8", b"invalid limit\n"
 
         conn: sqlite3.Connection | None = None
         try:
@@ -1167,34 +1419,95 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             events = query_events(conn, limit)
         except (sqlite3.Error, OSError) as exc:
             # Soft failure: HTTP 200 with an error payload so pollers keep polling.
-            self._send(200, "application/json; charset=utf-8",
-                       json.dumps({"error": f"ledger unavailable: {exc}"}, indent=2).encode("utf-8"))
-            return
+            body: Any = {"error": f"ledger unavailable: {exc}"}
+            return 200, "application/json; charset=utf-8", json.dumps(body, indent=2).encode("utf-8")
         finally:
             if conn is not None:
                 conn.close()
 
         if "envelope" in qs and qs["envelope"][0] == "object":
-            body: Any = {"events": events, "limit": limit}  # pre-rewrite shape
+            payload: Any = {"events": events, "limit": limit}  # pre-redesign shape
         else:
-            body = events
-        self._send(200, "application/json; charset=utf-8", json.dumps(body, indent=2).encode("utf-8"))
+            payload = events
+        return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
+
+    def _timeseries_body(self) -> tuple[int, str, bytes]:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = open_db_readonly(self.db_path)
+            buckets = query_timeseries(conn, cutoff_iso(HOURS))
+        except (sqlite3.Error, OSError) as exc:
+            body: Any = {"error": f"ledger unavailable: {exc}"}
+            return 200, "application/json; charset=utf-8", json.dumps(body, indent=2).encode("utf-8")
+        finally:
+            if conn is not None:
+                conn.close()
+        return 200, "application/json; charset=utf-8", json.dumps(buckets, indent=2).encode("utf-8")
+
+    def _body_for(self, parsed) -> tuple[int, str, bytes]:
+        route = parsed.path
+        if route == "/":
+            # Always render the shell at HTTP 200 — even when the ledger is
+            # unreachable — so the browser keeps a page that can keep polling.
+            snapshot = fetch_snapshot(self.db_path, DASHBOARD_EVENTS)
+            return 200, "text/html; charset=utf-8", render_page(snapshot)
+        if route == "/api/summary":
+            snapshot = fetch_snapshot(self.db_path, event_limit=0)
+            payload = {k: v for k, v in snapshot.items() if k != "events"}
+            return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
+        if route == "/api/timeseries":
+            return self._timeseries_body()
+        if route == "/api/events":
+            return self._events_body(parsed)
+        return 404, "text/plain; charset=utf-8", b"not found\n"
+
+    def do_GET(self) -> None:
+        try:
+            status, content_type, body = self._body_for(urlparse(self.path))
+        except Exception as exc:  # a handler must never kill the keep-alive connection
+            self.log_error("request failed: %r", exc)
+            try:
+                self._send(500, "application/json; charset=utf-8", b'{"error": "internal error"}\n')
+            except OSError:
+                pass
+            return
+        try:
+            self._send(status, content_type, body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client hung up mid-response; nothing to do
+
+    def do_HEAD(self) -> None:
+        try:
+            status, content_type, body = self._body_for(urlparse(self.path))
+        except Exception as exc:
+            self.log_error("request failed: %r", exc)
+            try:
+                self.send_error(500)
+            except OSError:
+                pass
+            return
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only usage-proxy ledger web UI")
+    parser = argparse.ArgumentParser(description="Live read-only usage-proxy ledger dashboard")
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Bind host (default: {DEFAULT_HOST})")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Bind port (default: {DEFAULT_PORT})")
-    parser.add_argument("--db", default=DEFAULT_DB, help=f"SQLite path (default: {DEFAULT_DB})")
+    parser.add_argument("--db", default=DEFAULT_DB, help=f"SQLite ledger path, opened read-only (default: {DEFAULT_DB})")
     args = parser.parse_args()
 
     UsageProxyHandler.db_path = args.db
     server = ThreadingHTTPServer((args.host, args.port), UsageProxyHandler)
-    print(f"Serving on http://{args.host}:{args.port}  db={args.db}")
+    server.daemon_threads = True
+    sys.stderr.write(f"usage-proxy-webui serving on http://{args.host}:{args.port}  db={args.db}\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down.")
+        sys.stderr.write("\nShutting down.\n")
     finally:
         server.server_close()
 
