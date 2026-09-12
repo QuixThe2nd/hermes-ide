@@ -84,7 +84,6 @@ class PlatformEntry:
     # after the shared-key loop, before ``_apply_env_overrides``. May set ``os.environ`` (guard
     # with ``not os.getenv(...)`` to keep env > YAML). Contract: docs/developer-guide/adding-platform-adapters.md.
     apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
-    cron_deliver_env_var: str = ""  # home-channel env var read for cron ``deliver=<name>``
     # ``(target_ref) -> Optional[(chat_id, thread_id)]`` run before channel-directory
     # fallback so plugins can declare native target syntax; None = continue resolution.
     parse_target_ref_fn: Optional[Callable[[str], Optional[tuple[str, Optional[str]]]]] = None

@@ -6344,14 +6344,6 @@ _SETUP_STEPS = (
     "      • Create an App-Level Token with 'connections:write' scope",
     "   3. Install to Workspace: Settings → Install App",
     "   4. After installing, invite the bot to channels: /invite @YourBot",)
-_SETUP_HOME_CHANNEL_HELP = (
-    "📬 Home Channel: where Hermes delivers cron job results,",
-    "   cross-platform messages, and notifications.",
-    "   To get a channel ID: open the channel in Slack, then right-click",
-    "   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).",
-    "   You can also set this later by typing /set-home in a Slack channel.",)
-
-
 def _write_slack_manifest_and_instruct() -> None:
     """Write the manifest under HERMES_HOME and print paste instructions; non-fatal."""
     from hermes_cli.cli_output import print_info, print_success, print_warning
@@ -6377,9 +6369,9 @@ def _write_slack_manifest_and_instruct() -> None:
 
 
 def interactive_setup() -> None:
-    """Guide the user through Slack bot setup (manifest, tokens, allowlist, home channel).
+    """Guide the user through Slack bot setup (manifest, tokens, allowlist).
     CLI helpers are lazy-imported to keep the plugin's import surface small."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success, print_warning)
 
@@ -6424,14 +6416,6 @@ def interactive_setup() -> None:
         print_info(
             "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
         )
-    print()
-    for line in _SETUP_HOME_CHANNEL_HELP:
-        print_info(line)
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
-    if home_channel:
-        save_env_value("SLACK_HOME_CHANNEL", home_channel)
-    elif remove_env_value("SLACK_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
 
 
 _YAML_BOOL_KEYS = (
@@ -6501,7 +6485,6 @@ def register(ctx) -> None:
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="SLACK_ALLOWED_USERS",
         allow_all_env="SLACK_ALLOW_ALL_USERS",
-        cron_deliver_env_var="SLACK_HOME_CHANNEL",
         # Out-of-process cron delivery; without it deliver=slack cron jobs fail with
         # "No live adapter" when cron runs apart from the gateway.
         standalone_sender_fn=_standalone_send,

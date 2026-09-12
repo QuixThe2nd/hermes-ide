@@ -4,7 +4,6 @@ Environment variables:
     MATTERMOST_URL              Server URL (e.g. https://mm.example.com)
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
-    MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
 """
 
 from __future__ import annotations
@@ -658,8 +657,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
 # --- Interactive setup wizard ---
 
 def interactive_setup() -> None:
-    """Guide the user through Mattermost bot setup (URL + token, allowlist, home channel)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    """Guide the user through Mattermost bot setup (URL + token, allowlist)."""
+    from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success
 
     def info(*lines: str) -> None:
@@ -692,15 +691,6 @@ def interactive_setup() -> None:
         print_success("Mattermost allowlist configured")
     else:
         print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
-    print()
-    info("📬 Home Channel: where Hermes delivers cron job results and notifications.",
-         "   To get a channel ID: click channel name → View Info → copy the ID",
-         "   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
-    if home_channel:
-        save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
-    elif remove_env_value("MATTERMOST_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
     print_info("   Open config in your editor:  hermes config edit")
 
 
@@ -755,6 +745,5 @@ def register(ctx) -> None:
         install_hint="pip install aiohttp", setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,  # YAML→env bridge (see _YAML_BRIDGE)
         allowed_users_env="MATTERMOST_ALLOWED_USERS", allow_all_env="MATTERMOST_ALLOW_ALL_USERS",
-        cron_deliver_env_var="MATTERMOST_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron; without it `deliver=mattermost` fails
         max_message_length=MAX_POST_LENGTH, emoji="💬", allow_update_command=True)

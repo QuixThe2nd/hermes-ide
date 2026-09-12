@@ -279,16 +279,11 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed PlatformConfig.extra from env so env-only setups appear in status
-    (``home_channel`` becomes a ``DeliveryTarget`` via the core plugin hook)."""
+    """Seed PlatformConfig.extra from env so env-only setups appear in status."""
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    seed: dict = {"project_id": project_id, "project_secret": project_secret}
-    home = _get_scoped_secret("PHOTON_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("PHOTON_HOME_CHANNEL_NAME", "Home")}
-    return seed
+    return {"project_id": project_id, "project_secret": project_secret}
 
 
 def _markdown_enabled() -> bool:
@@ -1600,7 +1595,7 @@ def register(ctx) -> None:
             "Spectrum project, links your phone number, installs the "
             "spectrum-ts sidecar)."),
         setup_fn=_cli.gateway_setup,  # surfaces Photon in the unified `hermes gateway setup` wizard
-        env_enablement_fn=_env_enablement, cron_deliver_env_var="PHOTON_HOME_CHANNEL",
+        env_enablement_fn=_env_enablement,
         standalone_sender_fn=_standalone_send, allowed_users_env="PHOTON_ALLOWED_USERS",
         allow_all_env="PHOTON_ALLOW_ALL_USERS", max_message_length=_MAX_MESSAGE_LENGTH, emoji="📱",
         pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM

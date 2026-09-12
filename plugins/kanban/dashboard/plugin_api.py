@@ -1096,22 +1096,23 @@ def get_config():
         "render_markdown": bool(k_cfg.get("render_markdown", True))}
 
 
-# --- Home-channel subscriptions (per-task, per-platform toggles) -------------
-# Each gateway platform has at most one "home" (chat_id, thread_id, name); a toggle-on writes
-# exactly the notify_subs row ``/kanban create`` would, so the gateway notifier needs no plumbing.
+# --- Notification-channel subscriptions (per-task, per-platform toggles) -----
+# Each gateway platform has at most one notification channel (chat_id, thread_id, name);
+# a toggle-on writes exactly the notify_subs row ``/kanban create`` would, so the gateway
+# notifier needs no plumbing.
 
-def _configured_home_channels() -> list[dict]:
-    """Every platform with a home_channel, from the live GatewayConfig (so env overlays
-    like ``TELEGRAM_HOME_CHANNEL`` are honored), sorted by platform."""
+def _configured_notification_channels() -> list[dict]:
+    """Every platform with a notification_channel, from the live GatewayConfig, sorted by platform."""
     try:
         from gateway.config import load_gateway_config
         gw_cfg = load_gateway_config()
     except Exception:
         return []
     result = [
-        {"platform": platform.value, "chat_id": pcfg.home_channel.chat_id,
-         "thread_id": pcfg.home_channel.thread_id or "", "name": pcfg.home_channel.name or "Home"}
-        for platform, pcfg in gw_cfg.platforms.items() if pcfg and pcfg.home_channel]
+        {"platform": platform.value, "chat_id": chan.chat_id,
+         "thread_id": chan.thread_id or "", "name": chan.name or platform.value}
+        for platform, pcfg in gw_cfg.platforms.items()
+        if pcfg and (chan := pcfg.notification_channel)]
     result.sort(key=lambda r: r["platform"])
     return result
 
@@ -1125,53 +1126,53 @@ def _active_profile_name() -> str:
         return "default"
 
 
-def _home_for_platform(platform: str, detail: str) -> dict:
-    home = next((h for h in _configured_home_channels() if h["platform"] == platform), None)
-    if not home:
+def _notification_channel_for_platform(platform: str, detail: str) -> dict:
+    channel = next((c for c in _configured_notification_channels() if c["platform"] == platform), None)
+    if not channel:
         raise HTTPException(status_code=404, detail=detail)
-    return home
+    return channel
 
 
-@router.get("/home-channels")
-def get_home_channels(task_id: Optional[str] = Query(None), board: Optional[str] = Query(None)):
-    """Every platform with a home channel plus whether *task_id* (if given) is
+@router.get("/notification-channels")
+def get_notification_channels(task_id: Optional[str] = Query(None), board: Optional[str] = Query(None)):
+    """Every platform with a notification channel plus whether *task_id* (if given) is
     subscribed to it; without ``task_id`` every ``subscribed`` is false."""
-    homes = _configured_home_channels()
-    subscribed_homes: set[tuple[str, str, str]] = set()
+    channels = _configured_notification_channels()
+    subscribed: set[tuple[str, str, str]] = set()
     if task_id:
         with _board_conn(board) as (board, conn):
             subs = kbn.list_notify_subs(conn, task_id)
-        subscribed_homes = {
+        subscribed = {
             (str(sub.get("platform") or ""), str(sub.get("chat_id") or ""), str(sub.get("thread_id") or "")) for sub in subs}
-    return {"home_channels": [
-        {**home, "subscribed": (home["platform"], home["chat_id"], home["thread_id"]) in subscribed_homes} for home in homes]}
+    return {"notification_channels": [
+        {**c, "subscribed": (c["platform"], c["chat_id"], c["thread_id"]) in subscribed} for c in channels]}
 
 
-@router.post("/tasks/{task_id}/home-subscribe/{platform}")
-def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
-    """Subscribe *task_id* to *platform*'s home channel. Idempotent at the DB
-    layer; 404 when the platform has no home or the task doesn't exist."""
-    home = _home_for_platform(
+@router.post("/tasks/{task_id}/notify-subscribe/{platform}")
+def subscribe_notifications(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Subscribe *task_id* to *platform*'s notification channel. Idempotent at the DB
+    layer; 404 when the platform has no notification channel or the task doesn't exist."""
+    channel = _notification_channel_for_platform(
         platform,
-        f"No home channel configured for platform {platform!r}. "
-        f"Set one from the messenger via /sethome, or configure "
-        f"gateway.platforms.{platform}.home_channel in config.yaml.")
+        f"No notification channel configured for platform {platform!r}. "
+        f"Set one from the messenger via /setnotify.")
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
         kbn.add_notify_sub(
-            conn, task_id=task_id, platform=platform, chat_id=home["chat_id"],
-            thread_id=home["thread_id"] or None, notifier_profile=_active_profile_name())
-        return {"ok": True, "task_id": task_id, "home_channel": home}
+            conn, task_id=task_id, platform=platform, chat_id=channel["chat_id"],
+            thread_id=channel["thread_id"] or None, notifier_profile=_active_profile_name())
+        return {"ok": True, "task_id": task_id, "notification_channel": channel}
 
 
-@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
-def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
-    """Remove any notify subscription on *task_id* matching *platform*'s home."""
-    home = _home_for_platform(platform, f"No home channel configured for platform {platform!r}.")
+@router.delete("/tasks/{task_id}/notify-subscribe/{platform}")
+def unsubscribe_notifications(task_id: str, platform: str, board: Optional[str] = Query(None)):
+    """Remove any notify subscription on *task_id* matching *platform*'s notification channel."""
+    channel = _notification_channel_for_platform(
+        platform, f"No notification channel configured for platform {platform!r}.")
     with _board_conn(board) as (board, conn):
         kbn.remove_notify_sub(
-            conn, task_id=task_id, platform=platform, chat_id=home["chat_id"], thread_id=home["thread_id"] or None)
-        return {"ok": True, "task_id": task_id, "home_channel": home}
+            conn, task_id=task_id, platform=platform, chat_id=channel["chat_id"], thread_id=channel["thread_id"] or None)
+        return {"ok": True, "task_id": task_id, "notification_channel": channel}
 
 
 # --- Stats / assignees / worker log / dispatch / model options ---------------

@@ -11,7 +11,7 @@ from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
-from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
+from tools.send_message_targets import _SLACK_USER_ID_RE, resolve_send_target
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
@@ -42,7 +42,7 @@ def send_message_tool(args, **kw):
 
 def _resolve_tool_target(target: str, *, pass_unresolved_references: bool = False):
     """``(platform_name, chat_id, thread_id, error)``; ``chat_id`` is None when no ref was given
-    (caller falls back to the home channel)."""
+    (the caller must demand an explicit target — there is no implicit destination)."""
     platform_name, _, target_ref = target.partition(":")
     platform_name, target_ref = platform_name.strip().lower(), target_ref.strip() or None
     prepare_send_message_platforms()
@@ -168,12 +168,8 @@ def _handle_react(args, remove=False):
     if err:
         return tool_error(err)
     if not chat_id:
-        try:
-            from gateway.config import load_gateway_config
-            chat_id = load_gateway_config().get_home_channel(platform).chat_id
-        except Exception:
-            return tool_error(f"No chat specified and no home channel set for {platform_name}. "
-                              f"Use '{platform_name}:chat_id'.")
+        return tool_error(f"No chat specified for {platform_name}. "
+                          f"Use '{platform_name}:chat_id'.")
     # P5(a): same egress-authorization floor as the send path — a reaction is
     # an outbound act against a named destination, so an unattested relay
     # target must be refused here too, not just on `send`.
@@ -223,16 +219,14 @@ def _handle_send(args):
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
-    used_home_channel = not chat_id
-    if used_home_channel:
-        chat_id, err = _home_chat_id(config, platform, platform_name)
-        if err:
-            return tool_error(err)
+    if not chat_id:
+        return tool_error(f"No delivery target configured for {platform_name}. Set an explicit "
+                          f"target like '{platform_name}:chat_id' or '{platform_name}:#channel-name'.")
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
-    # ``user:U...`` / ``user_name:@handle`` targets; a bare U... id can also arrive from session metadata or
-    # the home-channel config. All are opened via conversations.open (fixes #19236).
+    # ``user:U...`` / ``user_name:@handle`` targets; a bare U... id can also arrive from session
+    # metadata. All are opened via conversations.open (fixes #19236).
     if platform_name == "slack" and chat_id:
         chat_id, resolve_err = _slack_dm_chat_id(pconfig, chat_id)
         if resolve_err:
@@ -260,8 +254,6 @@ def _handle_send(args):
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
         if isinstance(result, dict) and result.get("success"):
-            if used_home_channel:
-                result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
         if isinstance(result, dict) and "error" in result:
@@ -300,23 +292,9 @@ def _resolve_platform_config(platform_name, config):
     return platform, pconfig, entry, None
 
 
-def _home_chat_id(config, platform, platform_name):
-    """``(home chat_id, None)`` or ``(None, actionable error)``; Weixin also honours WEIXIN_HOME_CHANNEL."""
-    home = config.get_home_channel(platform)
-    if home:
-        return home.chat_id, None
-    wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip() if platform_name == "weixin" else ""
-    if wx_home:
-        return wx_home, None
-    home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(platform_name, f"{platform_name.upper()}_HOME_CHANNEL")
-    return None, (f"No home channel set for {platform_name} to determine where to send the message. "
-                  f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                  f"or set a home channel via: hermes config set {home_env} <channel_id>")
-
-
 def _slack_dm_chat_id(pconfig, chat_id):
     """Open Slack user targets (``user:``/``user_name:`` from the parser, or a bare U... id from
-    session metadata / home-channel config) as DM conversations. ``(chat_id, None)`` or ``(None, error_dict)``."""
+    session metadata) as DM conversations. ``(chat_id, None)`` or ``(None, error_dict)``."""
     dm_target = f"user:{chat_id}" if chat_id.startswith("U") and _SLACK_USER_ID_RE.fullmatch(chat_id) else chat_id
     if not dm_target.startswith(("user:", "user_name:")):
         return chat_id, None
@@ -657,8 +635,8 @@ SEND_MESSAGE_SCHEMA = {
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "If the user just says a platform name like 'send to telegram', call "
+        "send_message(action='list') FIRST and send to an explicit target."
     ),
     "parameters": {
         "type": "object",
@@ -670,7 +648,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat). A bare platform name is not a target — always include an explicit channel/chat."
             },
             "message": {
                 "type": "string",

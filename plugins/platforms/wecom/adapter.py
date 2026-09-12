@@ -795,7 +795,7 @@ _ACCESS_CHOICES = (
 
 
 def interactive_setup() -> None:
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
     print_header("WeCom (Enterprise WeChat)")
@@ -845,11 +845,6 @@ def interactive_setup() -> None:
             save_env_value(key, value)
         for level, message in messages:
             {"warning": print_warning, "success": print_success, "info": print_info}[level](message)
-    if home := prompt("Home chat ID (optional, for cron/notifications)", password=False).strip():
-        save_env_value("WECOM_HOME_CHANNEL", home)
-        print_success(f"Home channel set to {home}")
-    elif remove_env_value("WECOM_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
     print_success("💬 WeCom configured!")
 
 
@@ -878,7 +873,7 @@ def register(ctx) -> None:
         name="wecom", label="WeCom (Enterprise WeChat)", adapter_factory=_build_adapter, check_fn=check_wecom_requirements,
         is_connected=_is_connected, validate_config=_is_connected, required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
         setup_fn=interactive_setup, allowed_users_env="WECOM_ALLOWED_USERS", allow_all_env="WECOM_ALLOW_ALL_USERS",
-        cron_deliver_env_var="WECOM_HOME_CHANNEL", standalone_sender_fn=_standalone_send, max_message_length=4000, **common,
+        standalone_sender_fn=_standalone_send, max_message_length=4000, **common,
     )
     from plugins.platforms.wecom.callback_adapter import check_wecom_callback_requirements, ensure_wecom_callback_requirements
     ctx.register_platform(

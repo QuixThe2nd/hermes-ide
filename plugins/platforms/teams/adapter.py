@@ -162,8 +162,7 @@ def is_connected(config) -> bool:
 
 def _env_enablement() -> dict | None:
     """Seed ``PlatformConfig.extra`` from env before adapter construction so ``gateway status`` reflects
-    env-only setups without the SDK. ``None`` when not minimally configured; ``home_channel`` becomes a
-    ``DeliveryTarget`` via the core hook."""
+    env-only setups without the SDK. ``None`` when not minimally configured."""
     client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
     client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
     tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()
@@ -175,8 +174,6 @@ def _env_enablement() -> dict | None:
         seed["port"] = port
     if service_url := os.getenv("TEAMS_SERVICE_URL", "").strip():
         seed["service_url"] = service_url
-    if home := os.getenv("TEAMS_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": os.getenv("TEAMS_HOME_CHANNEL_NAME", "Home")}
     return seed
 
 
@@ -792,7 +789,6 @@ def register(ctx) -> None:
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
         install_hint=_install_hint(), setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,  # env-only setups show up in gateway status
-        cron_deliver_env_var="TEAMS_HOME_CHANNEL",  # deliver=teams cron home-channel routing
         standalone_sender_fn=_standalone_send,  # out-of-process cron delivery via Bot Framework REST
         allowed_users_env="TEAMS_ALLOWED_USERS", allow_all_env="TEAMS_ALLOW_ALL_USERS",
         max_message_length=28000,  # Teams supports up to ~28 KB per message

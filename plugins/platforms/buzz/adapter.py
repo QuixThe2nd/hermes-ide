@@ -2,7 +2,7 @@
 
 Outbound and polling go through the ``buzz`` CLI ("JSON in, JSON out", never a shell);
 inbound prefers a NIP-42-authenticated WebSocket subscription with a CLI poll fallback.
-Config lives in ``gateway.platforms.buzz.extra`` (relay_url, channels, home_channel,
+Config lives in ``gateway.platforms.buzz.extra`` (relay_url, channels,
 poll_interval, cli_path, credentials_file, allowed_users, reply_in_thread, reaction_only_users)
 or the matching ``BUZZ_*`` env vars (env overrides config). The only secret is
 BUZZ_PRIVATE_KEY (nsec or hex): it reaches the CLI via the subprocess env and is never logged.
@@ -424,11 +424,6 @@ def _configured_relay(extra: dict) -> str:
     return (_scoped_platform_setting("BUZZ_RELAY_URL", extra, "relay_url") or extra.get("relay_url", "")).strip()
 
 
-def _configured_home_channel(extra: dict) -> str:
-    raw = _scoped_platform_setting("BUZZ_HOME_CHANNEL", extra, "home_channel")
-    return (raw or str(extra.get("home_channel", "") or "")).strip()
-
-
 def _configured_cli_path(extra: dict) -> str:
     raw = _scoped_platform_setting("BUZZ_CLI_PATH", extra, "cli_path")
     return _resolve_cli_path(str(raw or "").strip() or str(extra.get("cli_path", "") or ""))
@@ -640,7 +635,6 @@ class BuzzAdapter(BasePlatformAdapter):
         # Channels to watch: env csv > extra list/csv; empty = all joined channels
         raw_channels = _split_csv(_setting_or("BUZZ_CHANNELS", extra, "channels", []))
         self.channels: List[str] = [c.strip() for c in raw_channels if isinstance(c, str) and c.strip()]
-        self.home_channel = _configured_home_channel(extra)
         _pi_raw = _scoped_platform_setting("BUZZ_POLL_INTERVAL", extra, "poll_interval")
         try:
             self.poll_interval = max(_MIN_POLL_INTERVAL, float(_pi_raw or extra.get("poll_interval", _DEFAULT_POLL_INTERVAL)))
@@ -1962,7 +1956,7 @@ def is_connected(config) -> bool:
 # "flag" lowercases when present, "thread" lowercases and ignores profile scope.
 _YAML_BRIDGE = (
     ("relay_url", "BUZZ_RELAY_URL", "str"), ("cli_path", "BUZZ_CLI_PATH", "str"),
-    ("home_channel", "BUZZ_HOME_CHANNEL", "str"), ("transport", "BUZZ_TRANSPORT", "str"),
+    ("transport", "BUZZ_TRANSPORT", "str"),
     ("channels", "BUZZ_CHANNELS", "csv"), ("allowed_users", "BUZZ_ALLOWED_USERS", "csv"),
     ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "flag"),
     ("require_mention", "BUZZ_REQUIRE_MENTION", "flag"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "thread"),
@@ -2017,10 +2011,6 @@ def _env_enablement() -> Optional[dict]:
             pass
     if cli_path := os.getenv("BUZZ_CLI_PATH", "").strip():
         seed["cli_path"] = cli_path
-    # Cron delivery target; defaults to the first watched channel.
-    home = os.getenv("BUZZ_HOME_CHANNEL", "").strip() or (seed.get("channels") or [""])[0]
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": os.getenv("BUZZ_HOME_CHANNEL_NAME", home)}
     return seed
 
 
@@ -2041,8 +2031,8 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: BUZZ_RELAY_URL and BUZZ_PRIVATE_KEY must be configured"}
     if not cli_path:
         return {"error": "Buzz standalone send: buzz CLI binary not found"}
-    if not (target := (chat_id or "").strip() or _configured_home_channel(extra)):
-        return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
+    if not (target := (chat_id or "").strip()):
+        return {"error": "Buzz standalone send: no target channel (pass an explicit chat_id)"}
     args = ["messages", "send", "--channel", target, "--content", "-"]
     # Same reply_to_mode / reply_in_thread gate as the live adapter.
     if thread_id and _reply_to_mode(pconfig, extra) != "off":
@@ -2101,9 +2091,6 @@ def interactive_setup() -> None:
     channels = ask("Channel UUIDs to watch (comma-separated, empty = all joined channels)", "BUZZ_CHANNELS")
     if channels:
         save_env_value("BUZZ_CHANNELS", channels.replace(" ", ""))
-    home = ask("Home channel UUID for cron/notification delivery (optional)", "BUZZ_HOME_CHANNEL")
-    if home:
-        save_env_value("BUZZ_HOME_CHANNEL", home.strip())
     print()
     print_info("🔒 Access control: restrict who can talk to the agent")
     if prompt_yes_no("Allow all community members to talk to the agent?", False):
@@ -2126,7 +2113,7 @@ def register(ctx):
         validate_config=validate_config, is_connected=is_connected, required_env=["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"],
         install_hint="Requires the buzz CLI binary (https://github.com/block/buzz) on PATH or at BUZZ_CLI_PATH",
         setup_fn=interactive_setup, env_enablement_fn=_env_enablement, apply_yaml_config_fn=_apply_yaml_config,
-        cron_deliver_env_var="BUZZ_HOME_CHANNEL", standalone_sender_fn=_standalone_send,
+        standalone_sender_fn=_standalone_send,
         allowed_users_env="BUZZ_ALLOWED_USERS", allow_all_env="BUZZ_ALLOW_ALL_USERS", emoji="🐝",
         pii_safe=False,  # identities are pubkeys, not phone numbers
         allow_update_command=True,

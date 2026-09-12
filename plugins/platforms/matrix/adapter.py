@@ -3067,7 +3067,7 @@ def register(ctx) -> None:
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
-        allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
+        allow_all_env="MATRIX_ALLOW_ALL_USERS",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
         allow_update_command=True)
 

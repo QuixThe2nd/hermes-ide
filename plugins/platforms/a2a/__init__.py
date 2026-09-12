@@ -92,7 +92,7 @@ def register(ctx) -> None:
             required_env=[], install_hint="No extra packages needed (stdlib only)", setup_fn=interactive_setup,
             emoji="\U0001f9e9",  # puzzle piece
             allowed_users_env="A2A_ALLOWED_USERS", allow_all_env="A2A_ALLOW_ALL_USERS",
-            cron_deliver_env_var="A2A_HOME_CHANNEL", allow_update_command=False, platform_hint=_PLATFORM_HINT,
+            allow_update_command=False, platform_hint=_PLATFORM_HINT,
         )
     except Exception:
         logger.warning("A2A: failed to register platform adapter", exc_info=True)

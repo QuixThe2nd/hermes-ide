@@ -425,7 +425,7 @@ def is_connected(config) -> bool:
 
 def _env_enablement() -> dict | None:
     """Seed ``PlatformConfig.extra`` from env vars BEFORE adapter construction; ``None`` when IRC isn't
-    minimally configured (caller skips auto-enabling). ``home_channel`` becomes a ``DeliveryTarget``."""
+    minimally configured (caller skips auto-enabling)."""
     server = _get_scoped_secret("IRC_SERVER", "").strip()
     channel = _get_scoped_secret("IRC_CHANNEL", "").strip()
     if not (server and channel):
@@ -440,9 +440,6 @@ def _env_enablement() -> dict | None:
     for env, key in (("IRC_SERVER_PASSWORD", "server_password"), ("IRC_NICKSERV_PASSWORD", "nickserv_password")):
         if secret := _get_scoped_secret(env):
             seed[key] = secret
-    # Home channel defaults to IRC_CHANNEL so cron ``deliver=irc`` has a target without extra config.
-    if home := _get_scoped_secret("IRC_HOME_CHANNEL") or channel:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("IRC_HOME_CHANNEL_NAME", home)}
     return seed
 
 
@@ -611,7 +608,6 @@ def register(ctx):
         install_hint="No extra packages needed (stdlib only)",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,  # env-only setups show in gateway status
-        cron_deliver_env_var="IRC_HOME_CHANNEL",  # defaults to IRC_CHANNEL (see _env_enablement)
         standalone_sender_fn=_standalone_send,  # cron running separately from the gateway
         allowed_users_env="IRC_ALLOWED_USERS",
         allow_all_env="IRC_ALLOW_ALL_USERS",

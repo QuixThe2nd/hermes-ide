@@ -734,7 +734,7 @@ def register(ctx) -> None:
         ensure_deps_fn=ensure_dingtalk_deps, is_connected=_is_connected, validate_config=_is_connected,
         required_env=["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"], install_hint="pip install 'dingtalk-stream>=0.20' httpx",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="DINGTALK_ALLOWED_USERS",
-        allow_all_env="DINGTALK_ALLOW_ALL_USERS", cron_deliver_env_var="DINGTALK_HOME_CHANNEL",
+        allow_all_env="DINGTALK_ALLOW_ALL_USERS",
         standalone_sender_fn=_standalone_send, emoji="🐳", allow_update_command=True,
     )
 

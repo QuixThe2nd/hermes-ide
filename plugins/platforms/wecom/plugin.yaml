@@ -22,10 +22,6 @@ optional_env:
     description: "WeCom Smart Robot WebSocket URL"
     prompt: "WeCom WebSocket URL"
     password: false
-  - name: WECOM_HOME_CHANNEL
-    description: "Default chat ID for cron / notification delivery"
-    prompt: "Home channel ID"
-    password: false
   - name: WECOM_ALLOWED_USERS
     description: "Comma-separated WeCom user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

@@ -511,11 +511,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.debug("[GoogleChat] Could not persist bot_user_id cache", exc_info=True)
 
     async def _resolve_bot_user_id(self) -> Optional[str]:
-        """Resolve ``users/{id}`` via members.list on the home channel, then bootstrap
-        spaces. None when no space is known (self-filter falls back to ``sender.type == 'BOT'``)."""
+        """Resolve ``users/{id}`` via members.list on the bootstrap spaces. None when
+        no space is known (self-filter falls back to ``sender.type == 'BOT'``)."""
         candidate_spaces: List[str] = []
-        if self.config.home_channel and self.config.home_channel.chat_id:
-            candidate_spaces.append(self.config.home_channel.chat_id)
         if self._bootstrap_spaces:
             candidate_spaces.extend(s.strip() for s in self._bootstrap_spaces.split(",") if s.strip())
         for space in candidate_spaces:
@@ -1547,7 +1545,7 @@ _ENV_SEED_KEYS = (
 def _env_enablement() -> Optional[Dict[str, Any]]:
     """Seed ``PlatformConfig.extra`` from env during ``_apply_env_overrides`` (before the
     adapter exists, so ``gateway status`` reflects env-only config). None when the minimum
-    inbound settings are absent; ``home_channel`` becomes a ``DeliveryTarget`` in the core hook."""
+    inbound settings are absent."""
     if not _env_inbound_configured():
         return None
     project, subscription, http_events_url = _env_inbound_settings()
@@ -1555,11 +1553,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     values += [(extra_name, _get_scoped_secret(env)) for extra_name, env in _ENV_SEED_KEYS]
     values.append(("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
                    or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")))
-    seed: Dict[str, Any] = {extra_name: value for extra_name, value in values if value}
-    home = _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home")}
-    return seed
+    return {extra_name: value for extra_name, value in values if value}
 
 
 _SETUP_WALKTHROUGH = """Google Chat needs a GCP project, a Pub/Sub topic + subscription,
@@ -1612,12 +1606,6 @@ def interactive_setup() -> None:
     else:
         save_env_value("GOOGLE_CHAT_ALLOW_ALL_USERS", "true")
         print_warning("⚠️  Open access — anyone who can DM the bot can command it.")
-    home = prompt(
-        "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)",
-        default=get_env_value("GOOGLE_CHAT_HOME_CHANNEL") or "",
-    )
-    if home:
-        save_env_value("GOOGLE_CHAT_HOME_CHANNEL", home.strip())
     print()
     print_success("Google Chat configuration saved to ~/.hermes/.env")
     print_info("Restart the gateway: hermes gateway restart")
@@ -1717,7 +1705,6 @@ def register(ctx) -> None:
         install_hint="Run `hermes setup` to install Google Chat support.",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
-        cron_deliver_env_var="GOOGLE_CHAT_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         allowed_users_env="GOOGLE_CHAT_ALLOWED_USERS",
         allow_all_env="GOOGLE_CHAT_ALLOW_ALL_USERS",

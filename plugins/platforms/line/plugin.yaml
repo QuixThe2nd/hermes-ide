@@ -55,10 +55,6 @@ optional_env:
     description: "Allow any LINE user to talk to the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"
     password: false
-  - name: LINE_HOME_CHANNEL
-    description: "Default user/group/room ID for cron / notification delivery"
-    prompt: "Home channel ID (or empty)"
-    password: false
   - name: LINE_SLOW_RESPONSE_THRESHOLD
     description: "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
     prompt: "Slow response threshold (seconds)"

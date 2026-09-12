@@ -64,7 +64,3 @@ optional_env:
     description: "Allow any authenticated A2A peer to reach the agent (dev only)."
     prompt: "Allow all A2A peers? (true/false)"
     password: false
-  - name: A2A_HOME_CHANNEL
-    description: "Task/context id used as the cron / notification delivery target for deliver=a2a."
-    prompt: "A2A home channel (or empty)"
-    password: false
