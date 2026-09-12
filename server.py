@@ -7,8 +7,9 @@ Single file, Python stdlib only (http.server + sqlite3 + json):
   never block the proxy's writers and can never modify the ledger;
 * ``GET /`` serves the single-page dark dashboard.  Its JavaScript polls
   ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s and
-  updates the stat cards, the per-harness bars, the canvas chart and the
-  event table in place — no full page reloads.  The first paint is
+  updates the stat cards, the per-harness bars, the canvas charts (tokens
+  per hour and the model-usage donut) and the event table in place — no
+  full page reloads.  The first paint is
   server-rendered from the same data, so the page is meaningful even with
   JavaScript disabled (the chart then shows as an accessible data table);
 * every SQL statement is a fully static literal; request-supplied values are
@@ -50,6 +51,19 @@ DAYS_7D = 7
 # harness_color_idx) so the same harness always lands on the same hue in the
 # bars, the chips and the chart — on both the server and the browser.
 HARNESS_COLOR_COUNT = 6
+
+# Model-usage donut: the top MODEL_TOP_N models by 24 h tokens, the remainder
+# folded into an "other" bucket.  Slice colour follows token rank (index i of
+# MODEL_COLORS), so neighbours never repeat and "other" always draws the
+# neutral grey.  The six hues are the harness family with the lightness
+# stepped into the dark band (hue held), ordered so every neighbouring pair —
+# including the wrap onto "other" — clears the CVD and normal-vision floors
+# on the card surface (validator: worst adjacent OKLab dE 11.5 protan/deutan,
+# 16.5 normal).
+MODEL_TOP_N = 6
+MODEL_COLORS = ("#bd8714", "#d46c8b", "#5b8def", "#2ea79a", "#9a7be0", "#65a46c")
+MODEL_OTHER_COLOR = "#66738a"   # same neutral the page uses for unattributed
+DONUT_SIZE = 180                # square canvas, CSS px (device-pixel scaled in JS)
 
 # Outcome badge: green when usage is final, red for auth/rate-limit
 # rejections, grey for everything else.
@@ -260,6 +274,22 @@ def query_breakdown(
     ]
 
 
+def by_model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-model rows shaped for /api/summary's ``by_model`` (24 h window).
+
+    Events with no recorded model cannot be attributed, so they collapse into
+    one ``unknown`` slice rather than vanishing from the total.
+    """
+    return [
+        {
+            "model": "unknown" if not r["model"] or r["model"] == "(null)" else r["model"],
+            "tokens": int(r["total_tokens"] or 0),
+            "requests": int(r["requests"] or 0),
+        }
+        for r in rows
+    ]
+
+
 def hour_buckets() -> list[dict[str, Any]]:
     """24 empty hourly buckets (UTC) ending with the current, just-started hour."""
     current = utc_now().replace(minute=0, second=0, microsecond=0)
@@ -355,6 +385,7 @@ def error_snapshot(message: str) -> dict[str, Any]:
         "last_24h": {**empty_window(), "per_route": [], "per_caller": []},
         "last_7d": {"requests": 0, "tokens": 0},
         "all_time": {**empty_window(), "per_model": [], "per_route": []},
+        "by_model": [],
         "per_caller": [],
         "per_caller_24h": [],
         "per_route": [],
@@ -383,6 +414,7 @@ def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[
         all_time = query_window(conn, None)
         per_hour = query_timeseries(conn, cutoff_24h)
         events = query_events(conn, event_limit) if event_limit > 0 else []
+        by_model = by_model_rows(query_breakdown(conn, "model", cutoff_24h))
         caller_rows = query_breakdown(conn, "caller", None)
         route_rows = query_breakdown(conn, "route", None)
         model_rows = query_breakdown(conn, "model", None)
@@ -416,6 +448,7 @@ def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[
             "per_model": model_rows,
             "per_route": route_rows,
         },
+        "by_model": by_model,
         "per_caller": caller_rows,
         "per_caller_24h": last_24h["per_caller"],
         "per_route": route_rows,
@@ -562,6 +595,85 @@ def chart_data_table(buckets: list[dict[str, Any]]) -> str:
     )
 
 
+def donut_slices(by_model: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Donut slices: top MODEL_TOP_N models by tokens, remainder as "other".
+
+    Rows without token accounting (total_tokens NULL) draw no slice, so an
+    all-zero window degrades to the muted empty state instead of a dead ring.
+    """
+    rows = [r for r in (by_model or []) if (r.get("tokens") or 0) > 0]
+    rows.sort(key=lambda r: (-r["tokens"], r["model"]))
+    slices = [{"model": r["model"], "tokens": r["tokens"], "requests": r["requests"]} for r in rows[:MODEL_TOP_N]]
+    if len(rows) > MODEL_TOP_N:
+        rest = rows[MODEL_TOP_N:]
+        slices.append(
+            {
+                "model": "other",
+                "tokens": sum(r["tokens"] for r in rest),
+                "requests": sum(r["requests"] for r in rest),
+            }
+        )
+    return slices
+
+
+def slice_color(index: int) -> str:
+    return MODEL_COLORS[index] if index < len(MODEL_COLORS) else MODEL_OTHER_COLOR
+
+
+def fmt_pct(part: int, total: int) -> str:
+    if total <= 0 or part <= 0:
+        return "0%"
+    share = part / total * 100
+    return ("<1" if share < 1 else str(round(share))) + "%"
+
+
+def model_legend_html(slices: list[dict[str, Any]]) -> str:
+    """Legend body: swatch, model, tokens, share — colour never carries it alone."""
+    total = sum(s["tokens"] for s in slices)
+    items = "".join(
+        "<li>"
+        f'<span class="swatch" style="background:{slice_color(i)}"></span>'
+        f'<span class="name">{esc(s["model"])}</span>'
+        f'<span class="num">{esc(fmt_stat(s["tokens"]))}</span>'
+        f'<span class="pct">{esc(fmt_pct(s["tokens"], total))}</span>'
+        "</li>"
+        for i, s in enumerate(slices)
+    )
+    return f'<ul class="legend" id="model-legend">{items}</ul>'
+
+
+def donut_aria(slices: list[dict[str, Any]]) -> str:
+    total = sum(s["tokens"] for s in slices)
+    breakdown = ", ".join(f"{s['model']} {fmt_pct(s['tokens'], total)}" for s in slices)
+    return f"Donut chart of token share by model over the last 24 hours. {breakdown}"
+
+
+def model_panel_html(by_model: list[dict[str, Any]] | None) -> str:
+    """First-paint twin of the browser-rendered donut panel."""
+    slices = donut_slices(by_model)
+    aria = donut_aria(slices) if slices else "Donut chart of token share by model over the last 24 hours. No usage."
+    return (
+        '<section class="card" aria-label="Model usage">'
+        '<div class="card-head"><h2>Model usage</h2>'
+        '<span class="win">last 24 h &middot; by total tokens &middot; top '
+        + str(MODEL_TOP_N)
+        + " + other</span></div>"
+        '<div class="donut-row" id="donut-row"'
+        + ("" if slices else " hidden")
+        + "><div class=\"donut-wrap\" id=\"donut-wrap\" tabindex=\"0\" role=\"group\" aria-label=\""
+        + esc(aria)
+        + '">'
+        f'<canvas id="donut" width="{DONUT_SIZE}" height="{DONUT_SIZE}"></canvas>'
+        '<div class="tooltip" id="donut-tip" hidden></div>'
+        "</div>"
+        + model_legend_html(slices)
+        + '</div><p class="muted donut-empty" id="donut-empty"'
+        + (" hidden" if slices else "")
+        + ">no usage in the last 24h</p>"
+        "</section>"
+    )
+
+
 # --------------------------------------------------------------------------
 # Styling — dark, near-black, one accent hue, system font stack, no external
 # assets of any kind (no CDN links, no webfonts).
@@ -589,6 +701,8 @@ CSS = """
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
+/* author display values must not defeat the hidden attribute (donut-row) */
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--bg);
@@ -635,6 +749,7 @@ h1 .accent { color: var(--accent-bright); }
 
 .mid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
 @media (min-width: 1080px) { .mid { grid-template-columns: minmax(0, 1.9fr) minmax(330px, 1fr); align-items: start; } }
+.side { display: grid; gap: 12px; min-width: 0; }
 
 .error-card { display: none; margin-bottom: 12px; border-color: rgba(229, 83, 75, 0.45); background: rgba(229, 83, 75, 0.07); }
 .error-card.show { display: block; }
@@ -683,6 +798,20 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .chart-wrap:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
 .chart-wrap canvas { display: block; width: 100%; }
 
+/* model-usage donut: ring on the left, legend beside it, wraps below on narrow cards */
+.donut-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.donut-wrap { position: relative; flex: none; outline: none; border-radius: 8px; }
+.donut-wrap:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.donut-wrap canvas { display: block; }
+.donut-empty { margin: 4px 0 2px; font-size: 0.82rem; }
+.legend { list-style: none; margin: 0; padding: 0; flex: 1 1 160px; min-width: 160px; }
+.legend li { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.8rem; border-bottom: 1px solid var(--grid); }
+.legend li:last-child { border-bottom: none; }
+.legend .swatch { flex: none; width: 9px; height: 9px; border-radius: 3px; }
+.legend .name { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend .num { margin-left: auto; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.legend .pct { color: var(--muted); min-width: 3.2em; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
 .tooltip {
   position: absolute; z-index: 5; transform: translate(-50%, 0);
   background: rgba(9, 12, 17, 0.96); border: 1px solid var(--border-strong); border-radius: 8px;
@@ -714,9 +843,9 @@ footer { margin-top: 20px; color: var(--muted); font-size: 0.75rem; }
 
 # --------------------------------------------------------------------------
 # Client layer — polls /api/summary, /api/timeseries and /api/events every
-# POLL_SECONDS and re-renders cards / harness bars / canvas chart / event
-# table in place.  All DB-derived strings are inserted with textContent,
-# never innerHTML.
+# POLL_SECONDS and re-renders cards / harness bars / canvas charts (hourly
+# columns, model donut) / event table in place.  All DB-derived strings are
+# inserted with textContent, never innerHTML.
 # --------------------------------------------------------------------------
 
 JS = r"""
@@ -859,6 +988,177 @@ JS = r"""
       tdBar.appendChild(track);
       tr.appendChild(tdBar);
       tbody.appendChild(tr);
+    });
+  }
+
+  /* ---- model-usage donut (24 h, top 6 + other) ---- */
+
+  var DN = {
+    size: __DONUT_SIZE__, ring: 26,
+    /* rank-order slice colours — server twin: MODEL_COLORS / MODEL_OTHER_COLOR */
+    colors: ['#bd8714', '#d46c8b', '#5b8def', '#2ea79a', '#9a7be0', '#65a46c'],
+    other: '#66738a', surface: '#11151c',
+    text: '#a7b2c3', muted: '#6d7889', bright: '#e8edf4'
+  };
+  var donutGeom = null;      /* {slices, total, cx, cy, rIn, rOut, start} for hit tests */
+  var donutHover = -1;
+  var lastByModel = [];
+
+  function donutSlices(byModel) {
+    var rows = (byModel || []).filter(function (r) { return (Number(r.tokens) || 0) > 0; });
+    rows.sort(function (a, b) { return (Number(b.tokens) || 0) - (Number(a.tokens) || 0) || String(a.model).localeCompare(String(b.model)); });
+    var slices = rows.slice(0, DN.colors.length).map(function (r) {
+      return { model: String(r.model), tokens: Number(r.tokens) || 0, requests: Number(r.requests) || 0 };
+    });
+    if (rows.length > DN.colors.length) {
+      var rest = rows.slice(DN.colors.length);
+      slices.push({
+        model: 'other',
+        tokens: rest.reduce(function (a, r) { return a + (Number(r.tokens) || 0); }, 0),
+        requests: rest.reduce(function (a, r) { return a + (Number(r.requests) || 0); }, 0)
+      });
+    }
+    return slices;
+  }
+
+  function sliceColor(i) { return i < DN.colors.length ? DN.colors[i] : DN.other; }
+
+  function pctLabel(part, total) {
+    if (!total || part <= 0) return '0%';
+    var share = (part / total) * 100;
+    return (share < 1 ? '<1' : String(Math.round(share))) + '%';
+  }
+
+  function renderDonut(byModel) {
+    lastByModel = byModel || [];
+    var canvas = $('donut'), wrap = $('donut-wrap');
+    if (!canvas || !wrap) return;
+    var slices = donutSlices(lastByModel);
+    var row = $('donut-row'), empty = $('donut-empty');
+    if (row) row.hidden = !slices.length;
+    if (empty) empty.hidden = !!slices.length;
+    if (!slices.length) { donutGeom = null; return; }
+
+    var total = slices.reduce(function (a, s) { return a + s.tokens; }, 0);
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(DN.size * dpr);
+    canvas.height = Math.round(DN.size * dpr);
+    canvas.style.width = DN.size + 'px';
+    canvas.style.height = DN.size + 'px';
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, DN.size, DN.size);
+
+    var cx = DN.size / 2, cy = DN.size / 2;
+    var rOut = DN.size / 2 - 4, rIn = rOut - DN.ring;
+    var mono = 'ui-monospace, Menlo, Consolas, monospace';
+    var a0 = -Math.PI / 2;
+
+    slices.forEach(function (s, i) {
+      var ang = total > 0 ? (s.tokens / total) * Math.PI * 2 : 0;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a0) * rIn, cy + Math.sin(a0) * rIn);
+      ctx.arc(cx, cy, rOut + (i === donutHover ? 3 : 0), a0, a0 + ang);
+      ctx.arc(cx, cy, rIn, a0 + ang, a0, true);
+      ctx.closePath();
+      ctx.fillStyle = sliceColor(i);
+      ctx.fill();
+      /* 2 px surface ring = the gap between neighbouring slices */
+      ctx.strokeStyle = DN.surface;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      a0 += ang;
+    });
+
+    /* the hole carries the window total */
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = DN.bright;
+    ctx.font = '600 15px ' + mono;
+    ctx.fillText(fmtCompact(total), cx, cy - 8);
+    ctx.fillStyle = DN.muted;
+    ctx.font = '10px ' + mono;
+    ctx.fillText('tokens · 24 h', cx, cy + 10);
+
+    donutGeom = { slices: slices, total: total, cx: cx, cy: cy, rIn: rIn, rOut: rOut, start: -Math.PI / 2 };
+    canvas.setAttribute('aria-label', 'Token share by model, last 24 h: ' +
+      slices.map(function (s) { return s.model + ' ' + pctLabel(s.tokens, total); }).join(', '));
+
+    var legend = $('model-legend');
+    if (legend) {
+      legend.textContent = '';
+      slices.forEach(function (s, i) {
+        var li = el('li');
+        var sw = el('span', 'swatch');
+        sw.style.background = sliceColor(i);
+        li.appendChild(sw);
+        li.appendChild(el('span', 'name', s.model));
+        li.appendChild(el('span', 'num', fmtStat(s.tokens)));
+        li.appendChild(el('span', 'pct', pctLabel(s.tokens, total)));
+        legend.appendChild(li);
+      });
+    }
+  }
+
+  function donutSliceAt(x, y) {
+    if (!donutGeom || !donutGeom.total) return -1;
+    var g = donutGeom, dx = x - g.cx, dy = y - g.cy;
+    var r = Math.hypot(dx, dy);
+    if (r < g.rIn - 2 || r > g.rOut + 5) return -1;
+    var rel = Math.atan2(dy, dx) - g.start;
+    while (rel < 0) rel += Math.PI * 2;
+    var acc = 0;
+    for (var i = 0; i < g.slices.length; i++) {
+      acc += (g.slices[i].tokens / g.total) * Math.PI * 2;
+      if (rel <= acc) return i;
+    }
+    return -1;
+  }
+
+  function showDonutHover(i, px, py) {
+    var g = donutGeom, tip = $('donut-tip'), wrap = $('donut-wrap');
+    if (!g || !tip || !wrap || !g.slices[i]) return;
+    donutHover = i;
+    renderDonut(lastByModel);
+    var s = g.slices[i];
+    tip.textContent = '';
+    tip.appendChild(el('div', 'tv', fmtCompact(s.tokens) + ' tokens'));
+    tip.appendChild(el('div', 'tl',
+      s.model + ' · ' + pctLabel(s.tokens, g.total) + ' · ' + fmtInt(s.requests) + ' req'));
+    tip.hidden = false;
+    tip.style.left = Math.max(tip.offsetWidth / 2 + 2,
+      Math.min(wrap.clientWidth - tip.offsetWidth / 2 - 2, px)) + 'px';
+    tip.style.top = Math.max(2, py - tip.offsetHeight - 10) + 'px';
+  }
+
+  function hideDonutHover() {
+    if (donutHover < 0) { var tip = $('donut-tip'); if (tip) tip.hidden = true; return; }
+    donutHover = -1;
+    var tip2 = $('donut-tip');
+    if (tip2) tip2.hidden = true;
+    renderDonut(lastByModel);
+  }
+
+  function wireDonut() {
+    var canvas = $('donut'), wrap = $('donut-wrap');
+    if (!canvas || !wrap) return;
+    canvas.addEventListener('pointermove', function (ev) {
+      var rect = canvas.getBoundingClientRect();
+      var i = donutSliceAt(ev.clientX - rect.left, ev.clientY - rect.top);
+      if (i !== donutHover) showDonutHover(i, ev.clientX - rect.left, ev.clientY - rect.top);
+    });
+    canvas.addEventListener('pointerleave', hideDonutHover);
+    wrap.addEventListener('keydown', function (ev) {
+      var n = donutGeom ? donutGeom.slices.length : 0;
+      if (!n) return;
+      if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+        var next = donutHover < 0 ? 0 : (donutHover + (ev.key === 'ArrowRight' ? 1 : -1) + n) % n;
+        var g = donutGeom, acc = -Math.PI / 2;
+        for (var k = 0; k < next; k++) acc += (g.slices[k].tokens / g.total) * Math.PI * 2;
+        var mid = acc + (g.slices[next].tokens / g.total) * Math.PI;
+        showDonutHover(next, g.cx + Math.cos(mid) * (g.rOut + 3), g.cy + Math.sin(mid) * (g.rOut + 3));
+        ev.preventDefault();
+      } else if (ev.key === 'Escape') { hideDonutHover(); }
     });
   }
 
@@ -1180,6 +1480,7 @@ JS = r"""
   function renderSummary(summary) {
     renderCards(summary);
     renderHarness(summary.per_caller_24h && summary.per_caller_24h.length ? summary.per_caller_24h : summary.per_caller);
+    renderDonut(summary.by_model);
   }
 
   var bootBuckets = [];
@@ -1193,6 +1494,7 @@ JS = r"""
   renderChart(bootBuckets);
   renderEvents(boot.events || []);
   wireChart();
+  wireDonut();
   tick();
 
   var resizeTimer = null;
@@ -1259,6 +1561,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
         .replace("__FETCH_TIMEOUT_MS__", str(FETCH_TIMEOUT_MS))
         .replace("__DASHBOARD_EVENTS__", str(DASHBOARD_EVENTS))
         .replace("__HARNESS_COLOR_COUNT__", str(HARNESS_COLOR_COUNT))
+        .replace("__DONUT_SIZE__", str(DONUT_SIZE))
     )
 
     page = (
@@ -1325,6 +1628,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
         + """
 </section>
 
+<div class="side">
 <section class="card" aria-label="Per-harness usage">
   <div class="card-head"><h2>Per-harness usage</h2><span class="win">last 24 h &middot; bar = share of top harness</span></div>
   <div class="scroll-x">
@@ -1336,6 +1640,11 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
   </table>
   </div>
 </section>
+
+"""
+        + model_panel_html(snapshot.get("by_model"))
+        + """
+</div>
 </div>
 
 <section class="card" aria-label="Recent events">
