@@ -324,7 +324,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **已发送欢迎消息：** {embeds_count}
 **已接线：** {wired_list}（{wired_count}）
 **已启用模块：** {modules_count}/5
-主频道：{home_channel_state}——绝不会覆盖现有主频道。
+绝不会覆盖现有通知频道。
 重新同步最多每小时自动运行一次。"
   context:
     header:                "🧠 **Context Window**"

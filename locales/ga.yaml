@@ -328,7 +328,7 @@ Rith `/sethomeserver confirm` chun é a bhogadh go gild `{guild_id}`. Ní scrios
 **Teachtaireachtaí fáilte phostáilte:** {embeds_count}
 **Ceangailte:** {wired_list} ({wired_count})
 **Modúil chumasaithe:** {modules_count}/5
-Cainéal baile: {home_channel_state} — ní forscríobhtar cainéil bhaile atá ann cheana riamh.
+Ní forscríobhtar cainéil fógartha atá ann cheana riamh.
 Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a mhéad."
   context:
     header:                "🧠 **Context Window**"

@@ -324,7 +324,7 @@ Future messages in this room will use that transcript until `/reset` or another 
 **投稿されたウェルカムメッセージ:** {embeds_count}
 **接続済み:** {wired_list}（{wired_count}）
 **有効なモジュール:** {modules_count}/5
-ホームチャンネル: {home_channel_state} — 既存のホームチャンネルは上書きされません。
+既存の通知チャンネルは上書きされません。
 再同期は最大で1時間に1回自動実行されます。"
   context:
     header:                "🧠 **Context Window**"

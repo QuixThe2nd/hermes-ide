@@ -324,7 +324,7 @@ Futtasd a `/sethomeserver confirm` parancsot a(z) `{guild_id}` guildra való át
 **Közzétett üdvözlő üzenetek:** {embeds_count}
 **Bekötve:** {wired_list} ({wired_count})
 **Engedélyezett modulok:** {modules_count}/5
-Home csatorna: {home_channel_state} — a meglévő home csatornák soha nem íródnak felül.
+A meglévő értesítési csatornák soha nem íródnak felül.
 Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
   context:
     header:                "🧠 **Context Window**"
