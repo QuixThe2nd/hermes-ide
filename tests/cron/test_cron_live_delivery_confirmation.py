@@ -115,7 +115,6 @@ def _gateway_config(relay=False):
     if relay:
         platforms[Platform.RELAY] = PlatformConfig(enabled=True)
     config.platforms = platforms
-    config.get_home_channel = lambda p: None
     return config
 
 

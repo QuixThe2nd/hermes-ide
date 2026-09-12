@@ -1,7 +1,7 @@
 """Auto-created delivery threads for the ``thread:`` cron deliver token.
 
 A job whose ``deliver`` lane carries ``thread:<parent_chat_id>`` (platform
-derived by matching the id against configured home channels) or
+derived from the job's origin chat) or
 ``thread:<platform>:<parent_chat_id>`` gets a FRESH platform thread on first
 delivery, opened through the shipped ``adapter.create_handoff_thread`` surface
 and named after the job. The concrete ``platform:parent:new_thread_id`` target
@@ -35,25 +35,18 @@ from cron.scheduler import (
 from gateway.config import Platform, PlatformConfig
 from tools.cronjob_tools import _mode_guidance_notes
 
-# Fixture home channels — deliberately unlike any real platform id.
-DISCORD_HOME = "1549999999999999999"
-SLACK_HOME = "C0TESTTEST"
-
-
-@pytest.fixture(autouse=True)
-def _home_channels(monkeypatch):
-    """Two configured home channels so bare-id derivation is unambiguous."""
-    monkeypatch.setenv("DISCORD_HOME_CHANNEL", DISCORD_HOME)
-    monkeypatch.setenv("SLACK_HOME_CHANNEL", SLACK_HOME)
-    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+# Fixture parent chats — deliberately unlike any real platform id.
+DISCORD_PARENT = "1549999999999999999"
+SLACK_PARENT = "C0TESTTEST"
 
 
 def _job(deliver=None, name="Nightly digest", failure_deliver=None):
     job = {
         "id": "jthread01",
         "name": name,
-        "deliver": deliver or f"thread:{DISCORD_HOME}",
-        "origin": None,
+        "deliver": deliver or f"thread:{DISCORD_PARENT}",
+        # The bare thread:<id> form derives its platform from the origin chat.
+        "origin": {"platform": "discord", "chat_id": DISCORD_PARENT},
     }
     if failure_deliver is not None:
         job["failure_deliver"] = failure_deliver
@@ -66,20 +59,20 @@ def _job(deliver=None, name="Nightly digest", failure_deliver=None):
 
 
 class TestTokenParsing:
-    def test_bare_id_derives_platform_from_home_channel(self):
+    def test_bare_id_derives_platform_from_origin_chat(self):
         targets = _resolve_delivery_targets(_job())
         assert len(targets) == 1
         target = targets[0]
         assert target["platform"] == "discord"
-        assert target["chat_id"] == DISCORD_HOME
+        assert target["chat_id"] == DISCORD_PARENT
         assert target["thread_id"] is None
         assert target["_thread_auto"] is True
 
     def test_explicit_platform_form_names_the_platform(self):
-        targets = _resolve_delivery_targets(_job(deliver=f"thread:slack:{SLACK_HOME}"))
+        targets = _resolve_delivery_targets(_job(deliver=f"thread:slack:{SLACK_PARENT}"))
         assert len(targets) == 1
         assert targets[0]["platform"] == "slack"
-        assert targets[0]["chat_id"] == SLACK_HOME
+        assert targets[0]["chat_id"] == SLACK_PARENT
         assert targets[0]["_thread_auto"] is True
 
     def test_combined_origin_and_thread_token_dedups_to_one_target(self):
@@ -87,17 +80,17 @@ class TestTokenParsing:
         auto-creates — and when both resolve to the same chat, the merged
         target keeps BOTH the origin provenance and the create intent."""
         job = _job(
-            deliver=f"origin,thread:{DISCORD_HOME}",
+            deliver=f"origin,thread:{DISCORD_PARENT}",
         )
-        job["origin"] = {"platform": "discord", "chat_id": DISCORD_HOME}
+        job["origin"] = {"platform": "discord", "chat_id": DISCORD_PARENT}
         targets = _resolve_delivery_targets(job)
         assert len(targets) == 1
         assert targets[0]["_resolved_from"] == "origin"
         assert targets[0]["_thread_auto"] is True
 
     def test_token_order_does_not_strip_the_create_intent(self):
-        job = _job(deliver=f"thread:{DISCORD_HOME},origin")
-        job["origin"] = {"platform": "discord", "chat_id": DISCORD_HOME}
+        job = _job(deliver=f"thread:{DISCORD_PARENT},origin")
+        job["origin"] = {"platform": "discord", "chat_id": DISCORD_PARENT}
         targets = _resolve_delivery_targets(job)
         assert len(targets) == 1
         assert targets[0]["_thread_auto"] is True
@@ -106,7 +99,7 @@ class TestTokenParsing:
         """A token that already names a concrete thread is concrete itself —
         nothing to create."""
         targets = _resolve_delivery_targets(
-            _job(deliver=f"thread:discord:{DISCORD_HOME}:777")
+            _job(deliver=f"thread:discord:{DISCORD_PARENT}:777")
         )
         assert len(targets) == 1
         assert targets[0]["thread_id"] == "777"
@@ -117,10 +110,13 @@ class TestTokenParsing:
             assert _resolve_delivery_targets(_job(deliver="thread:")) == []
         assert "missing its parent chat id" in caplog.text
 
-    def test_unknown_parent_chat_id_resolves_to_nothing(self, caplog):
+    def test_bare_id_not_matching_origin_chat_resolves_to_nothing(self, caplog):
+        """A bare id that is not the job's origin chat cannot pick a platform —
+        the token must name one (thread:<platform>:<parent>)."""
         with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
             assert _resolve_delivery_targets(_job(deliver="thread:424242")) == []
-        assert "matches no configured home channel" in caplog.text
+        assert "names no platform" in caplog.text
+        assert "is not the job's origin chat" in caplog.text
 
     def test_parser_shapes(self):
         assert _parse_thread_deliver_token("thread:123") == (None, "123")
@@ -197,7 +193,6 @@ def _deliver(job, adapter, *, for_failure=False):
 
     config = MagicMock()
     config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
-    config.get_home_channel = lambda p: None
 
     async def _unused_standalone(*args, **kwargs):  # pragma: no cover - guard
         raise AssertionError("standalone sender must not run on the live lane")
@@ -234,23 +229,23 @@ class TestFirstDeliveryAutoCreatesThread:
 
         assert error is None
         # One create call: the job's name on the parent chat.
-        assert adapter.create_calls == [(DISCORD_HOME, "Nightly digest")]
+        assert adapter.create_calls == [(DISCORD_PARENT, "Nightly digest")]
         # The brief is routed into the NEW thread, not the parent chat.
         assert router_calls[0]["target"].thread_id == "9001"
         # The concrete token replaces the thread: token on the job.
-        concrete = f"discord:{DISCORD_HOME}:9001"
+        concrete = f"discord:{DISCORD_PARENT}:9001"
         update_job.assert_called_once_with("jthread01", {"deliver": concrete})
         assert job["deliver"] == concrete
 
     def test_persistence_replaces_only_the_thread_token(self):
-        job = _job(deliver=f"origin,thread:{DISCORD_HOME}")
-        job["origin"] = {"platform": "discord", "chat_id": DISCORD_HOME}
+        job = _job(deliver=f"origin,thread:{DISCORD_PARENT}")
+        job["origin"] = {"platform": "discord", "chat_id": DISCORD_PARENT}
 
         error, _, update_job = _deliver(job, FakeThreadAdapter())
 
         assert error is None
         update_job.assert_called_once_with(
-            "jthread01", {"deliver": f"origin,discord:{DISCORD_HOME}:9001"}
+            "jthread01", {"deliver": f"origin,discord:{DISCORD_PARENT}:9001"}
         )
 
     def test_thread_name_sanitized_before_reaching_the_adapter(self):
@@ -259,7 +254,7 @@ class TestFirstDeliveryAutoCreatesThread:
 
         _deliver(job, adapter)
 
-        assert adapter.create_calls == [(DISCORD_HOME, "N" * 100)]
+        assert adapter.create_calls == [(DISCORD_PARENT, "N" * 100)]
 
     def test_nameless_job_names_the_thread_after_the_job_id(self):
         job = _job(name="")
@@ -267,7 +262,7 @@ class TestFirstDeliveryAutoCreatesThread:
 
         _deliver(job, adapter)
 
-        assert adapter.create_calls == [(DISCORD_HOME, "jthread01")]
+        assert adapter.create_calls == [(DISCORD_PARENT, "jthread01")]
 
     def test_second_delivery_reuses_the_persisted_target(self):
         """Idempotence: after first-run persistence the concrete target is
@@ -286,7 +281,7 @@ class TestFirstDeliveryAutoCreatesThread:
         assert second_error is None
         assert adapter.create_calls == []  # no second thread, ever
         assert second_calls[0]["target"].thread_id == "9001"  # same thread
-        assert second_calls[0]["target"].chat_id == DISCORD_HOME
+        assert second_calls[0]["target"].chat_id == DISCORD_PARENT
         update_job.assert_not_called()  # already concrete — nothing to write
 
 
@@ -305,10 +300,10 @@ class TestCreateFallingBackToParentChat:
 
         assert error is None  # the run must not fail
         assert adapter.create_calls  # creation was attempted
-        assert router_calls[0]["target"].chat_id == DISCORD_HOME
+        assert router_calls[0]["target"].chat_id == DISCORD_PARENT
         assert router_calls[0]["target"].thread_id is None  # flat on the parent
         update_job.assert_not_called()  # nothing persisted
-        assert job["deliver"] == f"thread:{DISCORD_HOME}"
+        assert job["deliver"] == f"thread:{DISCORD_PARENT}"
         assert "could not create a thread" in caplog.text
 
     def test_raising_create_is_contained_the_same_way(self, caplog):
@@ -334,7 +329,6 @@ class TestCreateFallingBackToParentChat:
 
         config = MagicMock()
         config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
-        config.get_home_channel = lambda p: None
 
         with caplog.at_level(logging.WARNING, logger="cron.scheduler"), \
              patch("gateway.config.load_gateway_config", return_value=config), \
@@ -347,10 +341,10 @@ class TestCreateFallingBackToParentChat:
 
         assert error is None
         assert len(standalone_calls) == 1
-        assert standalone_calls[0]["chat_id"] == DISCORD_HOME
+        assert standalone_calls[0]["chat_id"] == DISCORD_PARENT
         assert standalone_calls[0]["kwargs"].get("thread_id") is None
         update_job.assert_not_called()
-        assert job["deliver"] == f"thread:{DISCORD_HOME}"
+        assert job["deliver"] == f"thread:{DISCORD_PARENT}"
         assert "no live gateway adapter" in caplog.text
 
 
@@ -370,12 +364,12 @@ class TestFailureLaneNeverAutoCreates:
 
         assert error is None
         assert adapter.create_calls == []
-        assert router_calls[0]["target"].chat_id == DISCORD_HOME
+        assert router_calls[0]["target"].chat_id == DISCORD_PARENT
         assert router_calls[0]["target"].thread_id is None
         update_job.assert_not_called()
 
     def test_explicit_failure_deliver_thread_token_resolves_flat(self):
-        job = _job(failure_deliver=f"thread:{DISCORD_HOME}")
+        job = _job(failure_deliver=f"thread:{DISCORD_PARENT}")
         adapter = FakeThreadAdapter()
 
         error, router_calls, update_job = _deliver(job, adapter, for_failure=True)
@@ -390,7 +384,7 @@ class TestFailureLaneNeverAutoCreates:
         targets = _resolve_delivery_targets(job, for_failure=True)
         assert len(targets) == 1
         assert targets[0]["platform"] == "discord"
-        assert targets[0]["chat_id"] == DISCORD_HOME
+        assert targets[0]["chat_id"] == DISCORD_PARENT
         assert targets[0]["thread_id"] is None
         assert "_thread_auto" not in targets[0]
 
@@ -409,22 +403,22 @@ def _preflight(job, *, connected=(Platform.DISCORD, Platform.SLACK)):
 
 
 class TestPreflightDelivery:
-    def test_bare_id_with_home_channel_match_passes(self):
+    def test_bare_id_matching_origin_chat_passes(self):
         """The blocking defect: a runnable thread:<bare_id> job must sail
         through preflight so first delivery can mint and persist the thread."""
         assert _preflight(_job()) is None
 
     def test_explicit_platform_parent_passes(self):
-        assert _preflight(_job(deliver=f"thread:slack:{SLACK_HOME}")) is None
+        assert _preflight(_job(deliver=f"thread:slack:{SLACK_PARENT}")) is None
 
     def test_concrete_four_segment_token_passes(self):
         """The already-concrete form names a real thread — a plain concrete
         target as far as preflight is concerned."""
-        assert _preflight(_job(deliver=f"thread:discord:{DISCORD_HOME}:777")) is None
+        assert _preflight(_job(deliver=f"thread:discord:{DISCORD_PARENT}:777")) is None
 
     def test_combined_origin_and_thread_token_passes(self):
-        job = _job(deliver=f"origin,thread:{DISCORD_HOME}")
-        job["origin"] = {"platform": "discord", "chat_id": DISCORD_HOME}
+        job = _job(deliver=f"origin,thread:{DISCORD_PARENT}")
+        job["origin"] = {"platform": "discord", "chat_id": DISCORD_PARENT}
         assert _preflight(job) is None
 
     def test_missing_parent_id_still_blocks(self):
@@ -438,7 +432,7 @@ class TestPreflightDelivery:
         assert "unknownplatform" in reason
         assert "not a known cron delivery target" in reason
 
-    def test_bare_id_without_home_channel_match_still_blocks(self):
+    def test_bare_id_not_matching_origin_chat_still_blocks(self):
         reason = _preflight(_job(deliver="thread:424242"))
         assert reason is not None
         assert "does not resolve" in reason
@@ -468,18 +462,18 @@ class TestCreateGuidanceNotes:
     def test_no_bogus_thread_note_for_bare_thread_token(self):
         """The auto-created delivery thread IS the point of the token — the
         two-segment warning must not fire for it."""
-        assert _mode_guidance_notes({}, f"thread:{DISCORD_HOME}") == []
+        assert _mode_guidance_notes({}, f"thread:{DISCORD_PARENT}") == []
 
     def test_no_bogus_thread_note_inside_a_combined_deliver(self):
-        assert _mode_guidance_notes({}, f"origin,thread:{DISCORD_HOME}") == []
+        assert _mode_guidance_notes({}, f"origin,thread:{DISCORD_PARENT}") == []
 
     def test_platform_chat_token_still_gets_the_note(self):
         """Existing behavior preserved: a plain platform:chat token with no
         thread segment still draws the topic-targeting warning."""
-        notes = _mode_guidance_notes({}, f"discord:{DISCORD_HOME}")
+        notes = _mode_guidance_notes({}, f"discord:{DISCORD_PARENT}")
         assert len(notes) == 1
         assert "no :thread_id segment" in notes[0]
-        assert f"discord:{DISCORD_HOME}" in notes[0]
+        assert f"discord:{DISCORD_PARENT}" in notes[0]
 
     def test_bot_chat_and_sms_exclusions_still_hold(self):
         """The pre-existing exemptions keep their old behavior — no thread_id

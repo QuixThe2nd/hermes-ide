@@ -108,18 +108,19 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
 
 
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
-    """Regression: a standalone cron tick process starts without home-channel
-    vars in its environment, and the agent path's per-run dotenv reload never
-    executes for no_agent jobs — delivery home channels stayed unresolved.
+    """Regression: a standalone cron tick process starts without the
+    deployment's .env in its environment, and the agent path's per-run dotenv
+    reload never executes for no_agent jobs — scripts (and standalone
+    delivery) that read secrets from .env found nothing.
     run_job must load .env at the top of the no_agent branch."""
     import hermes_cli.env_loader as env_loader
     from cron.jobs import create_job
     from cron.scheduler import run_job
 
-    loaded_homes: list = []
+    loaded_calls: list = []
 
     def fake_load(*, hermes_home=None, project_env=None):
-        loaded_homes.append(hermes_home)
+        loaded_calls.append(hermes_home)
         return []
 
     monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load)
@@ -133,8 +134,8 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert error is None
-    assert loaded_homes, "load_hermes_dotenv was not called on the no_agent path"
-    assert str(loaded_homes[0]) == str(hermes_env)
+    assert loaded_calls, "load_hermes_dotenv was not called on the no_agent path"
+    assert str(loaded_calls[0]) == str(hermes_env)
 
 
 def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
