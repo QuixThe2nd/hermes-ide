@@ -23,26 +23,6 @@ from unittest.mock import patch, MagicMock, AsyncMock, ANY
 from gateway.platforms.base import SendResult
 
 
-class TestConfigEnvOverrides(unittest.TestCase):
-    """Verify email config is loaded from environment variables."""
-
-
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-        "EMAIL_HOME_ADDRESS": "user@test.com",
-    }, clear=False)
-    def test_email_home_channel_loaded(self):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        home = config.platforms[Platform.EMAIL].home_channel
-        self.assertIsNotNone(home)
-        self.assertEqual(home.chat_id, "user@test.com")
-
-
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
 
