@@ -894,16 +894,17 @@ def sanitize_caller_label(value: Any) -> Optional[str]:
 
 # The Claude Code CLI names itself "claude-cli/<version> …" on its
 # connectivity probes — requests that bypass the Anthropic SDK client and so
-# cannot carry X-Usage-Caller. That prefix is the one UA the proxy recognizes.
-UA_LABEL_RE = re.compile(r"claude-cli/")
+# cannot carry X-Usage-Caller — and its bundled axios names itself "axios/<version>"
+# on the same kind of probes. Those two prefixes are the only UAs the proxy recognizes.
+UA_LABEL_RE = re.compile(r"(?:claude-cli|axios)/")
 
 
 def caller_label_from_user_agent(user_agent: Optional[str]) -> Optional[str]:
-    """Attribute the well-known CLI probe UA to its harness, else None.
+    """Attribute the well-known CLI probe UAs to their harness, else None.
 
     The harness — not the CLI version — is the caller the ledger wants, so
-    every ``claude-cli/…`` string maps to the one label "claude-code".
-    Anything else (including no UA at all) is not attribution.
+    every ``claude-cli/…`` and ``axios/…`` string maps to the one label
+    "claude-code". Anything else (including no UA at all) is not attribution.
     """
     if not user_agent:
         return None
