@@ -31,7 +31,6 @@ Add these to `~/.hermes/.env`:
 ```
 NTFY_TOPIC=hermes-myname-2026
 NTFY_ALLOWED_USERS=hermes-myname-2026
-NTFY_HOME_CHANNEL=hermes-myname-2026
 ```
 
 | Variable | Required | Description |
@@ -43,8 +42,6 @@ NTFY_HOME_CHANNEL=hermes-myname-2026
 | `NTFY_MARKDOWN` | Optional | Set `true` to send replies with `X-Markdown: true` header |
 | `NTFY_ALLOWED_USERS` | Recommended | Comma-separated topic names allowed (treated as user IDs; see below) |
 | `NTFY_ALLOW_ALL_USERS` | Optional | Set `true` to allow every publisher — only safe for private topics with read tokens |
-| `NTFY_HOME_CHANNEL` | Optional | Default topic for cron / notification delivery |
-| `NTFY_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
 
 ## Identity model — read this before deploying
 
@@ -74,18 +71,18 @@ In all cases, do not put sensitive data through ntfy unless the underlying topic
 
 ## Using ntfy with cron jobs
 
-Once `NTFY_HOME_CHANNEL` is set, cron jobs can deliver to ntfy:
+Cron jobs deliver to ntfy by naming the topic explicitly in the `deliver:` field:
 
 ```python
 cronjob(
     action="create",
     schedule="every 1h",
-    deliver="ntfy",          # uses NTFY_HOME_CHANNEL
+    deliver="ntfy:hermes-myname-2026",   # explicit topic target
     prompt="Check for alerts and summarise."
 )
 ```
 
-Or target a specific topic explicitly via the cron job's `deliver:` field, or from a shell script with the [`hermes send` CLI](/guides/pipe-script-output):
+Or from a shell script with the [`hermes send` CLI](/guides/pipe-script-output):
 
 ```bash
 hermes send ntfy:alerts-channel "Done!"

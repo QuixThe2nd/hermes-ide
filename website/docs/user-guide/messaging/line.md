@@ -148,11 +148,7 @@ display:
 
 ## Cron / notification delivery
 
-```env
-LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # default delivery target
-```
-
-Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a standalone Push-only sender so cron jobs work even when cron runs in a separate process from the gateway.
+Cron jobs deliver to an explicit user/group/room target — for example `hermes cron edit <id> --deliver line:Uxxxxxxxxxxxxxxxxxxxx`. The adapter ships a standalone Push-only sender so cron jobs work even when cron runs in a separate process from the gateway.
 
 ---
 
@@ -169,7 +165,6 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 | `LINE_ALLOWED_GROUPS` | one of | — | Comma-separated group IDs (C-prefixed) |
 | `LINE_ALLOWED_ROOMS` | one of | — | Comma-separated room IDs (R-prefixed) |
 | `LINE_ALLOW_ALL_USERS` | dev only | `false` | Skip allowlist entirely |
-| `LINE_HOME_CHANNEL` | no | — | Default cron / notification delivery target |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | no | `45` | Seconds before the postback button fires (`0` = disabled) |
 | `LINE_PENDING_TEXT` | no | "🤔 Still thinking…" | Bubble text shown alongside the postback button |
 | `LINE_BUTTON_LABEL` | no | "Get answer" | Button label |

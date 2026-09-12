@@ -48,8 +48,6 @@ QQ_CLIENT_SECRET=your-app-secret
 |---|---|---|
 | `QQ_APP_ID` | QQ Bot App ID (required) | — |
 | `QQ_CLIENT_SECRET` | QQ Bot App Secret (required) | — |
-| `QQBOT_HOME_CHANNEL` | OpenID for cron/notification delivery | — |
-| `QQBOT_HOME_CHANNEL_NAME` | Display name for home channel | `Home` |
 | `QQ_ALLOWED_USERS` | Comma-separated user OpenIDs for DM access | open (all users) |
 | `QQ_GROUP_ALLOWED_USERS` | Comma-separated group OpenIDs for group access | — |
 | `QQ_ALLOW_ALL_USERS` | Set to `true` to allow all DMs | `false` |
@@ -114,7 +112,7 @@ This usually means:
 - Verify the bot's **intents** are enabled at q.qq.com
 - Check `QQ_ALLOWED_USERS` if DM access is restricted
 - For group messages, ensure the bot is **@mentioned** (group policy may require allowlisting)
-- Check `QQBOT_HOME_CHANNEL` for cron/notification delivery
+- For cron delivery, set an explicit target (`hermes cron edit <id> --deliver qqbot:<openid>`)
 
 ### Connection errors
 

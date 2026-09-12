@@ -68,10 +68,6 @@ YUANBAO_API_DOMAIN=https://api.yuanbao.example.com
 # Optional: internal routing environment (e.g. test/staging/production)
 # YUANBAO_ROUTE_ENV=production
 
-# Optional: home channel for cron/notifications (format: direct:<account> or group:<group_code>)
-YUANBAO_HOME_CHANNEL=direct:bot_account_id
-YUANBAO_HOME_CHANNEL_NAME="Bot Notifications"
-
 # Optional: restrict access (legacy, see Access Control below for fine-grained policies)
 YUANBAO_ALLOWED_USERS=user_account_1,user_account_2
 ```
@@ -99,7 +95,6 @@ The adapter will connect to the Yuanbao WebSocket gateway, authenticate using HM
 - **Group information queries** — retrieve group details and member lists
 - **Sticker/Emoji support** — send TIMFaceElem stickers and emoji in conversations
 - **WeChat forwarded chat-history support** — when a user forwards a WeChat chat-history bundle into Yuanbao, the adapter decodes the forwarded records (sender nicknames, text, and multimedia entries, including nested forwards) and injects them into the conversation so the agent can read the full forwarded thread
-- **Auto-sethome** — first user to message the bot is automatically set as the home channel owner
 - **Slow-response notification** — sends a waiting message when the agent takes longer than expected
 
 ## Configuration Options
@@ -123,29 +118,19 @@ The Yuanbao adapter automatically handles media uploads via COS (Tencent Cloud O
 
 Media URLs are automatically validated and downloaded before upload to prevent SSRF attacks.
 
-## Home Channel
+## Scheduled Delivery
 
-Use the `/sethome` command in any Yuanbao chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
-
-:::tip Auto-sethome
-If no home channel is configured, the first user to message the bot will be automatically set as the home channel owner. If the current home channel is a group chat, the first DM will upgrade it to a direct channel.
-:::
-
-You can also set it manually in `~/.hermes/.env`:
+Cron jobs created with `/cron` in a Yuanbao chat deliver their results back to that chat (the job's captured origin). To deliver somewhere else — or when a job has no captured origin — set an explicit target:
 
 ```bash
-YUANBAO_HOME_CHANNEL=direct:user_account_id
+hermes cron edit <id> --deliver yuanbao:direct:user_account_id
 # or for a group:
-# YUANBAO_HOME_CHANNEL=group:group_code
-YUANBAO_HOME_CHANNEL_NAME="My Bot Updates"
+# hermes cron edit <id> --deliver yuanbao:group:group_code
 ```
 
-### Example: Set Home Channel
+A job whose `deliver` value resolves to no target records a delivery error telling you to set an explicit `platform:chat_id[:thread_id]` target; output is never silently dropped.
 
-1. Start a conversation with the bot in Yuanbao
-2. Send the command: `/sethome`
-3. The bot responds: "Home channel set to [chat_name] with ID [chat_id]. Cron jobs will deliver to this location."
-4. Future cron jobs and notifications will be sent to this channel
+Gateway lifecycle notices (restart/shutdown) are separate: they go to the notification channel you designate by running `/setnotify` in the destination chat.
 
 ### Example: Cron Job Delivery
 
@@ -155,7 +140,7 @@ Create a cron job:
 /cron "0 9 * * *" Check server status
 ```
 
-The scheduled output will be delivered to your Yuanbao home channel every day at 9 AM.
+The scheduled output will be delivered back to that chat every day at 9 AM.
 
 ## Usage Tips
 
@@ -177,7 +162,6 @@ All standard Hermes commands work on Yuanbao:
 |---------|-------------|
 | `/new` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model |
-| `/sethome` | Set this chat as the home channel |
 | `/status` | Show session info |
 | `/help` | Show available commands |
 
@@ -227,13 +211,13 @@ When you ask the bot to create or export a file, it sends the file directly to y
 3. Ensure the media file is accessible and not corrupted
 4. Check COS bucket configuration with platform admin
 
-### Messages not delivered to home channel
+### Scheduled output not delivered
 
-**Cause**: Home channel ID format is incorrect or cron job hasn't triggered.
+**Cause**: The cron job has no resolvable delivery target (for example `deliver: "origin"` with no captured origin chat).
 
 **Fix**:
-1. Verify YUANBAO_HOME_CHANNEL is in correct format
-2. Test with `/sethome` command to auto-detect correct format
+1. Check the job's delivery errors with `/status` or `hermes cron list`
+2. Set an explicit target: `hermes cron edit <id> --deliver yuanbao:direct:<account>` (or `yuanbao:group:<group_code>`)
 3. Check cron job schedule with `/status`
 4. Verify bot has send permissions in the target chat
 
@@ -316,7 +300,7 @@ Schedule tasks that run on Yuanbao:
 /cron "0 */4 * * *" Report system health
 ```
 
-Results are delivered to your home channel.
+Results are delivered back to the chat where you created the job.
 
 ### Background Tasks
 
