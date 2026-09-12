@@ -18709,8 +18709,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
-            "(home=%s, thread=%s, session_key=%s)",
-            cli_session_id, platform_name, home.chat_id, effective_thread_id,
+            "(target=%s, thread=%s, session_key=%s)",
+            cli_session_id, platform_name, channel_chat_id, effective_thread_id,
             session_key,
         )
 
@@ -18735,7 +18735,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             result = await transport.send(
                 platform,
-                str(home.chat_id),
+                str(channel.chat_id),
                 response_text,
                 send_metadata or None,
             )
@@ -30992,6 +30992,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             _clear_shutdown_notification()
 
+    def _free_tier_startup_line(self) -> Optional[str]:
+        """Delegate to the notifications mixin's copy: the monolithic-runner fold kept the
+        free-tier logic (NS-847) in ``run_notifications.GatewayNotificationsMixin`` while this
+        class's own startup broadcast shadowed the mixin method that called it."""
+        from gateway.run_notifications import GatewayNotificationsMixin
+
+        return GatewayNotificationsMixin._free_tier_startup_line(self)
+
     async def _send_notification_channel_startup_notifications(
         self,
         *,
@@ -31006,6 +31014,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+        free_tier_line = self._free_tier_startup_line()
+        if free_tier_line:
+            message = f"{message}\n{free_tier_line}"
         any_channel = any(
             (cfg.notification_channel and cfg.notification_channel.chat_id)
             for cfg in self.config.platforms.values()
