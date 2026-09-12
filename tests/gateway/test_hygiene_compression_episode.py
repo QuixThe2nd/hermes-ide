@@ -910,3 +910,199 @@ async def test_deferred_edit_fires_exactly_once_on_double_fire(monkeypatch, tmp_
     ), f"adoption edit missing after re-fire: {_edit_contents(adapter)}"
     await _drain_deferred(runner)
     assert {e["message_id"] for e in adapter.edits} == {"m1"}
+
+
+# ---------------------------------------------------------------------------
+# P2: compressor attribution in the success card
+# ---------------------------------------------------------------------------
+
+
+class RoutedInPlaceAgent(FastInPlaceAgent):
+    """Commits in-place; its compressor recorded the ACTUAL aux route."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.context_compressor._last_compression_telemetry = {
+            "aux_route_known": True,
+            "aux_provider": "openrouter",
+            "aux_model": "deepseek-chat-v3",
+        }
+        self.context_compressor._last_summary_fallback_used = False
+        self.context_compressor._last_feasibility_skip = False
+
+
+class LocalSummaryInPlaceAgent(RoutedInPlaceAgent):
+    """Commits in-place via the deterministic LOCAL summary (provider failed)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.context_compressor._last_summary_fallback_used = True
+        self.context_compressor._last_feasibility_skip = False
+
+
+class FeasibilitySkipInPlaceAgent(RoutedInPlaceAgent):
+    """Commits in-place via the local summary after a feasibility SKIP."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.context_compressor._last_summary_fallback_used = True
+        self.context_compressor._last_feasibility_skip = True
+
+
+class RoutedFencedStreamingAgent(FencedStreamingAgent):
+    """Deferred adoption whose compressor recorded the ACTUAL aux route."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.context_compressor._last_compression_telemetry = {
+            "aux_route_known": True,
+            "aux_provider": "openrouter",
+            "aux_model": "deepseek-chat-v3",
+        }
+        self.context_compressor._last_summary_fallback_used = False
+        self.context_compressor._last_feasibility_skip = False
+
+
+@pytest.mark.asyncio
+async def test_inline_success_card_names_actual_compressor_route(
+    monkeypatch, tmp_path
+):
+    """P2: the inline ✅ line reports the provider/model the compressor
+    ACTUALLY selected (aux_route_known telemetry), mirroring the agent-side
+    rail — not bare counts that leave attribution implicit."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, RoutedInPlaceAgent)
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+
+    successes = [
+        c
+        for c in _edit_contents(adapter)
+        if c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    ]
+    assert len(successes) == 1, f"one success edit, got: {_edit_contents(adapter)}"
+    assert "openrouter/deepseek-chat-v3" in successes[0]
+    assert "6 → 1 messages" in successes[0]
+    # A provider-generated summary carries no local-summary label.
+    assert "local deterministic summary" not in successes[0]
+
+
+@pytest.mark.asyncio
+async def test_inline_success_card_labels_local_summary_not_provider(
+    monkeypatch, tmp_path
+):
+    """P2: when the engine inserted its deterministic LOCAL summary (provider
+    summary unavailable), the ✅ line says so and the failed provider is
+    NEVER credited with a summary it did not produce."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, LocalSummaryInPlaceAgent)
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+
+    successes = [
+        c
+        for c in _edit_contents(adapter)
+        if c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    ]
+    assert len(successes) == 1, f"one success edit, got: {_edit_contents(adapter)}"
+    assert (
+        "provider summary unavailable — used local deterministic summary"
+        in successes[0]
+    )
+    assert "openrouter" not in successes[0], (
+        f"failed provider must not be credited with a local summary: {successes[0]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_success_card_labels_feasibility_skip_local_summary(
+    monkeypatch, tmp_path
+):
+    """P2: a feasibility-SKIP local summary gets the plain "local deterministic
+    summary" label (not "unavailable"), and names no provider route."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(
+        monkeypatch, gateway_run, tmp_path, FeasibilitySkipInPlaceAgent
+    )
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+
+    successes = [
+        c
+        for c in _edit_contents(adapter)
+        if c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    ]
+    assert len(successes) == 1, f"one success edit, got: {_edit_contents(adapter)}"
+    assert "· local deterministic summary" in successes[0]
+    assert "unavailable" not in successes[0]
+    assert "openrouter" not in successes[0]
+
+
+@pytest.mark.asyncio
+async def test_deferred_adoption_card_names_compressor_route(
+    monkeypatch, tmp_path
+):
+    """P2: the deferred adoption ✅ (watermark-fenced commit boundary) also
+    reports the actually selected provider/model from compressor telemetry."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(
+        monkeypatch, gateway_run, tmp_path, RoutedFencedStreamingAgent
+    )
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+    assert await _wait_for_edit(
+        adapter, lambda c: c == compression_tool_deferred_line()
+    ), f"deferred edit missing: {_edit_contents(adapter)}"
+
+    agent = RoutedFencedStreamingAgent.last_instance
+    agent.release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(agent.committed.wait, 5), timeout=6)
+    success_edit = await _wait_for_edit(
+        adapter, lambda c: c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    )
+    assert success_edit is not None, f"adoption edit missing: {_edit_contents(adapter)}"
+    assert "openrouter/deepseek-chat-v3" in success_edit["content"]
+    assert "6 → 1 messages" in success_edit["content"]
+
+    await _drain_deferred(runner)
+    assert {e["message_id"] for e in adapter.edits} == {"m1"}

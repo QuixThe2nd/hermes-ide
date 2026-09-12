@@ -55,11 +55,6 @@ from agent.compression_status import (
     COMPRESSION_ABORT_WARNING_PREFIX,
     COMPRESSION_TOOL_STATUS_EVENT,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_PREFIX,
-    compression_tool_aborted_line,
-    compression_tool_deferred_line,
-    compression_tool_failure_line,
-    compression_tool_start_line,
-    compression_tool_success_line,
     cooldown_fold_suffix,
     current_compression_attempt_token,
     is_compression_tool_failure_line,
@@ -3769,6 +3764,7 @@ from gateway.session_state import (
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
 from gateway.turn_context import TurnContext
 from gateway.run_turn import is_context_overflow_failure_result
 from gateway.platforms.base import (
@@ -9667,7 +9663,7 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
     return adapter_cls(config)
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayHygieneCompressionMixin):
     """
     Main gateway controller.
 
@@ -24687,70 +24683,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
-    async def _hygiene_compression_episode_update(
-        self,
-        *,
-        source: Any,
-        session_key: Any,
-        metadata: Any,
-        line: str,
-        attempt_token: Optional[str],
-    ) -> bool:
-        """Best-effort Discord episode-card update for session-hygiene compression.
-
-        Presentation-only twin of the in-agent rail: hygiene compression runs
-        in a detached ``AIAgent`` whose platform is deliberately stale
-        (``_GATEWAY_HYGIENE_PLATFORM``) and has no ``status_callback``, so
-        ``emit_compression_tool_status`` can never fire for it. The gateway —
-        which already holds the source adapter, session key, and thread
-        metadata — drives the SAME episode machinery under its OWN
-        ``hygiene``-railed key, so a hygiene attempt gets the identical
-        send-once/edit-in-place ``context_compress`` card WITHOUT sharing
-        episode state with the agent-side rail on the same chat: an open
-        hygiene card can never drop the agent rail's raw warnings or hand its
-        bubble to an agent attempt (and vice versa). All line text comes
-        from the ``agent/compression_status.py`` builders.
-
-        Every hygiene emission point runs on the event loop (the summary
-        itself is the only executor-threaded part), so no thread-safe hop is
-        needed here; the detached done-callback schedules this coro with
-        ``safe_schedule_threadsafe``. Returns True when the episode rail owns
-        this chat's compression surface (Discord) — callers then skip the
-        legacy plain notice for the same edge. Never raises and never touches
-        compression policy, timeouts, fencing, or cooldowns.
-        """
-        try:
-            chat_id = getattr(source, "chat_id", None)
-            if not chat_id:
-                return False
-            adapter = self._adapter_for_source(source)
-            if not _adapter_uses_compression_episode_rail(adapter):
-                return False
-            action, content = _compression_episode_decide(
-                adapter,
-                chat_id,
-                COMPRESSION_TOOL_STATUS_EVENT,
-                line,
-                session_key=session_key,
-                attempt_token=attempt_token,
-                rail=_COMPRESSION_EPISODE_RAIL_HYGIENE,
-            )
-            if action == "deliver" and content:
-                await _send_or_update_compression_episode_coro(
-                    adapter,
-                    chat_id,
-                    content,
-                    metadata,
-                    session_key=session_key,
-                    rail=_COMPRESSION_EPISODE_RAIL_HYGIENE,
-                )
-            return True
-        except Exception:
-            logger.debug(
-                "hygiene compression episode update failed", exc_info=True
-            )
-            return False
-
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.perf_counter()
@@ -25643,13 +25575,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # to before (no card, no event). The token
                                     # keys every later edit to THIS attempt so a
                                     # superseded attempt's late edit can never
-                                    # clobber its successor's episode.
+                                    # clobber its successor's episode. The card
+                                    # lifecycle itself lives in
+                                    # gateway/run_hygiene_compression.py.
                                     _hyg_episode_token = uuid.uuid4().hex
-                                    await self._hygiene_compression_episode_update(
+                                    await self._hygiene_episode_emit_start(
                                         source=source,
                                         session_key=session_key,
                                         metadata=_hyg_meta,
-                                        line=compression_tool_start_line(),
                                         attempt_token=_hyg_episode_token,
                                     )
                                     try:
@@ -25851,174 +25784,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # The flat retry-after is recorded by the
                                             # done-callback below ONLY if the worker
                                             # ends without committing anything.
-                                            _hyg_deferred_sid = session_entry.session_id
-                                            _hyg_deferred_key = session_key
-                                            _hyg_deferred_agent = _hyg_agent
-
-                                            def _hyg_adopt_or_space_retry(
-                                                _fut,
-                                                _gw=self,
-                                                _sid=_hyg_deferred_sid,
-                                                _skey=_hyg_deferred_key,
-                                                _agent=_hyg_deferred_agent,
-                                                _src=source,
-                                                _meta=_hyg_meta,
-                                                _loop=loop,
-                                                _tok=_hyg_episode_token,
-                                                _pre_msgs=_msg_count,
-                                                _pre_toks=_approx_tokens,
-                                            ):
-                                                try:
-                                                    _exc = _fut.exception()
-                                                except (
-                                                    asyncio.CancelledError,
-                                                    Exception,
-                                                ):
-                                                    _exc = None
-                                                    _committed = False
-                                                else:
-                                                    _committed = _exc is None and (
-                                                        bool(
-                                                            getattr(
-                                                                _agent,
-                                                                "_last_compaction_in_place",
-                                                                False,
-                                                            )
-                                                        )
-                                                        or getattr(
-                                                            _agent, "session_id", _sid
-                                                        )
-                                                        != _sid
-                                                    )
-                                                if _committed:
-                                                    logger.info(
-                                                        "Session hygiene compression for "
-                                                        "session %s finished after the "
-                                                        "turn-hold was released — summary "
-                                                        "adopted at the watermark-fenced "
-                                                        "commit boundary (#97963)",
-                                                        _sid,
-                                                    )
-                                                    try:
-                                                        _reset_hygiene_failure_streak(
-                                                            _gw, _skey
-                                                        )
-                                                    except Exception as _rs_err:
-                                                        logger.debug(
-                                                            "hygiene streak reset after "
-                                                            "deferred adoption failed: %s",
-                                                            _rs_err,
-                                                        )
-                                                    # Episode card: the ONLY
-                                                    # success terminal for a
-                                                    # deferred attempt — fired at
-                                                    # the watermark-fenced
-                                                    # adoption boundary itself,
-                                                    # not when the turn was
-                                                    # released. The done-callback
-                                                    # is sync on the loop, so the
-                                                    # coro is scheduled
-                                                    # thread-safely (it is also
-                                                    # safe from a worker thread
-                                                    # that resolved the future).
-                                                    try:
-                                                        _adopted = _fut.result()
-                                                        _adopted_msgs = (
-                                                            _adopted[0]
-                                                            if isinstance(
-                                                                _adopted, tuple
-                                                            )
-                                                            and _adopted
-                                                            else None
-                                                        )
-                                                    except Exception:
-                                                        _adopted_msgs = None
-                                                    safe_schedule_threadsafe(
-                                                        _gw._hygiene_compression_episode_update(
-                                                            source=_src,
-                                                            session_key=_skey,
-                                                            metadata=_meta,
-                                                            line=compression_tool_success_line(
-                                                                before_messages=_pre_msgs,
-                                                                after_messages=(
-                                                                    len(_adopted_msgs)
-                                                                    if isinstance(
-                                                                        _adopted_msgs,
-                                                                        list,
-                                                                    )
-                                                                    else None
-                                                                ),
-                                                                before_tokens=(
-                                                                    _pre_toks or None
-                                                                ),
-                                                                after_tokens=(
-                                                                    estimate_messages_tokens_rough(
-                                                                        _adopted_msgs
-                                                                    )
-                                                                    if isinstance(
-                                                                        _adopted_msgs,
-                                                                        list,
-                                                                    )
-                                                                    else None
-                                                                ),
-                                                            ),
-                                                            attempt_token=_tok,
-                                                        ),
-                                                        _loop,
-                                                        logger=logger,
-                                                        log_message=(
-                                                            "hygiene compression episode "
-                                                            "adoption scheduling error"
-                                                        ),
-                                                    )
-                                                else:
-                                                    # Nothing to adopt (summary failed,
-                                                    # fence refused the commit, or the
-                                                    # attempt was superseded). Restore
-                                                    # the pre-#97963 spacing so
-                                                    # sustained traffic does not spawn
-                                                    # and abandon a fresh compressor
-                                                    # every turn. Flat and
-                                                    # non-escalating: the streak must
-                                                    # not advance for a deferral.
-                                                    _record_hygiene_cooldown(
-                                                        _gw, _sid,
-                                                        _HYGIENE_TURNHOLD_RETRY_SECONDS,
-                                                        "hygiene compression deferred: "
-                                                        "turn-hold budget expired and the "
-                                                        "detached attempt did not commit",
-                                                    )
-                                                    # Episode card: the deferred
-                                                    # attempt ended WITHOUT
-                                                    # committing (summary failed,
-                                                    # fence refused the commit,
-                                                    # or the attempt was
-                                                    # superseded) — close the
-                                                    # card as stopped, never as
-                                                    # success.
-                                                    safe_schedule_threadsafe(
-                                                        _gw._hygiene_compression_episode_update(
-                                                            source=_src,
-                                                            session_key=_skey,
-                                                            metadata=_meta,
-                                                            line=compression_tool_aborted_line(
-                                                                _exc
-                                                                if _exc is not None
-                                                                else "detached attempt "
-                                                                "did not commit"
-                                                            ),
-                                                            attempt_token=_tok,
-                                                        ),
-                                                        _loop,
-                                                        logger=logger,
-                                                        log_message=(
-                                                            "hygiene compression episode "
-                                                            "terminal scheduling error"
-                                                        ),
-                                                    )
-
+                                            # The adoption/did-not-commit
+                                            # done-callback (including its
+                                            # episode-card terminals) lives in
+                                            # gateway/run_hygiene_compression.py.
                                             _hyg_future.add_done_callback(
-                                                _hyg_adopt_or_space_retry
+                                                self._hygiene_deferred_adoption_callback(
+                                                    session_id=session_entry.session_id,
+                                                    session_key=session_key,
+                                                    agent=_hyg_agent,
+                                                    source=source,
+                                                    metadata=_hyg_meta,
+                                                    loop=loop,
+                                                    attempt_token=_hyg_episode_token,
+                                                    before_messages=_msg_count,
+                                                    before_tokens=_approx_tokens,
+                                                )
                                             )
                                             from agent.session_activity import (
                                                 ActivityProvenance,
@@ -26047,32 +25828,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # boundary later replaces it with
                                             # the real terminal. On Discord this
                                             # replaces the plain deferral
-                                            # notice below; everywhere else the
+                                            # notice; everywhere else the
                                             # notice posts exactly as before.
-                                            if not await self._hygiene_compression_episode_update(
+                                            await self._hygiene_episode_emit_deferred_or_notice(
                                                 source=source,
                                                 session_key=session_key,
                                                 metadata=_hyg_meta,
-                                                line=compression_tool_deferred_line(),
                                                 attempt_token=_hyg_episode_token,
-                                            ):
-                                                _turnhold_msg = t(
-                                                    "gateway.compress.turnhold_deferred"
-                                                )
-                                                try:
-                                                    _adapter = self._adapter_for_source(source)
-                                                    if _adapter and source.chat_id:
-                                                        await _adapter.send(
-                                                            source.chat_id,
-                                                            _turnhold_msg,
-                                                            metadata=_hyg_meta,
-                                                        )
-                                                except Exception as _werr:
-                                                    logger.warning(
-                                                        "Failed to deliver compression-turnhold "
-                                                        "notice to user: %s",
-                                                        _werr,
-                                                    )
+                                            )
                                             raise
                                         _cancelled = None
                                         while _cancelled is None:
@@ -26141,34 +25904,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # was fence-CANCELLED here — a
                                             # failure terminal (⚠️), never a
                                             # deferral. On Discord it replaces
-                                            # the plain notice below.
-                                            if not await self._hygiene_compression_episode_update(
+                                            # the plain notice; everywhere else
+                                            # the notice posts exactly as before.
+                                            await self._hygiene_episode_emit_turnhold_cancelled_or_notice(
                                                 source=source,
                                                 session_key=session_key,
                                                 metadata=_hyg_meta,
-                                                line=compression_tool_aborted_line(
-                                                    "turn-hold budget expired — "
-                                                    "attempt cancelled"
-                                                ),
                                                 attempt_token=_hyg_episode_token,
-                                            ):
-                                                _turnhold_msg = t(
-                                                    "gateway.compress.turnhold_deferred"
-                                                )
-                                                try:
-                                                    _adapter = self._adapter_for_source(source)
-                                                    if _adapter and source.chat_id:
-                                                        await _adapter.send(
-                                                            source.chat_id,
-                                                            _turnhold_msg,
-                                                            metadata=_hyg_meta,
-                                                        )
-                                                except Exception as _werr:
-                                                    logger.warning(
-                                                        "Failed to deliver compression-turnhold "
-                                                        "notice to user: %s",
-                                                        _werr,
-                                                    )
+                                            )
                                             raise
                                     except asyncio.TimeoutError:
                                         _hyg_waited = time.monotonic() - _hyg_wait_started
@@ -26286,20 +26029,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # On Discord it replaces the plain
                                             # timeout warning below.
                                             _hyg_episode_owned = (
-                                                await self._hygiene_compression_episode_update(
+                                                await self._hygiene_episode_emit_timeout_terminal(
                                                     source=source,
                                                     session_key=session_key,
                                                     metadata=_hyg_meta,
-                                                    line=(
-                                                        compression_tool_aborted_line(
-                                                            "cancelled at commit fence"
-                                                        )
-                                                        if _hyg_fence_cancelled
-                                                        else compression_tool_failure_line(
-                                                            _hyg_timeout_error
-                                                        )
-                                                    ),
                                                     attempt_token=_hyg_episode_token,
+                                                    fence_cancelled=_hyg_fence_cancelled,
+                                                    timeout_error=_hyg_timeout_error,
                                                 )
                                             )
                                             if _hyg_fence_cancelled:
@@ -26408,23 +26144,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         # line claims nothing). Scheduled
                                         # detached so the unwind itself is
                                         # never delayed by delivery.
-                                        safe_schedule_threadsafe(
-                                            self._hygiene_compression_episode_update(
-                                                source=source,
-                                                session_key=session_key,
-                                                metadata=_hyg_meta,
-                                                line=compression_tool_aborted_line(
-                                                    "cancelled",
-                                                    context_preservation=None,
-                                                ),
-                                                attempt_token=_hyg_episode_token,
-                                            ),
-                                            loop,
-                                            logger=logger,
-                                            log_message=(
-                                                "hygiene compression episode "
-                                                "unwind scheduling error"
-                                            ),
+                                        self._hygiene_episode_schedule_unwind_terminal(
+                                            source=source,
+                                            session_key=session_key,
+                                            metadata=_hyg_meta,
+                                            attempt_token=_hyg_episode_token,
+                                            loop=loop,
                                         )
                                         raise
 
@@ -26598,52 +26323,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # fence-cancelled no-op, anti-growth
                                     # refusal, missing session_db) closes the
                                     # card as ⚠️. A no-op is never a success.
-                                    _hyg_episode_owned = False
-                                    if _hyg_rotated or _hyg_in_place:
-                                        await self._hygiene_compression_episode_update(
+                                    _hyg_episode_owned = (
+                                        await self._hygiene_episode_emit_inline_terminal(
                                             source=source,
                                             session_key=session_key,
                                             metadata=_hyg_meta,
-                                            line=compression_tool_success_line(
-                                                before_messages=_msg_count,
-                                                after_messages=_new_count,
-                                                before_tokens=_approx_tokens or None,
-                                                after_tokens=_new_tokens or None,
-                                            ),
                                             attempt_token=_hyg_episode_token,
+                                            agent=_hyg_agent,
+                                            rotated=_hyg_rotated,
+                                            in_place=_hyg_in_place,
+                                            aborted=_hyg_aborted,
+                                            fence_cancelled=_hyg_fence_cancelled,
+                                            before_messages=_msg_count,
+                                            after_messages=_new_count,
+                                            before_tokens=_approx_tokens or None,
+                                            after_tokens=_new_tokens or None,
                                         )
-                                    elif _hyg_aborted and not _hyg_fence_cancelled:
-                                        # The card's failure terminal carries
-                                        # the sanitized reason + preservation
-                                        # fact; the raw warning below still
-                                        # posts wherever the rail is absent.
-                                        _hyg_episode_owned = (
-                                            await self._hygiene_compression_episode_update(
-                                                source=source,
-                                                session_key=session_key,
-                                                metadata=_hyg_meta,
-                                                line=compression_tool_failure_line(
-                                                    getattr(
-                                                        _comp,
-                                                        "_last_summary_error",
-                                                        None,
-                                                    )
-                                                ),
-                                                attempt_token=_hyg_episode_token,
-                                            )
-                                        )
-                                    else:
-                                        await self._hygiene_compression_episode_update(
-                                            source=source,
-                                            session_key=session_key,
-                                            metadata=_hyg_meta,
-                                            line=compression_tool_aborted_line(
-                                                "cancelled at commit fence"
-                                                if _hyg_fence_cancelled
-                                                else "did not rotate or compact in place"
-                                            ),
-                                            attempt_token=_hyg_episode_token,
-                                        )
+                                    )
                                     if not _hyg_aborted:
                                         # Recovery decision lives in the
                                         # extracted, unit-tested predicate — the
