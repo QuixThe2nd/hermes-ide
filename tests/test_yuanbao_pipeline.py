@@ -34,7 +34,6 @@ from gateway.platforms.yuanbao import (
     ChatRoutingMiddleware,
     AccessPolicy,
     AccessGuardMiddleware,
-    AutoSetHomeMiddleware,
     ExtractContentMiddleware,
     PlaceholderFilterMiddleware,
     OwnerCommandMiddleware,
@@ -445,115 +444,6 @@ class TestAccessPolicy:
 
 
 
-class TestAutoSetHomeMiddleware:
-    @pytest.mark.asyncio
-    async def test_pairing_unapproved_dm_does_not_set_home(self, monkeypatch, tmp_path):
-        """Intake-only pairing DMs must not claim YUANBAO_HOME_CHANNEL."""
-        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
-        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
-        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-
-        adapter = make_adapter()
-        adapter._auto_sethome_done = False
-        adapter._access_policy = AccessPolicy(
-            dm_policy="pairing",
-            dm_allow_from=[],
-            group_policy="pairing",
-            group_allow_from=[],
-        )
-        ctx = make_ctx(
-            adapter=adapter,
-            chat_type="dm",
-            chat_id="direct:unapproved-sender",
-            from_account="unapproved-sender",
-        )
-        next_fn = AsyncMock()
-
-        with patch("gateway.pairing.PairingStore") as mock_store_cls:
-            mock_store_cls.return_value.is_approved.return_value = False
-            await AutoSetHomeMiddleware()(ctx, next_fn)
-
-        assert "YUANBAO_HOME_CHANNEL" not in os.environ
-        assert not (tmp_path / "config.yaml").exists()
-        next_fn.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_pairing_approved_dm_sets_home(self, monkeypatch, tmp_path):
-        """Pairing-approved senders may auto-designate the home channel."""
-        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home",
-            lambda: tmp_path,
-        )
-
-        adapter = make_adapter()
-        adapter._auto_sethome_done = False
-        adapter._access_policy = AccessPolicy(
-            dm_policy="pairing",
-            dm_allow_from=[],
-            group_policy="pairing",
-            group_allow_from=[],
-        )
-        ctx = make_ctx(
-            adapter=adapter,
-            chat_type="dm",
-            chat_id="direct:approved-sender",
-            from_account="approved-sender",
-            chat_name="Approved",
-        )
-        next_fn = AsyncMock()
-
-        with patch("gateway.pairing.PairingStore") as mock_store_cls:
-            mock_store_cls.return_value.is_approved.return_value = True
-            await AutoSetHomeMiddleware()(ctx, next_fn)
-
-        assert os.environ.get("YUANBAO_HOME_CHANNEL") == "direct:approved-sender"
-        next_fn.assert_awaited_once()
-
-
-
-class TestSenderMayDesignateHome:
-    def test_pairing_unapproved_sender_denied(self, monkeypatch):
-        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
-        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-
-        adapter = make_adapter()
-        adapter._access_policy = AccessPolicy(
-            dm_policy="pairing",
-            dm_allow_from=[],
-            group_policy="pairing",
-            group_allow_from=[],
-        )
-        ctx = make_ctx(
-            adapter=adapter,
-            chat_type="dm",
-            from_account="unapproved-sender",
-        )
-
-        with patch("gateway.pairing.PairingStore") as mock_store_cls:
-            mock_store_cls.return_value.is_approved.return_value = False
-            assert adapter._sender_may_designate_home(ctx) is False
-
-    def test_pairing_approved_sender_allowed(self):
-        adapter = make_adapter()
-        adapter._access_policy = AccessPolicy(
-            dm_policy="pairing",
-            dm_allow_from=[],
-            group_policy="pairing",
-            group_allow_from=[],
-        )
-        ctx = make_ctx(
-            adapter=adapter,
-            chat_type="dm",
-            from_account="approved-sender",
-        )
-
-        with patch("gateway.pairing.PairingStore") as mock_store_cls:
-            mock_store_cls.return_value.is_approved.return_value = True
-            assert adapter._sender_may_designate_home(ctx) is True
-
-
-
 class TestExtractContentMiddleware:
     @pytest.mark.asyncio
     async def test_extracts_text_and_media(self):
@@ -641,41 +531,6 @@ class TestGroupAtGuardMiddleware:
         next_fn.assert_awaited_once()
 
 
-class TestAutoSetHomeAfterGroupAtGuard:
-    @pytest.mark.asyncio
-    async def test_unaddressed_group_does_not_set_home(self, monkeypatch, tmp_path):
-        """Group traffic dropped by GroupAtGuard must not persist YUANBAO_HOME_CHANNEL."""
-        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
-        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home",
-            lambda: tmp_path,
-        )
-
-        adapter = make_adapter()
-        adapter._auto_sethome_done = False
-        adapter._access_policy = AccessPolicy(
-            dm_policy="pairing",
-            dm_allow_from=[],
-            group_policy="open",
-            group_allow_from=[],
-        )
-        adapter._session_store = None
-
-        push_data = make_json_push(
-            from_account="alice",
-            group_code="grp-1",
-            text="hello group",
-            msg_id="msg-group-001",
-        )
-        ctx = InboundContext(adapter=adapter, raw_frames=[push_data])
-        pipeline = InboundPipelineBuilder.build()
-        await pipeline.execute(ctx)
-
-        assert "YUANBAO_HOME_CHANNEL" not in os.environ
-        assert not (tmp_path / "config.yaml").exists()
-
-
 # ============================================================
 # 4. Factory Tests
 # ============================================================
@@ -697,7 +552,6 @@ class TestCreateInboundPipeline:
             "owner-command",
             "build-source",
             "group-at-guard",
-            "auto-sethome",
             "group-attribution",
             "classify-msg-type",
             "quote-context",
