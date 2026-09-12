@@ -20,7 +20,7 @@ from tools.send_message_tool import send_message_tool
 
 ATTESTED_CHAT = "111111111111111111"
 ARBITRARY_CHAT = "999999999999999999"
-HOME_CHAT = "222222222222222222"
+NOTIFICATION_CHAT = "222222222222222222"
 
 
 @pytest.fixture
@@ -61,8 +61,12 @@ def relay_env(tmp_path, monkeypatch):
     return directory
 
 
-def _send(target: str, sent):
-    """Invoke the real tool, recording any egress it attempts."""
+def _send(target: str, sent, *, notification_chat: str | None = None):
+    """Invoke the real tool, recording any egress it attempts.
+
+    ``notification_chat`` seeds the config's notification channel, the
+    operator-designated destination the attestation set must vouch for.
+    """
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -71,7 +75,9 @@ def _send(target: str, sent):
     discord_cfg = SimpleNamespace(enabled=True, token="t", extra={})
     config = SimpleNamespace(
         platforms={Platform.DISCORD: discord_cfg},
-        get_home_channel=lambda _p: SimpleNamespace(chat_id=HOME_CHAT),
+        get_notification_channel=lambda _p: (
+            SimpleNamespace(chat_id=notification_chat) if notification_chat else None
+        ),
     )
 
     async def _record(platform, pconfig, chat_id, message, **kwargs):
@@ -116,13 +122,13 @@ def test_attested_directory_chat_id_still_sends(relay_env):
     assert sent == [ATTESTED_CHAT]
 
 
-def test_home_channel_is_attested(relay_env):
-    """The operator-configured home channel is a provenance, not a guess."""
+def test_notification_channel_is_attested(relay_env):
+    """The operator-configured notification channel is a provenance, not a guess."""
     sent: list[str] = []
-    result = _send("discord", sent)
+    result = _send(f"discord:{NOTIFICATION_CHAT}", sent, notification_chat=NOTIFICATION_CHAT)
 
     assert result["success"] is True
-    assert sent == [HOME_CHAT]
+    assert sent == [NOTIFICATION_CHAT]
 
 
 def test_session_origin_chat_is_attested(relay_env, monkeypatch):
@@ -255,7 +261,6 @@ def _send_slack(target: str, sent, *, resolves_to: str | None = SLACK_DM):
     slack_cfg = SimpleNamespace(enabled=True, token="xoxb-t", extra={})
     config = SimpleNamespace(
         platforms={Platform.SLACK: slack_cfg},
-        get_home_channel=lambda _p: SimpleNamespace(chat_id=SLACK_DM),
     )
 
     async def _record(platform, pconfig, chat_id, message, **kwargs):
