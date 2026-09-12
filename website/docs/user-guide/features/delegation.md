@@ -585,7 +585,7 @@ error.
 
 ## Cursor My Machines (`delegate_cursor_agent`)
 
-`delegate_cursor_agent` is a separate delegation surface from `delegate_agent`. It keeps the same parameter schema and follows the same lifecycle: blocking by default (the final JSON result returns inline once the cloud run finishes), or a background handle plus one later completion when `background=true`.
+`delegate_cursor_agent` is a separate delegation surface from `delegate_agent`. It keeps the same parameter schema and follows the same lifecycle as `delegate_agent`: an omitted `background` detaches when the session can receive a late completion and blocks inline otherwise, `background=false` always blocks this turn, and `background=true` always returns a background handle plus one later completion.
 
 The backend is a [Cursor My Machines](https://cursor.com/docs/cloud-agent/self-hosted-guides/my-machines.md) Cloud Agent, not a local `agent -p` subprocess:
 

@@ -1558,6 +1558,52 @@ def background_delivery_supported() -> tuple:
     )
 
 
+def _omitted_default_delivery_supported() -> bool:
+    """Strict consumer test for the OMITTED-argument background default.
+
+    Stricter than :func:`background_delivery_supported` on purpose, and that
+    is NOT an inconsistency: an explicit ``background=true`` on an incapable
+    session fails LOUDLY before any work starts, so it can trust the widest
+    capability test. The omitted default instead falls back SILENTLY to
+    blocking, so it must grant a detach only when a consumer genuinely owns a
+    later turn — the same two refusals ``_resolve_async_wake_sid`` applies for
+    ``delegate_agent``:
+
+    1. A finite one-shot chat (``hermes -q``) sets
+       ``HERMES_SINGLE_QUERY_SESSION`` but never declares
+       ``async_delivery=False``; its process exits after the turn, so a
+       returned handle would strand the result. Cron and ``hermes -z`` are
+       already refused by ``async_delivery_supported`` itself.
+    2. A stateless HTTP request with a raw session id can only consume a
+       detached result when it DECLARED ``session_history_delivery``; an
+       omitted declaration is default-deny (#98619) and must not inherit wake
+       authority from the id alone.
+    """
+    try:
+        from gateway.session_context import async_delivery_supported, get_session_env
+    except Exception:  # pragma: no cover — mirror background_delivery_supported
+        logger.debug("omitted-default gate: context unavailable", exc_info=True)
+        return True
+
+    if not async_delivery_supported():
+        # Stateless channel or Kanban worker: only a raw session id WITH a
+        # declared server-history consumer can consume a detached result.
+        if not _current_origin_session_id():
+            return False
+        try:
+            from gateway.session_context import session_history_delivery_supported
+        except Exception:  # pragma: no cover
+            return False
+        return session_history_delivery_supported()
+
+    try:
+        if get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1":
+            return False
+    except Exception:  # pragma: no cover
+        pass
+    return True
+
+
 def _delegation_config() -> dict:
     """The ``delegation`` config section for the background-mode default.
 
@@ -1585,9 +1631,10 @@ def resolve_background_arg(args: Optional[Dict[str, Any]], *, config: Optional[d
     3. absent (or ``None``) → the ``delegation.default_background`` config key
        (default ``True``); when the config default is on, delivery capability
        is still required — a session that cannot receive a late completion
-       (cron job, one-shot run, Kanban worker, stateless HTTP endpoint with no
-       bound wake id) silently falls back to ``False`` (today's blocking
-       behavior) instead of erroring.
+       (one-shot `hermes -q` chat, cron job, one-shot run, Kanban worker,
+       stateless HTTP endpoint with no declared server-history consumer)
+       silently falls back to ``False`` (today's blocking behavior) instead
+       of erroring.
 
     Presence is read from the raw dict, NOT via ``args.get(...)`` defaults:
     ``is_truthy_value(args.get("background"), default=...)`` collapses
@@ -1601,8 +1648,7 @@ def resolve_background_arg(args: Optional[Dict[str, Any]], *, config: Optional[d
         config = _delegation_config()
     if not is_truthy_value((config or {}).get("default_background"), default=True):
         return False
-    supported, _reason = background_delivery_supported()
-    return supported
+    return _omitted_default_delivery_supported()
 
 
 def register_inline_wait(

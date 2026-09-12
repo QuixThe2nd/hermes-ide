@@ -250,6 +250,37 @@ class TestResolveBackgroundArg:
         # Silent fallback: a bool, never an error, for the omitted path.
         assert ad.resolve_background_arg({}) is False
 
+    def test_omitted_in_single_query_session_blocks_silently(self, monkeypatch):
+        """`hermes -q` sets HERMES_SINGLE_QUERY_SESSION but never declares
+        async_delivery=False; the process exits after the turn, so an omitted
+        argument must block, not hand out a handle nobody will read."""
+        monkeypatch.setattr(
+            "gateway.session_context.async_delivery_supported", lambda: True
+        )
+        monkeypatch.setattr(
+            "gateway.session_context.get_session_env",
+            lambda name, default="": "1" if name == "HERMES_SINGLE_QUERY_SESSION" else default,
+        )
+        assert ad.resolve_background_arg({}) is False
+
+    def test_omitted_api_wake_sid_requires_declared_history_delivery(self, monkeypatch):
+        """A stateless HTTP session with a raw session id may only detach when
+        the request DECLARED a server-history consumer (default-deny #98619)."""
+        monkeypatch.setattr(
+            "gateway.session_context.async_delivery_supported", lambda: False
+        )
+        monkeypatch.setattr(ad, "_current_origin_session_id", lambda: "20260913_rawsid")
+        monkeypatch.setattr(
+            "gateway.session_context.session_history_delivery_supported",
+            lambda: False,
+        )
+        assert ad.resolve_background_arg({}) is False
+        monkeypatch.setattr(
+            "gateway.session_context.session_history_delivery_supported",
+            lambda: True,
+        )
+        assert ad.resolve_background_arg({}) is True
+
     @pytest.mark.parametrize("raw", [True, "true", "1", "yes", "on"])
     def test_explicit_truthy_always_detaches(self, monkeypatch, raw):
         for supported in (True, False):
