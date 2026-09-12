@@ -49,6 +49,16 @@ def _voice_mixer_module():
         return voice_mixer
 
 
+def _inbox_thread_module():
+    """Sibling ``inbox_thread`` module: flat import (plugin dir on sys.path) else package-relative."""
+    try:
+        import inbox_thread
+        return inbox_thread
+    except ImportError:
+        from . import inbox_thread
+        return inbox_thread
+
+
 def _image_ext_from_content_type(content_type: str) -> str:
     """Attachment extension for a downloaded image (png unless jpeg/gif/webp is evident)."""
     if "jpeg" in content_type or "jpg" in content_type:
@@ -3511,6 +3521,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             self._nonconversational_messages.mark_many([message_id])
                         elif not _looks_like_nonconversational_history_message(content):
                             self._last_self_message_id[_target_id] = message_id
+                        # Inbox contract: every top-level bot message in the
+                        # Hermes Starts inbox channel anchors a public thread.
+                        await _inbox_thread_module().ensure_inbox_thread(
+                            self, channel, msg, content, thread_id=thread_id
+                        )
                         result = SendResult(
                             success=True,
                             message_id=message_id,
@@ -3598,6 +3613,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 chunks[0] = mention_prefix + chunks[0]
 
             message_ids = []
+            # Anchor candidate for inbox auto-threading (first chunk is the opener).
+            first_sent_message = None
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -3623,6 +3640,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         msg = await channel.send(content=chunk, reference=None)
                     else:
                         raise
+                if i == 0:
+                    first_sent_message = msg
                 message_ids.append(str(msg.id))
             # Track the last sent message for history backfill (skips the full history scan).
             if message_ids:
@@ -3631,6 +3650,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     await self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
+            # Inbox contract: every top-level bot message in the Hermes
+            # Starts inbox channel anchors a public thread.
+            await _inbox_thread_module().ensure_inbox_thread(
+                self, channel, first_sent_message, content, thread_id=thread_id
+            )
             # Connection-shaped failure (WS drop / closed session): use the ledger's runtime-retryable
             # marker so the reconnect sweep can replay this final response instead of stranding it until a
             # process restart (#95382 silent partial loss).
