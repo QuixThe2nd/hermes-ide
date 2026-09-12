@@ -4,9 +4,11 @@ When other sessions or background work are in flight, the tool pings the
 requester in the calling chat and waits for them to type the exact word
 ``restart`` before anything happens (same primitive as ``clarify``: an
 open-ended registration whose reply the gateway text-intercept eats instead of
-starting a new turn). As soon as the word lands it calls
-``GatewayRunner.begin_user_restart``, the same shared entry point the
-``/restart`` slash command uses, so the two cannot drift apart: the drain
+starting a new turn). As soon as the word lands it queues through the same
+gateway-owned sequence the ``/restart`` slash command runs — persist the
+requester's comeback routing, offer the opt-in Discord wind-down embed, then
+hand off to ``GatewayRunner.request_restart`` — all through one shared
+helper, so the two cannot drift apart: the drain
 blocks new work, waits for in-flight sessions to finish naturally — with
 no cap, so live work is never forced — and the gateway bounces and comes
 back online — the tool never runs a wait of its own beside that drain. When
@@ -30,7 +32,6 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-import threading
 from typing import Any, Optional
 
 from agent.turn_control import turn_control_field_for
@@ -64,22 +65,18 @@ RESTART_SCHEMA = {
     },
 }
 
-# Gateway-loop round trips (the confirm prompt send, then begin_user_restart)
-# are quick — begin_user_restart only writes two small marker files and
-# schedules the drain task. The bound exists so a wedged loop fails the tool
-# call instead of hanging the worker thread forever. A timeout cancels
-# begin_user_restart mid-setup, and that coroutine's rollback restores
-# admission and its provisional markers — the failed hand-off leaves the
-# gateway retryable and never reaches stop().
+# Gateway-loop round trips (the confirm prompt send, then the queued restart)
+# are quick — the shared on-loop sequence synchronously writes one small
+# marker file, optionally sends the Discord wind-down embed, and hands off to
+# request_restart, which schedules the drain task. The synchronous marker
+# write matters: it cannot keep running past a cancelled hand-off the way a
+# thread-pool write can, so a timeout can never leave a phantom notify
+# marker behind. The bound exists so a wedged loop fails the tool call
+# instead of hanging the worker thread forever. A timeout cancels the
+# queued restart mid-setup; nothing before the request_restart call mutates
+# admission, and request_restart owns rolling its own setup back, so the
+# failed hand-off leaves the gateway retryable and never reaches stop().
 _BEGIN_RESTART_TIMEOUT_S = 15.0
-
-# After the timeout path cancels begin_user_restart, how long to wait for the
-# cancelled coroutine to finish unwinding (the rollback runs synchronously
-# inside it, so its completion means admission is restored). Bounded so a
-# truly wedged loop still fails the tool call; if even this expires, the
-# rollback stays unconfirmed and a retry may transiently read
-# ``already_in_progress`` — the pre-fix behavior, not a new hang.
-_BEGIN_ROLLBACK_SETTLE_S = 5.0
 
 # The only reply that confirms a restart: this exact word, nothing else.
 _CONFIRM_WORD = "restart"
@@ -92,7 +89,7 @@ _CONFIRM_PROMPT = (
 
 # The same gate, said honestly when other sessions are still working: the
 # bounce will not fire the moment the word lands, but once they finish —
-# the shared drain inside begin_user_restart does that waiting.
+# the shared drain request_restart opens does that waiting.
 _CONFIRM_PROMPT_WAITING_ON_OTHERS = (
     "Gateway restart requested — reply with the exact word `restart` "
     "(lowercase, on its own) and the gateway will bounce once the other "
@@ -103,6 +100,17 @@ _NO_RUNNER_ERROR = (
     "No live gateway runner in this process — the restart tool only works "
     "inside a running gateway. From outside, an operator can run "
     "`hermes gateway restart` in a separate shell."
+)
+
+# The runner the plugin needs must expose the current restart entry point.
+# A runner without it is a foreign or outdated object — restarts from here
+# would crash on a missing attribute (the bug this guard exists for), so the
+# tool refuses with a typed error instead.
+_UNSUPPORTED_RUNNER_ERROR = (
+    "This gateway runner does not expose the current restart API "
+    "(`request_restart`) — the gateway and the restart tool are out of "
+    "sync. Restart the gateway from an operator shell "
+    "(`hermes gateway restart`) once, which realigns both, and retry."
 )
 
 _CRON_REFUSAL = (
@@ -701,6 +709,24 @@ def _confirm_restart_with_requester(
     )
 
 
+async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str]) -> dict:
+    """Queue the confirmed restart through the ONE shared gateway sequence.
+
+    Thin delegation to ``gateway.restart.queue_user_restart`` — the
+    gateway-owned helper the ``/restart`` slash handler also calls — so this
+    path owns no requester-setup choreography of its own and imports no core
+    privates; the two user-restart entry points cannot drift apart. Must run
+    on the gateway event loop (``request_restart`` schedules its drain task
+    there), and returns the shared status dict shape: ``status``
+    ("restarting" / "already_in_progress"), ``active_agents`` (counted
+    before the drain closes in), and ``via_service`` (None when nothing was
+    started this call).
+    """
+    from gateway.restart import queue_user_restart
+
+    return await queue_user_restart(runner, source, message_id)
+
+
 def handle_restart(args: dict, **_: Any) -> str:
     """Restart the gateway via the shared /restart drain path.
 
@@ -725,13 +751,14 @@ def handle_restart(args: dict, **_: Any) -> str:
        restored to its exact original name on every exit — before the
        restart can be queued, and cosmetically (a rename or restore failure
        is logged, never fatal).
-    6. After a successful confirm — other work in flight or not —
-       ``begin_user_restart`` is queued immediately, exactly as on the skip
-       path. The shared drain owns the wait for the other sessions: it
-       blocks new work and lets running turns finish naturally, with no
-       cap — a user-requested restart never forces them (#77184). The
-       requester's routing is
-       persisted to ``.restart_notify.json`` for the comeback notice.
+    6. After a successful confirm — other work in flight or not — the
+       restart is queued immediately, exactly as on the skip path: the
+       requester's routing is persisted to ``.restart_notify.json`` for the
+       comeback notice, the opt-in wind-down embed is offered, and
+       ``request_restart`` opens the shared drain. That drain owns the wait
+       for the other sessions: it blocks new work and lets running turns
+       finish naturally, with no cap — a user-requested restart never
+       forces them (#77184).
     7. On confirmation (or a skipped confirm), returns once the restart is
        queued — the bounce happens after this turn ends.
     """
@@ -749,6 +776,16 @@ def handle_restart(args: dict, **_: Any) -> str:
         runner = None
     if runner is None:
         return _error_json(_NO_RUNNER_ERROR)
+
+    # The gateway-owned queue sequence this hands the runner into calls these
+    # on it directly. A runner without them is a foreign or outdated object,
+    # and the failure mode this tool already lived through is the raw
+    # AttributeError — refuse early with a typed error instead of crashing
+    # the tool call mid-flow.
+    if not callable(getattr(runner, "request_restart", None)) or not callable(
+        getattr(runner, "_running_agent_count", None)
+    ):
+        return _error_json(_UNSUPPORTED_RUNNER_ERROR)
 
     if getattr(runner, "_restart_requested", False) or getattr(
         runner, "_draining", False
@@ -813,41 +850,26 @@ def handle_restart(args: dict, **_: Any) -> str:
         # drain right away, with no plugin-side wait beside it. Waiting for
         # the other sessions here would run BEFORE _draining is set, so new
         # turns would keep being accepted and a hung chat would never trip
-        # the drain's force-timeout. begin_user_restart owns that wait.
+        # the drain's force-timeout. The shared drain owns that wait.
 
     message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip() or None
-    begin = runner.begin_user_restart(source=source, message_id=message_id)
-    # Flag when the begin coroutine has fully unwound — success or exception.
-    # The timeout path below cancels it mid-setup; the rollback that restores
-    # admission runs synchronously inside the unwind, so waiting for this flag
-    # (bounded) means the tool only answers "failed" once the gateway is
-    # actually retryable. Without it, a retry landing in the gap between
-    # future.cancel() and the loop delivering the cancellation would read
-    # ``already_in_progress`` for a restart that is not going to happen.
-    begin_settled = threading.Event()
-
-    async def _begin_and_flag_settled() -> Any:
-        try:
-            return await begin
-        finally:
-            begin_settled.set()
-
-    future, submit_error = _submit_to_loop(_begin_and_flag_settled(), loop)
+    future, submit_error = _submit_to_loop(
+        _queue_user_restart(runner, source, message_id), loop
+    )
     if submit_error is not None:
         logger.warning(
-            "restart tool: begin_user_restart could not be submitted: %s", submit_error
+            "restart tool: the queued restart could not be submitted: %s",
+            submit_error,
         )
         return _error_json(f"Failed to begin gateway restart: {submit_error}")
     try:
         status = future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:
+        # Cancellation lands at an await point: nothing before the
+        # request_restart call mutates admission, and request_restart rolls
+        # its own setup back when it cannot establish the drain task — so
+        # the gateway stays retryable and stop() is never reached.
         future.cancel()
-        logger.warning("restart tool: begin_user_restart failed: %s", exc)
-        if not begin_settled.wait(timeout=_BEGIN_ROLLBACK_SETTLE_S):
-            logger.warning(
-                "restart tool: cancelled begin_user_restart did not settle within "
-                "%.1fs; admission rollback could not be confirmed",
-                _BEGIN_ROLLBACK_SETTLE_S,
-            )
+        logger.warning("restart tool: queued restart failed: %s", exc)
         return _error_json(f"Failed to begin gateway restart: {exc}")
     return _result_json(runner, status)

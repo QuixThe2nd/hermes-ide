@@ -79,6 +79,11 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     import gateway.slash_commands as gateway_slash
     monkeypatch.setattr(gateway_slash, "atomic_json_write", _fake_atomic_json_write)
 
+    # The notify-marker write lives in gateway/restart.py::queue_user_restart
+    # (the shared user-restart queue helper); patch that module's import seam too.
+    import gateway.restart as gateway_restart
+    monkeypatch.setattr(gateway_restart, "atomic_json_write", _fake_atomic_json_write)
+
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
 
@@ -93,12 +98,13 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     await runner._handle_restart_command(event)
 
     # Both markers land through atomic_json_write (which owns the staging +
-    # promote dance internally), on the gateway loop's to_thread hop so the
-    # event loop never blocks on fsync.
+    # promote dance internally). The dedup marker is written by the slash
+    # handler first, then the shared queue helper writes the notify marker —
+    # both before the restart is queued.
     names = [name for name, _payload, _kwargs in calls]
-    assert names == [".restart_notify.json", ".restart_last_processed.json"]
-    assert calls[0][1]["chat_id"] == "42"
-    assert calls[1][1]["platform"] == "telegram"
+    assert names == [".restart_last_processed.json", ".restart_notify.json"]
+    assert calls[0][1]["platform"] == "telegram"
+    assert calls[1][1]["chat_id"] == "42"
 
 
 # ── notification-channel startup notifications ─────────────────────────────

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import inspect
 import logging
 import os
@@ -110,19 +109,6 @@ def _execute(command: str, **ctx_kwargs):
     return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
 
 
-def _restart_notify_payload(event: MessageEvent) -> dict:
-    """Requester routing info so the new gateway process can notify them once back online."""
-    source = event.source
-    data = {"platform": source.platform.value if source.platform else None,
-            "chat_id": source.chat_id, "chat_type": source.chat_type}
-    if source.delivered_via_upstream_relay is True:
-        data["delivered_via_upstream_relay"] = True
-        data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
-    optional = (("thread_id", source.thread_id), ("message_id", event.message_id))
-    data.update({k: v for k, v in optional if v})
-    return data
-
-
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
@@ -169,7 +155,7 @@ def _target_thread_from_source(source) -> Optional[str]:
 class _RestartMarkerAttempt:
     """Attempt-scoped identity for one begin's authoritative marker writes.
 
-    Cancelling ``begin_user_restart`` cannot stop an ``asyncio.to_thread``
+    Cancelling a queued user restart cannot stop an ``asyncio.to_thread``
     worker, so a worker whose coroutine was cancelled may still be mid-write
     when the abort rollback runs — and a direct authoritative write would let
     it re-create a marker the rollback just removed. Every marker write in
@@ -543,6 +529,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
+        from gateway.restart import queue_user_restart
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
         # update_id) and we see it *again*, it's a redelivery from PTB's graceful-shutdown get_updates
         # ACK failing on the way out. Ignoring it prevents a loop where every fresh gateway re-restarts.
@@ -557,21 +544,6 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
-        async def _write_marker(name: str, build, label: str) -> None:
-            try:
-                await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)
-            except Exception as e:
-                logger.debug("Failed to write restart %s: %s", label, e)
-
-        def _notify_payload() -> dict:
-            data = _restart_notify_payload(event)
-            mid = str(event.message_id) if event.message_id is not None else event.source.message_id
-            try:
-                self._restart_command_source = dataclasses.replace(event.source, message_id=mid)
-            except Exception:
-                self._restart_command_source = event.source
-            return data
-
         def _dedup_payload() -> dict:
             # Platform + update_id of the triggering /restart, for redelivery detection.
             data = {"platform": event.source.platform.value if event.source.platform else None,
@@ -580,19 +552,21 @@ class GatewaySlashCommandsMixin(
                 data["update_id"] = event.platform_update_id
             return data
 
-        # Save the requester's routing info so the new gateway process can notify them once back.
-        await _write_marker(".restart_notify.json", _notify_payload, "notify file")
-        # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
-        # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
-        # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
-        await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
-        active_agents = self._running_agent_count()
-        # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
-        # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
-        # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
-        from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
-        via_service = is_gateway_supervisor_process() or is_container_restart_context()
-        self.request_restart(detached=not via_service, via_service=via_service)
+        # Record the triggering platform + update_id in a dedicated dedup marker BEFORE the restart
+        # is queued, so the bounce can never outrun it. Unlike .restart_notify.json (unlinked once
+        # the new gateway sends its notification) this persists so a delayed Telegram redelivery is
+        # still detectable. Overwritten on every /restart.
+        try:
+            await asyncio.to_thread(atomic_json_write, _hermes_home / ".restart_last_processed.json",
+                                    _dedup_payload(), indent=None)
+        except Exception as e:
+            logger.debug("Failed to write restart dedup marker: %s", e)
+        # The requester-facing queue steps — comeback routing + notify marker, the capability-gated
+        # wind-down offer, then the request_restart drain hand-off (supervisor/container routing
+        # included) — live in ONE gateway-owned helper shared with the agent-callable restart tool,
+        # so the two user-restart entry points cannot drift apart.
+        status = await queue_user_restart(self, event.source, event.message_id)
+        active_agents = status["active_agents"]
         # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
         # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
         # restarts while active), the next startup auto-suspends it — breaking the loop.

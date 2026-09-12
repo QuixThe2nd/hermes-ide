@@ -15418,7 +15418,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._draining = True
         # No cooperative wind-down here. The drain waits naturally; the park
         # steer only happens if the requester opts in via the ⏸️ reaction on
-        # the Discord embed begin_user_restart offered for this cycle. The
+        # the Discord wind-down embed offered for this cycle. The
         # cycle opener itself runs INSIDE the setup transaction below — an
         # exception out of it must hit the rollback, not strand the latch.
 
@@ -15514,7 +15514,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the flags and cycle state set above are unowned, so undo them
             # or every later request answers ``already_in_progress``
             # against a restart that never started, with admission closed
-            # forever (same failure class as a cancelled begin_user_restart).
+            # forever (same failure class as a cancelled restart hand-off).
             # Nothing after a successful create_task can raise, so a real
             # task is never rolled back.
             self._restart_task = None
@@ -15600,10 +15600,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _begin_restart_cycle(self) -> int:
         """Open one restart cycle: bump the generation and mint a nonce.
 
-        Idempotent within the cycle. ``begin_user_restart`` opens it early so
-        the ⏸️ offer it is about to send can be bound to a generation;
-        ``request_restart`` then re-enters here and must NOT mint a second
-        generation, or the live offer would be orphaned behind a stale one.
+        Idempotent within the cycle. The wind-down prompt send opens it
+        early so the ⏸️ offer it is about to send can be bound to a
+        generation; ``request_restart`` then re-enters here and must NOT
+        mint a second generation, or the live offer would be orphaned
+        behind a stale one.
         """
         if self._restart_cycle_open:
             return self._restart_generation
@@ -15623,15 +15624,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Every other surface — Telegram/Signal/Slack, relay-fronted Discord,
         signal, update, API and service-manager restarts — never reaches the
-        offer at all, because they never call :meth:`begin_user_restart` with
+        offer at all, because they never send the wind-down prompt with
         a native Discord source. This is the second gate: even on that path an
         offer needs a numeric requester snowflake to authorize against, and at
         least one live chat that is not the requester's own turn.
 
         The engaged-restart check is ``_restart_task_started``, not
-        ``_draining``: ``begin_user_restart`` closes admission (sets
-        ``_draining``) synchronously on confirmation, *before* this offer is
-        sent, so a draining flag alone must not suppress the one prompt this
+        ``_draining``: the user-restart path sends this offer *before* it
+        hands off to ``request_restart()`` (which sets ``_draining``), so a
+        draining flag alone must not suppress the one prompt this
         cycle is about to make. Once the drain task itself is running — a
         signal/update/API restart that went straight to
         ``request_restart()`` — no offer may appear behind it.

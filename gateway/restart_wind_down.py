@@ -25,8 +25,8 @@ park on request. The existing drain wait still covers them.
 Since the opt-in change, none of this runs merely because a restart began.
 ``request_restart()`` drains and waits naturally. The park steer fires only
 when the requester explicitly opts in — today via the ``⏸️`` reaction on the
-Discord embed ``begin_user_restart`` offers — and the snapshot is taken at
-that reaction, not at restart-request time. See
+Discord wind-down embed offered beside a user-requested restart — and the
+snapshot is taken at that reaction, not at restart-request time. See
 :meth:`GatewayRunner.accept_restart_wind_down_opt_in`.
 """
 
