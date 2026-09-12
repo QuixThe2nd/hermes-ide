@@ -309,8 +309,6 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         "agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
-
     event = MessageEvent(
         text="hello",
         source=SessionSource(
@@ -471,8 +469,6 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
         "agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
-
     event = MessageEvent(
         text="hello",
         source=SessionSource(

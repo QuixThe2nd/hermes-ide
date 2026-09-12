@@ -35,8 +35,8 @@ def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
     )
 
     names = {c["name"] for c in discord.channels.values()}
-    # Lounges is inbox/outbox only — the old Chat/#home channel is gone from
-    # the template and must not be minted anymore.
+    # Lounges is inbox/outbox only — the old Chat module's #home chat is gone
+    # from the template and must not be minted anymore.
     assert "home" not in names
     for name in ("model-fallback", "gateway-restarts", "other"):
         assert name in names
@@ -80,7 +80,7 @@ def test_template_order_puts_notifications_first():
         "gateway-restarts",
         "other",
     ]
-    # Lounges is inbox/outbox only — no home channel in the template. The
+    # Lounges is inbox/outbox only — no #home chat in the template. The
     # module key stays `chat` (internal slug); "Chat" is its legacy category.
     assert TEMPLATE["chat"].category == "Lounges"
     assert TEMPLATE["chat"].legacy_categories == ("Chat",)
@@ -532,7 +532,7 @@ def test_stored_gateway_restarts_id_survives_idle_rename(
     assert len(discord.mutations) == mutations
 
 
-def test_leftover_chat_home_channel_is_never_deleted(hermes, make_discord):
+def test_leftover_legacy_home_chat_is_never_deleted(hermes, make_discord):
     """A #home left by a previous Chat provision stays exactly where it was —
     even as its parent category migrates in place to Lounges: the template no
     longer references the channel, and reconcile never deletes."""
