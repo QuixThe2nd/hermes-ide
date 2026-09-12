@@ -1322,6 +1322,14 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Async-by-default delegation: a delegate_* call whose `background`
+        # argument is OMITTED detaches when the session can receive a late
+        # completion (returns a handle; exactly one completion message
+        # follows) and silently blocks inline where it cannot (cron jobs,
+        # one-shot runs, workers, stateless HTTP endpoints). Set false to
+        # restore the old contract where omitted always blocks inline.
+        # Explicit background=true/false is never overridden by this key.
+        "default_background": True,
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

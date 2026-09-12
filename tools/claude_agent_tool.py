@@ -81,7 +81,6 @@ from tools.claude_run_receipts import write_spawn_receipt
 from tools.claude_viewer_url import watch_url
 from tools.registry import registry
 from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
-from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -488,13 +487,16 @@ def delegate_claude_agent(
 ) -> str:
     """Delegate one dev task to the Claude Code CLI.
 
-    Uniform delegation lifecycle: the mode comes ONLY from the explicit
-    ``background`` argument. Omitted/false blocks until the CLI exits and
-    returns the run's result inline. ``background=true`` first checks the
-    session can receive a late completion — failing clearly (starting
-    nothing) when it cannot — and otherwise returns the shared acceptance
-    envelope; the terminal result later re-enters the conversation through
-    the completion rail.
+    Uniform delegation lifecycle: an explicit ``background`` argument decides
+    the mode exactly as written — ``false`` blocks until the CLI exits and
+    returns the run's result inline; ``true`` first checks the session can
+    receive a late completion (failing clearly, starting nothing, when it
+    cannot) and otherwise returns the shared acceptance envelope, with the
+    terminal result later re-entering the conversation through the completion
+    rail. The model-facing OMITTED case resolves one level up
+    (``_handle_delegate_claude_agent`` → ``resolve_background_arg``): async
+    where the session supports late delivery, blocking otherwise. Direct
+    Python callers keep the blocking default of this signature.
 
     The hidden ``session_id``/``tool_call_id`` pair the gateway supplies
     keys the spawn correlation receipt (see ``_spawn_on_spawn``); it is
@@ -999,15 +1001,26 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
+                # No static "default": the omitted-arg behavior is
+                # capability-conditional (see resolve_background_arg), so a
+                # plain schema default would lie on half the sessions.
                 "description": (
-                    "Blocking by default: omitted or false runs the CLI to "
-                    "completion and returns its final report inline. Pass "
-                    "true to return a background handle immediately and keep "
-                    "working; the terminal result re-enters the conversation "
-                    "as a new message when the run finishes. The mode depends "
-                    "only on this argument."
+                    "Delivery mode for this run. Omitted: runs in the "
+                    "background and the result is delivered later — the call "
+                    "returns a handle immediately and the terminal result "
+                    "re-enters the conversation as a new message when the "
+                    "run finishes; on sessions that cannot receive a late "
+                    "completion (one-shot runs, cron jobs, workers, "
+                    "stateless HTTP endpoints) an omitted argument instead "
+                    "blocks to completion and returns the final report "
+                    "inline this turn. Configuring "
+                    "delegation.default_background=false restores blocking "
+                    "for omitted arguments on every session. false: always "
+                    "block inline this "
+                    "turn. true: detach; rejected up front — with no work "
+                    "started — on sessions that cannot receive a late "
+                    "completion."
                 ),
-                "default": False,
             },
         },
         "required": ["task", "workdir"],
@@ -1016,6 +1029,8 @@ DELEGATE_CLAUDE_AGENT_SCHEMA = {
 
 
 def _handle_delegate_claude_agent(args, **kw):
+    from tools.async_delegation import resolve_background_arg
+
     return delegate_claude_agent(
         task=args.get("task", ""),
         workdir=args.get("workdir", ""),
@@ -1024,7 +1039,7 @@ def _handle_delegate_claude_agent(args, **kw):
         allowed_tools=args.get("allowed_tools", DEFAULT_ALLOWED_TOOLS),
         permission_mode=args.get("permission_mode", DEFAULT_PERMISSION_MODE),
         task_id=kw.get("task_id"),
-        background=is_truthy_value(args.get("background"), default=False),
+        background=resolve_background_arg(args),
         session_id=kw.get("session_id"),
         tool_call_id=kw.get("tool_call_id"),
     )

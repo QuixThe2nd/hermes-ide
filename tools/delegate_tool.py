@@ -4084,10 +4084,18 @@ def delegate_agent(
     # as one message once ALL children finish — the chat is not blocked while
     # they run.
     #
-    # Uniform delegation lifecycle: the mode comes ONLY from this explicit
-    # argument. Never nesting depth, session type, platform, or delivery
-    # capability — omitted/false blocks until the result is back inline.
-    background = is_truthy_value(background, default=False) if background is not None else False
+    # Uniform delegation lifecycle: an explicit argument is never
+    # second-guessed — true detaches, false blocks. Only the OMITTED case
+    # (None, exactly as run_agent forwards it) resolves through the one
+    # shared capability-aware default: delegation.default_background (on by
+    # default) detached WHEN this session can receive a late completion,
+    # otherwise today's blocking behavior, silently.
+    if background is None:
+        from tools.async_delegation import resolve_background_arg
+
+        background = resolve_background_arg({})
+    else:
+        background = is_truthy_value(background)
 
     # Fail clearly BEFORE any child is built when background delivery has no
     # channel. A session that can never receive a detached completion must not
@@ -5215,12 +5223,13 @@ def _build_top_level_description() -> str:
         "terminal session, and toolset, and only its final summary returns to "
         "you. Pass every task in `tasks` — one entry spawns one subagent, "
         "several run in parallel (limit in the tasks description).\n\n"
-        "Blocking by default: the call returns once every child has finished, "
-        "with the consolidated results (in task order) inline. Pass "
-        "background=true to dispatch and keep working instead — dispatch then "
-        "returns immediately with live transcript paths and the completed "
-        "result re-enters the conversation as a new message on its own. In "
-        "that mode do NOT wait or poll. In both modes `action` "
+        "Async by default: the call returns immediately with live transcript "
+        "paths and the consolidated results (in task order) re-enter the "
+        "conversation as a new message once every child has finished — do NOT "
+        "wait or poll. Pass background=false when you need the results inline "
+        "this turn to continue working. (On sessions that cannot receive a "
+        "late completion — cron jobs, one-shot runs, workers — the default "
+        "blocks to completion inline instead.) In both modes `action` "
         "(list/steer/stop) controls running children live — steer when a "
         "transcript shows a child drifting.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
@@ -5375,19 +5384,27 @@ DELEGATE_TASK_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "default": False,
+                # No static "default": the omitted-arg behavior is
+                # capability-conditional (see resolve_background_arg), so a
+                # plain schema default would lie on half the sessions.
                 "description": (
-                    "Run this delegation in the background. Default false: "
-                    "the call BLOCKS until every child has finished and "
-                    "returns the consolidated results inline in this turn "
-                    "(use this whenever you need the results to continue "
-                    "working). background=true returns immediately with a "
-                    "handle; the results re-enter the conversation as a new "
-                    "message when they finish. Rejected up front — with no "
+                    "Delivery mode for this delegation. Omitted: runs in the "
+                    "background and the results are delivered later — the "
+                    "call returns immediately with a handle and the "
+                    "consolidated results re-enter the conversation as a new "
+                    "message when every child has finished; on sessions that "
+                    "cannot receive a late completion (one-shot `hermes -z` "
+                    "runs, cron jobs, Kanban workers, stateless HTTP "
+                    "endpoints) an omitted argument instead blocks to "
+                    "completion and returns the results inline this turn. "
+                    "Configuring delegation.default_background=false "
+                    "restores blocking for omitted arguments on every "
+                    "session. "
+                    "background=false: always block inline this turn (use "
+                    "whenever you need the results to continue working). "
+                    "background=true: detach; rejected up front — with no "
                     "work started — on sessions that cannot receive a late "
-                    "completion (one-shot `hermes -z` runs, cron jobs, Kanban "
-                    "workers, stateless HTTP endpoints); there, omit it and "
-                    "work in the foreground."
+                    "completion."
                 ),
             },
             "action": {
@@ -5436,13 +5453,16 @@ from tools.registry import registry, tool_error
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback).
 
-    Uniform delegation lifecycle: the mode is decided ONLY by the explicit
-    ``background`` argument, exactly as the model wrote it. No depth, session,
-    platform, or capability inference. The live path is
+    Uniform delegation lifecycle: an explicit ``background`` argument decides
+    the mode exactly as the model wrote it; only an OMITTED argument takes
+    the shared capability-aware default (async where the session can receive
+    a late completion, blocking otherwise). The live path is
     ``run_agent._dispatch_delegate_agent``; this mirrors it for the rare case
     the intercept is bypassed.
     """
-    return is_truthy_value(args.get("background"), default=False)
+    from tools.async_delegation import resolve_background_arg
+
+    return resolve_background_arg(args)
 
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}

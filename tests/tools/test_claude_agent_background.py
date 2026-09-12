@@ -3,8 +3,12 @@
 Focused acceptance tests for the cli-agent half of the uniform delegation
 lifecycle:
 
-- foreground (default) blocks and returns the run's result inline, emitting
-  ZERO completion-queue events;
+- foreground (explicit `background=false`, plus the direct-Python signature
+  default) blocks and returns the run's result inline, emitting ZERO
+  completion-queue events;
+- an OMITTED model-facing argument is async-by-default: it detaches in a
+  capable session (envelope inline, exactly one terminal event later) and
+  silently blocks to completion where late delivery is unsupported;
 - background returns the shared acceptance envelope immediately (with
   ``tool`` / ``result_kind="cli_agent"``) and exactly ONE terminal event
   later lands on the shared completion rail;
@@ -155,19 +159,32 @@ def test_foreground_returns_inline_result_and_emits_no_event(
     assert process_registry.completion_queue.empty()
 
 
-def test_schema_advertises_background_default_false():
+def test_schema_describes_capability_conditional_default():
+    """No static schema default: omitted is capability-conditional, so a plain
+    ``default`` key would lie on half the sessions. The description must state
+    the real semantics of all three spellings."""
     from tools.registry import registry
 
     entry = registry.get_entry("delegate_claude_agent")
     prop = entry.schema["parameters"]["properties"]["background"]
     assert prop["type"] == "boolean"
-    assert prop["default"] is False
-    assert "Blocking by default" in prop["description"]
+    assert "default" not in prop
+    desc = prop["description"]
+    # Omitted detaches where late delivery works...
+    assert "background" in desc.lower()
+    assert "inline this turn" in desc
+    # ...and silently blocks where it cannot (cron/one-shot/worker sessions).
+    assert "cannot receive a late completion" in desc
+    assert "blocks to completion" in desc
+    # Explicit spellings keep their exact meaning.
+    assert "false: always block inline" in desc
+    assert "rejected up front" in desc
 
 
-def test_handler_forwards_background_argument(monkeypatch, repo):
-    """The registry handler forwards `background` unchanged — no default
-    flipping, no inference from platform/session."""
+def test_handler_resolves_background_through_the_shared_resolver(monkeypatch, repo):
+    """The registry handler resolves the mode through the ONE shared
+    resolver: explicit values pass through exactly as written (any truthy
+    spelling), and only the OMITTED argument is capability-aware."""
     import tools.claude_agent_tool as mod
 
     seen = {}
@@ -177,32 +194,93 @@ def test_handler_forwards_background_argument(monkeypatch, repo):
         return "{}"
 
     monkeypatch.setattr(mod, "delegate_claude_agent", _capture)
+    _patch_delivery(monkeypatch, True)
 
+    # Explicit truthy spellings normalize as the schema promises.
     mod._handle_delegate_claude_agent(
         {"task": "t", "workdir": str(repo), "background": True}, task_id="tk"
     )
     assert seen["background"] is True
-
-    seen.clear()
-    mod._handle_delegate_claude_agent({"task": "t", "workdir": str(repo)}, task_id="tk")
-    assert seen["background"] is False
-
-    # The legacy truthy spellings normalize the same way the schema promises.
     seen.clear()
     mod._handle_delegate_claude_agent(
         {"task": "t", "workdir": str(repo), "background": "true"}, task_id="tk"
     )
     assert seen["background"] is True
+
+    # Explicit falsey spellings block even in a capable session.
     seen.clear()
     mod._handle_delegate_claude_agent(
         {"task": "t", "workdir": str(repo), "background": ""}, task_id="tk"
     )
+    assert seen["background"] is False
+    seen.clear()
+    mod._handle_delegate_claude_agent(
+        {"task": "t", "workdir": str(repo), "background": False}, task_id="tk"
+    )
+    assert seen["background"] is False
+
+    # Omitted: async-by-default in a capable session, silent blocking
+    # fallback in an incapable one — never an error for the omitted path.
+    seen.clear()
+    mod._handle_delegate_claude_agent({"task": "t", "workdir": str(repo)}, task_id="tk")
+    assert seen["background"] is True
+
+    _patch_delivery(monkeypatch, False)
+    seen.clear()
+    mod._handle_delegate_claude_agent({"task": "t", "workdir": str(repo)}, task_id="tk")
+    assert seen["background"] is False
+
+    # delegation.default_background=false restores the old blocking default.
+    monkeypatch.setattr(
+        "tools.delegate_tool._load_config",
+        lambda: {"default_background": False},
+    )
+    _patch_delivery(monkeypatch, True)
+    seen.clear()
+    mod._handle_delegate_claude_agent({"task": "t", "workdir": str(repo)}, task_id="tk")
     assert seen["background"] is False
 
 
 # ---------------------------------------------------------------------------
 # Background: shared envelope + exactly one terminal event
 # ---------------------------------------------------------------------------
+
+@_REAL_SUBPROC
+def test_omitted_background_dispatches_and_delivers_exactly_once(
+    monkeypatch, repo, fake_binary
+):
+    """Async-by-default: a MODEL-FACING call that omits ``background`` (driven
+    through the registry handler, the path the model actually hits) detaches
+    in a capable session — envelope inline, exactly one terminal event later."""
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    _patch_delivery(monkeypatch, True)
+    monkeypatch.setattr(
+        "tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01
+    )
+
+    out = claude_agent_tool._handle_delegate_claude_agent(
+        {"task": "finish the work", "workdir": str(repo)},
+        session_id="sess-omit-1",
+        tool_call_id="call-omit-1",
+    )
+    envelope = json.loads(out)
+    assert envelope["status"] == "dispatched"
+    assert envelope["mode"] == "background"
+    assert envelope["tool"] == "delegate_claude_agent"
+    assert envelope["delegation_id"].startswith("deleg_")
+    assert "final_report" not in envelope
+
+    evt = _drain_one()
+    assert evt is not None, "omitted-background run never produced a terminal event"
+    assert evt["type"] == "async_delegation"
+    assert evt["delegation_id"] == envelope["delegation_id"]
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "claude report: done"
+    # Exactly one delivery.
+    assert process_registry.completion_queue.empty()
+
 
 @_REAL_SUBPROC
 def test_background_returns_envelope_then_one_terminal_event(

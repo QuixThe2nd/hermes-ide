@@ -99,7 +99,7 @@ class TestSingleTask:
                 "duration_seconds": 5.0,
                 "_child_role": "analyst",
             }
-            delegate_agent(goal="do X", parent_agent=_make_parent())
+            delegate_agent(goal="do X", parent_agent=_make_parent(), background=False)
 
         assert len(captured) == 1
         payload = captured[0]
@@ -127,7 +127,7 @@ class TestSingleTask:
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
                 "_child_role": None,
             }
-            delegate_agent(goal="go", parent_agent=_make_parent())
+            delegate_agent(goal="go", parent_agent=_make_parent(), background=False)
 
         assert dispatch_threads and all(t is main_thread for t in dispatch_threads)
         cb_thread = captured[0]["_thread"]
@@ -145,6 +145,7 @@ class TestSingleTask:
             delegate_agent(
                 goal="go",
                 parent_agent=_make_parent(session_id="sess-xyz"),
+                background=False,
             )
 
         assert captured[0]["parent_session_id"] == "sess-xyz"
@@ -176,6 +177,7 @@ class TestBatchMode:
                     {"goal": "Investigate module C"},
                 ],
                 parent_agent=_make_parent(),
+                background=False,
             )
 
         assert len(captured) == 3
@@ -210,6 +212,7 @@ class TestBatchMode:
                     {"goal": "Investigate module B"},
                 ],
                 parent_agent=_make_parent(),
+                background=False,
             )
 
         for payload in captured:
@@ -247,7 +250,7 @@ class TestPayloadShape:
                     "result": "secret output",
                 }],
             }
-            delegate_agent(goal="do X", parent_agent=_make_parent())
+            delegate_agent(goal="do X", parent_agent=_make_parent(), background=False)
 
         assert captured[0]["tool_call_history"] == [{
             "tool_name": "write_file",
@@ -277,7 +280,7 @@ class TestPayloadShape:
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
                 "_child_role": "leaf",
             }
-            raw = delegate_agent(goal="do X", parent_agent=_make_parent())
+            raw = delegate_agent(goal="do X", parent_agent=_make_parent(), background=False)
 
         parsed = json.loads(raw)
         assert "results" in parsed

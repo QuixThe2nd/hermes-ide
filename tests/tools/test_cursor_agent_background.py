@@ -110,17 +110,29 @@ def test_foreground_returns_inline_result_and_emits_no_event(cloud_env):
     assert process_registry.completion_queue.empty()
 
 
-def test_schema_advertises_background_default_false():
+def test_schema_describes_capability_conditional_default():
+    """No static schema default: omitted is capability-conditional, so a plain
+    ``default`` key would lie on half the sessions. The description must state
+    the real semantics of all three spellings."""
     from tools.registry import registry
 
     entry = registry.get_entry("delegate_cursor_agent")
     prop = entry.schema["parameters"]["properties"]["background"]
     assert prop["type"] == "boolean"
-    assert prop["default"] is False
-    assert "Blocking by default" in prop["description"]
+    assert "default" not in prop
+    desc = prop["description"]
+    assert "background" in desc.lower()
+    assert "inline this turn" in desc
+    assert "cannot receive a late completion" in desc
+    assert "blocks to completion" in desc
+    assert "false: always block inline" in desc
+    assert "rejected up front" in desc
 
 
-def test_handler_forwards_background_argument(monkeypatch, tmp_path):
+def test_handler_resolves_background_through_the_shared_resolver(monkeypatch, tmp_path):
+    """The registry handler resolves the mode through the ONE shared
+    resolver: explicit values pass through exactly as written, and only the
+    OMITTED argument is capability-aware."""
     seen = {}
 
     def _capture(*a, **kw):
@@ -128,6 +140,7 @@ def test_handler_forwards_background_argument(monkeypatch, tmp_path):
         return "{}"
 
     monkeypatch.setattr(cursor_agent_tool, "delegate_cursor_agent", _capture)
+    _patch_delivery(monkeypatch, True)
 
     cursor_agent_tool._handle_delegate_cursor_agent(
         {"task": "t", "workdir": str(tmp_path), "background": True},
@@ -137,6 +150,42 @@ def test_handler_forwards_background_argument(monkeypatch, tmp_path):
     )
     assert seen["background"] is True
 
+    seen.clear()
+    cursor_agent_tool._handle_delegate_cursor_agent(
+        {"task": "t", "workdir": str(tmp_path), "background": False},
+        session_id="s",
+        tool_call_id="c",
+        task_id="tk",
+    )
+    assert seen["background"] is False
+
+    # Omitted: async-by-default in a capable session, silent blocking
+    # fallback in an incapable one — never an error for the omitted path.
+    seen.clear()
+    cursor_agent_tool._handle_delegate_cursor_agent(
+        {"task": "t", "workdir": str(tmp_path)},
+        session_id="s",
+        tool_call_id="c",
+        task_id="tk",
+    )
+    assert seen["background"] is True
+
+    _patch_delivery(monkeypatch, False)
+    seen.clear()
+    cursor_agent_tool._handle_delegate_cursor_agent(
+        {"task": "t", "workdir": str(tmp_path)},
+        session_id="s",
+        tool_call_id="c",
+        task_id="tk",
+    )
+    assert seen["background"] is False
+
+    # delegation.default_background=false restores the old blocking default.
+    monkeypatch.setattr(
+        "tools.delegate_tool._load_config",
+        lambda: {"default_background": False},
+    )
+    _patch_delivery(monkeypatch, True)
     seen.clear()
     cursor_agent_tool._handle_delegate_cursor_agent(
         {"task": "t", "workdir": str(tmp_path)},
@@ -150,6 +199,36 @@ def test_handler_forwards_background_argument(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Background: shared envelope + exactly one terminal event
 # ---------------------------------------------------------------------------
+
+def test_omitted_background_dispatches_and_delivers_exactly_once(cloud_env):
+    """Async-by-default: a MODEL-FACING call that omits ``background`` (driven
+    through the registry handler, the path the model actually hits) detaches
+    in a capable session — envelope inline, exactly one terminal event later."""
+    cloud, workdir, _home = cloud_env
+    session_id, tool_call_id = _session_ids()
+
+    out = cursor_agent_tool._handle_delegate_cursor_agent(
+        {"task": "small job", "workdir": str(workdir.resolve())},
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+    )
+    envelope = json.loads(out)
+
+    assert envelope["status"] == "dispatched"
+    assert envelope["mode"] == "background"
+    assert envelope["tool"] == "delegate_cursor_agent"
+    assert envelope["result_kind"] == "cloud_agent"
+    assert envelope["delegation_id"].startswith("deleg_")
+    assert "final_report" not in envelope
+
+    evt = _drain_one()
+    assert evt is not None, "omitted-background run never produced a terminal event"
+    assert evt["delegation_id"] == envelope["delegation_id"]
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "cloud done"
+    # Exactly one delivery.
+    assert process_registry.completion_queue.empty()
+
 
 def test_background_returns_envelope_then_one_terminal_event(cloud_env):
     cloud, workdir, _home = cloud_env

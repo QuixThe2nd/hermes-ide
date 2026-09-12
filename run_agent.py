@@ -4199,19 +4199,18 @@ class AIAgent(
             _strip_model_hidden_task_fields,
             delegate_agent as _delegate_agent,
         )
-        # Uniform delegation lifecycle: the mode comes ONLY from the explicit
-        # `background` argument, exactly as the model wrote it. No nesting,
-        # session, platform, or capability inference — omitted/false blocks
-        # until the result is back inline; true dispatches to the background
-        # rail (and fails loudly, before starting work, when the session has
-        # no channel for a late completion).
+        # Uniform delegation lifecycle: an explicit `background` argument
+        # passes through exactly as the model wrote it. Omitted is forwarded
+        # as None (NOT defaulted to False) — the handler resolves it through
+        # the one shared capability-aware default: detached where the session
+        # can receive a late completion, blocking otherwise.
         return _delegate_agent(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
-            background=function_args.get("background", False),
+            background=function_args.get("background"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"),
             message=function_args.get("message"),
