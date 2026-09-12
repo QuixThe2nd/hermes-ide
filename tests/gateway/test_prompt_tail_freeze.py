@@ -67,7 +67,7 @@ def _make_context(
     message_id: str | None = "1357",
     shared_multi_user: bool = False,
     connected: list[Platform] | None = None,
-    home_channels: dict | None = None,
+    notification_channels: dict | None = None,
 ) -> SessionContext:
     source = SessionSource(
         platform=platform,
@@ -83,8 +83,8 @@ def _make_context(
         message_id=message_id,
     )
     connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
-    if home_channels is None:
-        home_channels = {
+    if notification_channels is None:
+        notification_channels = {
             Platform.DISCORD: DeliveryTarget(
                 platform=Platform.DISCORD, chat_id="111222333", name="general"
             ),
@@ -92,7 +92,7 @@ def _make_context(
     return SessionContext(
         source=source,
         connected_platforms=connected,
-        home_channels=home_channels,
+        notification_channels=notification_channels,
         shared_multi_user_session=shared_multi_user,
     )
 
@@ -137,24 +137,24 @@ class TestEphemeralChangeKeyParity:
         ("platform", dict(platform=Platform.TELEGRAM)),
         ("connected_platforms", dict(connected=[Platform.DISCORD])),
         (
-            "home_channel_renamed",
+            "notification_channel_renamed",
             dict(
-                home_channels={
+                notification_channels={
                     Platform.DISCORD: DeliveryTarget(
-                        platform=Platform.DISCORD, chat_id="111222333", name="ops-home"
+                        platform=Platform.DISCORD, chat_id="111222333", name="ops-restarts"
                     )
                 }
             ),
         ),
         (
-            "home_channel_added",
+            "notification_channel_added",
             dict(
-                home_channels={
+                notification_channels={
                     Platform.DISCORD: DeliveryTarget(
                         platform=Platform.DISCORD, chat_id="111222333", name="general"
                     ),
                     Platform.TELEGRAM: DeliveryTarget(
-                        platform=Platform.TELEGRAM, chat_id="tg1", name="tg-home"
+                        platform=Platform.TELEGRAM, chat_id="tg1", name="tg-restarts"
                     ),
                 }
             ),

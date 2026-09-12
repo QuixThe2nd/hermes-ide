@@ -106,7 +106,7 @@ def _context_for(source: SessionSource) -> SessionContext:
     return SessionContext(
         source=source,
         connected_platforms=[Platform.MATRIX],
-        home_channels={},
+        notification_channels={},
         session_key=build_session_key(source),
         session_id="session-test",
     )

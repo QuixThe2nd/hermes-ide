@@ -53,14 +53,14 @@ def nous_runner(tmp_path, monkeypatch):
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM, chat_id="home-1", name="Home")
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
     return runner, adapter
 
 
 async def _startup_message(runner, adapter) -> str:
-    delivered = await runner._send_home_channel_startup_notifications()
+    delivered = await runner._send_notification_channel_startup_notifications()
     assert delivered == {("telegram", "home-1", None)}
     adapter.send.assert_called_once()
     return adapter.send.call_args.args[1]

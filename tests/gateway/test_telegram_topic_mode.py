@@ -630,7 +630,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
-    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="208214988",
         name="Tester DM",

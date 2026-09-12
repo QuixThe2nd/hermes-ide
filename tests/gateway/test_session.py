@@ -93,7 +93,7 @@ class TestBuildSessionContextPrompt:
                 Platform.TELEGRAM: PlatformConfig(
                     enabled=True,
                     token="fake-token",
-                    home_channel=DeliveryTarget(
+                    notification_channel=DeliveryTarget(
                         platform=Platform.TELEGRAM,
                         chat_id="111",
                         name="Home Chat",
