@@ -205,6 +205,47 @@ def _canonical_route_name(provider_id: str) -> str:
     }[provider_id]
 
 
+def build_route_table_scoped(
+    cfg: Mapping[str, object],
+    *,
+    environ: Optional[Mapping[str, str]] = None,
+    hermes_home=None,
+) -> dict[str, str]:
+    """``build_route_table`` with a profile secret scope active around it.
+
+    The provider base-URL env override resolves through
+    ``hermes_cli.config.get_env_value_prefer_dotenv`` →
+    ``agent.secret_scope.get_secret``, which fails closed under the
+    multiplexed gateway when no scope is installed. Wrapping the build in
+    ``set_secret_scope`` keeps that guard honest rather than working around
+    it: with no scope active, this profile's own ``.env``/secret-source
+    snapshot is installed for the duration of the build and reset after, so
+    the read resolves *this* profile's endpoints and can never reach for
+    another profile's ``os.environ``. An already-active scope (the per-turn
+    profile scope) is used as-is. Resolution with multiplexing off is
+    unchanged — there the scope is a ``.env`` overlay over the process
+    environment, exactly what the credential layer already fell back to.
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        current_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    token = None
+    if current_secret_scope() is None:
+        from hermes_constants import get_hermes_home
+
+        home = hermes_home if hermes_home is not None else get_hermes_home()
+        token = set_secret_scope(build_profile_secret_scope(home))
+    try:
+        return build_route_table(cfg, environ=environ)
+    finally:
+        if token is not None:
+            reset_secret_scope(token)
+
+
 def proxy_origin(port: int) -> str:
     from plugins.llm_usage_proxy.server import BIND_HOST
 
@@ -215,6 +256,7 @@ __all__ = [
     "EXTRA_ROUTES",
     "PROVIDER_ROUTES",
     "build_route_table",
+    "build_route_table_scoped",
     "provider_route_bases",
     "proxy_origin",
 ]

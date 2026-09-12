@@ -10,6 +10,12 @@ Two separate concerns:
   ``/health`` must answer with this service's id/version, this profile's
   identity token, and exactly the route mapping the caller expects; anything
   else is a foreign listener and traffic stays direct (unmetered, visible).
+* **Table sourcing** — the same verified ``/health`` answer is also the
+  client-side route table's source of truth: ``fetch_proxy_routes`` hands
+  back the mapping the serving process actually forwards to, so a reconcile
+  under the multiplexed gateway can verify and activate routing without
+  resolving any provider endpoint (and therefore without reading a
+  provider secret) itself.
 """
 
 from __future__ import annotations
@@ -80,6 +86,89 @@ def port_in_use(port: int, *, bind: str = BIND_HOST) -> bool:
     )
 
 
+def _health_payload(
+    port: int,
+    *,
+    host: str = BIND_HOST,
+    timeout: float = _PROBE_TIMEOUT_SEC,
+) -> Tuple[Optional[dict], str]:
+    """GET /health on *port* → ``(payload, failure_detail)``.
+
+    The payload is None — with the reason in *detail* — for anything that is
+    not a 200 JSON answer with ``ok: true``: nothing listening, a foreign
+    listener, a proxy too mid-restart to answer. Shape checks beyond that
+    (service, version, identity) belong to the callers that know what they
+    expected.
+    """
+    try:
+        conn = http.client.HTTPConnection(host, int(port), timeout=timeout)
+        try:
+            conn.request("GET", "/health")
+            response = conn.getresponse()
+            status = response.status
+            body = response.read(16384)
+        finally:
+            conn.close()
+    except OSError as exc:
+        return None, f"http probe failed: {exc.strerror or exc}"
+    if status != 200:
+        return None, f"http status {status}"
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, "health response is not JSON"
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return None, "health response is not a healthy payload"
+    return payload, ""
+
+
+def _identity_mismatch_reason(
+    payload: dict, *, expect_identity: Optional[str] = None
+) -> str:
+    """Why *payload* is not this service answering for this profile, or ""."""
+    if payload.get("service") != SERVICE_ID:
+        return f"listener service is {payload.get('service')!r}, not {SERVICE_ID!r}"
+    if payload.get("version") != PROTOCOL_VERSION:
+        return (
+            f"listener protocol version {payload.get('version')!r}"
+            f" != {PROTOCOL_VERSION!r}"
+        )
+    if expect_identity is not None and payload.get("identity") != expect_identity:
+        return "listener belongs to a different profile"
+    return ""
+
+
+def fetch_proxy_routes(
+    port: int,
+    *,
+    host: str = BIND_HOST,
+    timeout: float = _PROBE_TIMEOUT_SEC,
+    expect_identity: Optional[str] = None,
+) -> Optional[dict[str, str]]:
+    """The route table (name → upstream base) the proxy on *port* serves now.
+
+    The secret-free source for a *client-side* table: /health reports the
+    exact mapping the serving process forwards to, so a reconcile that adopts
+    it never has to resolve provider endpoints itself — a credential read the
+    multiplexed gateway must not make. The listener still has to verify as
+    this profile's proxy (service id, protocol version, and — when given —
+    the profile identity token) before its table is trusted, and anything
+    else returns None: never a guess, never a partially parsed payload.
+    """
+    payload, _ = _health_payload(port, host=host, timeout=timeout)
+    if payload is None:
+        return None
+    if _identity_mismatch_reason(payload, expect_identity=expect_identity):
+        return None
+    routes = payload.get("routes")
+    if not isinstance(routes, dict) or not all(
+        isinstance(name, str) and isinstance(base, str)
+        for name, base in routes.items()
+    ):
+        return None
+    return dict(routes)
+
+
 def classify_proxy_health(
     port: int,
     *,
@@ -98,34 +187,12 @@ def classify_proxy_health(
     which is this profile's own unit and therefore safe to restart, never a
     listener to fight. Anything else is *FOREIGN*.
     """
-    try:
-        conn = http.client.HTTPConnection(host, int(port), timeout=timeout)
-        try:
-            conn.request("GET", "/health")
-            response = conn.getresponse()
-            status = response.status
-            body = response.read(16384)
-        finally:
-            conn.close()
-    except OSError as exc:
-        return FOREIGN, f"http probe failed: {exc.strerror or exc}"
-    if status != 200:
-        return FOREIGN, f"http status {status}"
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return FOREIGN, "health response is not JSON"
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
-        return FOREIGN, "health response is not a healthy payload"
-    if payload.get("service") != SERVICE_ID:
-        return FOREIGN, f"listener service is {payload.get('service')!r}, not {SERVICE_ID!r}"
-    if payload.get("version") != PROTOCOL_VERSION:
-        return FOREIGN, (
-            f"listener protocol version {payload.get('version')!r}"
-            f" != {PROTOCOL_VERSION!r}"
-        )
-    if expect_identity is not None and payload.get("identity") != expect_identity:
-        return FOREIGN, "listener belongs to a different profile"
+    payload, detail = _health_payload(port, host=host, timeout=timeout)
+    if payload is None:
+        return FOREIGN, detail
+    mismatch = _identity_mismatch_reason(payload, expect_identity=expect_identity)
+    if mismatch:
+        return FOREIGN, mismatch
     if expect_routes is not None:
         routes = payload.get("routes")
         if not isinstance(routes, dict) or routes != dict(expect_routes):

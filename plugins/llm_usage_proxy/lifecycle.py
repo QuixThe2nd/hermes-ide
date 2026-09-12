@@ -34,6 +34,7 @@ from plugins.llm_usage_proxy.systemd import (
     ReconcileResult,
     profile_identity,
     reconcile_service,
+    resolve_reconcile_routes,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,12 +56,27 @@ def reconcile_proxy_on_load(
     Explicit disablement (``llm_usage_proxy.enabled: false`` or
     ``plugins.disabled``) stops this profile's unit, drops any registered
     route table, and never installs anything. Never raises.
+
+    The route table is resolved once (``resolve_reconcile_routes``: adopted
+    from the running proxy's verified ``/health`` under the multiplexed
+    gateway, provider-config build otherwise) and that *same* table is what
+    the service reconcile classifies the port with, what ``/health`` is
+    verified against, and what gets registered — one source, so a proxy
+    restarted with a new table generation is re-verified on the next tick
+    instead of staying deverified.
     """
     if not platform_supported():
         return None
 
     cfg = load_llm_usage_proxy_config()
     enabled = not plugin_explicitly_disabled() and bool(cfg.get("enabled", False))
+    port = int(cfg.get("port") or 0) or DEFAULT_PORT
+    identity = profile_identity()
+    # Never raises; (None, ...) means no table is resolvable in this process
+    # and routing must stand down rather than verify against a guess.
+    table, table_source = resolve_reconcile_routes(
+        cfg, port=port, identity=identity, environ=environ
+    )
     kwargs: dict = {}
     if run_systemctl is not None:
         kwargs["run_systemctl"] = run_systemctl
@@ -68,6 +84,8 @@ def reconcile_proxy_on_load(
         kwargs["scope"] = scope
     if environ is not None:
         kwargs["environ"] = environ
+    kwargs["routes"] = table
+    kwargs["routes_source"] = table_source
     try:
         result = reconcile_service(cfg, enabled=enabled, **kwargs)
     except Exception as exc:
@@ -92,9 +110,19 @@ def reconcile_proxy_on_load(
             routing.clear_route_table("llm_usage_proxy disabled in config")
             return result
 
-        port = int(cfg.get("port") or 0) or DEFAULT_PORT
-        identity = profile_identity()
-        table = dict(result.routes) if result is not None else {}
+        if table is None:
+            routing.deactivate_routing(
+                "no route table is resolvable in this process (multiplexed:"
+                " no verified proxy on the port to adopt, and provider"
+                " endpoints not readable); traffic stays direct and unmetered"
+            )
+            logger.warning(
+                "llm_usage_proxy has no route table on port %s; provider"
+                " traffic stays direct and unmetered",
+                port,
+            )
+            return result
+
         healthy, detail = wait_for_verified_health(
             port,
             timeout=HEALTH_WAIT_TIMEOUT_SEC,
@@ -128,9 +156,10 @@ def reconcile_proxy_on_load(
 
         routing.activate_routing()
         logger.info(
-            "llm_usage_proxy routing active on %s for %d route(s): %s",
+            "llm_usage_proxy routing active on %s for %d route(s) (%s): %s",
             proxy_origin(port),
             len(table),
+            "adopted from proxy /health" if table_source == "health" else "from provider config",
             ", ".join(sorted(table)),
         )
     except Exception as exc:

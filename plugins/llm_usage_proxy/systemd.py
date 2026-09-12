@@ -37,8 +37,13 @@ from plugins.llm_usage_proxy.config import (
     load_llm_usage_proxy_config,
     manage_keys_enabled,
 )
-from plugins.llm_usage_proxy.probe import FREE, PortState, probe_port_state
-from plugins.llm_usage_proxy.routes import build_route_table
+from plugins.llm_usage_proxy.probe import (
+    FREE,
+    PortState,
+    fetch_proxy_routes,
+    probe_port_state,
+)
+from plugins.llm_usage_proxy.routes import build_route_table, build_route_table_scoped
 from plugins.llm_usage_proxy.server import BIND_HOST, DEFAULT_PORT, compute_identity
 
 logger = logging.getLogger(__name__)
@@ -104,6 +109,11 @@ class ReconcileResult:
     service_active_known: bool = True
     routes: tuple[tuple[str, str], ...] = ()
     identity: str = ""
+    # Where the reported route table came from: "health" (adopted from the
+    # running proxy's /health — the multiplex-safe path) or "env" (resolved
+    # from this profile's provider configuration). Empty when no table was
+    # resolved at all.
+    routes_source: str = ""
 
 
 def service_name(hermes_home: Optional[Path] = None) -> str:
@@ -148,8 +158,14 @@ def build_exec_start_argv(
     python: Optional[str] = None,
     script: Optional[Path] = None,
     environ=None,
+    targets: Optional[Mapping[str, str]] = None,
 ) -> list[str]:
-    """argv for the unit: repo python running the bundled server.py."""
+    """argv for the unit: repo python running the bundled server.py.
+
+    ``targets`` pins an already-resolved route table (the one reconcile
+    classified the port with) so the unit never renders a *second*, possibly
+    different table; when omitted the table is built from provider config.
+    """
     home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
     interpreter = python or resolve_python_executable()
     port = int(cfg.get("port") or DEFAULT_PORT)
@@ -167,9 +183,11 @@ def build_exec_start_argv(
         # No secret travels in argv: the server reads the key store from disk.
         argv.append("--manage-keys")
         argv.extend(("--keys-path", str(keys_path(home))))
-    targets = build_route_table(cfg, environ=environ)
-    for name in sorted(targets):
-        argv.extend(("--upstream", f"{name}={targets[name]}"))
+    resolved = dict(targets) if targets is not None else build_route_table(
+        cfg, environ=environ
+    )
+    for name in sorted(resolved):
+        argv.extend(("--upstream", f"{name}={resolved[name]}"))
     return argv
 
 
@@ -331,6 +349,61 @@ def disable_service(
     return tuple(warnings)
 
 
+def resolve_reconcile_routes(
+    cfg: Mapping[str, object],
+    *,
+    port: int,
+    identity: str,
+    environ=None,
+) -> tuple[Optional[dict[str, str]], str]:
+    """The route table this reconcile trusts, without an unscoped secret read.
+
+    Under the multiplexed gateway the running proxy's own ``/health`` answer
+    is the authoritative source: it reports the exact upstream mapping the
+    serving process forwards to, so adopting it verifies and activates
+    routing without resolving a single provider endpoint here — the
+    credential read that otherwise fails closed on the gateway's client-build
+    path. The table is only adopted after the listener answers as this
+    profile's proxy (service, protocol, identity token). When that fetch
+    fails — nothing listening yet, or a listener that does not verify — the
+    env-based build runs as the fallback, wrapped in this profile's secret
+    scope (``build_route_table_scoped``), so a not-yet-started unit can still
+    be rendered and no path here can trip the unscoped-read guard.
+
+    With multiplexing off, the env build stays the primary source and no
+    health round-trip is made: that is the standalone CLI reconcile, whose
+    job is exactly to converge a running proxy to edited provider config
+    (stale → rewrite → restart), and whose credential reads never fail
+    closed.
+
+    Returns ``(table, source)`` with source ``"health"`` or ``"env"``;
+    ``(None, "env")`` means no table could be resolved and the caller must
+    stand down rather than guess. Never raises.
+    """
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        multiplex = is_multiplex_active()
+    except Exception:  # pragma: no cover - secret_scope is always present
+        multiplex = False
+
+    if multiplex:
+        try:
+            table = fetch_proxy_routes(port, expect_identity=identity)
+        except Exception:  # pragma: no cover - the fetch is failure-tolerant
+            table = None
+        if table is not None:
+            return table, "health"
+
+    try:
+        return build_route_table_scoped(cfg, environ=environ), "env"
+    except Exception as exc:
+        logger.warning(
+            "llm_usage_proxy route table unavailable from provider config: %s", exc
+        )
+        return None, "env"
+
+
 def reconcile_service(
     cfg: Mapping[str, object],
     *,
@@ -338,6 +411,8 @@ def reconcile_service(
     run_systemctl: Optional[Callable[[Sequence[str]], tuple[int, str, str]]] = None,
     scope: Optional[InstallScope] = None,
     environ=None,
+    routes: Optional[Mapping[str, str]] = None,
+    routes_source: str = "",
 ) -> ReconcileResult:
     """Install/start this profile's proxy, standing down when the port is taken.
 
@@ -347,12 +422,26 @@ def reconcile_service(
     this profile's own proxy. Any failure is reported as a warning on the
     result — reconcile never raises, so a broken systemd cannot take gateway
     startup down with it.
+
+    ``routes``/``routes_source`` pin an already-resolved route table (the
+    lifecycle resolves once and verifies the very same table it classified
+    the port with); by default the table is resolved here via
+    :func:`resolve_reconcile_routes`.
     """
     runner = run_systemctl or default_systemctl_runner
     warnings: list[str] = []
     home = get_hermes_home()
     identity = profile_identity(home)
-    routes = build_route_table(cfg, environ=environ)
+    if routes is None:
+        routes, routes_source = resolve_reconcile_routes(
+            cfg,
+            port=int(cfg.get("port") or DEFAULT_PORT),
+            identity=identity,
+            environ=environ,
+        )
+    else:
+        routes = dict(routes)
+    route_items = tuple(sorted((routes or {}).items()))
 
     if not platform_supported():
         return ReconcileResult(
@@ -364,7 +453,8 @@ def reconcile_service(
             unit_installed=False,
             port=PortState(FREE, "not probed (platform unsupported)"),
             warnings=(),
-            routes=tuple(sorted(routes.items())),
+            routes=route_items,
+            routes_source=routes_source,
             identity=identity,
         )
 
@@ -379,7 +469,8 @@ def reconcile_service(
             unit_installed=False,
             port=PortState(FREE, "not probed (no systemd scope)"),
             warnings=("systemd user manager unavailable for this install",),
-            routes=tuple(sorted(routes.items())),
+            routes=route_items,
+            routes_source=routes_source,
             identity=identity,
         )
 
@@ -417,7 +508,8 @@ def reconcile_service(
             warnings=tuple(warnings),
             enabled_known=enabled_probe.known,
             service_active_known=active_probe.known,
-            routes=tuple(sorted(routes.items())),
+            routes=route_items,
+            routes_source=routes_source,
             identity=identity,
         )
 
@@ -459,14 +551,45 @@ def reconcile_service(
             warnings=tuple(warnings),
             enabled_known=enabled_probe.known,
             service_active_known=active_probe.known,
-            routes=tuple(sorted(routes.items())),
+            routes=route_items,
+            routes_source=routes_source,
             identity=identity,
         )
+
+    # Rendering a unit needs a real table: with no verified proxy to adopt it
+    # from and provider endpoints unresolvable in this process, standing down
+    # beats writing a unit that forwards nowhere. One more scoped attempt is
+    # made first (the resolution above may have been the health path).
+    targets = routes
+    if targets is None:
+        try:
+            targets = build_route_table_scoped(cfg, environ=environ)
+        except Exception as exc:
+            return ReconcileResult(
+                supported=True,
+                scope=selected,
+                changed=False,
+                enabled=False,
+                service_active=False,
+                unit_installed=False,
+                port=port_state,
+                warnings=(
+                    f"route table unavailable ({exc}); unit not written and"
+                    " routing left off"
+                ),
+                routes=(),
+                routes_source="",
+                identity=identity,
+            )
+        routes = targets
+        route_items = tuple(sorted(routes.items()))
 
     home_str = str(home.resolve())
     body = render_service_unit(
         hermes_home=home_str,
-        exec_start=build_exec_start_argv(cfg, hermes_home=home, environ=environ),
+        exec_start=build_exec_start_argv(
+            cfg, hermes_home=home, environ=environ, targets=targets
+        ),
         scope=selected,
     )
     try:
@@ -481,7 +604,8 @@ def reconcile_service(
             unit_installed=False,
             port=port_state,
             warnings=(f"failed to write {service_name(home)}: {exc}",),
-            routes=tuple(sorted(routes.items())),
+            routes=route_items,
+            routes_source=routes_source,
             identity=identity,
         )
 
@@ -547,7 +671,8 @@ def reconcile_service(
         warnings=tuple(warnings),
         enabled_known=enabled_probe.known,
         service_active_known=active_probe.known,
-        routes=tuple(sorted(routes.items())),
+        routes=route_items,
+        routes_source=routes_source,
         identity=identity,
     )
 
@@ -583,6 +708,12 @@ def format_status(
             f" ({', '.join(name for name, _ in result.routes)})"
             if result.routes
             else ""
+        )
+        + (
+            {
+                "health": " [adopted from the running proxy's /health]",
+                "env": " [from provider config]",
+            }.get(result.routes_source, "")
         ),
     ]
     if routing is not None:
@@ -617,6 +748,7 @@ __all__ = [
     "probe_service_is_active",
     "probe_service_is_enabled",
     "reconcile_service",
+    "resolve_reconcile_routes",
     "render_service_unit",
     "server_script_path",
     "service_name",
