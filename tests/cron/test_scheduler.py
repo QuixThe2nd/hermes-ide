@@ -2212,9 +2212,10 @@ class TestSendMediaTimeoutCancelsFuture:
 class TestCronDeliveryTargets:
     """``cron_delivery_targets`` powers the dashboard delivery dropdown.
 
-    It must list every configured + cron-deliverable platform (no hardcoded
-    set), flag whether each has its home channel set, and never include
-    platforms whose gateway isn't configured.
+    It must list only machine-local Bot Chat targets: gateway platforms have
+    no implicit destination anymore, so even configured + connected platforms
+    must not appear — an explicit ``platform:chat_id[:thread_id]`` target is
+    free-text, not a listed option.
     """
 
     def _patch_connected(self, monkeypatch, names):
@@ -2232,36 +2233,21 @@ class TestCronDeliveryTargets:
             gateway_config, "load_gateway_config", lambda: _GatewayConfig()
         )
 
-    def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
+    def test_configured_gateway_platforms_are_not_listed_as_targets(self, monkeypatch):
         from cron.scheduler_delivery import cron_delivery_targets
 
         self._patch_connected(monkeypatch, ["matrix", "telegram"])
-        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
-        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
 
-        targets = {t["id"]: t for t in cron_delivery_targets()}
+        with patch("hermes_cli.profiles.list_profile_names", return_value=["default"]):
+            targets = cron_delivery_targets()
 
-        # bot-chat:<profile> entries (machine-local Bot Chat injection) ride
-        # the same listing but are not gateway platforms — scope the
-        # platform assertions to the gateway entries.
-        platform_targets = {k: v for k, v in targets.items() if not k.startswith("bot-chat")}
-
-        assert set(platform_targets) == {"matrix", "telegram"}
-        # Configured but no home channel → surfaced, flagged for the UI.
-        assert platform_targets["matrix"]["home_target_set"] is False
-        assert platform_targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
-        assert platform_targets["telegram"]["home_target_set"] is False
-        # Bot Chat targets need no home channel: whatever profiles exist on
-        # this machine must all be listed as ready.
-        bot_chat = [v for k, v in targets.items() if k.startswith("bot-chat")]
-        assert all(t["home_target_set"] for t in bot_chat)
-
-
-class TestHomeTargetEnvVarRegistry:
-    """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
-    platform that supports cron-driven outbound delivery. Missing an
-    entry means ``hermes cron create --deliver=<platform>`` silently
-    fails to route through the platform's home channel."""
+        ids = [t["id"] for t in targets]
+        # Connected gateway platforms are NOT deliver targets: there is no
+        # per-platform default destination to offer the UI.
+        assert "matrix" not in ids
+        assert "telegram" not in ids
+        # Only Bot Chat entries (machine-local, one per profile) are listed.
+        assert ids == ["bot-chat:default"]
 
 
 class TestCronDeliveryMirror:
@@ -2588,12 +2574,12 @@ class TestCronContinuableSurfaceInChannel:
         """REGRESSION (restart-shaped): the connector's fail-closed tenant
         guard resolves the workspace from metadata.scope_id. After a gateway
         restart the RelayAdapter's per-chat scope cache is cold, and
-        DeliveryRouter stamps scope only for the configured HOME channel —
-        so a scoped Slack origin that is NOT the home chat egressed with no
-        scope_id and could be rejected before delivery. The scheduler must
-        stamp the persisted origin scope onto origin-matching routing
-        metadata (and never onto fan-out targets, which the origin-match
-        gate already excludes)."""
+        DeliveryRouter stamps scope only for the configured notification
+        channel — so a scoped Slack origin that is NOT the notification chat
+        egressed with no scope_id and could be rejected before delivery. The
+        scheduler must stamp the persisted origin scope onto origin-matching
+        routing metadata (and never onto fan-out targets, which the
+        origin-match gate already excludes)."""
         captured = {}
 
         class _SpyRouter:
@@ -2608,7 +2594,7 @@ class TestCronContinuableSurfaceInChannel:
         scoped_origin = {
             "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
             # Persisted workspace scope (captured at job creation). C123 is
-            # not any configured home channel in this harness.
+            # not the configured notification channel in this harness.
             "scope_id": "T0AAAA111",
         }
         with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
@@ -2624,8 +2610,8 @@ class TestCronContinuableSurfaceInChannel:
 
     def test_legacy_origin_without_scope_stamps_nothing(self):
         """Legacy jobs (origin persisted before scope capture) must not gain
-        a scope_id key — the relay's per-chat cache / home-channel stamping
-        remain the only sources, exactly today's behavior."""
+        a scope_id key — the relay's per-chat cache / notification-channel
+        stamping remain the only sources, exactly today's behavior."""
         captured = {}
 
         class _SpyRouter:
