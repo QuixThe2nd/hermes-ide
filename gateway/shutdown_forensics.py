@@ -215,22 +215,33 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual).
+
+    systemctl answers with the manager *default* (90s) even for a unit that manager doesn't
+    have (``LoadState=not-found``), so only a ``LoadState=loaded`` answer is that manager's
+    real unit; anything else falls through to the next manager.
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        # Output: "LoadState=loaded" + "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        load_state, value = None, None
         for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
+            if line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+            elif line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if load_state != "loaded" or value is None:
+            continue  # not-found / masked / error / absent → not this manager's unit
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -130,6 +131,59 @@ class TestParseSystemdDuration:
 
     def test_minutes(self):
         assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us
+# ---------------------------------------------------------------------------
+
+class TestSystemdTimeoutStopUs:
+    # systemctl exits 0 with the manager default (90s) even for a unit that
+    # manager doesn't have (LoadState=not-found), so only a LoadState=loaded
+    # answer may be trusted as that manager's real TimeoutStopUSec.
+
+    def _fake_systemctl(self, monkeypatch, stdouts):
+        """Script sf.subprocess.run: each call pops the next stdout; record argv lists.
+        An unscripted extra call IndexErrors — the helper must stop when the spec says."""
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=stdouts[len(calls) - 1], stderr="")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        return calls
+
+    def test_user_manager_not_found_falls_through_to_system(self, monkeypatch):
+        calls = self._fake_systemctl(monkeypatch, [
+            "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",  # --user: the 90s default
+            "LoadState=loaded\nTimeoutStopUSec=1d 10min\n",     # system: the real unit
+        ])
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 87_000 * 1_000_000
+        assert len(calls) == 2  # queried the user manager, then the system manager
+
+    def test_not_found_everywhere_returns_none(self, monkeypatch):
+        self._fake_systemctl(monkeypatch, [
+            "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+            "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+        ])
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+    def test_loaded_user_manager_wins_without_querying_system(self, monkeypatch):
+        calls = self._fake_systemctl(monkeypatch, [
+            "LoadState=loaded\nTimeoutStopUSec=2h\n",
+        ])
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 2 * 3600 * 1_000_000
+        assert len(calls) == 1 and "--user" in calls[0]
+
+    def test_missing_load_state_line_is_not_trusted(self, monkeypatch):
+        # Older systemctl that doesn't emit LoadState: undeterminable, never the default.
+        self._fake_systemctl(monkeypatch, [
+            "TimeoutStopUSec=1min 30s\n",
+            "TimeoutStopUSec=1min 30s\n",
+        ])
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
 
 
 # ---------------------------------------------------------------------------
