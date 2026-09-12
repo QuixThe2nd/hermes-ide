@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Run Claude Code against the z.ai coding plan.
+
+Primary: glm-5.2. Fallback: glm-5.3-flash via Claude Code --fallback-model
+(and fallbackModel settings for interactive sessions).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from pathlib import Path
+
+PRIMARY_MODEL = "glm-5.2"
+FALLBACK_MODEL = "glm-5.3-flash"
+DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic"
+
+
+def read_dotenv(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def has_flag(argv: list[str], name: str) -> bool:
+    prefix = name + "="
+    return any(arg == name or arg.startswith(prefix) for arg in argv)
+
+
+def build_argv(user_argv: list[str]) -> list[str]:
+    argv = list(user_argv)
+    if not has_flag(argv, "--fallback-model"):
+        argv.extend(["--fallback-model", FALLBACK_MODEL])
+    # --fallback-model is documented as --print only; settings cover interactive.
+    if not has_flag(argv, "--settings"):
+        argv.extend(["--settings", json.dumps({"fallbackModel": [FALLBACK_MODEL]})])
+    return argv
+
+
+hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+secrets = hermes_home / "secrets" / "zai.env"
+api_key = os.environ.get("ZAI_API_KEY", "")
+if not api_key and secrets.is_file():
+    api_key = read_dotenv(secrets).get("ZAI_API_KEY", "")
+if not api_key:
+    raise SystemExit(
+        "claude-glm: missing ZAI_API_KEY — set the ZAI_API_KEY environment"
+        f" variable, or add ZAI_API_KEY=... to {secrets}"
+    )
+
+binary = os.environ.get("CLAUDE_BIN", "") or shutil.which("claude")
+if not binary:
+    raise SystemExit(
+        "claude-glm: cannot find the Claude Code CLI. Tried, in order:\n"
+        f"  1. the CLAUDE_BIN environment variable ({os.environ.get('CLAUDE_BIN') or 'unset'})\n"
+        "  2. a `claude` executable on PATH (shutil.which)\n"
+        f"PATH was: {os.environ.get('PATH', '')}\n"
+        "Install the Claude Code CLI or point CLAUDE_BIN at its binary."
+    )
+
+env = os.environ.copy()
+env.pop("ANTHROPIC_API_KEY", None)
+# An externally-set base URL (proxy, gateway) wins over the z.ai default.
+env.setdefault("ANTHROPIC_BASE_URL", DEFAULT_BASE_URL)
+env.update(
+    {
+        "ANTHROPIC_AUTH_TOKEN": api_key,
+        "ANTHROPIC_MODEL": PRIMARY_MODEL,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": PRIMARY_MODEL,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": PRIMARY_MODEL,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": PRIMARY_MODEL,
+        "CLAUDE_CODE_SUBAGENT_MODEL": PRIMARY_MODEL,
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    }
+)
+
+os.execve(binary, [binary, *build_argv(os.sys.argv[1:])], env)

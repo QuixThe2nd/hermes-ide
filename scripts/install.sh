@@ -2152,6 +2152,16 @@ EOF
     chmod +x "$command_link_dir/hermes-acp"
     log_success "Installed hermes-acp launcher → $command_link_display_dir/hermes-acp"
 
+    # Also install the bundled claude-glm wrapper: delegate_claude_agent drives
+    # Claude Code through it (z.ai anthropic-compatible endpoint, GLM primary +
+    # flash fallback) and discovers it via CLAUDE_GLM_BIN → this dir → PATH, so
+    # it must land in the same command-link dir as `hermes`. Copy (not symlink)
+    # so the command survives the checkout being moved; overwrite is idempotent.
+    rm -f "$command_link_dir/claude-glm"
+    cp "$INSTALL_DIR/scripts/claude-glm" "$command_link_dir/claude-glm"
+    chmod +x "$command_link_dir/claude-glm"
+    log_success "Installed claude-glm wrapper → $command_link_display_dir/claude-glm"
+
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
         log_info "$command_link_display_dir is the native Termux command path"
