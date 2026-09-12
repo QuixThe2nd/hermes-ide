@@ -7,10 +7,12 @@ safety pass at 85% context). In-agent compression already posts one
 fully silent on Discord while a multi-minute summarization ran.
 
 These tests pin the presentation-only contract: hygiene drives the SAME
-per-(adapter, chat, session) episode state directly from the gateway (the
-detached hygiene agent keeps its deliberately stale platform and no
-status_callback), with a per-attempt token so a superseded attempt's late
-edit cannot clobber its successor's episode. Card edges:
+episode machinery directly from the gateway under its OWN ``hygiene``-railed
+registry key — separate state from the in-agent status rail on the same
+(adapter, chat, session), so neither rail can drop or hand over the other's
+lines (the detached hygiene agent keeps its deliberately stale platform and
+no status_callback) — with a per-attempt token so a superseded attempt's
+late edit cannot clobber its successor's episode. Card edges:
 
 - start line the moment the summary executor is spawned;
 - ONE non-terminal "still running in the background" edit at turn-hold
@@ -19,6 +21,14 @@ edit cannot clobber its successor's episode. Card edges:
   the inline wait observed the commit;
 - ⚠️ on timeout-cancel, fence-cancel, and did-not-commit outcomes — never a
   success for a no-op;
+- a superseding attempt HANDS OVER the open bubble (edit, no second send)
+  and the superseded attempt's late terminal is dropped;
+- the deferred state is edited EXACTLY once per attempt, even if the
+  turn-hold edge fires twice;
+- a stale scheduled delivery (text no longer ep.last_text) never edits;
+- with a hygiene card open, the agent rail stays independent: its raw abort
+  warning still posts and its compression_tool start opens a SEPARATE
+  bubble;
 - nothing at all for non-episode-rail adapters (byte-identical legacy
   notices).
 """
@@ -36,10 +46,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.compression_status import (
+    COMPRESSION_ABORT_WARNING_PREFIX,
     COMPRESSION_TOOL_FAILURE_PREFIX,
     COMPRESSION_TOOL_START_PREFIX,
     COMPRESSION_TOOL_SUCCESS_PREFIX,
     compression_tool_deferred_line,
+    compression_tool_start_line,
+    compression_tool_success_line,
+    emit_compression_tool_status,
 )
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -220,6 +234,16 @@ async def _wait_for_edit(adapter, predicate, timeout=5.0):
     return None
 
 
+async def _wait_for_send(adapter, predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for sent in adapter.sent:
+            if predicate(sent["content"]):
+                return sent
+        await asyncio.sleep(0.05)
+    return None
+
+
 def _sent_contents(adapter):
     return [m["content"] for m in adapter.sent]
 
@@ -330,6 +354,20 @@ class SilentTimeoutAgent(_EpisodeAgentBase):
         # No touch_progress at all: silent worker.
         self.release_worker.wait(timeout=20)
         return (messages, None)
+
+
+class MultiAttemptFencedStreamingAgent(FencedStreamingAgent):
+    """Fenced streaming agent recording every instance (supersede tests).
+
+    The shared base only keeps ``last_instance``; driving two attempts on
+    one card needs BOTH handles (the superseded worker and its successor).
+    """
+
+    instances = []
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        type(self).instances.append(self)
 
 
 @pytest.mark.asyncio
@@ -559,3 +597,316 @@ async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
         )
         for c in _sent_contents(adapter)
     )
+
+
+@pytest.mark.asyncio
+async def test_second_attempt_hands_over_card_and_drops_superseded_terminal(
+    monkeypatch, tmp_path
+):
+    """A second hygiene attempt while the card is open takes over the SAME
+    bubble (an edit, never a second send) and the superseded attempt's late
+    terminal is dropped — one card, one terminal, the newest attempt's."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    MultiAttemptFencedStreamingAgent.instances = []
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, MultiAttemptFencedStreamingAgent)
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    # Attempt 1: start card, then turn-hold expiry defers it (the worker
+    # keeps streaming, so the card stays open and NON-terminal).
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+    assert await _wait_for_edit(
+        adapter, lambda c: c == compression_tool_deferred_line()
+    ), f"attempt 1 deferred edit missing: {_edit_contents(adapter)}"
+
+    # Attempt 2 (next turn, same still-oversized transcript): must HAND OVER
+    # the open bubble — an edit to m1, never a second send. (The hand-over
+    # emission is awaited inline by the handler, so it has landed by return;
+    # exact-content check because the deferred line shares the start prefix.)
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+    assert any(
+        e["content"] == compression_tool_start_line() for e in adapter.edits
+    ), f"attempt 2 hand-over start edit missing: {_edit_contents(adapter)}"
+    start_sends = [
+        c for c in _sent_contents(adapter) if c.startswith(COMPRESSION_TOOL_START_PREFIX)
+    ]
+    assert len(start_sends) == 1, (
+        f"hand-over must edit the open card, not send a second bubble: "
+        f"{_sent_contents(adapter)}"
+    )
+    assert {e["message_id"] for e in adapter.edits} == {"m1"}
+
+    assert len(MultiAttemptFencedStreamingAgent.instances) == 2
+    first, second = MultiAttemptFencedStreamingAgent.instances
+
+    # The superseded attempt finishes late and COMMITS: its adoption terminal
+    # carries the old attempt token and must be dropped by the registry.
+    first.release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(first.committed.wait, 5), timeout=6)
+    await asyncio.sleep(0.2)  # let the dropped emission's slot come and go
+
+    # The successor's commit is the ONE and ONLY terminal on the card.
+    second.release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(second.committed.wait, 5), timeout=6)
+    success_edit = await _wait_for_edit(
+        adapter, lambda c: c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    )
+    assert success_edit is not None, f"successor adoption edit missing: {_edit_contents(adapter)}"
+    assert "6 → 1 messages" in success_edit["content"]
+    await _drain_deferred(runner)
+    assert (
+        sum(
+            1
+            for c in _edit_contents(adapter)
+            if c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+        )
+        == 1
+    ), f"superseded attempt's late terminal must be dropped: {_edit_contents(adapter)}"
+    assert len(start_sends) == 1
+    assert {e["message_id"] for e in adapter.edits} == {"m1"}
+
+
+@pytest.mark.asyncio
+async def test_stale_scheduled_update_is_skipped_not_edited():
+    """The coro's stale-delivery guard: an update scheduled before a newer
+    decision (text no longer ep.last_text) is skipped — no edit fires for
+    it, exactly one delivery carries the current state."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    adapter = DiscordEpisodeAdapter()
+
+    start = compression_tool_start_line()
+    deferred = compression_tool_deferred_line()
+    success = compression_tool_success_line(before_messages=6, after_messages=1)
+    decide = gateway_run._compression_episode_decide
+    deliver = gateway_run._send_or_update_compression_episode_coro
+    rail = gateway_run._COMPRESSION_EPISODE_RAIL_HYGIENE
+
+    action, content = decide(
+        adapter,
+        "12345",
+        gateway_run.COMPRESSION_TOOL_STATUS_EVENT,
+        start,
+        session_key=SESSION_KEY,
+        attempt_token="attempt-1",
+        rail=rail,
+    )
+    assert (action, content) == ("deliver", start)
+    await deliver(adapter, "12345", start, None, session_key=SESSION_KEY, rail=rail)
+    assert _sent_contents(adapter) == [start]
+
+    # Two updates decided back to back; only the NEWEST text may deliver.
+    for line in (deferred, success):
+        action, content = decide(
+            adapter,
+            "12345",
+            gateway_run.COMPRESSION_TOOL_STATUS_EVENT,
+            line,
+            session_key=SESSION_KEY,
+            attempt_token="attempt-1",
+            rail=rail,
+        )
+        assert (action, content) == ("deliver", line)
+    assert await deliver(
+        adapter, "12345", success, None, session_key=SESSION_KEY, rail=rail
+    )
+    assert _edit_contents(adapter) == [success]
+
+    # The deferred update, scheduled first, runs LAST: the registry has
+    # moved on to the terminal — it must be skipped with no edit fired.
+    assert (
+        await deliver(adapter, "12345", deferred, None, session_key=SESSION_KEY, rail=rail)
+        is None
+    )
+    assert _edit_contents(adapter) == [success], (
+        f"stale scheduled update must not edit: {_edit_contents(adapter)}"
+    )
+    assert _sent_contents(adapter) == [start]
+
+
+@pytest.mark.asyncio
+async def test_agent_rail_independent_of_open_hygiene_card(monkeypatch, tmp_path):
+    """With a hygiene card open (non-terminal), the agent rail keeps its own
+    episode on the same chat: its raw abort warning still POSTS via the
+    normal rail (not dropped by the hygiene card) and its compression_tool
+    start opens a SEPARATE bubble — byte-identical to a chat with no hygiene
+    episode at all."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, FencedStreamingAgent)
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+    assert await _wait_for_edit(
+        adapter, lambda c: c == compression_tool_deferred_line()
+    ), f"hygiene card not open (non-terminal): {_edit_contents(adapter)}"
+    hygiene_starts = [
+        c for c in _sent_contents(adapter) if c.startswith(COMPRESSION_TOOL_START_PREFIX)
+    ]
+    assert len(hygiene_starts) == 1  # m1 — the open hygiene card
+
+    # The real agent-rail consumer (TurnRunner._status_callback_sync) on a
+    # ctx bound to the SAME adapter/chat/session as the hygiene card.
+    turn_runner = gateway_run.TurnRunner(
+        runner,
+        SimpleNamespace(
+            _status_adapter=adapter,
+            _status_chat_id="12345",
+            _run_still_current=lambda: True,
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="12345",
+                chat_type="dm",
+                user_id="12345",
+            ),
+            session_key=SESSION_KEY,
+            _status_thread_metadata=None,
+            _loop_for_step=asyncio.get_running_loop(),
+            _cleanup_progress=False,
+            _cleanup_msg_ids=[],
+            tool_progress_enabled=False,
+            progress_queue=None,
+            _native_slack_task_cards=False,
+        ),
+    )
+
+    # 1) Raw abort warning while ONLY the hygiene card is open: must fall
+    #    through to the normal rail and post as its own message. Before the
+    #    rail split the shared non-terminal hygiene episode dropped it.
+    warning = f"{COMPRESSION_ABORT_WARNING_PREFIX} summary provider timed out"
+    turn_runner._status_callback_sync("warn", warning)
+    assert await _wait_for_send(adapter, lambda c: c == warning), (
+        f"agent-rail abort warning was dropped by the open hygiene card: "
+        f"{_sent_contents(adapter)}"
+    )
+
+    # 2) Agent-rail compression_tool start through the REAL emit hop (token
+    #    ContextVar included): opens its OWN bubble — no hand-over of the
+    #    hygiene card, no edit to m1. The card's own start line has the same
+    #    text, so wait for the SECOND start send to appear.
+    fake_turn_agent = SimpleNamespace(
+        platform="discord", status_callback=turn_runner._status_callback_sync
+    )
+    assert emit_compression_tool_status(
+        fake_turn_agent, compression_tool_start_line(), attempt_token="agent-attempt-1"
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        start_sends = [
+            c
+            for c in _sent_contents(adapter)
+            if c.startswith(COMPRESSION_TOOL_START_PREFIX)
+        ]
+        if len(start_sends) == 2:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(
+            f"agent attempt must open a SEPARATE bubble, not take the card: "
+            f"{_sent_contents(adapter)}"
+        )
+    assert {e["message_id"] for e in adapter.edits} == {"m1"}, (
+        f"agent rail must never edit the hygiene card: {adapter.edits}"
+    )
+
+    # 3) Independence is symmetric: the hygiene card still owns its own
+    #    lifecycle — its adoption terminal edits m1 and nothing else.
+    agent = FencedStreamingAgent.last_instance
+    agent.release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(agent.committed.wait, 5), timeout=6)
+    success_edit = await _wait_for_edit(
+        adapter, lambda c: c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    )
+    assert success_edit is not None, f"hygiene adoption edit missing: {_edit_contents(adapter)}"
+    assert success_edit["message_id"] == "m1"
+    await _drain_deferred(runner)
+    assert {e["message_id"] for e in adapter.edits} == {"m1"}
+
+
+@pytest.mark.asyncio
+async def test_deferred_edit_fires_exactly_once_on_double_fire(monkeypatch, tmp_path):
+    """The deferred ("still compressing in the background") state is edited
+    EXACTLY once per attempt even if the turn-hold edge fires twice — the
+    registry already represents that exact non-terminal line on the card, so
+    the re-fire must not re-edit (and must not fall back to a legacy send)."""
+    gateway_run = importlib.import_module("gateway.run")
+    gateway_run._reset_compression_episodes()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+    _write_episode_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, FencedStreamingAgent)
+
+    adapter = DiscordEpisodeAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db, Platform.DISCORD)
+
+    tokens = []
+    real_update = runner._hygiene_compression_episode_update
+
+    async def _capturing_update(**kwargs):
+        tokens.append(kwargs.get("attempt_token"))
+        return await real_update(**kwargs)
+
+    runner._hygiene_compression_episode_update = _capturing_update
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
+    )
+    assert result == "ok"
+    assert await _wait_for_edit(
+        adapter, lambda c: c == compression_tool_deferred_line()
+    ), f"deferred edit missing: {_edit_contents(adapter)}"
+    assert _edit_contents(adapter).count(compression_tool_deferred_line()) == 1
+
+    # The turn-hold edge fires AGAIN for the SAME attempt (same token): the
+    # identical non-terminal line is already on the card — dropped, not
+    # re-edited, and no legacy plain deferral notice appears either.
+    attempt_token = next(t for t in tokens if t)
+    assert await _capturing_update(
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="12345",
+            chat_type="dm",
+            user_id="12345",
+        ),
+        session_key=SESSION_KEY,
+        metadata=None,
+        line=compression_tool_deferred_line(),
+        attempt_token=attempt_token,
+    )
+    await asyncio.sleep(0.1)
+    assert _edit_contents(adapter).count(compression_tool_deferred_line()) == 1, (
+        f"double-fired deferral must not re-edit the card: {_edit_contents(adapter)}"
+    )
+    assert not any(
+        "deferred" in c.lower() or "still streaming" in c.lower()
+        for c in _sent_contents(adapter)
+    ), f"re-fired edge must not leak a legacy notice: {_sent_contents(adapter)}"
+
+    # The episode is still healthy: the adoption terminal lands on the card.
+    agent = FencedStreamingAgent.last_instance
+    agent.release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(agent.committed.wait, 5), timeout=6)
+    assert await _wait_for_edit(
+        adapter, lambda c: c.startswith(COMPRESSION_TOOL_SUCCESS_PREFIX)
+    ), f"adoption edit missing after re-fire: {_edit_contents(adapter)}"
+    await _drain_deferred(runner)
+    assert {e["message_id"] for e in adapter.edits} == {"m1"}

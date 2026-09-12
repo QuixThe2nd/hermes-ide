@@ -1186,12 +1186,21 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
 # into the episode instead of posting unpaired follow-ups. Telegram/Slack
 # keep their existing per-status-key editing; every other adapter keeps
 # one-message-per-status — byte-identical to before. State is scoped per
-# (platform, adapter instance, session, chat) episode plus a per-attempt
-# operation token, and delivery failures stay in the logs — they must never
-# affect compression itself.
+# (platform, adapter instance, session, chat, rail) episode plus a per-attempt
+# operation token — the rail discriminator keeps gateway session hygiene's
+# card in its OWN episode, apart from the in-agent rail on the same chat, so
+# neither can drop or hand over the other's lines — and delivery failures stay
+# in the logs — they must never affect compression itself.
 
 _COMPRESSION_EPISODE_TTL_SECONDS = 1800.0
 _COMPRESSION_EPISODE_REGISTRY_MAX = 512
+# Rail discriminator appended to every episode key. The in-agent status rail
+# and the gateway session-hygiene card drive the same machinery but must own
+# SEPARATE episode state on the same (platform, adapter, session, chat): an
+# open hygiene card must never swallow the agent rail's raw abort/cooldown
+# warnings or hand its bubble to an agent attempt (and vice versa).
+_COMPRESSION_EPISODE_RAIL_AGENT = "agent"
+_COMPRESSION_EPISODE_RAIL_HYGIENE = "hygiene"
 
 
 @dataclasses.dataclass
@@ -1215,26 +1224,31 @@ class _CompressionEpisodeState:
     updated_at: float = 0.0
 
 
-_compression_episodes: Dict[Tuple[str, str, str, str], _CompressionEpisodeState] = {}
+_compression_episodes: Dict[Tuple[str, str, str, str, str], _CompressionEpisodeState] = {}
 _compression_episodes_lock = threading.Lock()
 # Per-episode asyncio locks serialize send->edit on the gateway loop so a
 # terminal/fold update scheduled behind the start line observes the start's
 # message id and edits instead of posting a second bubble. Created lazily on
 # the loop thread inside the coro; evicted together with the episode so the
 # dict cannot grow past the registry it shadows.
-_compression_episode_async_locks: Dict[Tuple[str, str, str, str], asyncio.Lock] = {}
+_compression_episode_async_locks: Dict[Tuple[str, str, str, str, str], asyncio.Lock] = {}
 
 
 def _compression_episode_key(
-    adapter: Any, chat_id: Any, session_key: Any = None
-) -> Tuple[str, str, str, str]:
-    """Episode ownership key: platform + adapter INSTANCE + session + chat.
+    adapter: Any,
+    chat_id: Any,
+    session_key: Any = None,
+    rail: str = _COMPRESSION_EPISODE_RAIL_AGENT,
+) -> Tuple[str, str, str, str, str]:
+    """Episode ownership key: platform + adapter INSTANCE + session + chat + rail.
 
     Two adapter instances sharing a name and channel (multi-profile runners)
     must never share an episode; session_key scopes the lifecycle to the
     profile/conversation the attempt belongs to. Deliberately NOT run-scoped:
     a cooldown warning arrives on a LATER turn than the failed attempt and
-    must still find its episode.
+    must still find its episode. The rail discriminator keeps the gateway
+    session-hygiene card and the in-agent status rail in SEPARATE episodes on
+    the same chat, so neither can drop or hand over the other's lines.
     """
     platform = getattr(getattr(adapter, "platform", None), "value", None)
     if not platform:
@@ -1244,10 +1258,11 @@ def _compression_episode_key(
         str(id(adapter)),
         str(session_key or ""),
         str(chat_id),
+        str(rail or _COMPRESSION_EPISODE_RAIL_AGENT),
     )
 
 
-def _evict_compression_episode(key: Tuple[str, str, str, str]) -> None:
+def _evict_compression_episode(key: Tuple[str, str, str, str, str]) -> None:
     """Drop an episode AND its async delivery lock (caller holds the lock)."""
     _compression_episodes.pop(key, None)
     _compression_episode_async_locks.pop(key, None)
@@ -1287,6 +1302,7 @@ def _compression_episode_decide(
     *,
     session_key: Any = None,
     attempt_token: Optional[str] = None,
+    rail: str = _COMPRESSION_EPISODE_RAIL_AGENT,
 ) -> Tuple[str, Optional[str]]:
     """Sync-side episode bookkeeping for one prepared status line.
 
@@ -1297,7 +1313,7 @@ def _compression_episode_decide(
       attempt's stale event) — post nothing.
     - ``"pass"``: not episode business — fall through to the normal rail.
     """
-    key = _compression_episode_key(adapter, chat_id, session_key)
+    key = _compression_episode_key(adapter, chat_id, session_key, rail=rail)
     now = time.monotonic()
     with _compression_episodes_lock:
         ep = _compression_episodes.get(key)
@@ -1337,6 +1353,15 @@ def _compression_episode_decide(
                     ep.failed = False
                     ep.cooldown_folded = False
                     ep.terminal_base = ""
+                elif not terminal and ep.delivered and ep.last_text == text:
+                    # Same attempt re-firing a non-terminal edge whose exact
+                    # line is already on the bubble (double-delivered
+                    # turn-hold deferral, async replay): the state is
+                    # represented — re-editing would churn the message for
+                    # zero visible change, so the edge stays a one-edit
+                    # transition. Undelivered text still re-delivers (send
+                    # retry when the first attempt failed).
+                    return "drop", None
             if ep is None:
                 if len(_compression_episodes) >= _COMPRESSION_EPISODE_REGISTRY_MAX:
                     oldest_key = min(
@@ -1392,7 +1417,12 @@ def _compression_episode_decide(
 
 
 async def _send_or_update_compression_episode_coro(
-    adapter, chat_id, content, metadata, session_key=None
+    adapter,
+    chat_id,
+    content,
+    metadata,
+    session_key=None,
+    rail=_COMPRESSION_EPISODE_RAIL_AGENT,
 ):
     """Deliver one episode update: send the start line once, then edit in place.
 
@@ -1400,7 +1430,7 @@ async def _send_or_update_compression_episode_coro(
     failure must not affect compression, and the next update simply retries
     delivery (send when no message id is known yet).
     """
-    key = _compression_episode_key(adapter, chat_id, session_key)
+    key = _compression_episode_key(adapter, chat_id, session_key, rail=rail)
     lock = _compression_episode_async_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -7340,6 +7370,7 @@ class TurnRunner:
                     if event_type == COMPRESSION_TOOL_STATUS_EVENT
                     else None
                 ),
+                rail=_COMPRESSION_EPISODE_RAIL_AGENT,
             )
             if _episode_action == "drop":
                 logger.debug(
@@ -7357,6 +7388,7 @@ class TurnRunner:
                         _episode_content,
                         ctx._status_thread_metadata,
                         session_key=ctx.session_key,
+                        rail=_COMPRESSION_EPISODE_RAIL_AGENT,
                     ),
                     ctx._loop_for_step,
                     logger=logger,
@@ -24671,10 +24703,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         (``_GATEWAY_HYGIENE_PLATFORM``) and has no ``status_callback``, so
         ``emit_compression_tool_status`` can never fire for it. The gateway —
         which already holds the source adapter, session key, and thread
-        metadata — drives the SAME per-(adapter, chat, session) episode state
-        the agent-side rail uses, so a hygiene attempt gets the identical
-        send-once/edit-in-place ``context_compress`` card. All line text
-        comes from the ``agent/compression_status.py`` builders.
+        metadata — drives the SAME episode machinery under its OWN
+        ``hygiene``-railed key, so a hygiene attempt gets the identical
+        send-once/edit-in-place ``context_compress`` card WITHOUT sharing
+        episode state with the agent-side rail on the same chat: an open
+        hygiene card can never drop the agent rail's raw warnings or hand its
+        bubble to an agent attempt (and vice versa). All line text comes
+        from the ``agent/compression_status.py`` builders.
 
         Every hygiene emission point runs on the event loop (the summary
         itself is the only executor-threaded part), so no thread-safe hop is
@@ -24698,6 +24733,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 line,
                 session_key=session_key,
                 attempt_token=attempt_token,
+                rail=_COMPRESSION_EPISODE_RAIL_HYGIENE,
             )
             if action == "deliver" and content:
                 await _send_or_update_compression_episode_coro(
@@ -24706,6 +24742,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     content,
                     metadata,
                     session_key=session_key,
+                    rail=_COMPRESSION_EPISODE_RAIL_HYGIENE,
                 )
             return True
         except Exception:
