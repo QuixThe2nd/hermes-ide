@@ -290,8 +290,6 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_BOT_TOKEN` | **是** | — | 来自 [Discord 开发者门户](https://discord.com/developers/applications) 的机器人 token。 |
 | `DISCORD_ALLOWED_USERS` | **是** | — | 允许与机器人交互的 Discord 用户 ID，逗号分隔。没有此项**或** `DISCORD_ALLOWED_ROLES`，网关将拒绝所有用户。 |
 | `DISCORD_ALLOWED_ROLES` | 否 | — | Discord 角色 ID，逗号分隔。拥有其中任一角色的成员即被授权——与 `DISCORD_ALLOWED_USERS` 为 OR 语义。连接时自动启用 **Server Members Intent**。适用于管理团队频繁变动的场景：新管理员一旦被授予角色即可获得访问权限，无需推送配置。 |
-| `DISCORD_HOME_CHANNEL` | 否 | — | 机器人发送主动消息（cron 输出、提醒、通知）的频道 ID。 |
-| `DISCORD_HOME_CHANNEL_NAME` | 否 | `"Home"` | 主频道在日志和状态输出中的显示名称。 |
 | `DISCORD_COMMAND_SYNC_POLICY` | 否 | `"safe"` | 控制原生斜杠命令启动同步。`"safe"` 对现有全局命令进行差异比较，仅更新已更改的内容，当 Discord 元数据更改无法通过补丁应用时重新创建命令。`"bulk"` 保留旧的 `tree.sync()` 行为。`"off"` 完全跳过启动同步。 |
 | `DISCORD_REQUIRE_MENTION` | 否 | `true` | 为 `true` 时，机器人仅在服务器频道中被 `@提及` 时响应。设置为 `false` 可响应每个频道中的所有消息。 |
 | `DISCORD_THREAD_REQUIRE_MENTION` | 否 | `false` | 为 `true` 时，禁用线程内的提及快捷方式——线程与频道的门控方式相同，即使机器人已经参与其中，也需要 `@提及`。当多个机器人共享一个线程且你希望每个机器人仅在明确 `@提及` 时触发时使用此设置。 |
@@ -693,24 +691,11 @@ discord:
 
 按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `600` 秒）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
 
-## 主频道
+## 主动投递目标
 
-你可以指定一个"主频道"，机器人在此发送主动消息（例如 cron 任务输出、提醒和通知）。有两种设置方式：
+Cron 任务和提醒投递到你在每个任务上配置的显式目标 — 例如 `hermes cron edit <id> --deliver discord:123456789012345678`（开启开发者模式后复制的频道 ID）。
 
-### 使用斜杠命令
-
-在机器人所在的任意 Discord 频道中输入 `/sethome`。该频道即成为主频道。
-
-### 手动配置
-
-将以下内容添加到你的 `~/.hermes/.env`：
-
-```bash
-DISCORD_HOME_CHANNEL=123456789012345678
-DISCORD_HOME_CHANNEL_NAME="#bot-updates"
-```
-
-将 ID 替换为实际的频道 ID（开启开发者模式后右键点击 → Copy Channel ID）。
+Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标频道中运行 `/setnotify` 指定它，运行 `/clearnotify` 移除它。
 
 ## 语音消息
 

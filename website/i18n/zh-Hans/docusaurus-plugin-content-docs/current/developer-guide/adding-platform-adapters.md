@@ -56,8 +56,8 @@ requires_env:
     prompt: "Channel"
     password: false
 optional_env:
-  - name: MY_PLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery"
+  - name: MY_PLATFORM_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
     password: false
 ```
 
@@ -106,11 +106,7 @@ def _env_enablement() -> dict | None:
     channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
     if not (token and channel):
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": "Home"}
-    return seed
+    return {"token": token, "channel": channel}
 
 
 def register(ctx):
@@ -126,9 +122,9 @@ def register(ctx):
         # 环境变量驱动的自动配置 — 在适配器构建前从环境变量
         # 填充 PlatformConfig.extra。参见下方"环境变量驱动的自动配置"章节。
         env_enablement_fn=_env_enablement,
-        # Cron 主频道投递支持。允许 deliver=my_platform 的 cron 任务
-        # 无需编辑 cron/scheduler.py 即可路由。参见下方"Cron 投递"章节。
-        cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
+        # 进程外 cron 投递。允许 deliver=my_platform:chat_id 的 cron 任务
+        # 在没有共存 gateway 时发送。参见下方"Cron 投递"章节。
+        standalone_sender_fn=_standalone_send,
         # 每平台用户授权环境变量
         allowed_users_env="MY_PLATFORM_ALLOWED_USERS",
         allow_all_env="MY_PLATFORM_ALLOW_ALL_USERS",
@@ -178,9 +174,9 @@ gateway:
 | 配置解析 | `Platform._missing_()` 接受任意平台名称 |
 | 已连接平台验证 | 调用注册表中的 `validate_config()` |
 | 用户授权 | 检查 `allowed_users_env` / `allow_all_env` |
-| 仅环境变量自动启用 | `env_enablement_fn` 填充 `PlatformConfig.extra` + `home_channel` |
+| 仅环境变量自动启用 | `env_enablement_fn` 填充 `PlatformConfig.extra` |
 | YAML 配置桥接 | `apply_yaml_config_fn` 将 `config.yaml` 键转换为环境变量/extras |
-| Cron 投递 | `cron_deliver_env_var` 使 `deliver=<name>` 生效 |
+| Cron 投递 | `standalone_sender_fn` 以进程外方式发送显式 `deliver=<name>:<chat_id>` 目标 |
 | `hermes config` UI 条目 | `plugin.yaml` 中的 `requires_env` / `optional_env` 自动填充 |
 | send_message 工具 | 通过实时 gateway 适配器路由 |
 | Webhook 跨平台投递 | 检查注册表中的已知平台 |
@@ -205,23 +201,13 @@ def _env_enablement() -> dict | None:
 
     在 load_gateway_config() 期间由平台注册表调用。
     当平台未完成最低配置时返回 None — 调用方将跳过自动启用。
-    返回字典以填充 extras。
-
-    特殊键 'home_channel' 会被提取并成为 PlatformConfig 上的
-    HomeChannel dataclass；其他所有键合并到 PlatformConfig.extra 中。
+    返回字典以填充 extras；所有键合并到 PlatformConfig.extra 中。
     """
     token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
     channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
     if not (token and channel):
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": os.getenv("MY_PLATFORM_HOME_CHANNEL_NAME", "Home"),
-        }
-    return seed
+    return {"token": token, "channel": channel}
 
 
 def register(ctx):
@@ -278,21 +264,9 @@ hook 内抛出的异常会被捕获并以 debug 级别记录 — 行为异常的
 
 ## Cron 投递
 
-要让 `deliver=my_platform` 的 cron 任务路由到已配置的主频道，将 `cron_deliver_env_var` 设置为持有默认聊天/房间/频道 ID 的环境变量名：
+Cron 任务使用显式的 `deliver=my_platform:<chat_id>` 目标（可选 `:<thread_id>`）寻址你的平台。在 plugin 注册表中注册平台后，`my_platform` 即成为可识别的 `deliver=` 平台。裸 `deliver=my_platform` 不会解析到任何目标 — 任务会记录一条投递错误，提示操作者设置显式的 `platform:chat_id[:thread_id]` 目标，而不是静默丢弃输出。
 
-```python
-ctx.register_platform(
-    name="my_platform",
-    ...
-    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
-)
-```
-
-调度器在解析 `deliver=my_platform` 任务的主目标时会读取此环境变量，并将该平台视为 `_KNOWN_DELIVERY_PLATFORMS` 风格检查中的有效 cron 目标。如果你的 `env_enablement_fn` 填充了 `home_channel` 字典（见上文），则优先使用该值 — `cron_deliver_env_var` 是在环境变量填充之前运行的 cron 任务的回退方案。
-
-### 进程外 cron 投递
-
-`cron_deliver_env_var` 使你的平台成为可识别的 `deliver=` 目标。要在 cron 任务运行于独立进程（即 `hermes cron run` 与 `hermes gateway` 分离）时使实际发送成功，需注册 `standalone_sender_fn`：
+要在 cron 任务运行于独立进程（即 `hermes cron run` 与 `hermes gateway` 分离）时使实际发送成功，需注册 `standalone_sender_fn`：
 
 ```python
 async def _standalone_send(
@@ -312,7 +286,6 @@ async def _standalone_send(
 ctx.register_platform(
     name="my_platform",
     ...
-    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
     standalone_sender_fn=_standalone_send,
 )
 ```
@@ -345,10 +318,6 @@ requires_env:
     prompt: "Channel"
     password: false
 optional_env:
-  - name: MY_PLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery (defaults to MY_PLATFORM_CHANNEL)"
-    prompt: "Home channel (or empty)"
-    password: false
   - name: MY_PLATFORM_ALLOWED_USERS
     description: "Comma-separated user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
@@ -555,7 +524,7 @@ await self.handle_message(event)
 2. **`hermes_cli/gateway.py`** — 在 `_PLATFORMS` 列表中添加条目，包含 key、label、emoji、token_var、setup_instructions 和 vars
 3. **`hermes_cli/platforms.py`** — 添加带 label 和 default_toolset 的 `PlatformInfo` 条目（供 `skills_config` 和 `tools_config` TUI 使用）
 4. **`hermes_cli/setup.py`** — 添加 `_setup_newplat()` 函数（可委托给 `gateway.py`）并将元组添加到消息平台列表
-5. **`hermes_cli/status.py`** — 添加平台检测条目：`"NewPlat": ("NEWPLAT_TOKEN", "NEWPLAT_HOME_CHANNEL")`
+5. **`hermes_cli/status.py`** — 添加平台检测条目：`"NewPlat": "NEWPLAT_TOKEN"`
 6. **`hermes_cli/dump.py`** — 将 `"newplat": "NEWPLAT_TOKEN"` 添加到平台检测字典
 
 ### 7. 工具
