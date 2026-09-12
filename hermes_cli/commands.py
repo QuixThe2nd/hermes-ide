@@ -730,3 +730,21 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+# ``gateway/run.py`` telegramizes help-text command mentions through
+# ``from hermes_cli.commands import _sanitize_telegram_name`` — a path that predates the
+# commands_platforms split.  Re-export the real object lazily: commands_platforms imports
+# this module at its top, so an eager import here would be circular.  Chained onto the
+# PLUGIN-COMPAT ``__getattr__`` above; the ``globals().get`` capture keeps this hook
+# standing after that block is reverted away.
+_prev_module_getattr = globals().get("__getattr__")
+
+
+def __getattr__(name):  # PEP 562 — chained onto the PLUGIN-COMPAT hook above
+    if name == "_sanitize_telegram_name":
+        import importlib
+        return getattr(importlib.import_module("hermes_cli.commands_platforms"), name)
+    if _prev_module_getattr is not None:
+        return _prev_module_getattr(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
