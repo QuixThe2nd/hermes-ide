@@ -146,11 +146,7 @@ display:
 
 ## Cron / 通知推送
 
-```env
-LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
-```
-
-设置了 `deliver: line` 的 Cron 任务会路由至 `LINE_HOME_CHANNEL`。适配器内置独立的仅 Push 发送器，因此即使 cron 在独立进程中运行，也能正常工作。
+Cron 任务投递至显式的用户/群组/房间目标——例如 `hermes cron edit <id> --deliver line:Uxxxxxxxxxxxxxxxxxxxx`。适配器内置独立的仅 Push 发送器，因此即使 cron 在独立进程中运行，也能正常工作。
 
 ---
 
@@ -167,7 +163,6 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 | `LINE_ALLOWED_GROUPS` | 三选一 | — | 逗号分隔的群组 ID（C 开头） |
 | `LINE_ALLOWED_ROOMS` | 三选一 | — | 逗号分隔的房间 ID（R 开头） |
 | `LINE_ALLOW_ALL_USERS` | 仅开发环境 | `false` | 完全跳过白名单验证 |
-| `LINE_HOME_CHANNEL` | 否 | — | 默认 cron / 通知推送目标 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 否 | `45` | 触发 postback 按钮的等待秒数（`0` = 禁用） |
 | `LINE_PENDING_TEXT` | 否 | "🤔 Still thinking…" | postback 按钮旁显示的气泡文本 |
 | `LINE_BUTTON_LABEL` | 否 | "Get answer" | 按钮标签 |

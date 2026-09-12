@@ -48,7 +48,7 @@ For `/setcommands`, a useful starting set:
 ```
 help - Show help information
 new - Start a new conversation
-sethome - Set this chat as the home channel
+setnotify - Set this chat as the notification channel
 ```
 :::
 
@@ -348,16 +348,17 @@ The proxy applies to both the main Telegram connection and the fallback IP trans
 
 If the fallback IP discovery path is unhealthy on your host, set `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true` to keep cold connect on the plain `api.telegram.org` path. You can also bound DNS-over-HTTPS fallback discovery with `HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT` in seconds; the default is `5`.
 
-## Home Channel
+## Scheduled Delivery
 
-Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
-
-You can also set it manually in `~/.hermes/.env`:
+Cron jobs created with `/cron` in a Telegram chat deliver their results back to that chat (the job's captured origin). To deliver somewhere else — or when a job has no captured origin — set an explicit `platform:chat_id[:thread_id]` target:
 
 ```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="My Notes"
+hermes cron edit <id> --deliver telegram:-1001234567890
 ```
+
+A job whose `deliver` value resolves to no target records a delivery error telling you to set an explicit target; output is never silently dropped.
+
+Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination chat to designate it.
 
 :::tip
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
@@ -365,13 +366,13 @@ Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM c
 
 ### Cron deliveries in topic mode
 
-If you have topic mode enabled in your bot DM, cron messages delivered to the root chat land in the system-only lobby — replying there opens no session and you see the "main chat is reserved for system commands" notice. Create a dedicated forum topic (e.g. `Cron`) and set:
+If you have topic mode enabled in your bot DM, cron messages delivered to the root chat land in the system-only lobby — replying there opens no session and you see the "main chat is reserved for system commands" notice. Create a dedicated forum topic (e.g. `Cron`) and aim the job's delivery at it by appending the topic's thread ID:
 
 ```bash
-TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
+hermes cron edit <id> --deliver telegram:<chat_id>:<topic_thread_id>
 ```
 
-`TELEGRAM_CRON_THREAD_ID` overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron deliveries only. Replies in that topic continue the topic's existing session.
+Replies in that topic continue the topic's existing session.
 
 ## Voice Messages
 

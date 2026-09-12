@@ -44,7 +44,7 @@ Hermes Agent 与 Telegram 集成，作为功能完整的对话机器人。连接
 ```
 help - Show help information
 new - Start a new conversation
-sethome - Set this chat as the home channel
+setnotify - Set this chat as the notification channel
 ```
 :::
 
@@ -262,30 +262,31 @@ TELEGRAM_PROXY=socks5://127.0.0.1:1080
 
 代理同时适用于主 Telegram 连接和备用 IP 传输。如果未设置 Telegram 专用代理，gateway 会回退到 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（或 macOS 系统代理自动检测）。
 
-## 主频道
+## 定时投递
 
-在任意 Telegram 聊天（私聊或群组）中使用 `/sethome` 命令，将其指定为**主频道**。定时任务（cron 任务）的结果会投递到此频道。
-
-也可以在 `~/.hermes/.env` 中手动设置：
+在 Telegram 聊天中使用 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。要投递到其他位置 — 或任务没有捕获 origin 时 — 设置显式的 `platform:chat_id[:thread_id]` 目标：
 
 ```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="My Notes"
+hermes cron edit <id> --deliver telegram:-1001234567890
 ```
+
+`deliver` 值无法解析到目标的任务会记录一条投递错误，提示你设置显式目标；输出永远不会被静默丢弃。
 
 :::tip
 群聊 ID 是负数（例如 `-1001234567890`）。你的个人私聊 ID 与你的用户 ID 相同。
 :::
 
+Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标聊天中运行 `/setnotify` 指定它。
+
 ### 话题模式下的 Cron 投递
 
-如果你在机器人私聊中启用了话题模式，投递到根聊天的 cron 消息会落入仅限系统的大厅——在那里回复不会开启会话，你会看到"主聊天保留给系统命令"的提示。创建一个专用论坛话题（例如 `Cron`）并设置：
+如果你在机器人私聊中启用了话题模式，投递到根聊天的 cron 消息会落入仅限系统的大厅——在那里回复不会开启会话，你会看到"主聊天保留给系统命令"的提示。创建一个专用论坛话题（例如 `Cron`），并在任务的投递目标后附加该话题的 thread ID：
 
 ```bash
-TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
+hermes cron edit <id> --deliver telegram:<chat_id>:<topic_thread_id>
 ```
 
-`TELEGRAM_CRON_THREAD_ID` 仅针对 cron 投递覆盖 `TELEGRAM_HOME_CHANNEL_THREAD_ID`。在该话题中的回复会继续该话题的现有会话。
+在该话题中的回复会继续该话题的现有会话。
 
 ## 语音消息
 

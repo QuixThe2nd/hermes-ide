@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Змін немає."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Не вдалося зберегти головний канал: {error}"
-    success:               "✅ Головний канал встановлено на **{name}** (ID: {chat_id}).\nCron-завдання та міжплатформні повідомлення доставлятимуться сюди."
-    discord_pointer:       "💡 Хочете повне налаштування? `/sethomeserver` розгортає цілий домашній сервер — чат, пам'ять, квоти та швидкості — повністю підключений."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` працює лише в Discord — він створює категорії, канали та вебхуки Discord."
     relay_blocked:        "⚠️ Ця відповідь надійшла через ретранслятор, який не може автентифікувати цілі гільдій Discord. Запустіть `/sethomeserver` зі звичайного повідомлення Discord."

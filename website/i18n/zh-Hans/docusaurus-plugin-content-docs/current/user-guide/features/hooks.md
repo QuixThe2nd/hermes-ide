@@ -109,7 +109,7 @@ import httpx
 
 THRESHOLD = 10
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_HOME_CHANNEL")
+CHAT_ID = os.getenv("TELEGRAM_ALERT_CHAT_ID")  # 接收警报的聊天
 
 async def handle(event_type: str, context: dict):
     iteration = context.get("iteration", 0)

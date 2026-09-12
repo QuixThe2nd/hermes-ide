@@ -501,23 +501,6 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
 
-## Home Room
-
-You can designate a "home room" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
-
-### Using the Slash Command
-
-Type `/sethome` in any Matrix room where the bot is present. That room becomes the home room.
-If your Matrix client intercepts slash commands, type `!sethome` instead.
-
-### Manual Configuration
-
-Add this to your `~/.hermes/.env`:
-
-```bash
-MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
-```
-
 ## Room allowlist (`allowed_rooms`)
 
 Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.

@@ -844,8 +844,6 @@ def register(ctx):
         # 从环境变量自动填充 PlatformConfig.extra，使仅环境变量的设置
         # 在 `hermes gateway status` 中显示，无需 SDK 实例化。
         env_enablement_fn=_env_enablement,
-        # 启用 cron 投递：`deliver=myplatform` 路由到此变量。
-        cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
         emoji="💬",
         platform_hint="You are chatting via MyPlatform. Keep responses concise.",
     )
@@ -863,8 +861,8 @@ requires_env:
     description: "Bot token from the MyPlatform console"
     password: true
 optional_env:
-  - name: MYPLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery"
+  - name: MYPLATFORM_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
     password: false
 ```
 

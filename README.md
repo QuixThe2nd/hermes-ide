@@ -18,7 +18,7 @@ Start with a home server: a new Discord server for just you and your bot, then r
 
 The home_server plugin keeps that layout in sync. It checks at most hourly, but the template fingerprint bypasses the wait when the layout changes, so new or reordered channels appear straight away. It is idempotent, keeps categories and channels in template order, never deletes anything, renames legacy Quotas and Chat categories to Models and Lounges in place, and does not clobber existing home, notification, or rename targets.
 
-Notifications get their own category instead of everything landing in the home channel: `#model-fallback`, `#gateway-restarts`, and `#other`. The restarts channel doubles as a session counter: `#gateway-restarts` becomes `agents-N` while Hermes is running and `restarting-N-agents` while it drains, so you can see how many sessions are alive without opening another dashboard.
+Notifications get their own category instead of cluttering the lounges: `#model-fallback`, `#gateway-restarts`, and `#other`. The restarts channel doubles as a session counter: `#gateway-restarts` becomes `agents-N` while Hermes is running and `restarting-N-agents` while it drains, so you can see how many sessions are alive without opening another dashboard.
 
 Conversation uses an email-inspired structure. Chat lives in `#inbox` and `#outbox`. The outbox is where you start conversations and threads; the inbox contains conversations initiated by your agent. Agents can start conversations at any time using a tool, a post-run hook, or a cronjob, and they get another cronjob registered that automatically modifies how conversations are started, so your agent can give itself creative freedom. The goal of the inbox is to give your agent an outlet for unsolicited advice.
 
@@ -283,7 +283,7 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
 | Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
 | Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
-| Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
+| Platform-specific status       | `/platforms`                                  | `/status`, `/platform`                                                           |
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 

@@ -2191,7 +2191,7 @@ When `redact_pii` is `true`, the gateway redacts personally identifiable informa
 | Phone numbers (user ID on WhatsApp/Signal) | Hashed to `user_<12-char-sha256>` |
 | User IDs | Hashed to `user_<12-char-sha256>` |
 | Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
-| Home channel IDs | Numeric portion hashed |
+| Notification channel IDs | Numeric portion hashed |
 | User names / usernames | **Not affected** (user-chosen, publicly visible) |
 
 **Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.

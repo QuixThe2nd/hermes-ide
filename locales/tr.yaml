@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Değişiklik yok."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Ana kanal kaydedilemedi: {error}"
-    success:               "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
-    discord_pointer:       "💡 Tam kurulumu mu istiyorsunuz? `/sethomeserver` tüm ana sunucuyu — sohbet, bellek, kotalar ve hızlar — tamamen bağlanmış şekilde hazırlar."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` yalnızca Discord'da çalışır — Discord kategorileri, kanalları ve webhook'ları oluşturur."
     relay_blocked:        "⚠️ Bu mesaj, Discord sunucu hedeflerini doğrulayamayan bir aktarıcı üzerinden geldi. `/sethomeserver` komutunu yerel bir Discord mesajından çalıştırın."

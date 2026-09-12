@@ -240,7 +240,7 @@ Hermes Agent uses your Discord User ID to control who can interact with the bot.
 Your User ID is a long number like `284102345871466496`.
 
 :::tip
-Developer Mode also lets you copy **Channel IDs** and **Server IDs** the same way — right-click the channel or server name and select Copy ID. You'll need a Channel ID if you want to set a home channel manually.
+Developer Mode also lets you copy **Channel IDs** and **Server IDs** the same way — right-click the channel or server name and select Copy ID. You'll need a Channel ID when configuring explicit delivery targets (for example a cron job's `deliver` target or a `notification_channel`).
 :::
 
 ## Step 8: Configure Hermes Agent
@@ -293,8 +293,6 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
 | `DISCORD_ALLOW_ALL_USERS` | No | `false` | Explicit opt-in to allow every Discord user who can reach the bot. This restores the pre-0.18 open behavior for Discord only; use only for trusted/private guilds or development. |
 | `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
-| `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
-| `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
@@ -726,24 +724,11 @@ Click a numbered button to answer, or click **Other** to type a free-form respon
 
 The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
-## Home Channel
+## Proactive Delivery Targets
 
-You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
+Cron jobs and reminders deliver to an explicit target you configure per job — for example `hermes cron edit <id> --deliver discord:123456789012345678` (a channel ID copied with Developer Mode on).
 
-### Using the Slash Command
-
-Type `/sethome` in any Discord channel where the bot is present. That channel becomes the home channel.
-
-### Manual Configuration
-
-Add these to your `~/.hermes/.env`:
-
-```bash
-DISCORD_HOME_CHANNEL=123456789012345678
-DISCORD_HOME_CHANNEL_NAME="#bot-updates"
-```
-
-Replace the ID with the actual channel ID (right-click → Copy Channel ID with Developer Mode on).
+Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination channel to designate it, and `/clearnotify` to remove it.
 
 ## Voice Messages
 

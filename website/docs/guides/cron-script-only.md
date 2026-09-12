@@ -180,7 +180,6 @@ See the [cron feature reference](/user-guide/features/cron) for the full syntax.
 `--deliver` accepts everything the gateway knows about. Some common shapes:
 
 ```bash
---deliver telegram                       # platform home channel
 --deliver telegram:-1001234567890        # specific chat
 --deliver telegram:-1001234567890:17585  # specific Telegram forum topic
 --deliver discord:#ops
@@ -188,6 +187,8 @@ See the [cron feature reference](/user-guide/features/cron) for the full syntax.
 --deliver signal:+15551234567
 --deliver local                          # just save to ~/.hermes/cron/output/
 ```
+
+A bare platform name (`--deliver telegram`) resolves to nothing — every messaging target must name an explicit chat.
 
 No running gateway is required at script-run time for bot-token platforms (Telegram, Discord, Slack, Signal, SMS, WhatsApp) — the tool calls each platform's REST endpoint directly using the credentials already in `~/.hermes/.env` / `~/.hermes/config.yaml`.
 

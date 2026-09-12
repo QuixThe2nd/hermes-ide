@@ -157,9 +157,9 @@ Run `/usage` periodically to see your token consumption. Run `/insights` for a b
 
 ## Messaging Tips
 
-### Set a Home Channel
+### Name Explicit Delivery Targets
 
-Use `/sethome` in your preferred Telegram or Discord chat to designate it as the home channel. Cron job results and scheduled task outputs are delivered here. Without it, the agent has nowhere to send proactive messages.
+Cron job results and scheduled task outputs go to an explicit `platform:chat_id` target you set when creating the job (`--deliver telegram:-1001234567890`). For gateway shutdown/startup broadcasts, set a notification channel with `/setnotify` in the chat that should receive them.
 
 ### Use /title to Organize Sessions
 

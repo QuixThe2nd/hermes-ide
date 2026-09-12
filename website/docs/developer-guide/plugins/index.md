@@ -1450,8 +1450,6 @@ def register(ctx):
         # Auto-populate PlatformConfig.extra from env so env-only setups
         # show up in `hermes gateway status` without SDK instantiation.
         env_enablement_fn=_env_enablement,
-        # Opt in to cron delivery: `deliver=myplatform` routes to this var.
-        cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
         emoji="💬",
         platform_hint="You are chatting via MyPlatform. Keep responses concise.",
     )
@@ -1469,8 +1467,8 @@ requires_env:
     description: "Bot token from the MyPlatform console"
     password: true
 optional_env:
-  - name: MYPLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery"
+  - name: MYPLATFORM_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
     password: false
 ```
 

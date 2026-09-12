@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Nincs változás."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"
-    success:               "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."
-    discord_pointer:       "💡 A teljes beállítást szeretnéd? A `/sethomeserver` egy egész home szerveret létesít — csevegés, memória, kvóták és sebességek — mind bekötve."
-
   set_home_server:
     discord_only:         "⚠️ A `/sethomeserver` csak Discordon működik — Discord kategóriákat, csatornákat és webhookokat hoz létre."
     relay_blocked:        "⚠️ Ez az üzenet egy olyan relay-en érkezett, amely nem tudja hitelesíteni a Discord guild célokat. Futtasd a `/sethomeserver` parancsot natív Discord üzenetből."
