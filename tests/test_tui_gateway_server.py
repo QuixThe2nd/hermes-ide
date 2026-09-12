@@ -15233,7 +15233,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
         if home == profile_home:
             config.platforms[Platform.DISCORD] = PlatformConfig(
                 enabled=True,
-                home_channel=DeliveryTarget(
+                notification_channel=DeliveryTarget(
                     platform=Platform.DISCORD,
                     chat_id="discord-home",
                     name="Hermes / #chat-coding",
