@@ -254,8 +254,6 @@ class TestEnvConfigLoading:
         "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
         "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         "GOOGLE_APPLICATION_CREDENTIALS",
-        "GOOGLE_CHAT_HOME_CHANNEL",
-        "GOOGLE_CHAT_HOME_CHANNEL_NAME",
     )
 
     def _clean_env(self, monkeypatch):
@@ -1573,9 +1571,6 @@ class TestGoogleChatInteractiveSetup:
             ),
             "Path to Service Account JSON (or inline JSON)": "/tmp/sa.json",
             "Allowed user emails (comma-separated)": "alice@example.com, bob@example.com",
-            "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)": (
-                "spaces/AAAA"
-            ),
         }
 
         def fake_get_env_value(key):
@@ -1612,7 +1607,6 @@ class TestGoogleChatInteractiveSetup:
         )
         assert saved["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"] == "/tmp/sa.json"
         assert saved["GOOGLE_CHAT_ALLOWED_USERS"] == "alice@example.com,bob@example.com"
-        assert saved["GOOGLE_CHAT_HOME_CHANNEL"] == "spaces/AAAA"
 
 
 # ===========================================================================

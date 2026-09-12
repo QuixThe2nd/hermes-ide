@@ -1,10 +1,9 @@
-"""Tests for the Discord plugin's interactive_setup wizard home-channel flow.
+"""Tests for the Discord plugin's interactive_setup wizard.
 
 The interactive_setup wizard lazy-imports its CLI helpers from
 ``hermes_cli.config`` (get_env_value / save_env_value / remove_env_value) and
 ``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
-source modules. Covers the home-channel clear-on-blank behavior added in
-PR #58421 and extended in the follow-up.
+source modules.
 """
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
@@ -33,28 +32,8 @@ def _patch_setup_io(monkeypatch, prompts, saved, removed, existing, infos=None):
     monkeypatch.setattr(cli_output_mod, "print_info", _info)
 
 
-# Discord prompts: bot_token (password), allowed_users, home_channel.
-_PROMPTS_NONEMPTY = ["«redacted:discord-bot-token»", "", "123456789012345678"]
-_PROMPTS_BLANK = ["«redacted:discord-bot-token»", "", ""]
-_PROMPTS_WHITESPACE = ["«redacted:discord-bot-token»", "", "   "]
-
-
-class TestDiscordDeliveryTargetClear:
-    """Blank home-channel answer must clear DISCORD_HOME_CHANNEL (#12423)."""
-
-    def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch,
-            _PROMPTS_BLANK,
-            saved,
-            removed,
-            existing={"DISCORD_HOME_CHANNEL": "987654321098765432"},
-        )
-        interactive_setup()
-        assert "DISCORD_HOME_CHANNEL" in removed
-        assert "DISCORD_HOME_CHANNEL" not in saved
+# Discord prompts: bot_token (password), allowed_users.
+_PROMPTS_BLANK = ["«redacted:discord-bot-token»", ""]
 
 
 class TestDiscordSetupPrivilegedIntentsGuidance:
@@ -76,5 +55,3 @@ class TestDiscordSetupPrivilegedIntentsGuidance:
         assert "Message Content Intent" in joined
         assert "Privileged Gateway Intents" in joined
         assert "discord.com/developers/applications" in joined
-
-

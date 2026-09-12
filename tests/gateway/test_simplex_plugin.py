@@ -82,12 +82,10 @@ def test_is_connected_mirrors_validate(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_env_enablement_seeds_home_channel(monkeypatch):
+def test_env_enablement_seeds_ws_url(monkeypatch):
     monkeypatch.setenv("SIMPLEX_WS_URL", "ws://127.0.0.1:5225")
-    monkeypatch.setenv("SIMPLEX_HOME_CHANNEL", "42")
-    monkeypatch.setenv("SIMPLEX_HOME_CHANNEL_NAME", "Personal")
     seed = _env_enablement()
-    assert seed["home_channel"] == {"chat_id": "42", "name": "Personal"}
+    assert seed == {"ws_url": "ws://127.0.0.1:5225"}
 
 
 # ---------------------------------------------------------------------------

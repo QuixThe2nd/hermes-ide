@@ -29,7 +29,7 @@ def _run_setup_feishu(
     # QR path: method(0), dm(0), group(0) — 3 choices (no connection mode)
     # Manual path: method(1), domain(0), connection(0), dm(0), group(0) — 5 choices
     prompt_choice_responses = list(prompt_choice_responses or [0, 0, 0])
-    prompt_responses = list(prompt_responses or [""])
+    prompt_responses = list(prompt_responses or [])
 
     saved_env = {}
     removed_keys = []
@@ -91,7 +91,6 @@ class TestSetupFeishuQrPath:
             },
             prompt_yes_no_responses=[True],
             prompt_choice_responses=[0, 0, 0],
-            prompt_responses=[""],
         )
         assert "FEISHU_BOT_OPEN_ID" not in env
         assert "FEISHU_BOT_NAME" not in env
@@ -110,7 +109,7 @@ class TestSetupFeishuConnectionMode:
         env, _ = _run_setup_feishu(
             qr_result=None,
             prompt_choice_responses=[1, 0, 0, 0, 0],  # method=manual, domain=feishu, connection=ws, dm=pairing, group=open
-            prompt_responses=["cli_manual", "secret_manual", ""],  # app_id, app_secret, home_channel
+            prompt_responses=["cli_manual", "secret_manual"],  # app_id, app_secret
         )
         assert env["FEISHU_CONNECTION_MODE"] == "websocket"
 
@@ -130,13 +129,13 @@ class TestSetupFeishuDmPolicy:
             },
             prompt_yes_no_responses=[True],
             prompt_choice_responses=[0, dm_choice_idx, 0],  # method=QR, dm=<choice>, group=open
-            prompt_responses=prompt_responses or [""],
+            prompt_responses=prompt_responses,
         )
         return env
 
 
     def test_allowlist_sets_feishu_allow_all_false_with_list(self):
-        env = self._run_with_dm_choice(2, prompt_responses=["ou_user1,ou_user2", ""])
+        env = self._run_with_dm_choice(2, prompt_responses=["ou_user1,ou_user2"])
         assert env["FEISHU_ALLOW_ALL_USERS"] == "false"
         assert env["FEISHU_ALLOWED_USERS"] == "ou_user1,ou_user2"
         assert "GATEWAY_ALLOW_ALL_USERS" not in env
@@ -156,31 +155,8 @@ class TestSetupFeishuGroupPolicy:
             },
             prompt_yes_no_responses=[True],
             prompt_choice_responses=[0, 0, 0],  # method=QR, dm=pairing, group=open
-            prompt_responses=[""],
         )
         assert env["FEISHU_GROUP_POLICY"] == "open"
-
-
-# ---------------------------------------------------------------------------
-# Home channel (optional clear — Issue #12423)
-# ---------------------------------------------------------------------------
-
-class TestSetupFeishuDeliveryTarget:
-    """Blank home-channel answer must clear FEISHU_HOME_CHANNEL."""
-
-    def test_blank_removes_existing_home_channel(self):
-        env, removed = _run_setup_feishu(
-            qr_result={
-                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
-                "open_id": None, "bot_name": None, "bot_open_id": None,
-            },
-            prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, 0, 0],
-            prompt_responses=[""],
-            existing_env={"FEISHU_HOME_CHANNEL": "chat_old"},
-        )
-        assert "FEISHU_HOME_CHANNEL" in removed
-        assert "FEISHU_HOME_CHANNEL" not in env
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +183,6 @@ class TestSetupFeishuAdapterIntegration:
             },
             prompt_yes_no_responses=[True],
             prompt_choice_responses=[0, dm_idx, group_idx],  # method=QR, dm, group
-            prompt_responses=[""],
         )
         return env
 
