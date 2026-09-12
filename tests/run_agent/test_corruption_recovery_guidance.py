@@ -10,7 +10,7 @@ empty.
 The fix adds:
 1. _session_db_init_error attribute on GatewayRunner, set when init fails
 2. _send_session_db_warning_notifications() — broadcasts a recovery-guidance
-   message to all home channels after the gateway connects
+   message to all notification channels after the gateway connects
 3. Improved "corrupt" cause wording in _format_turn_completion_explanation
    with the full recovery path (hermes doctor, sqlite3 .recover, backups)
 """
@@ -41,24 +41,38 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     import asyncio
 
     import gateway.run as gateway_run
+    from gateway.config import DeliveryTarget, GatewayConfig, Platform, PlatformConfig
 
     custom_home = tmp_path / "custom-hermes-home"
     monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
 
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"
-    sent = []
-    monkeypatch.setattr(
-        runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())]
+    runner.adapters = {}
+    config = GatewayConfig()
+    config.platforms[Platform.TELEGRAM] = PlatformConfig(
+        enabled=True,
+        notification_channel=DeliveryTarget(
+            platform=Platform.TELEGRAM, chat_id="ops-chat", name="Ops"
+        ),
     )
+    runner.config = config
+    sent = []
 
-    async def _capture_send(_platform, _home, _transport, message, _log_fmt):
-        sent.append(message)
+    class _Transport:
+        is_relay = False
 
-    monkeypatch.setattr(runner, "_send_home_channel_message", _capture_send)
+        class adapter:
+            @staticmethod
+            async def send(chat_id, message):
+                sent.append(message)
+
+    monkeypatch.setattr(
+        gateway_run, "resolve_delivery_transport", lambda *a, **k: _Transport()
+    )
     asyncio.run(runner._send_session_db_warning_notifications())
 
-    assert sent, "warning must be broadcast to home channels"
+    assert sent, "warning must be broadcast to notification channels"
     assert f"{custom_home / 'backups'}" in sent[0]
     assert "~/.hermes/backups" not in sent[0]
 
