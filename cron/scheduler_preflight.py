@@ -245,8 +245,9 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 if not platform:
                     return (
                         f"deliver target '{part}' does not resolve to a parent chat "
-                        "target (missing parent chat id, unknown platform, or no "
-                        "configured home-channel match). Fix the job's `deliver` value."
+                        "target (missing parent chat id, unknown platform, or a bare "
+                        "token whose parent is not the job's origin chat). Fix the "
+                        "job's `deliver` value."
                     )
                 platform_parts.append(platform)
                 continue
