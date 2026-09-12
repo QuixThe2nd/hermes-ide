@@ -67,7 +67,7 @@ else:
 Set up the cron job:
 
 ```bash
-/cron add "every 1h" "If the script output says CHANGE DETECTED, summarize what changed on the page and why it might matter. If it says NO_CHANGE, respond with just [SILENT]." --script ~/.hermes/scripts/watch-site.py --name "Pricing monitor" --deliver telegram
+/cron add "every 1h" "If the script output says CHANGE DETECTED, summarize what changed on the page and why it might matter. If it says NO_CHANGE, respond with just [SILENT]." --script ~/.hermes/scripts/watch-site.py --name "Pricing monitor" --deliver telegram:-1001234567890
 ```
 
 :::tip The [SILENT] Trick
@@ -82,7 +82,7 @@ For cron monitoring jobs, instruct the agent to respond with only `[SILENT]` whe
 
 ## Pattern 2: Weekly Report
 
-Compile information from multiple sources into a formatted summary. This runs once a week and delivers to your home channel.
+Compile information from multiple sources into a formatted summary. This runs once a week and delivers to a Telegram group you name explicitly.
 
 ```bash
 /cron add "0 9 * * 1" "Generate a weekly report covering:
@@ -92,7 +92,7 @@ Compile information from multiple sources into a formatted summary. This runs on
 3. Check Hacker News for the most discussed AI/ML posts
 
 Format as a clean summary with sections for each source. Include links.
-Keep it under 500 words — highlight only what matters." --name "Weekly AI digest" --deliver telegram
+Keep it under 500 words — highlight only what matters." --name "Weekly AI digest" --deliver telegram:-1001234567890
 ```
 
 From the CLI:
@@ -101,7 +101,7 @@ From the CLI:
 hermes cron create "0 9 * * 1" \
   "Generate a weekly report covering the top AI news, trending ML GitHub repos, and most-discussed HN posts. Format with sections, include links, keep under 500 words." \
   --name "Weekly AI digest" \
-  --deliver telegram
+  --deliver telegram:-1001234567890
 ```
 
 The `0 9 * * 1` is a standard cron expression: 9:00 AM every Monday.
@@ -123,7 +123,7 @@ Use the terminal to run gh commands:
   gh pr list --repo NousResearch/hermes-agent --state all --json number,title,author,createdAt,mergedAt --limit 10
 
 Filter to only items from the last 6 hours. If nothing new, respond with [SILENT].
-Otherwise, provide a concise summary of the activity." --name "Repo watcher" --deliver discord
+Otherwise, provide a concise summary of the activity." --name "Repo watcher" --deliver discord:123456789012345678
 ```
 
 :::warning Self-Contained Prompts
@@ -175,7 +175,7 @@ If prices are flat and nothing notable, respond with [SILENT].
 If there's a significant move, explain what happened." \
   --script ~/.hermes/scripts/collect-prices.py \
   --name "Price tracker" \
-  --deliver telegram
+  --deliver telegram:-1001234567890
 ```
 
 The script does the mechanical collection; the agent adds the reasoning layer.
@@ -245,13 +245,12 @@ The `--deliver` flag controls where results go:
 |--------|---------|----------|
 | `origin` | `--deliver origin` | Same chat that created the job (default) |
 | `local` | `--deliver local` | Save to local file only |
-| `telegram` | `--deliver telegram` | Your Telegram home channel |
-| `discord` | `--deliver discord` | Your Discord home channel |
-| `slack` | `--deliver slack` | Your Slack home channel |
 | Specific chat | `--deliver telegram:-1001234567890` | A specific Telegram group |
 | Threaded | `--deliver telegram:-1001234567890:17585` | A specific Telegram topic thread |
 | Bot Chat | `--deliver bot-chat` | Inject output into this profile's canonical Bot Chat — the bot reads it and responds |
 | Bot Chat (named) | `--deliver bot-chat:research` | Another local profile's Bot Chat |
+
+Every messaging target must name an explicit chat — a bare platform name (`--deliver telegram`) resolves to nothing and the job records a delivery error telling you to set an explicit `platform:chat_id[:thread_id]` target (`hermes cron edit <id> --deliver ...`).
 
 ### Bot Chat delivery
 
@@ -268,8 +267,8 @@ Things to know:
   profiles on other gateways/machines cannot be targeted.
 - **Costs a bot turn.** Each delivery runs a full agent turn in the target
   bot's Bot Chat — budget accordingly for high-frequency jobs.
-- **Combinable.** `--deliver bot-chat,telegram` posts to the bot AND your
-  Telegram home channel. The `all` token never expands to bot-chat targets.
+- **Combinable.** `--deliver bot-chat,telegram:-1001234567890` posts to the bot
+  AND your Telegram group. The `all` token never expands to bot-chat targets.
 - The delivered message is prefixed so the bot knows it came from a scheduled
   job, not from you.
 

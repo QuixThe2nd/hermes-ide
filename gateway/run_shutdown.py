@@ -900,7 +900,7 @@ class GatewayShutdownMixin:
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
     ) -> bool:
         """Send one shutdown notice; True when delivered. Failures are debug-logged, never raised."""
-        where = "home channel " if kind == "home channel" else ""
+        where = "notification channel " if kind == "notification channel" else ""
         fail_fmt = f"Failed to send shutdown notification to {where}%s:%s: %s"
         if not await self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs):
             return False
@@ -924,7 +924,7 @@ class GatewayShutdownMixin:
         return True
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
-        """Send shutdown/restart notifications to active chats and home channels.
+        """Send shutdown/restart notifications to active chats and notification channels.
 
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
@@ -970,38 +970,38 @@ class GatewayShutdownMixin:
             if await self._send_shutdown_notice(adapter, chat_id, msg, "active chat", platform_str, metadata=metadata):
                 notified.add(dedup_key)
         if self._restart_requested and restart_source is not None:
-            logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
+            logger.debug("Skipping notification-channel shutdown broadcasts for in-chat restart")
             return
-        # A quiet drain (routine fleet auto-update) suppresses ONLY the home-channel broadcast; per-session
+        # A quiet drain (routine fleet auto-update) suppresses ONLY the notification-channel broadcast; per-session
         # pings above stay. Current-epoch marker only; a failing check fails toward the louder behaviour.
         with _log_suppressed(logging.DEBUG, "drain_notification_suppressed check failed: %s"):
             from gateway.drain_control import drain_notification_suppressed
             if drain_notification_suppressed():
                 logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
+                    "Notification-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
         # Snapshot adapters: adapter.send() can hit a fatal path (_handle_fatal) that pops the adapter
         # from self.adapters -> ``RuntimeError: dictionary changed size during iteration``.
         for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
-            if not home or not home.chat_id:
+            channel = self.config.get_notification_channel(platform)
+            if not channel or not channel.chat_id:
                 continue
-            if not self._notice_allowed(platform, "home channel"):
+            if not self._notice_allowed(platform, "notification channel"):
                 continue
-            dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
+            dedup_key = _notice_target_key(platform.value, channel.chat_id, channel.thread_id)
             if dedup_key in notified:
                 continue
             try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
+                metadata = self._thread_metadata_for_target(platform, channel.chat_id, channel.thread_id, adapter=adapter)
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
+                    "Failed to send shutdown notification to notification channel %s:%s: %s", platform.value, channel.chat_id, e,
                 )
                 continue
-            # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
+            # Notification channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
             if await self._send_shutdown_notice(
-                adapter, str(home.chat_id), msg, "home channel", platform.value,
+                adapter, str(channel.chat_id), msg, "notification channel", platform.value,
                 **({"metadata": metadata} if metadata else {}),
             ):
                 notified.add(dedup_key)

@@ -137,7 +137,7 @@ def _cmd_validate(args) -> None:
             issues.append("TEAMS_GRAPH_ACCESS_TOKEN or complete MSGRAPH_* app credentials is required for graph delivery mode.")
         if not teams_extra.get("team_id"):
             issues.append("TEAMS_TEAM_ID is required for graph delivery mode.")
-        if not (teams_extra.get("channel_id") or teams_extra.get("chat_id") or teams_config.home_channel):
+        if not (teams_extra.get("channel_id") or teams_extra.get("chat_id")):
             issues.append("TEAMS_CHANNEL_ID is required for graph delivery mode.")
     else:
         warnings.append("TEAMS_DELIVERY_MODE is not set.")

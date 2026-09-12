@@ -445,7 +445,7 @@ def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> 
             lines.append(f"{plat_name.title()}:")
             lines.append(
                 f"  (no channels discovered yet — send directly with "
-                f"{plat_name}:<chat_id>, or bare '{plat_name}' for the home channel)"
+                f"{plat_name}:<chat_id>)"
             )
         elif plat_name == "discord":
             # Group Discord channels by guild (sorted by name); DMs last, in discovery order.
@@ -464,5 +464,4 @@ def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> 
             lines.extend(f"  {plat_name}:{_channel_target_name(plat_name, ch)}" for ch in channels)
         lines.append("")
     lines.append('Use these as the "target" parameter when sending.')
-    lines.append('Bare platform name (e.g. "telegram") sends to home channel.')
     return "\n".join(lines)

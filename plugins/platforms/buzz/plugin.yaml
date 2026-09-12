@@ -34,10 +34,6 @@ optional_env:
     description: "Comma-separated channel UUIDs to watch (default: all joined channels)"
     prompt: "Channel UUIDs (comma-separated)"
     password: false
-  - name: BUZZ_HOME_CHANNEL
-    description: "Channel UUID for cron / notification delivery (defaults to the first watched channel)"
-    prompt: "Home channel UUID (or empty)"
-    password: false
   - name: BUZZ_ALLOWED_USERS
     description: "Comma-separated npubs or hex pubkeys allowed to talk to the agent"
     prompt: "Allowed users (comma-separated)"

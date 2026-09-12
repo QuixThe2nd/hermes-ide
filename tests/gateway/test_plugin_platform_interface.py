@@ -130,3 +130,22 @@ def test_platform_entry_has_required_fields(platform_name: str, clean_registry):
         assert callable(entry.setup_fn)
 
 
+def test_cron_deliver_env_var_is_accepted_and_ignored(caplog):
+    """The deprecated home-channel kwarg must not TypeError in register_platform
+    forwarding; the entry registers, warns once, and the field stays inert."""
+    import logging as _logging
+    from gateway.platform_registry import PlatformEntry
+
+    with caplog.at_level(_logging.WARNING, logger="gateway.platform_registry"):
+        entry = PlatformEntry(
+            name="x", label="x", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            cron_deliver_env_var="X_HOME_ROOM",
+        )
+        PlatformEntry(
+            name="y", label="y", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            cron_deliver_env_var="Y_HOME_ROOM",
+        )
+    assert entry.cron_deliver_env_var == "X_HOME_ROOM"
+    deprecations = [r for r in caplog.records if "cron_deliver_env_var" in r.getMessage()]
+    assert len(deprecations) == 1, "warning must fire once per process, not per platform"
+    assert "platform:chat_id" in deprecations[0].getMessage()

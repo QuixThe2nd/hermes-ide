@@ -454,8 +454,8 @@ class GatewayAdapterLifecycleMixin:
 
     async def _handoff_watcher(self, interval: float = 2.0, drain_timeout: float = 30.0) -> None:
         """Process pending CLI→gateway session handoffs from ``state.db``: claim atomically (pending
-        → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
-        ``completed``/``failed``."""
+        → running), dispatch a synthetic event to the platform's notification channel bound to the
+        CLI session_id, mark ``completed``/``failed``."""
         from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, _reclaim_stale
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.

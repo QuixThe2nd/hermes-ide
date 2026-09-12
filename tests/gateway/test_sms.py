@@ -17,28 +17,6 @@ from gateway.config import Platform, PlatformConfig
 
 # ── Config loading ──────────────────────────────────────────────────
 
-class TestSmsConfigLoading:
-    """Verify _apply_env_overrides wires SMS correctly."""
-
-
-    def test_env_overrides_set_home_channel(self):
-        from gateway.config import load_gateway_config
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest123",
-            "TWILIO_AUTH_TOKEN": "token_abc",
-            "TWILIO_PHONE_NUMBER": "+15551234567",
-            "SMS_HOME_CHANNEL": "+15559876543",
-            "SMS_HOME_CHANNEL_NAME": "My Phone",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            config = load_gateway_config()
-            hc = config.platforms[Platform.SMS].home_channel
-            assert hc is not None
-            assert hc.chat_id == "+15559876543"
-            assert hc.name == "My Phone"
-            assert hc.platform == Platform.SMS
-
 # ── Format / truncate ───────────────────────────────────────────────
 
 class TestSmsFormatAndTruncate:

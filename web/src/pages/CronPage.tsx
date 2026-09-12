@@ -358,14 +358,13 @@ function CronJobFormFields({
 
   const deliveryOptions = selectOptions(
     form.deliver,
-    deliveryTargets.map((target) => {
-      const base = target.id === "local" ? t.cron.delivery.local : target.name;
-      if (target.id !== "local" && !target.home_target_set) {
-        const hint = t.cron.delivery.needsHomeChannel ?? "set a home channel first";
-        return { value: target.id, label: `${base} — ${hint}` };
-      }
-      return { value: target.id, label: base };
-    }),
+    deliveryTargets.map((target) => ({
+      value: target.id,
+      label: target.id === "local" ? t.cron.delivery.local : target.name,
+    })),
+  );
+  const deliverIsPreset = deliveryTargets.some(
+    (target) => target.id === form.deliver,
   );
 
   return (
@@ -406,6 +405,18 @@ function CronJobFormFields({
         >
           {deliveryOptions}
         </Select>
+        {/* Free-text explicit target: presets above cover local / Bot Chat; anything
+            else (platform:chat_id[:thread_id], comma lists) is typed here. */}
+        <Input
+          id={`${idPrefix}-deliver-custom`}
+          aria-label={t.cron.delivery.customTarget ?? "Custom delivery target"}
+          placeholder={
+            t.cron.delivery.customTarget ??
+            "Custom target: platform:chat_id[:thread_id] (comma-separate several)"
+          }
+          value={deliverIsPreset ? "" : form.deliver}
+          onChange={(e) => update("deliver", e.target.value)}
+        />
         {onlyLocalAvailable && (
           <p className="text-xs text-muted-foreground">
             {t.cron.delivery.noneConfigured ??
@@ -582,7 +593,7 @@ export default function CronPage() {
     onClose: closeCreateModal,
   });
   const [deliveryTargets, setDeliveryTargets] = useState<CronDeliveryTarget[]>([
-    { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+    { id: "local", name: "Local" },
   ]);
   const [creating, setCreating] = useState(false);
 
@@ -659,9 +670,7 @@ export default function CronPage() {
       .then((res) => setDeliveryTargets(res.targets))
       .catch(() =>
         // Fall back to local-only so the modal still works if the endpoint fails.
-        setDeliveryTargets([
-          { id: "local", name: "Local", home_target_set: true, home_env_var: null },
-        ]),
+        setDeliveryTargets([{ id: "local", name: "Local" }]),
       );
   }, []);
 

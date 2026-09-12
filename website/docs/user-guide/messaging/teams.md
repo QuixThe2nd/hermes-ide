@@ -165,8 +165,6 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
 | `TEAMS_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to use the bot |
 | `TEAMS_ALLOW_ALL_USERS` | Set `true` to skip the allowlist and allow anyone |
-| `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
-| `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 
 ### config.yaml

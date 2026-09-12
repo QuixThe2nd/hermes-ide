@@ -953,18 +953,17 @@ function CronJobRuns({
 }
 
 // Label a cron delivery target: 'local' → localized "This desktop", known
-// platforms → their delivery label, anything else → the backend name. Configured
-// platforms without a cron home channel get a "set a home channel first" hint.
+// platforms → their delivery label, anything else → the backend name.
 function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron']): string {
-  const base = target.id === 'local' ? c.deliveryLabels.local : (c.deliveryLabels[target.id] ?? target.name)
-
-  return target.id !== 'local' && !target.home_target_set ? `${base} — ${c.deliverNeedsHomeChannel}` : base
+  return target.id === 'local' ? c.deliveryLabels.local : (c.deliveryLabels[target.id] ?? target.name)
 }
 
 // The delivery-target checkbox group, shared by the manual cron editor and the
 // blueprint form. The scheduler accepts comma-separated targets, so users can
 // keep results local while also sending them to connected platforms. Preserve
-// selected targets missing from discovery so editing never drops a saved route.
+// selected targets missing from discovery so editing never drops a saved route;
+// the trailing input feeds explicit platform:chat_id[:thread_id] targets into
+// the same deliver string (comma-separated lists are valid).
 export function DeliverCheckboxes({
   c,
   id,
@@ -985,8 +984,18 @@ export function DeliverCheckboxes({
     ...targets,
     ...selected
       .filter(target => !knownIds.has(target))
-      .map(target => ({ home_env_var: null, home_target_set: true, id: target, name: target }))
+      .map(target => ({ id: target, name: target }))
   ]
+
+  // Free-text portion: every selected target that is not a checkbox preset.
+  // Rewriting it rewrites exactly that portion — checked presets survive, and
+  // unknown tokens keep their preserved checkboxes above while typed.
+  const customValue = selected.filter(target => !knownIds.has(target)).join(',')
+  const onCustomChange = (next: string) => {
+    const presets = selected.filter(target => knownIds.has(target))
+    const customs = next.split(',').map(part => part.trim()).filter(Boolean)
+    onChange([...new Set([...presets, ...customs])].join(','))
+  }
 
   return (
     <div
@@ -1010,6 +1019,13 @@ export function DeliverCheckboxes({
           </label>
         )
       })}
+      <Input
+        aria-label={c.deliverCustomTarget}
+        id={`${id}-custom`}
+        onChange={event => onCustomChange(event.target.value)}
+        placeholder={c.deliverCustomTarget}
+        value={customValue}
+      />
     </div>
   )
 }

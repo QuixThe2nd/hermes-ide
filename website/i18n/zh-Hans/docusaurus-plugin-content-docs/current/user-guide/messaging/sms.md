@@ -53,9 +53,6 @@ TWILIO_PHONE_NUMBER=+15551234567
 
 # 安全：限制特定电话号码（推荐）
 SMS_ALLOWED_USERS=+15559876543,+15551112222
-
-# 可选：为 cron 任务投递设置主频道
-SMS_HOME_CHANNEL=+15559876543
 ```
 
 ---
@@ -130,8 +127,6 @@ hermes gateway
 | `SMS_INSECURE_NO_SIGNATURE` | 否 | 设为 `true` 可禁用签名验证（仅限本地开发——**不适用于生产环境**） |
 | `SMS_ALLOWED_USERS` | 否 | 允许聊天的 E.164 格式电话号码，逗号分隔 |
 | `SMS_ALLOW_ALL_USERS` | 否 | 设为 `true` 允许所有人（不推荐） |
-| `SMS_HOME_CHANNEL` | 否 | 用于 cron 任务／通知投递的电话号码 |
-| `SMS_HOME_CHANNEL_NAME` | 否 | 主频道的显示名称（默认：`Home`） |
 
 ---
 

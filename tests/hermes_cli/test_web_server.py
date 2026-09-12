@@ -1431,8 +1431,8 @@ class TestWebServerEndpoints:
         gateway vars belong to the Keys page.
 
         Uses credentials as the example: the self-configuring knobs
-        (*_HOME_CHANNEL, *_ALLOW_ALL_USERS, …) were deliberately dropped from
-        the setup cards and handed back to Keys — see
+        (*_ALLOW_ALL_USERS, *_REPLY_TO_MODE, …) were deliberately dropped
+        from the setup cards and handed back to Keys — see
         tests/hermes_cli/test_setup_hidden_env.py.
         """
         from hermes_cli.web_server_messaging import _MESSAGING_KEYS_PAGE_KEYS, _build_catalog_entry, _channel_managed_env_keys

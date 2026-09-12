@@ -118,20 +118,30 @@ def make_restart_runner(
     runner._handle_active_session_busy_message = (
         GatewayRunner._handle_active_session_busy_message.__get__(runner, GatewayRunner)
     )
+    # The upstream merge that folded the restart flow into the monolithic
+    # runner dropped GatewayRunner.begin_user_restart while callers and these
+    # bindings survived; bind defensively so helper consumers don't crash.
+    _begin_user_restart = getattr(GatewayRunner, "begin_user_restart", None)
+    if _begin_user_restart is not None:
+        runner.begin_user_restart = _begin_user_restart.__get__(runner, GatewayRunner)
+    _stage_and_promote = getattr(GatewayRunner, "_stage_and_promote_restart_marker", None)
+    if _stage_and_promote is not None:
+        runner._stage_and_promote_restart_marker = _stage_and_promote.__get__(
+            runner, GatewayRunner
+        )
+    _rollback_aborted = getattr(GatewayRunner, "_rollback_aborted_user_restart", None)
+    if _rollback_aborted is not None:
+        runner._rollback_aborted_user_restart = _rollback_aborted.__get__(
+            runner, GatewayRunner
+        )
     runner._handle_restart_command = GatewayRunner._handle_restart_command.__get__(
-        runner, GatewayRunner
-    )
-    runner._is_stale_restart_redelivery = (
-        GatewayRunner._is_stale_restart_redelivery.__get__(runner, GatewayRunner)
-    )
-    runner._handle_set_home_command = GatewayRunner._handle_set_home_command.__get__(
         runner, GatewayRunner
     )
     runner._send_restart_notification = GatewayRunner._send_restart_notification.__get__(
         runner, GatewayRunner
     )
-    runner._send_home_channel_startup_notifications = (
-        GatewayRunner._send_home_channel_startup_notifications.__get__(runner, GatewayRunner)
+    runner._send_notification_channel_startup_notifications = (
+        GatewayRunner._send_notification_channel_startup_notifications.__get__(runner, GatewayRunner)
     )
     runner._status_action_label = GatewayRunner._status_action_label.__get__(
         runner, GatewayRunner

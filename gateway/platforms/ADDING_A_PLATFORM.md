@@ -17,7 +17,7 @@ status display, gateway setup, and more.
 **Optional hooks cover the edges most adapters need:**
 
 - `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`
-  (and an optional `home_channel` dict) from env vars BEFORE the adapter is
+  from env vars BEFORE the adapter is
   constructed.  Without this, env-only setups don't surface in
   `hermes gateway status` or `get_connected_platforms()` until the SDK
   instantiates.
@@ -29,14 +29,12 @@ status display, gateway setup, and more.
   preserve env > YAML precedence); the returned dict is merged into
   `PlatformConfig.extra`.  Called during `load_gateway_config()` after
   the generic shared-key loop and before `_apply_env_overrides()`.
-- `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
-  set, `deliver=<name>` cron jobs route to this var without editing
-  `cron/scheduler.py`'s hardcoded sets.
 - `standalone_sender_fn: async (...) -> dict`: out-of-process delivery
   for cron jobs that run separately from the gateway.  Without this, a
   `deliver=<name>` job fires correctly but the actual send returns
-  `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
-  for end-to-end cron support.  See the docsite for the signature.
+  `No live adapter for platform '<name>'`.  Jobs must still name an
+  explicit `deliver=platform:chat_id` target.  See the docsite for the
+  signature.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.
@@ -324,7 +322,7 @@ Add to the `platforms` dict in the Messaging Platforms section:
 ```python
 platforms = {
     ...
-    "Your Platform": ("YOUR_PLATFORM_TOKEN", "YOUR_PLATFORM_HOME_CHANNEL"),
+    "Your Platform": "YOUR_PLATFORM_TOKEN",
 }
 ```
 

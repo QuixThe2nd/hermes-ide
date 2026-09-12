@@ -189,7 +189,6 @@ TIPS = [
     "The API server exposes an OpenAI-compatible endpoint compatible with Open WebUI and LibreChat.",
     "Discord voice channel mode: the bot joins VC, transcribes speech, and talks back.",
     "group_sessions_per_user: true gives each person their own session in group chats.",
-    "/sethome marks a chat as the home channel for cron job deliveries.",
     "The gateway supports inactivity-based timeouts — active agents can run indefinitely.",
     # --- Security ---
     "Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.",

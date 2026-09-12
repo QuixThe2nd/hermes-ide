@@ -223,7 +223,7 @@ webhooks:
         message_thread_id: "42"
 ```
 
-若 `deliver_extra` 中未提供 `chat_id`，则回退到目标平台配置的主频道。
+若 `deliver_extra` 中未提供 `chat_id`，投递会以“no delivery target”错误失败——请始终为目标平台设置显式 `chat_id`。
 
 ---
 
@@ -301,23 +301,23 @@ platforms:
 |-------------|-------------|
 | `log` | 将响应记录到 gateway 日志输出。这是默认值，适合测试使用。 |
 | `github_comment` | 通过 `gh` CLI 将响应作为 PR/issue 评论发布。需要 `deliver_extra.repo` 和 `deliver_extra.pr_number`。`gh` CLI 必须安装并在 gateway 主机上完成认证（`gh auth login`）。 |
-| `telegram` | 将响应路由到 Telegram。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `discord` | 将响应路由到 Discord。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `slack` | 将响应路由到 Slack。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `signal` | 将响应路由到 Signal。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `sms` | 通过 Twilio 将响应路由到 SMS。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `whatsapp` | 将响应路由到 WhatsApp。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `matrix` | 将响应路由到 Matrix。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `mattermost` | 将响应路由到 Mattermost。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `homeassistant` | 将响应路由到 Home Assistant。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `email` | 将响应路由到 Email。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `dingtalk` | 将响应路由到 DingTalk。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `feishu` | 将响应路由到 Feishu/Lark。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `wecom` | 将响应路由到 WeCom。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `weixin` | 将响应路由到 Weixin（微信）。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `bluebubbles` | 将响应路由到 BlueBubbles（iMessage）。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
+| `telegram` | 将响应路由到 Telegram。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `discord` | 将响应路由到 Discord。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `slack` | 将响应路由到 Slack。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `signal` | 将响应路由到 Signal。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `sms` | 通过 Twilio 将响应路由到 SMS。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `whatsapp` | 将响应路由到 WhatsApp。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `matrix` | 将响应路由到 Matrix。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `mattermost` | 将响应路由到 Mattermost。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `homeassistant` | 将响应路由到 Home Assistant。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `email` | 将响应路由到 Email。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `dingtalk` | 将响应路由到 DingTalk。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `feishu` | 将响应路由到 Feishu/Lark。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `wecom` | 将响应路由到 WeCom。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `weixin` | 将响应路由到 Weixin（微信）。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `bluebubbles` | 将响应路由到 BlueBubbles（iMessage）。在 `deliver_extra` 中指定目标 `chat_id`。 |
 
-跨平台投递时，目标平台也必须在 gateway 中启用并连接。若 `deliver_extra` 中未提供 `chat_id`，响应将发送到该平台配置的主频道。
+跨平台投递时，目标平台也必须在 gateway 中启用并连接。`deliver_extra` 中的目标 `chat_id` 为必填——缺少时投递会以“no delivery target”错误失败。
 
 ---
 

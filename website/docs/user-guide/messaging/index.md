@@ -214,7 +214,6 @@ platform network disconnect as an event-loop failure.
 | `/stop` | Stop the running agent |
 | `/approve` | Approve a pending dangerous command |
 | `/deny` | Reject a pending dangerous command |
-| `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
 | `/title [name]` | Set or show the session title |
 | `/resume [name]` | Resume a previously named session |
@@ -715,7 +714,7 @@ Explicit per-platform proxy variables (`DISCORD_PROXY`, `TELEGRAM_PROXY`,
 
 ### Automatic circuit breaker
 
-Each adapter is wrapped in a circuit breaker. Repeated retryable failures (network blips, rate-limit replies, 5xx upstream responses, websocket disconnects) cause the breaker to trip — the adapter is auto-paused, an operator notification is sent to the home channel of another live platform when one is configured, and a structured log line is emitted.
+Each adapter is wrapped in a circuit breaker. Repeated retryable failures (network blips, rate-limit replies, 5xx upstream responses, websocket disconnects) cause the breaker to trip — the adapter is auto-paused and a structured log line is emitted.
 
 The breaker does **not** auto-resume — it stays open until you run `/platform resume <name>` manually. This is intentional: if a platform is in a sustained outage, you don't want the gateway thrashing reconnects.
 
@@ -731,16 +730,14 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 ### Restart notifications
 
-When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
+When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's **notification channel** — the destination you designate by running `/setnotify` in that chat. Platforms without a notification channel simply skip the broadcast. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
       gateway_restart_notification: false   # opt out for this platform
     discord:
-      home_chat_id: "987654321"
       # gateway_restart_notification omitted → defaults to true
 ```
 

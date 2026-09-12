@@ -390,7 +390,7 @@ def _relay_env(monkeypatch, platform="telegram", directory=None):
     monkeypatch.setattr(cd, "_build_from_sessions", lambda _p: [])
     import gateway.relay.egress as eg
 
-    monkeypatch.setattr(eg, "_home_channel_id", lambda _p: None)
+    monkeypatch.setattr(eg, "_notification_channel_id", lambda _p: None)
     monkeypatch.setattr(eg, "_has_live_native_adapter", lambda _p: False)
     return eg
 

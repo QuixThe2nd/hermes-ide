@@ -178,10 +178,6 @@ Member ID 格式类似 `U01ABC2DEF3`。你至少需要自己的 Member ID。
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_ALLOWED_USERS=U01ABC2DEF3              # 逗号分隔的 Member ID
-
-# 可选
-SLACK_HOME_CHANNEL=C01234567890              # 定时/计划消息的默认频道
-SLACK_HOME_CHANNEL_NAME=general              # 主频道的可读名称（可选）
 ```
 
 或运行交互式设置：
@@ -446,19 +442,17 @@ platforms:
 
 ---
 
-## 主频道
+## 定时投递
 
-将 `SLACK_HOME_CHANNEL` 设置为频道 ID，Hermes 将在此频道发送计划消息、定时任务结果和其他主动通知。查找频道 ID 的方法：
+Cron 任务和其他主动输出投递到你在每个任务上配置的显式 Slack 目标。查找频道 ID 的方法：
 
 1. 在 Slack 中右键点击频道名称
 2. 点击 **View channel details**
 3. 向下滚动——频道 ID 显示在底部
 
-```bash
-SLACK_HOME_CHANNEL=C01234567890
-```
-
 确保机器人已被**邀请到该频道**（`/invite @Hermes Agent`）。
+
+Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标频道中运行 `/setnotify` 指定它。
 
 ---
 

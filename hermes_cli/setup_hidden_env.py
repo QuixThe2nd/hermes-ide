@@ -7,7 +7,6 @@ Hiding is a *presentation* decision only: the vars keep working through ``hermes
 # Suffix match, so plugin adapters nobody enumerated (IRC, SimpleX, LINE, ntfy) get the same
 # treatment without a code change here.
 #
-#   *_HOME_CHANNEL*        the bot offers /sethome on the first chat
 #   *_ALLOW_ALL_USERS      defaults off; enabling it is a security decision
 #   *_REPLY_TO_MODE / *_REPLY_MODE   cosmetic threading preference (Mattermost spelling too)
 #   *_REQUIRE_MENTION / *_AUTO_THREAD   behavior toggles with sane defaults
@@ -17,7 +16,7 @@ Hiding is a *presentation* decision only: the vars keep working through ``hermes
 # Allowlists (*_ALLOWED_USERS) deliberately stay visible: that IS the decision a new user has to
 # make, and the gateway denies everyone until it's set.
 SETUP_HIDDEN_ENV_SUFFIXES = (
-    "_HOME_CHANNEL", "_HOME_CHANNEL_NAME", "_HOME_CHANNEL_THREAD_ID", "_HOME_ADDRESS", "_ALLOW_ALL_USERS",
+    "_ALLOW_ALL_USERS",
     "_REPLY_TO_MODE", "_REPLY_MODE", "_REQUIRE_MENTION", "_AUTO_THREAD", "_FREE_RESPONSE_CHANNELS",
     "_FREE_RESPONSE_ROOMS", "_ALLOWED_CHANNELS", "_PROXY",
 )

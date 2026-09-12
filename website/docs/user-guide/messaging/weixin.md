@@ -79,10 +79,6 @@ WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
 
 # Optional: restore legacy multiline splitting behavior
 # WEIXIN_SPLIT_MULTILINE_MESSAGES=true
-
-# Optional: home channel for cron/notifications
-WEIXIN_HOME_CHANNEL=chat_id
-WEIXIN_HOME_CHANNEL_NAME=Home
 ```
 
 ### 3. Start the Gateway
@@ -309,8 +305,6 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | `WEIXIN_GROUP_POLICY` | — | `disabled` | Group access policy: `open`, `allowlist`, `disabled` |
 | `WEIXIN_ALLOWED_USERS` | — | _(empty)_ | Comma-separated user IDs for DM allowlist |
 | `WEIXIN_GROUP_ALLOWED_USERS` | — | _(empty)_ | Comma-separated **group chat IDs** (not member user IDs) for group allowlist. The variable name is legacy — it expects group IDs, not user IDs. |
-| `WEIXIN_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
-| `WEIXIN_HOME_CHANNEL_NAME` | — | `Home` | Display name for the home channel |
 | `WEIXIN_ALLOW_ALL_USERS` | — | — | Gateway-level flag to allow all users (used by setup wizard) |
 
 ## Troubleshooting

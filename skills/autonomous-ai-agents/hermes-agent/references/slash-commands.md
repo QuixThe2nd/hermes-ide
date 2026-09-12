@@ -83,7 +83,6 @@ it. New commands land often; `/help` in-session is always authoritative.
 /restart                   Restart gateway after draining active runs (GW)
                            (the agent can also call the `restart` tool — same
                            drain path)
-/sethome                   Set current chat as home channel (GW)
 /topic [off|help]          Telegram DM topic sessions (GW)
 /platform <pause|resume|list> Pause/resume a failing platform (GW)
 /commands [page]           Browse all commands, paginated (GW)

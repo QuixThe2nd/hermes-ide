@@ -758,40 +758,6 @@ class AccessGuardMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AutoSetHomeMiddleware(InboundMiddleware):
-    """Silently designate the first inbound conversation as home channel (config.yaml + env);
-    a group home is upgraded by the first DM. Runs after GroupAtGuard so unaddressed group traffic
-    never claims it; only strictly-authorized senders (allowlist / open opt-in / pairing-approved)
-    may — intake-only pairing forwards must not."""
-    name = "auto-sethome"
-
-    async def handle(self, ctx: InboundContext, next_fn) -> None:
-        adapter = ctx.adapter
-        if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
-            _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
-            _should_set = not _cur_home or (_cur_home.startswith("group:") and ctx.chat_type == "dm")
-            if ctx.chat_type == "dm":
-                adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
-            if _should_set:
-                self._persist_home(adapter, ctx)
-        await next_fn()
-
-    @staticmethod
-    def _persist_home(adapter, ctx: InboundContext) -> None:
-        try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
-            config_path = get_hermes_home() / "config.yaml"
-            # Raw read: merged defaults must not be persisted to the user's file.
-            user_config: dict = read_user_config_raw(config_path)
-            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-            atomic_config_write(config_path, user_config)
-            os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
-            logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)
-        except Exception as e:
-            logger.warning("[%s] Auto-sethome failed: %s", adapter.name, e)
-
-
 def _iter_custom_elems(msg_body: list) -> Iterator[Tuple[Any, dict]]:
     """Yield ``(custom, content)`` for each TIMCustomElem whose ``data`` parses as JSON (any type)."""
     for elem in msg_body or []:
@@ -1753,7 +1719,7 @@ class InboundPipelineBuilder:
     _DEFAULT_MIDDLEWARES: list[type] = [
         DecodeMiddleware, ExtractFieldsMiddleware, RecallGuardMiddleware, DedupMiddleware, SkipSelfMiddleware,
         ChatRoutingMiddleware, AccessGuardMiddleware, ExtractContentMiddleware, PlaceholderFilterMiddleware,
-        OwnerCommandMiddleware, BuildSourceMiddleware, GroupAtGuardMiddleware, AutoSetHomeMiddleware,
+        OwnerCommandMiddleware, BuildSourceMiddleware, GroupAtGuardMiddleware,
         GroupAttributionMiddleware, ClassifyMessageTypeMiddleware, QuoteContextMiddleware,
         ForwardedRecordsParseMiddleware, MediaResolveMiddleware, PatchAnchorsMiddleware, DispatchMiddleware,
     ]
@@ -2648,9 +2614,6 @@ class YuanbaoAdapter(BasePlatformAdapter):
             return policy, [x.strip() for x in raw.split(",") if x.strip()]
         self._access_policy = AccessPolicy(*_policy("dm"), *_policy("group"))
         self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
-        # Auto-sethome stays open when no home is set or the home is a group (upgradable by first DM).
-        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (config.home_channel.chat_id if config.home_channel else "")
-        self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
     def _track_task(self, task: asyncio.Task) -> asyncio.Task:
         """Register a fire-and-forget task so it won't be GC'd prematurely."""
@@ -2662,27 +2625,6 @@ class YuanbaoAdapter(BasePlatformAdapter):
     def enforces_own_access_policy(self) -> bool:
         """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
         return True
-
-    def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
-        """Sender may persist YUANBAO_HOME_CHANNEL: strict allowlist, open opt-in, or pairing-approved
-        (intake-only pairing forwards are excluded)."""
-        policy: AccessPolicy = self._access_policy
-        sender = str(ctx.from_account or "").strip()
-        if not sender:
-            return False
-        if ctx.chat_type == "dm":
-            if policy.is_dm_allowed(sender):
-                return True
-            if policy.dm_policy == "pairing":
-                from gateway.pairing import PairingStore
-                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
-            return False
-        group_code = str(ctx.group_code or "").strip()
-        if ctx.chat_type != "group" or not group_code:
-            return False
-        if policy.group_policy == "allowlist":
-            return policy.is_group_allowed(group_code)
-        return policy.group_policy == "open" and policy._open_dm_opted_in()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         ok = await self._connection.open()

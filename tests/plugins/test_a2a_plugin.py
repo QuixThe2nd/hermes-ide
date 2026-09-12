@@ -165,7 +165,7 @@ class TestInjectionFilter:
     def test_slash_commands_are_wrapped_not_passed_through(self):
         """Remote peers must NOT reach operator slash commands: leading-slash
         text is framed and filtered like everything else."""
-        wrapped = security.wrap_inbound("peer-x", "/sethome #general")
+        wrapped = security.wrap_inbound("peer-x", "/setnotify #general")
         assert not wrapped.startswith("/")
         assert "A2A inbound" in wrapped
 

@@ -47,7 +47,6 @@ _PHOTON_ENV = (
     "PHOTON_DASHBOARD_PROJECT_ID",
     "PHOTON_SPECTRUM_HOST",
     "PHOTON_ALLOWED_USERS",
-    "PHOTON_HOME_CHANNEL",
 )
 
 
@@ -106,12 +105,12 @@ def test_store_project_credentials_round_trip(
     assert photon_auth.load_dashboard_project_id() == "sp-123"
 
 
-def test_load_user_numbers_falls_back_to_home_channel(
+def test_load_user_numbers_falls_back_to_allowed_users(
     tmp_hermes_home: Path,
 ) -> None:
     from hermes_cli.config import save_env_value
 
-    save_env_value("PHOTON_HOME_CHANNEL", "+15551234567")
+    save_env_value("PHOTON_ALLOWED_USERS", "+15551234567")
 
     phone, assigned = photon_auth.load_user_numbers()
     assert phone == "+15551234567"

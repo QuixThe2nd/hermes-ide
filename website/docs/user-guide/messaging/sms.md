@@ -53,9 +53,6 @@ TWILIO_PHONE_NUMBER=+15551234567
 
 # Security: restrict to specific phone numbers (recommended)
 SMS_ALLOWED_USERS=+15559876543,+15551112222
-
-# Optional: set a home channel for cron job delivery
-SMS_HOME_CHANNEL=+15559876543
 ```
 
 ---
@@ -130,8 +127,6 @@ Text your Twilio number — Hermes will respond via SMS.
 | `SMS_INSECURE_NO_SIGNATURE` | No | Set to `true` to disable signature validation (local dev only — **not for production**) |
 | `SMS_ALLOWED_USERS` | No | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |
-| `SMS_HOME_CHANNEL` | No | Phone number for cron job / notification delivery |
-| `SMS_HOME_CHANNEL_NAME` | No | Display name for the home channel (default: `Home`) |
 
 ---
 

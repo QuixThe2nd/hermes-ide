@@ -67,7 +67,7 @@ def write_drain_request(
     """Write the begin-drain marker atomically; returns the payload.
 
     Re-writing refreshes ``requested_at`` (keep-alive past the max-age).
-    ``suppress_notification`` skips ONLY the home-channel "gateway shutting down"
+    ``suppress_notification`` skips ONLY the notification-channel "gateway shutting down"
     broadcast (the per-session interrupt ping is never suppressed); which drains
     are quiet is the caller's policy.  Stamped with the instantiation epoch so a
     copy surviving a machine restart on the durable volume reads as stale.

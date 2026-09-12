@@ -3408,9 +3408,9 @@
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
-    // Home-channel notification toggles. homeChannels is the list of platforms
-    // the user has a /sethome on; each entry has a `subscribed` bool telling
-    // us whether this task is currently subscribed via that platform's home.
+    // Notification-channel toggles. homeChannels is the list of platforms
+    // the user has a /setnotify on; each entry has a `subscribed` bool telling
+    // us whether this task is currently subscribed via that platform's channel.
     const [homeChannels, setHomeChannels] = useState([]);
     const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
@@ -3424,9 +3424,9 @@
 
     const loadHomeChannels = useCallback(function () {
       const qs = new URLSearchParams({ task_id: props.taskId });
-      const url = withBoard(`${API}/home-channels?${qs}`, boardSlug);
+      const url = withBoard(`${API}/notification-channels?${qs}`, boardSlug);
       return SDK.fetchJSON(url)
-        .then(function (d) { setHomeChannels(d.home_channels || []); })
+        .then(function (d) { setHomeChannels(d.notification_channels || []); })
         .catch(function () { /* silent — endpoint optional on older gateways */ });
     }, [props.taskId, boardSlug]);
 
@@ -3647,7 +3647,7 @@
       });
       const method = currentlySubscribed ? "DELETE" : "POST";
       const url = withBoard(
-        `${API}/tasks/${encodeURIComponent(props.taskId)}/home-subscribe/${encodeURIComponent(platform)}`,
+        `${API}/tasks/${encodeURIComponent(props.taskId)}/notify-subscribe/${encodeURIComponent(platform)}`,
         boardSlug,
       );
       return SDK.fetchJSON(url, { method: method })
@@ -4739,10 +4739,10 @@
   }
 
 
-  // One toggle per gateway platform the user has a home channel set on
+  // One toggle per gateway platform the user has a notification channel set on
   // (telegram, discord, slack, etc.). Toggling on creates a kanban_notify_subs
-  // row routed to that platform's home; toggling off removes it. Nothing
-  // renders when no platforms have a home configured — this section stays
+  // row routed to that platform's channel; toggling off removes it. Nothing
+  // renders when no platforms have one configured — this section stays
   // invisible for users who haven't set one up.
   function HomeSubsSection(props) {
     const { t } = useI18n();
@@ -4751,7 +4751,7 @@
     const busy = props.homeBusy || {};
     return h("div", { className: "hermes-kanban-section" },
       h("div", { className: "hermes-kanban-section-head" },
-        tx(t, "notifyHomeChannels", "Notify home channels")),
+        tx(t, "notifyChannels", "Notify channels")),
       h("div", { className: "hermes-kanban-home-subs" },
         channels.map(function (hc) {
           const isBusy = !!busy[hc.platform];

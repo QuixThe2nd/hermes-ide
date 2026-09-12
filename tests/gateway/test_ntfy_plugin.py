@@ -382,15 +382,6 @@ class TestEnvEnablement:
             assert _env_enablement()["markdown"] is True
 
 
-    def test_home_channel_override(self, monkeypatch):
-        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
-        monkeypatch.setenv("NTFY_HOME_CHANNEL", "alerts")
-        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alerts Channel")
-        seed = _env_enablement()
-        assert seed["home_channel"]["chat_id"] == "alerts"
-        assert seed["home_channel"]["name"] == "Alerts Channel"
-
-
 # ---------------------------------------------------------------------------
 # 10. _standalone_send() — out-of-process cron delivery
 # ---------------------------------------------------------------------------
@@ -496,7 +487,7 @@ class TestTruncateHelper:
 # ---------------------------------------------------------------------------
 #
 # __init__'s server/topic/publish_topic, _env_enablement's topic/server/
-# publish_topic/markdown/home_channel, and check_requirements/validate_config/
+# publish_topic/markdown, and check_requirements/validate_config/
 # is_connected's topic reads, all previously read raw os.getenv
 # unconditionally (only NTFY_TOKEN was already scoped). Under multiplex,
 # os.environ holds the DEFAULT profile's YAML-to-env bridge output -- a

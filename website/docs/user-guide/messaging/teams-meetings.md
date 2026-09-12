@@ -155,7 +155,6 @@ Use this when you want Hermes to post the summary through Microsoft Graph into a
 Supported targets:
 - `chat_id`
 - `team_id` + `channel_id`
-- `team_id` + `home_channel` fallback for the existing Teams platform
 
 Example:
 

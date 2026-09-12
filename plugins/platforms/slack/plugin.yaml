@@ -29,14 +29,6 @@ optional_env:
     description: "Allow any Slack user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
     password: false
-  - name: SLACK_HOME_CHANNEL
-    description: "Default channel ID for cron / notification delivery (starts with C)"
-    prompt: "Home channel ID"
-    password: false
-  - name: SLACK_HOME_CHANNEL_NAME
-    description: "Display name for the Slack home channel"
-    prompt: "Home channel display name"
-    password: false
   - name: SLACK_THREAD_REQUIRE_MENTION
     description: >-
       Require an explicit @mention for Slack thread replies while preserving

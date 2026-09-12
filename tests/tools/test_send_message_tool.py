@@ -235,7 +235,6 @@ def _make_config():
     telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
     return SimpleNamespace(
         platforms={Platform.TELEGRAM: telegram_cfg},
-        get_home_channel=lambda _platform: None,
     ), telegram_cfg
 
 
@@ -287,7 +286,6 @@ class TestSendMessageTool:
         ntfy_cfg = SimpleNamespace(enabled=True, token=None, extra={"topic": "hermes-in"})
         config = SimpleNamespace(
             platforms={ntfy_platform: ntfy_cfg},
-            get_home_channel=lambda _platform: None,
         )
 
         with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -996,19 +994,18 @@ class TestParseTargetRef:
             assert _parse_target_ref(platform, target)[2] is False, f"{platform}:{target}"
 
 
-class TestEmailHomeChannelErrorHint:
-    """The no-home-channel error for email points at the real env var.
+class TestEmailExplicitTargetRequired:
+    """A bare ``email`` target is refused with explicit-target guidance.
 
-    Email reads its home channel from EMAIL_HOME_ADDRESS (gateway/config.py),
-    not the generic EMAIL_HOME_CHANNEL. The error guidance must name the
-    variable that is actually consulted so users who follow it succeed.
+    There is no implicit destination anymore: the error must tell the caller
+    to name the address (e.g. ``email:someone@example.com``) rather than
+    pointing at any environment variable.
     """
 
-    def test_email_error_names_email_home_address(self):
+    def test_bare_email_target_demands_explicit_address(self):
         email_cfg = SimpleNamespace(enabled=True, token="", extra={})
         config = SimpleNamespace(
             platforms={Platform.EMAIL: email_cfg},
-            get_home_channel=lambda _platform: None,
         )
         with patch("gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False):
@@ -1021,8 +1018,10 @@ class TestEmailHomeChannelErrorHint:
                     }
                 )
             )
-        assert "EMAIL_HOME_ADDRESS" in result["error"]
-        assert "EMAIL_HOME_CHANNEL" not in result["error"]
+        assert result["error"] == (
+            "No delivery target configured for email. Set an explicit "
+            "target like 'email:chat_id' or 'email:#channel-name'."
+        )
 
 class TestResolveSlackUserTargets:
     """_resolve_slack_user_target opens user targets as DMs before sending.

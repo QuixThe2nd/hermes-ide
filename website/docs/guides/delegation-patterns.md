@@ -221,7 +221,7 @@ delegation:
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_agent`
 - **Default 250 iterations** — set `delegation.max_iterations` lower in `config.yaml` for fleets of simple tasks to save cost
-- **Blocking by default** — an omitted or false `background` blocks the calling turn until the delegated work is terminal and returns the final result inline. Pass `background=true` to get a handle immediately instead; the completion then re-enters the conversation as a new message. The mode depends only on that argument — never on the platform or session type.
+- **Async by default** — an omitted `background` detaches when the session can receive a late completion and blocks inline otherwise (one-shot chats, cron, workers, stateless endpoints). Pass `background=false` to always block this turn or `background=true` to require a handle; explicit values are never overridden. Setting `delegation.default_background: false` in config restores blocking-by-default for omitted arguments.
 - **Not durable** — a `background=true` delegation posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
 
 ---

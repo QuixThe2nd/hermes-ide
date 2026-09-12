@@ -79,10 +79,6 @@ WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
 
 # 可选：恢复旧版多行拆分行为
 # WEIXIN_SPLIT_MULTILINE_MESSAGES=true
-
-# 可选：cron/通知的默认频道
-WEIXIN_HOME_CHANNEL=chat_id
-WEIXIN_HOME_CHANNEL_NAME=Home
 ```
 
 ### 3. 启动网关
@@ -288,8 +284,6 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | `WEIXIN_GROUP_POLICY` | — | `disabled` | 群组访问策略：`open`、`allowlist`、`disabled` |
 | `WEIXIN_ALLOWED_USERS` | — | _（空）_ | 私信白名单的逗号分隔用户 ID |
 | `WEIXIN_GROUP_ALLOWED_USERS` | — | _（空）_ | 群组白名单的逗号分隔**群聊 ID**（非成员用户 ID）。变量名为历史遗留，实际填写的是群 ID 而非用户 ID。 |
-| `WEIXIN_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
-| `WEIXIN_HOME_CHANNEL_NAME` | — | `Home` | 默认频道的显示名称 |
 | `WEIXIN_ALLOW_ALL_USERS` | — | — | 网关级别的允许所有用户标志（由配置向导使用） |
 
 ## 故障排查

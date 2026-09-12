@@ -27,10 +27,6 @@ optional_env:
     description: "Allow any Mattermost user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
     password: false
-  - name: MATTERMOST_HOME_CHANNEL
-    description: "Default channel ID for cron / notification delivery"
-    prompt: "Home channel ID"
-    password: false
   - name: MATTERMOST_REPLY_MODE
     description: "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off."
     prompt: "Reply mode (thread|off)"

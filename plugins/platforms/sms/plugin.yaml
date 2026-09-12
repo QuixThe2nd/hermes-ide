@@ -26,7 +26,3 @@ optional_env:
     description: "Comma-separated phone numbers allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
     password: false
-  - name: SMS_HOME_CHANNEL
-    description: "Default phone number for cron / notification delivery"
-    prompt: "Home number"
-    password: false

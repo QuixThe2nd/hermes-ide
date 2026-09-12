@@ -32,7 +32,6 @@ gateway:
         attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                  # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
-        home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4           # seconds between inbound poll sweeps
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
@@ -52,7 +51,6 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_RELAY_URL` | ✅ | Base URL of the community relay |
 | `BUZZ_PRIVATE_KEY` | ✅ | Nostr private key (nsec or hex) — the only secret |
 | `BUZZ_CHANNELS` | — | Comma-separated channel UUIDs to watch (default: all joined channels) |
-| `BUZZ_HOME_CHANNEL` | — | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | — | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
 | `BUZZ_ALLOW_ALL_USERS` | — | Allow any community member to talk to the agent |
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
@@ -78,7 +76,6 @@ gateway:
         attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                         # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
-        home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4                  # seconds between inbound poll sweeps (default 4 — balances latency vs. relay load)
         cli_path: ""                      # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
@@ -128,7 +125,7 @@ By default the allow-list is empty, which means every community member who menti
 
 The allow-list also gates **inbound attachments**: relay media is fetched with the agent's own Buzz credentials, so a download only happens for a sender the gateway explicitly authorizes. A denied, missing, or failed authorization leaves the message text untouched and makes no credentialed request.
 
-Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
+Cron jobs deliver to an explicit channel target — `deliver: buzz:<channel-uuid>` — and work even when cron runs outside the gateway process. A bare `deliver: buzz` resolves to nothing and records a delivery error telling you to set an explicit target.
 
 ## Inbound attachments
 

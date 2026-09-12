@@ -2337,7 +2337,7 @@ export const ru = defineLocale({
     promptPlaceholder: 'Суммируй мои непрочитанные треды Slack и пришли топ-5 на почту...',
     frequencyLabel: 'Частота',
     deliverLabel: 'Доставить в',
-    deliverNeedsHomeChannel: 'сначала задайте домашний канал',
+    deliverCustomTarget: 'Свой адресат: platform:chat_id[:thread_id] (несколько — через запятую)',
     modelLabel: 'Модель',
     modelDefault: 'По умолчанию (глобальная модель)',
     customScheduleLabel: 'Своё расписание',

@@ -68,7 +68,7 @@ class TestCostInResultEntry(unittest.TestCase):
         parent = _make_mock_parent()
         with patch("run_agent.AIAgent", return_value=child):
             result = json.loads(
-                delegate_agent(goal="Test per-delegation cost", parent_agent=parent)
+                delegate_agent(goal="Test per-delegation cost", parent_agent=parent, background=False)
             )
         return parent, result
 

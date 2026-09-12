@@ -112,16 +112,16 @@ _TERMINAL_ENV_ROWS = {
     "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20", False),),
 }
 
-_PLATFORMS = {  # name -> (token env var, home-channel env var or None)
-    "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
-    "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"), "WhatsApp": ("WHATSAPP_ENABLED", None),
-    "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-    "Slack": ("SLACK_BOT_TOKEN", None), "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-    "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"), "DingTalk": ("DINGTALK_CLIENT_ID", None),
-    "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"), "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
-    "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None), "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
-    "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"), "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
-    "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL")}
+_PLATFORMS = {  # name -> token env var
+    "Telegram": "TELEGRAM_BOT_TOKEN",
+    "Discord": "DISCORD_BOT_TOKEN", "WhatsApp": "WHATSAPP_ENABLED",
+    "Signal": "SIGNAL_HTTP_URL",
+    "Slack": "SLACK_BOT_TOKEN", "Email": "EMAIL_ADDRESS",
+    "SMS": "TWILIO_ACCOUNT_SID", "DingTalk": "DINGTALK_CLIENT_ID",
+    "Feishu": "FEISHU_APP_ID", "WeCom": "WECOM_BOT_ID",
+    "WeCom Callback": "WECOM_CALLBACK_CORP_ID", "Weixin": "WEIXIN_ACCOUNT_ID",
+    "BlueBubbles": "BLUEBUBBLES_SERVER_URL", "QQBot": "QQ_APP_ID",
+    "Yuanbao": "YUANBAO_APP_ID"}
 
 # Gateway manager label when the runtime snapshot is unavailable, keyed by platform.
 _GATEWAY_FALLBACK = {"termux": ("unknown", "Termux / manual process"), "linux": ("unknown", "systemd/manual"),
@@ -197,10 +197,9 @@ def _render_terminal(ctx):
 
 def _render_platforms(ctx):
     _section("Messaging Platforms")
-    for name, (token_var, home_var) in _PLATFORMS.items():
+    for name, token_var in _PLATFORMS.items():
         has_token = bool(os.getenv(token_var, ""))
-        home_channel = os.getenv(home_var, "") if home_var else ""
-        _row(name, has_token, _configured(has_token) + (f" (home: {home_channel})" if home_channel else ""))
+        _row(name, has_token, _configured(has_token))
 
     try:  # Plugin-registered platforms
         from gateway.platform_registry import platform_registry

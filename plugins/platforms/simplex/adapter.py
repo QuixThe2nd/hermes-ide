@@ -4,7 +4,7 @@ or ``docker run -p 5225:5225 simplexchat/simplex-chat-cli -p 5225``); JSON comma
 Env: SIMPLEX_WS_URL (required; default ws://127.0.0.1:5225) · SIMPLEX_ALLOWED_USERS (numeric
 contactIds — stable across renames, see ``/contacts`` — or display names) · SIMPLEX_ALLOW_ALL_USERS ·
 SIMPLEX_AUTO_ACCEPT ('false' disables contact-request auto-accept; default true) ·
-SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) · SIMPLEX_HOME_CHANNEL[_NAME] ·
+SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) ·
 HERMES_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
 ``websockets`` is imported lazily so the plugin stays discoverable when the package is missing.
 """
@@ -607,8 +607,7 @@ def is_connected(config) -> bool:
 
 def _env_enablement() -> Optional[dict]:
     """Seed ``PlatformConfig.extra`` from env BEFORE adapter construction so ``gateway status``
-    reflects env-only setups. ``None`` when not minimally configured; ``home_channel`` becomes
-    a ``HomeChannel`` via the core hook."""
+    reflects env-only setups. ``None`` when not minimally configured."""
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL", "").strip()
     if not ws_url:
         return None
@@ -617,8 +616,6 @@ def _env_enablement() -> Optional[dict]:
         seed["auto_accept"] = auto_accept not in {"0", "false", "no"}
     if group_allowed := _get_scoped_secret("SIMPLEX_GROUP_ALLOWED", "").strip():
         seed["group_allowed"] = group_allowed
-    if home := _get_scoped_secret("SIMPLEX_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("SIMPLEX_HOME_CHANNEL_NAME", "").strip() or home}
     return seed
 
 
@@ -654,8 +651,7 @@ _SETUP_PROMPTS = (
     ("SIMPLEX_WS_URL", "Daemon WebSocket URL (default ws://127.0.0.1:5225)"),
     ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or display names (comma-separated; blank=skip)"),
     ("SIMPLEX_GROUP_ALLOWED", "Allowed group IDs (comma-separated, or '*' for any; blank=disable groups)"),
-    ("SIMPLEX_AUTO_ACCEPT", "Auto-accept incoming contact requests? (true/false, default true)"),
-    ("SIMPLEX_HOME_CHANNEL", "Home channel contact/group ID (or empty)"))
+    ("SIMPLEX_AUTO_ACCEPT", "Auto-accept incoming contact requests? (true/false, default true)"))
 
 
 def interactive_setup() -> None:
@@ -689,7 +685,7 @@ def register(ctx) -> None:
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["SIMPLEX_WS_URL"],
         install_hint=("pip install websockets   # SimpleX adapter requires the websockets package"),
-        setup_fn=interactive_setup, env_enablement_fn=_env_enablement, cron_deliver_env_var="SIMPLEX_HOME_CHANNEL",
+        setup_fn=interactive_setup, env_enablement_fn=_env_enablement,
         standalone_sender_fn=_standalone_send, allowed_users_env="SIMPLEX_ALLOWED_USERS",
         allow_all_env="SIMPLEX_ALLOW_ALL_USERS", max_message_length=MAX_MESSAGE_LENGTH, emoji="🔒",
         pii_safe=True,  # SimpleX uses opaque contact IDs only — nothing to redact

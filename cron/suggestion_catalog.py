@@ -112,6 +112,53 @@ CATALOG: List[CatalogEntry] = [
             "deliver": "origin",
         },
     ),
+    CatalogEntry(
+        key="catalog:gateway-log-scout",
+        title="Gateway log scout",
+        description="Periodically checks Hermes logs for errors and crashes, "
+        "slowly widening which logs it watches, and only speaks up when "
+        "something actually needs attention.",
+        job_spec={
+            "prompt": (
+                "You are the Hermes log scout. You run unattended with no "
+                "chat context, so this prompt is your entire brief. Keep run "
+                "state in ~/.hermes/logs/.log-scout-state.json: a JSON object "
+                "with an integer \"depth\" and a \"suppressions\" list of at "
+                "most 10 {\"pattern\", \"reason\"} pairs (a line-pattern to "
+                "skip and a one-line reason it is benign). If the state file "
+                "is missing or unreadable, start at depth 1 with no "
+                "suppressions. Each run covers ladder levels 1 through "
+                "min(depth, 7), all under ~/.hermes/logs/ — level 1: "
+                "gateway.log and errors.log; level 2: plus their .1 "
+                "rotations; level 3: plus agent.log and agent.log.1; "
+                "level 4: plus the .2 and .3 rotations of the gateway and "
+                "errors logs; level 5: plus the tails of "
+                "tui_gateway_crash.log, gateway-exit-diag.log, and "
+                "gateway-shutdown-diag.log; level 6: plus "
+                "gateway-startup-watchdog.log; level 7: plus journalctl for "
+                "the Hermes gateway service over the last 24h (error and "
+                "traceback lines only). Tail at most ~400 lines per file and "
+                "skip files that do not exist. Hunt for: tracebacks and "
+                "exceptions (dedupe each to a pattern with a count and time "
+                "range — never dump per-line), message-send failures, "
+                "provider HTTP 401/403/429/5xx responses and quota "
+                "exhaustion, gateway crashes or restarts not caused by this "
+                "job itself, and high-frequency repeated errors (state the "
+                "rate). Ignore startup banners, log lines this job itself "
+                "produced or delivered, and any suppressed pattern. Redact "
+                "anything secret-shaped (tokens, keys, credentials) before "
+                "reporting. If you find real problems, your entire final "
+                "output is ONE concise alert naming the affected files, "
+                "counts, and time ranges — no raw log dumps — and you leave "
+                "depth unchanged. If the run is clean, write depth = "
+                "min(depth + 1, 7) back to the state file and respond with "
+                "exactly [SILENT] so the user is not pinged."
+            ),
+            "schedule": "every 6h",
+            "name": "Gateway log scout",
+            "deliver": "origin",
+        },
+    ),
 ]
 
 

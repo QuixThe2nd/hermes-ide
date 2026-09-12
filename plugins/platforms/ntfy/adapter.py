@@ -4,7 +4,7 @@ config.yaml ``platforms.ntfy.extra``: ``server`` (default https://ntfy.sh), ``to
 ``publish_topic`` (defaults to topic), ``token`` (Bearer or ``user:pass`` Basic), ``markdown``
 (default false). Env (read at construct time; ``extra`` wins over env): NTFY_TOPIC, NTFY_SERVER_URL,
 NTFY_TOKEN, NTFY_PUBLISH_TOPIC, NTFY_MARKDOWN ("true"/"1"/"yes"), NTFY_ALLOWED_USERS (topic names),
-NTFY_ALLOW_ALL_USERS (dev only), NTFY_HOME_CHANNEL, NTFY_HOME_CHANNEL_NAME.
+NTFY_ALLOW_ALL_USERS (dev only).
 Identity: ntfy has no authenticated user; ``title`` is publisher-controlled and NOT used for
 authorization. Each topic is one trusted channel (``user_id`` == topic). Protect it with a read token.
 """
@@ -323,8 +323,6 @@ def _env_enablement() -> dict | None:
 
     Runs BEFORE adapter construction so ``gateway status`` reflects env-only
     setups without instantiating the HTTP client. ``None`` = not configured.
-    The ``home_channel`` key is lifted by the core hook into a ``HomeChannel``
-    on the ``PlatformConfig`` instead of being merged into ``extra``.
     """
     topic = _get_scoped_secret("NTFY_TOPIC", "").strip()
     if not topic:
@@ -338,9 +336,6 @@ def _env_enablement() -> dict | None:
     markdown = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
     if markdown:
         seed["markdown"] = markdown in _MARKDOWN_TRUTHY
-    home = _get_scoped_secret("NTFY_HOME_CHANNEL", "").strip() or topic
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("NTFY_HOME_CHANNEL_NAME", home)}
     return seed
 
 
@@ -385,7 +380,6 @@ def register(ctx) -> None:
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["NTFY_TOPIC"], install_hint="pip install httpx   # already a Hermes dependency",
         env_enablement_fn=_env_enablement,  # env-only setups show in `gateway status`
-        cron_deliver_env_var="NTFY_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron delivery
         allowed_users_env="NTFY_ALLOWED_USERS", allow_all_env="NTFY_ALLOW_ALL_USERS",
         max_message_length=MAX_MESSAGE_LENGTH, emoji="🔔",

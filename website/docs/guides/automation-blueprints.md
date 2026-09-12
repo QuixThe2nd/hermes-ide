@@ -567,9 +567,9 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
 |--------|------|-------|
 | Same chat | `--deliver origin` | Default — delivers to where the job was created |
 | Local file | `--deliver local` | Saves output, no notification |
-| Telegram | `--deliver telegram` | Home channel, or `telegram:CHAT_ID` for specific |
-| Discord | `--deliver discord` | Home channel, or `discord:CHANNEL_ID` |
-| Slack | `--deliver slack` | Home channel |
+| Telegram | `--deliver telegram:CHAT_ID` | Specific chat |
+| Discord | `--deliver discord:CHANNEL_ID` | Specific channel |
+| Slack | `--deliver slack:CHANNEL_ID` | Specific channel |
 | SMS | `--deliver sms:+15551234567` | Direct to phone number |
 | Specific thread | `--deliver telegram:-100123:456` | Telegram forum topic |
 

@@ -4742,9 +4742,6 @@ _PLATFORMS = [
              "help": "Paste the bot token from step 2 above."},
             {"name": "MATTERMOST_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)",
              "password": False, "is_allowlist": True, "help": "Your Mattermost user ID from step 4 above."},
-            {"name": "MATTERMOST_HOME_CHANNEL",
-             "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)",
-             "password": False, "help": "Channel ID where Hermes delivers cron results and notifications."},
             {"name": "MATTERMOST_REPLY_MODE",
              "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)",
              "password": False,
@@ -4777,10 +4774,6 @@ _PLATFORMS = [
              "prompt": "Pre-authorized phone numbers or iMessage IDs (comma-separated, or leave empty for DM pairing)",
              "password": False, "is_allowlist": True,
              "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead (recommended)."},
-            {"name": "BLUEBUBBLES_HOME_CHANNEL",
-             "prompt": "Home channel (phone number or iMessage ID for cron/notifications, or empty)",
-             "password": False,
-             "help": "Phone number or Apple ID to deliver cron results and notifications to."},
         ],
     },
     {
@@ -4800,9 +4793,6 @@ _PLATFORMS = [
              "prompt": "Allowed user OpenIDs (comma-separated, leave empty for open access)",
              "password": False, "is_allowlist": True,
              "help": "Optional — restrict DM access to specific user OpenIDs."},
-            {"name": "QQBOT_HOME_CHANNEL",
-             "prompt": "Home channel (user/group OpenID for cron delivery, or empty)", "password": False,
-             "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
     {
@@ -4990,13 +4980,6 @@ def _confirm_reconfigure(label: str, *env_vars: str) -> bool:
     return True
 
 
-def _offer_home_channel(home_var: str, user_id: str, what: str) -> None:
-    """Offer to persist ``user_id`` as ``home_var`` (e.g. "your Telegram user ID")."""
-    if prompt_yes_no(f"  Use {what} ({user_id}) as the home channel?", True):
-        save_env_value(home_var, user_id)
-        print_success(f"  Home channel set to {user_id}")
-
-
 def _save_env_values(**values: str) -> None:
     for name, value in values.items():
         save_env_value(name, value)
@@ -5132,9 +5115,7 @@ def _setup_standard_platform(platform: dict):
     if platform.get("key") == "telegram":
         auto_token_saved, auto_owner_user_id = _telegram_auto_setup(token_var)
 
-    allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
-
-    # Skip knobs the setup forms hide (home channel, reply mode, proxy...): they're self-configuring.
+    # Skip knobs the setup forms hide (reply mode, proxy...): they're self-configuring.
     setup_vars = [
         v for v in platform["vars"]
         if v["name"] == token_var or v.get("is_allowlist") or not _is_setup_hidden_env(v["name"])
@@ -5152,9 +5133,7 @@ def _setup_standard_platform(platform: dict):
             continue
 
         if var.get("is_allowlist"):
-            saved = _prompt_allowlist_var(var, platform.get("key"), auto_owner_user_id)
-            if saved is not None:
-                allowed_val_set = saved
+            _prompt_allowlist_var(var, platform.get("key"), auto_owner_user_id)
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
@@ -5166,14 +5145,6 @@ def _setup_standard_platform(platform: dict):
             return
         else:
             print_info("  Skipped (can configure later)")
-
-    # Offer the first allowlisted user ID as home channel when none is set (Telegram DMs).
-    home_var = f"{label.upper()}_HOME_CHANNEL"
-    home_val = get_env_value(home_var)
-    if allowed_val_set and not home_val and label == "Telegram":
-        first_id = allowed_val_set.split(",")[0].strip()
-        if first_id:
-            _offer_home_channel(home_var, first_id, "your user ID")
 
     print()
     print_success(f"{emoji} {label} configured!")
@@ -5319,10 +5290,6 @@ def _setup_weixin():
         _save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
         print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
 
-    if user_id:
-        print()
-        _offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
-
     print()
     print_success("Weixin configured!")
     print_info(f"  Account ID: {account_id}")
@@ -5394,15 +5361,6 @@ def _setup_qqbot():
         allowlist = _prompt_csv("  Allowed user OpenIDs (comma-separated)", user_openid or "")
         _save_env_values(QQ_ALLOW_ALL_USERS="false", QQ_ALLOWED_USERS=allowlist)
         print_success("  Allowlist saved.")
-
-    print()
-    if user_openid:
-        _offer_home_channel("QQBOT_HOME_CHANNEL", user_openid, "your QQ user ID")
-    else:
-        home_channel = prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
-        if home_channel:
-            save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
-            print_success(f"  Home channel set to {home_channel.strip()}")
 
     print()
     print_success("🐧 QQ Bot configured!")

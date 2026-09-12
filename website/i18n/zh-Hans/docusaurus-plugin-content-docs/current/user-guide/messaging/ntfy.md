@@ -29,7 +29,6 @@ hermes gateway setup
 ```
 NTFY_TOPIC=hermes-myname-2026
 NTFY_ALLOWED_USERS=hermes-myname-2026
-NTFY_HOME_CHANNEL=hermes-myname-2026
 ```
 
 | 变量 | 是否必填 | 说明 |
@@ -41,8 +40,6 @@ NTFY_HOME_CHANNEL=hermes-myname-2026
 | `NTFY_MARKDOWN` | 可选 | 设为 `true` 以使用 `X-Markdown: true` 请求头发送回复 |
 | `NTFY_ALLOWED_USERS` | 推荐 | 允许的 topic 名称（逗号分隔，视为用户 ID；见下文） |
 | `NTFY_ALLOW_ALL_USERS` | 可选 | 设为 `true` 以允许所有发布者——仅在具有读取 token 的私有 topic 下安全 |
-| `NTFY_HOME_CHANNEL` | 可选 | cron 任务/通知投递的默认 topic |
-| `NTFY_HOME_CHANNEL_NAME` | 可选 | 主渠道的可读标签 |
 
 ## 身份模型——部署前请阅读
 
@@ -72,18 +69,18 @@ ntfy 没有原生的已认证用户身份。已发布消息中的 `title` 字段
 
 ## 在 cron 任务中使用 ntfy
 
-设置 `NTFY_HOME_CHANNEL` 后，cron 任务即可投递到 ntfy：
+cron 任务通过在 `deliver:` 字段中显式命名 topic 来投递到 ntfy：
 
 ```python
 cronjob(
     action="create",
     schedule="every 1h",
-    deliver="ntfy",          # uses NTFY_HOME_CHANNEL
+    deliver="ntfy:hermes-myname-2026",   # 显式 topic 目标
     prompt="Check for alerts and summarise."
 )
 ```
 
-或显式指定目标 topic：
+也可通过 shell 脚本使用 [`hermes send` CLI](/guides/pipe-script-output)：
 
 ```python
 send_message(target="ntfy:alerts-channel", message="Done!")

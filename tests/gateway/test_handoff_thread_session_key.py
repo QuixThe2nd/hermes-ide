@@ -68,7 +68,7 @@ def _handoff_key(
 
     Mirrors the fixed logic in GatewayRunner._process_handoff: for Discord
     thread destinations, chat_id is the thread's own id; for other platforms,
-    chat_id remains the parent/home channel.
+    chat_id remains the parent chat.
     """
     dest_chat_type = "thread"
     # This mirrors the fixed logic in GatewayRunner._process_handoff.

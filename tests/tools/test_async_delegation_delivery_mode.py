@@ -18,6 +18,7 @@ import json
 import queue
 import threading
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -217,6 +218,156 @@ def test_acceptance_envelope_shape_and_tool_provenance():
     # Omitted optionals are absent, not null.
     assert "subagent_ids" not in payload
     assert "live_transcripts" not in payload
+
+
+# ---------------------------------------------------------------------------
+# resolve_background_arg — the ONE async-by-default mode resolver
+# ---------------------------------------------------------------------------
+
+
+def _pin_capability(monkeypatch, supported: bool):
+    """Pin the delivery capability predicate the resolver must consult."""
+    monkeypatch.setattr(
+        "gateway.session_context.async_delivery_supported", lambda: supported
+    )
+    if not supported:
+        monkeypatch.setattr(
+            ad, "_current_origin_session_id", lambda: ""
+        )
+
+
+class TestResolveBackgroundArg:
+    """The full matrix: explicit values pass through exactly as written;
+    only the OMITTED argument is capability-aware."""
+
+    def test_omitted_in_capable_session_detaches(self, monkeypatch):
+        _pin_capability(monkeypatch, True)
+        assert ad.resolve_background_arg({}) is True
+        assert ad.resolve_background_arg({"background": None}) is True
+
+    def test_omitted_in_incapable_session_blocks_silently(self, monkeypatch):
+        _pin_capability(monkeypatch, False)
+        # Silent fallback: a bool, never an error, for the omitted path.
+        assert ad.resolve_background_arg({}) is False
+
+    def test_omitted_in_single_query_session_blocks_silently(self, monkeypatch):
+        """`hermes -q` sets HERMES_SINGLE_QUERY_SESSION but never declares
+        async_delivery=False; the process exits after the turn, so an omitted
+        argument must block, not hand out a handle nobody will read."""
+        monkeypatch.setattr(
+            "gateway.session_context.async_delivery_supported", lambda: True
+        )
+        monkeypatch.setattr(
+            "gateway.session_context.get_session_env",
+            lambda name, default="": "1" if name == "HERMES_SINGLE_QUERY_SESSION" else default,
+        )
+        assert ad.resolve_background_arg({}) is False
+
+    def test_omitted_api_wake_sid_requires_declared_history_delivery(self, monkeypatch):
+        """A stateless HTTP session with a raw session id may only detach when
+        the request DECLARED a server-history consumer (default-deny #98619)."""
+        monkeypatch.setattr(
+            "gateway.session_context.async_delivery_supported", lambda: False
+        )
+        monkeypatch.setattr(ad, "_current_origin_session_id", lambda: "20260913_rawsid")
+        monkeypatch.setattr(
+            "gateway.session_context.session_history_delivery_supported",
+            lambda: False,
+        )
+        assert ad.resolve_background_arg({}) is False
+        monkeypatch.setattr(
+            "gateway.session_context.session_history_delivery_supported",
+            lambda: True,
+        )
+        assert ad.resolve_background_arg({}) is True
+
+    @pytest.mark.parametrize("raw", [True, "true", "1", "yes", "on"])
+    def test_explicit_truthy_always_detaches(self, monkeypatch, raw):
+        for supported in (True, False):
+            _pin_capability(monkeypatch, supported)
+            assert ad.resolve_background_arg({"background": raw}) is True
+
+    @pytest.mark.parametrize("raw", [False, "false", "", "no", 0])
+    def test_explicit_falsey_always_blocks(self, monkeypatch, raw):
+        _pin_capability(monkeypatch, True)
+        assert ad.resolve_background_arg({"background": raw}) is False
+
+    def test_config_default_background_false_restores_blocking(self, monkeypatch):
+        _pin_capability(monkeypatch, True)
+        cfg = {"default_background": False}
+        assert ad.resolve_background_arg({}, config=cfg) is False
+        # Explicit values still win over the config default.
+        assert ad.resolve_background_arg({"background": True}, config=cfg) is True
+        assert ad.resolve_background_arg({"background": False}, config=cfg) is False
+
+    def test_config_read_goes_through_the_canonical_loader(self, monkeypatch):
+        """config=None reads delegation.* via tools.delegate_tool._load_config —
+        the same seam every other delegation knob uses (and tests patch)."""
+        _pin_capability(monkeypatch, True)
+        monkeypatch.setattr(
+            "tools.delegate_tool._load_config",
+            lambda: {"default_background": "false"},
+        )
+        assert ad.resolve_background_arg({}) is False
+
+    def test_missing_config_section_means_async_default(self, monkeypatch):
+        _pin_capability(monkeypatch, True)
+        assert ad.resolve_background_arg({}, config={}) is True
+        assert ad.resolve_background_arg({}, config=None) is True
+
+
+class TestAllFourToolsShareTheResolver:
+    """No tool reimplements the matrix: all four model-facing entries consult
+    the SAME resolve_background_arg, with the raw args, before any work."""
+
+    @pytest.mark.parametrize("tool", ["delegate_agent", "delegate_claude_agent", "delegate_cursor_agent", "delegate_assistant"])
+    def test_every_delegate_tool_consults_the_shared_resolver(self, monkeypatch, tool):
+        calls = []
+
+        def _spy(args, *, config=None):
+            calls.append(dict(args))
+            return False  # block: every faked path then takes the cheap branch
+
+        monkeypatch.setattr(ad, "resolve_background_arg", _spy)
+        _pin_capability(monkeypatch, False)
+
+        if tool == "delegate_agent":
+            import tools.delegate_tool as dt
+
+            parent = MagicMock()
+            parent._delegate_depth = 0
+
+            def _no_work(**kw):
+                raise AssertionError("no work may run in the spy test")
+
+            monkeypatch.setattr(dt, "_build_child_agent", _no_work)
+            monkeypatch.setattr(dt, "_load_config", lambda: {})
+            # None == omitted, exactly as run_agent forwards it; the spy
+            # blocks, so the (faked) spawn must refuse before any child.
+            with pytest.raises(AssertionError):
+                dt.delegate_agent(goal="g", background=None, parent_agent=parent)
+        elif tool == "delegate_claude_agent":
+            import tools.claude_agent_tool as mod
+
+            monkeypatch.setattr(mod, "delegate_claude_agent", lambda *a, **kw: "{}")
+            mod._handle_delegate_claude_agent({"task": "t", "workdir": "/w"})
+        elif tool == "delegate_cursor_agent":
+            import tools.cursor_agent_tool as mod
+
+            monkeypatch.setattr(mod, "delegate_cursor_agent", lambda *a, **kw: "{}")
+            mod._handle_delegate_cursor_agent({"task": "t", "workdir": "/w"})
+        else:
+            import plugins.missions as pm
+
+            monkeypatch.setattr(
+                pm, "_handle_start", lambda *a, **kw: json.dumps({"ok": False})
+            )
+            monkeypatch.setattr(pm, "_acquire_foreground_wait_slot", lambda: True)
+            monkeypatch.setattr(pm, "_release_foreground_wait_slot", lambda: None)
+            pm.handle_delegate_assistant({"chat_id": "c", "goal": "g"})
+
+        assert len(calls) == 1, f"{tool} did not resolve exactly once"
+        assert "background" not in calls[0] or calls[0]["background"] is None
 
 
 # ---------------------------------------------------------------------------

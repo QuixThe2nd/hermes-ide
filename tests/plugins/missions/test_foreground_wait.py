@@ -77,6 +77,9 @@ def missions_env(tmp_path, monkeypatch):
 
 def _start_mission(pm, chat_id=CHAT, **extra):
     """Start a mission through the public dispatch_agent action surface."""
+    # This file exercises the FOREGROUND wait contract; the tool's
+    # omitted-arg default is capability-aware async, so pin blocking mode.
+    extra.setdefault("background", False)
     return json.loads(
         pm.handle_dispatch_agent(
             {"action": "start", "chat_id": chat_id, "goal": "Agree picnic time", **extra},
@@ -93,6 +96,9 @@ def _wait_in_thread(pm, chat_id=CHAT, **extra):
     live — i.e. exactly the state a real origin turn is in while it waits.
     """
     box = {}
+    # Foreground contract under test: pin the explicit blocking mode (the
+    # omitted-arg default is capability-aware async).
+    extra.setdefault("background", False)
 
     def _run():
         box["out"] = pm.handle_delegate_assistant(
@@ -315,7 +321,8 @@ class TestForegroundCapacity:
 
         refused = json.loads(
             missions_env.handle_delegate_assistant(
-                {"chat_id": OTHER_CHAT, "goal": "second mission"},
+                {"chat_id": OTHER_CHAT, "goal": "second mission",
+                 "background": False},
                 session_key=ORIGIN_KEY,
                 session_id="sess-fg-2",
             )

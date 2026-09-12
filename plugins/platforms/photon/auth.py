@@ -651,9 +651,6 @@ def refresh_user_numbers(project_id: str, project_secret: str) -> Tuple[Optional
 
 def _configured_operator_phone() -> Optional[str]:
     """Infer the operator's E.164 number from existing Photon env settings."""
-    home = _normalize_phone(_get_config_env_value("PHOTON_HOME_CHANNEL") or "")
-    if home and E164_RE.match(home):
-        return home
     allowed = _get_config_env_value("PHOTON_ALLOWED_USERS") or ""
     candidates = [n for n in map(_normalize_phone, re.split(r"[,\s]+", allowed)) if E164_RE.match(n)]
     return candidates[0] if len(candidates) == 1 else None

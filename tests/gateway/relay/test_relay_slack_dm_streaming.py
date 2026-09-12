@@ -295,7 +295,7 @@ def _media_wire(chat_id: str, chat_type: str):
 async def test_slack_dm_media_keeps_and_promotes_anchor_in_thread_mode():
     """Thread-per-message: an image must land in the per-message thread. The
     connector threads on metadata.thread_id only, so the surviving anchor has
-    to be promoted there — a bare reply_to would post to the home channel."""
+    to be promoted there — a bare reply_to would post to the chat root."""
     adapter, stub = _media_wire("D1", "dm")
     await adapter.send_image("D1", "https://example.com/x.png", reply_to="1700.0001")
     frame = [f for f in stub.sent if f["op"] == "send_media"][-1]

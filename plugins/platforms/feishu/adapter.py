@@ -4268,14 +4268,6 @@ def interactive_setup() -> None:
     save_env_value("FEISHU_GROUP_POLICY", "open" if group_idx == 0 else "disabled")
     print_info("Group chats enabled (bot must be @mentioned)." if group_idx == 0 else "Group chats disabled.")
 
-    print_info("Leave blank to clear a previously saved home channel (cron / notifications).")
-    home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
-    if home_channel:
-        save_env_value("FEISHU_HOME_CHANNEL", home_channel)
-        print_success(f"Home channel set to {home_channel}")
-    elif remove_env_value("FEISHU_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
-
     print_success("🪽 Feishu / Lark configured!")
     print_info(f"App ID: {app_id}")
     print_info(f"Domain: {domain}")
@@ -4314,7 +4306,7 @@ def register(ctx) -> None:
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
         install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
-        allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
+        allow_all_env="FEISHU_ALLOW_ALL_USERS",
         standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
     )

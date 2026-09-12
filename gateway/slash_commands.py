@@ -22,11 +22,10 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import (
-    HomeChannel,
+    DeliveryTarget,
     Platform,
     PlatformConfig,
     clear_notification_channel,
-    persist_home_channel,
     persist_notification_channel,
 )
 from gateway.platforms.base import EphemeralReply
@@ -140,10 +139,10 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-def _home_thread_from_source(source) -> Optional[str]:
-    """The thread id /sethome should persist on the home target, or None.  Slack thread-per-message
+def _target_thread_from_source(source) -> Optional[str]:
+    """The thread id a channel-picking command should persist, or None.  Slack thread-per-message
     keying stamps a top-level message's own id as ``source.thread_id`` (a session key, not a
-    location); persisting it would pin HOME to that ephemeral thread.  A thread id equal to the
+    location); persisting it would pin the target to that ephemeral thread.  A thread id equal to the
     message's own id is synthetic and dropped; a real thread (id = parent's) is kept."""
     thread_id = getattr(source, "thread_id", None)
     if not thread_id:
@@ -589,48 +588,215 @@ class GatewaySlashCommandsMixin(
         reply = _execute("commands", args=event.get_command_args(), options={"page_size": page_size})
         return self._telegramized_command_reply(event, reply.text)
 
-    async def _handle_set_home_command(self, event: MessageEvent) -> str:
-        """Handle /sethome command -- set the current chat as the platform's home channel."""
-        from gateway.run import _home_target_env_var, _home_thread_env_var
-        source = event.source
-        platform_name = source.platform.value if source.platform else "unknown"
-        chat_id = source.chat_id
-        chat_name = source.chat_name or chat_id
+    def _logical_channel_from_source(self, source) -> tuple[Optional[DeliveryTarget], Optional[str]]:
+        """Build the DeliveryTarget a channel-picking command should persist.
+
+        A Relay-fronted logical target must carry authenticated provenance
+        (user_id/scope_id from the relay itself — a target the relay cannot
+        vouch for would leave every later delivery to it unroutable), and
+        Slack's synthetic per-message session thread must never pin the
+        target (see ``_target_thread_from_source``).
+
+        Returns ``(channel, None)`` on success or ``(None, error_detail)``
+        when the source cannot name a durable, authenticated target.
+        """
         if source.platform is None:
-            return t("gateway.set_home.save_failed", error="Missing logical platform")
+            return None, "Missing logical platform"
+
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
             adapter_for_source = getattr(self, "_adapter_for_source", None)
             relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
             fronts_platform = getattr(relay_adapter, "fronts_platform", None)
-            if (source.platform in {None, Platform.LOCAL, Platform.RELAY}
-                    or not getattr(source, "user_id", None)
-                    or not callable(fronts_platform) or not fronts_platform(source.platform)):
-                return t("gateway.set_home.save_failed",
-                         error="Relay does not authenticate this logical home target")
-        thread_id = _home_thread_from_source(source)
-        home = HomeChannel(
-            platform=source.platform, chat_id=str(chat_id), name=chat_name, thread_id=thread_id,
-            user_id=str(source.user_id) if getattr(source, "user_id", None) else None,
-            scope_id=str(source.scope_id) if getattr(source, "scope_id", None) else None)
-        # config.yaml is canonical because it can persist the authenticated logical-target
-        # provenance required by Relay after a restart.
+            if (
+                source.platform in {None, Platform.LOCAL, Platform.RELAY}
+                or not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(source.platform)
+            ):
+                return None, "Relay does not authenticate this logical target"
+
+        thread_id = _target_thread_from_source(source)
+        channel = DeliveryTarget(
+            platform=source.platform,
+            chat_id=str(source.chat_id),
+            name=source.chat_name or source.chat_id,
+            thread_id=str(thread_id) if thread_id else None,
+            user_id=(
+                str(source.user_id)
+                if getattr(source, "user_id", None)
+                else None
+            ),
+            scope_id=(
+                str(source.scope_id)
+                if getattr(source, "scope_id", None)
+                else None
+            ),
+        )
+        return channel, None
+
+    async def _handle_set_home_server_command(self, event: MessageEvent) -> str:
+        """Handle /sethomeserver -- provision and wire the Discord home server.
+
+        Discord-only: the whole feature (categories, voice-channel walls,
+        memory webhooks) is Discord-shaped, so other platforms get a clear
+        refusal rather than a half-run. Authorization is the same slash gate
+        the operator commands go through — the operator allowlists plus
+        ``allow_admin_from`` — and provisioning additionally fails loudly when
+        the bot lacks Manage Channels / Manage Webhooks in the target guild.
+        """
+        source = event.source
+        if source.platform is not Platform.DISCORD:
+            return t("gateway.set_home_server.discord_only")
+
+        # Relay guard: a relay-fronted Discord message passes the platform
+        # check above, but only a relay that actually fronts Discord and
+        # authenticated the sender may drive a guild-level config write +
+        # provisioning.
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        if via_relay:
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
+            if (
+                not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(Platform.DISCORD)
+            ):
+                return t("gateway.set_home_server.relay_blocked")
+
+        raw_args = event.get_command_args().strip()
+        confirmed = raw_args.lower() in {"confirm", "yes", "--confirm"}
+
+        # A guild the user is invoking from, or an explicit one. scope_id is the
+        # canonical guild carrier on SessionSource (the guild_id alias is
+        # legacy); raw_message covers slash interactions that only set guild_id.
+        guild_id = str(getattr(source, "scope_id", None) or "").strip()
+        if not guild_id:
+            raw = getattr(event, "raw_message", None)
+            raw_guild = getattr(raw, "guild_id", None) or getattr(
+                getattr(raw, "guild", None), "id", None
+            )
+            guild_id = str(raw_guild or "").strip()
+        if not guild_id:
+            return t("gateway.set_home_server.no_guild")
+
         try:
-            persist_home_channel(home, enabled_if_new=not via_relay)
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            section = config.get("discord_home_server")
+            if not isinstance(section, dict):
+                section = {}
+                config["discord_home_server"] = section
+            current = str(section.get("guild_id") or "").strip()
         except Exception as e:
-            return t("gateway.set_home.save_failed", error=e)
-        # Preserve legacy home env vars for existing cron/setup consumers.
+            return t("gateway.set_home_server.save_failed", error=e)
+
+        if current and current != guild_id and not confirmed:
+            return t(
+                "gateway.set_home_server.confirm_required",
+                current=current,
+                guild_id=guild_id,
+            )
+
+        if current != guild_id:
+            section["guild_id"] = guild_id
+            try:
+                save_config(config)
+            except Exception as e:
+                return t("gateway.set_home_server.save_failed", error=e)
+
+        # Progress feedback: provisioning makes several REST round-trips, so
+        # tell the user it started before the first one lands.
+        adapter = getattr(self, "_adapter_for_source", None)
+        adapter = adapter(source) if callable(adapter) else None
+        if adapter is not None:
+            try:
+                metadata = self._thread_metadata_for_source(source)
+                await adapter.send(
+                    str(source.chat_id),
+                    t("gateway.set_home_server.progress"),
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.debug("sethomeserver progress send failed", exc_info=True)
+
         try:
-            from hermes_cli.config import save_env_value
-            save_env_value(_home_target_env_var(platform_name), str(chat_id))
-            save_env_value(_home_thread_env_var(platform_name), str(thread_id or ""))
+            from plugins.home_server.core import HomeServerError, reconcile
+            report = await asyncio.to_thread(reconcile)
+        except HomeServerError as e:
+            return t("gateway.set_home_server.provision_failed", error=e)
         except Exception as e:
-            logger.warning("Home config saved but legacy env persistence failed: %s", e)
-        # Keep the running gateway config in sync too. The pre-restart notification path reads
-        # self.config before the process reloads config.
-        platform_config = self.config.platforms.setdefault(source.platform, PlatformConfig(enabled=not via_relay))
-        platform_config.home_channel = home
-        return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+            return t("gateway.set_home_server.provision_failed", error=e)
+
+        if not report.get("enabled"):
+            return t("gateway.set_home_server.save_failed", error="guild_id not set")
+
+        created = report.get("created") or []
+        embeds = report.get("embeds_posted") or []
+        wired = report.get("wired") or {}
+        modules = report.get("modules") or {}
+
+        return t(
+            "gateway.set_home_server.success",
+            created_count=len(created),
+            created_list=", ".join(c.split(":", 1)[1] for c in created) or "—",
+            embeds_count=len(embeds),
+            wired_count=len(wired),
+            wired_list=", ".join(sorted(wired)) or "—",
+            modules_count=sum(1 for v in modules.values() if v),
+            guild_id=guild_id,
+        )
+
+    async def _handle_set_notify_command(self, event: MessageEvent) -> str:
+        """Handle /setnotify -- route gateway lifecycle broadcasts to this chat.
+
+        Persists the platform's ``notification_channel``: shutdown/startup
+        broadcasts land here (e.g. a dedicated "#gateway-restarts" channel).
+        """
+        source = event.source
+        chat_name = source.chat_name or source.chat_id
+        channel, error = self._logical_channel_from_source(source)
+        if error is not None:
+            return t("gateway.set_notify.save_failed", error=error)
+
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+
+        try:
+            persist_notification_channel(channel, enabled_if_new=not via_relay)
+        except Exception as e:
+            return t("gateway.set_notify.save_failed", error=e)
+
+        # Keep the running gateway config in sync too. The shutdown
+        # broadcast reads self.config before the process reloads config.yaml.
+        platform_config = getattr(self, "config").platforms.setdefault(
+            source.platform,
+            PlatformConfig(enabled=not via_relay),
+        )
+        platform_config.notification_channel = channel
+
+        return t("gateway.set_notify.success", name=chat_name, chat_id=source.chat_id)
+
+    async def _handle_clear_notify_command(self, event: MessageEvent) -> str:
+        """Handle /clearnotify -- stop routing lifecycle broadcasts to the notification channel."""
+        source = event.source
+        if source.platform is None:
+            return t("gateway.clear_notify.failed", error="Missing logical platform")
+
+        try:
+            clear_notification_channel(source.platform)
+        except Exception as e:
+            return t("gateway.clear_notify.failed", error=e)
+
+        # Mirror /setnotify's in-sync update so the very next lifecycle
+        # broadcast already reflects the cleared channel.
+        platform_config = getattr(self, "config", None)
+        if platform_config is not None:
+            platform_config = platform_config.platforms.get(source.platform)
+        if platform_config is not None:
+            platform_config.notification_channel = None
+
+        return t("gateway.clear_notify.success")
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

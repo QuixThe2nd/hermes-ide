@@ -377,7 +377,7 @@ _OUTBOUND_MEDIA = {
 _INBOUND_MEDIA_EXT = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file": ".bin"}
 _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_video_from_bytes_async}
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
-_ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"), ("LINE_HOME_CHANNEL", "home_channel"))
+_ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"))
 
 
 class LineAdapter(BasePlatformAdapter):
@@ -1001,7 +1001,7 @@ def register(ctx) -> None:
         name="line", label="LINE", adapter_factory=lambda cfg: LineAdapter(cfg), check_fn=check_requirements,
         validate_config=validate_config, is_connected=is_connected,
         required_env=["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"], install_hint="pip install aiohttp",
-        setup_fn=interactive_setup, env_enablement_fn=_env_enablement, cron_deliver_env_var="LINE_HOME_CHANNEL",
+        setup_fn=interactive_setup, env_enablement_fn=_env_enablement,
         standalone_sender_fn=_standalone_send, allowed_users_env="LINE_ALLOWED_USERS",
         allow_all_env="LINE_ALLOW_ALL_USERS",
         max_message_length=LINE_SAFE_BUBBLE_CHARS,  # per-bubble cap is 5000; smart-chunker uses 4500

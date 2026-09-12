@@ -1102,7 +1102,7 @@ def _(rid, params: dict, session: dict) -> dict:
         return _err(rid, 4009, "session busy — wait for the current turn to finish, then retry the handoff")
     if not (platform_name := (params.get("platform", "") or "").strip().lower()):
         return _err(rid, 4023, "platform required")
-    # Validate up front: an unconfigured platform / missing home channel pends forever.
+    # Validate up front: an unconfigured platform / missing notification channel pends forever.
     from gateway.config import Platform, load_gateway_config
     try:
         platform = Platform(platform_name)
@@ -1115,9 +1115,10 @@ def _(rid, params: dict, session: dict) -> dict:
         return _err(rid, 5021, f"could not load gateway config: {e}")
     if not getattr(gw_config.platforms.get(platform), "enabled", False):
         return _err(rid, 4025, f"platform '{platform_name}' is not configured/enabled in the gateway")
-    if not (home := gw_config.get_home_channel(platform)) or not home.chat_id:
-        return _err(rid, 4026, f"no home channel configured for {platform_name} — set one with "
-                    "/sethome on the destination chat first")
+    channel = gw_config.get_notification_channel(platform)
+    if not channel or not channel.chat_id:
+        return _err(rid, 4026, f"no delivery target configured for {platform_name} — set one with "
+                    "/setnotify on the destination chat")
     # The watcher transfers a persisted row, so make sure one exists for an empty chat.
     _ensure_session_db_row(session)
     key = session["session_key"]
@@ -1131,7 +1132,7 @@ def _(rid, params: dict, session: dict) -> dict:
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
         except Exception as e:
             return _err(rid, 5007, str(e))
-    return _ok(rid, {"queued": True, "session_key": key, "platform": platform_name, "home_name": home.name})
+    return _ok(rid, {"queued": True, "session_key": key, "platform": platform_name})
 
 
 @method("handoff.state")

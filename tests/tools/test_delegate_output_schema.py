@@ -406,6 +406,7 @@ class TestDelegateTaskDispatch:
                 context="base context",
                 output_schema=ADDRESS_SCHEMA,
                 parent_agent=_make_mock_parent(),
+                background=False,
             )
         payload = json.loads(out)
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")

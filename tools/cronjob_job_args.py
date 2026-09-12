@@ -68,7 +68,7 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
         "cronjob(action='list')) but will NOT be delivered back into this "
         "session — CLI/TUI sessions have no live-delivery channel. To be "
         "notified when it runs, recreate or update the job with deliver set to "
-        "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'.")
+        "an explicit platform target, e.g. deliver='telegram:-1001234567890'.")
 
 
 def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> List[str]:
@@ -91,11 +91,6 @@ def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> Li
             "error alert. prompt/skills are ignored.")
     _deliver = (user_deliver or "").strip().lower()
     if _deliver:
-        if "all" in _deliver.split(","):
-            notes.append(
-                "deliver='all' resolves at fire time and never includes "
-                "bot-chat targets — channels connected later are picked up "
-                "automatically.")
         if _deliver.startswith("bot-chat:"):
             notes.append("Targeting another profile's Bot Chat costs that bot an agent turn per run.")
         # platform:chat_id with no thread segment loses topic targeting —
@@ -217,7 +212,8 @@ def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     session is ephemeral, so by fire time there is no origin). Non-cron sessions: unchanged.
     Cron sessions: ``origin`` (or omitted) becomes the creating run's ``platform:chat_id[:thread]``
     from HERMES_CRON_AUTO_DELIVER_*, or ``local`` when it has no concrete target; other
-    elements pass through. Otherwise the scheduler would guess a home channel."""
+    elements pass through. Otherwise the originless run would record a delivery error at fire
+    time — there is no default destination to fall back to."""
     from gateway.session_context import get_session_env
     from utils import is_truthy_value
     if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):

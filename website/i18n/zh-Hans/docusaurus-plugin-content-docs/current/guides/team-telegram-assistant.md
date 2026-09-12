@@ -254,20 +254,11 @@ hermes pairing clear-pending
 
 ## 第五步：配置机器人
 
-### 设置主频道
+### 为定时任务选择投递目标
 
-**主频道**是机器人投递 cron 任务结果和主动消息的地方。没有主频道，定时任务将无处发送输出。
+Cron 任务的结果发送到显式的 `telegram:<chat_id>` 目标，因此先决定哪个群组或聊天接收它们（例如 team-updates 群组）。每个 cron 任务在创建时指定自己的目标——参见[用 Cron 实现自动化](/guides/automate-with-cron)。
 
-**方式 1：** 在机器人所在的任意 Telegram 群组或聊天中使用 `/sethome` 命令。
-
-**方式 2：** 在 `~/.hermes/.env` 中手动设置：
-
-```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="Team Updates"
-```
-
-要查找频道 ID，可将 [@userinfobot](https://t.me/userinfobot) 添加到群组——它会报告该群组的聊天 ID。
+要查找聊天 ID，可将 [@userinfobot](https://t.me/userinfobot) 添加到群组——它会报告该群组的聊天 ID。
 
 ### 配置工具进度显示
 
@@ -338,7 +329,7 @@ github.com/myorg/myproject for:
 Format as a brief standup-style summary.
 ```
 
-Agent 会自动创建一个 cron 任务，并将结果投递到你提问的聊天（或主频道）。
+Agent 会自动创建一个 cron 任务，并将结果投递到你提问的聊天。
 
 ### 服务器健康检查
 

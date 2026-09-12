@@ -34,20 +34,27 @@ logic stays in one place.
 
 Delivery-mode contract (uniform delegation lifecycle)
 -----------------------------------------------------
-Every delegation tool advertises ``background: bool = false``. The mode is
-decided ONLY by that argument — never by nesting, platform, session type, or
-delivery capability:
+Every delegation tool advertises ``background: bool``. An EXPLICIT value is
+never second-guessed; only the OMITTED argument takes a capability-aware
+default (:func:`resolve_background_arg`):
 
-* ``background=false`` (the default) blocks until a terminal outcome and
-  returns the final result inline. A foreground executor-owned run never
-  touches this registry: no record, no durable row, no completion event.
-  (The one exception is the foreground mission wait — an externally-driven
-  unit — which registers an inline record plus an ``external`` durable row
-  so its cross-process takeover is exactly-once; see
-  ``register_inline_wait`` / ``claim_inline_takeover``.)
+* ``background=false`` blocks until a terminal outcome and returns the final
+  result inline. A foreground executor-owned run never touches this
+  registry: no record, no durable row, no completion event. (The one
+  exception is the foreground mission wait — an externally-driven unit —
+  which registers an inline record plus an ``external`` durable row so its
+  cross-process takeover is exactly-once; see ``register_inline_wait`` /
+  ``claim_inline_takeover``.)
 * ``background=true`` returns the shared acceptance envelope (see
   :func:`build_background_acceptance_envelope`) immediately and later
   delivers exactly ONE terminal result through the completion rail.
+* OMITTED resolves async-by-default: ``delegation.default_background``
+  (on unless configured off) detaches WHEN :func:`background_delivery_supported`
+  says this session can receive a late completion, and silently falls back
+  to the blocking foreground behavior where it cannot (cron jobs, one-shot
+  runs, Kanban workers, stateless HTTP endpoints). An explicit value is
+  never overridden — ``background=true`` still fails loudly, before any
+  work, on an unsupported channel.
 
 Exactly one delivery channel per delegation is enforced structurally at
 :func:`publish_terminal_event`: it is the only producer of
@@ -72,6 +79,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 from hermes_constants import get_hermes_home
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1548,6 +1556,99 @@ def background_delivery_supported() -> tuple:
         "background=false) to run the task in the foreground this turn "
         "instead.",
     )
+
+
+def _omitted_default_delivery_supported() -> bool:
+    """Strict consumer test for the OMITTED-argument background default.
+
+    Stricter than :func:`background_delivery_supported` on purpose, and that
+    is NOT an inconsistency: an explicit ``background=true`` on an incapable
+    session fails LOUDLY before any work starts, so it can trust the widest
+    capability test. The omitted default instead falls back SILENTLY to
+    blocking, so it must grant a detach only when a consumer genuinely owns a
+    later turn — the same two refusals ``_resolve_async_wake_sid`` applies for
+    ``delegate_agent``:
+
+    1. A finite one-shot chat (``hermes -q``) sets
+       ``HERMES_SINGLE_QUERY_SESSION`` but never declares
+       ``async_delivery=False``; its process exits after the turn, so a
+       returned handle would strand the result. Cron and ``hermes -z`` are
+       already refused by ``async_delivery_supported`` itself.
+    2. A stateless HTTP request with a raw session id can only consume a
+       detached result when it DECLARED ``session_history_delivery``; an
+       omitted declaration is default-deny (#98619) and must not inherit wake
+       authority from the id alone.
+    """
+    try:
+        from gateway.session_context import async_delivery_supported, get_session_env
+    except Exception:  # pragma: no cover — mirror background_delivery_supported
+        logger.debug("omitted-default gate: context unavailable", exc_info=True)
+        return True
+
+    if not async_delivery_supported():
+        # Stateless channel or Kanban worker: only a raw session id WITH a
+        # declared server-history consumer can consume a detached result.
+        if not _current_origin_session_id():
+            return False
+        try:
+            from gateway.session_context import session_history_delivery_supported
+        except Exception:  # pragma: no cover
+            return False
+        return session_history_delivery_supported()
+
+    try:
+        if get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1":
+            return False
+    except Exception:  # pragma: no cover
+        pass
+    return True
+
+
+def _delegation_config() -> dict:
+    """The ``delegation`` config section for the background-mode default.
+
+    Read through ``delegate_tool._load_config`` (the canonical loader every
+    other delegation knob uses, and the seam tests patch) — lazily, because
+    ``delegate_tool`` imports this module lazily and a module-level import
+    would close a cycle.
+    """
+    try:
+        from tools.delegate_tool import _load_config
+        return _load_config() or {}
+    except Exception:  # pragma: no cover — loader failure must not wedge mode
+        logger.debug("resolve_background_arg: config load failed", exc_info=True)
+        return {}
+
+
+def resolve_background_arg(args: Optional[Dict[str, Any]], *, config: Optional[dict] = None) -> bool:
+    """The ONE background-mode resolver for every ``delegate_*`` tool.
+
+    Implements the async-by-default contract:
+
+    1. ``background`` present and truthy (any spelling ``is_truthy_value``
+       accepts) → ``True`` — explicit detach, exactly as the caller wrote it.
+    2. present and falsey → ``False`` — explicit blocking, never second-guessed.
+    3. absent (or ``None``) → the ``delegation.default_background`` config key
+       (default ``True``); when the config default is on, delivery capability
+       is still required — a session that cannot receive a late completion
+       (one-shot `hermes -q` chat, cron job, one-shot run, Kanban worker,
+       stateless HTTP endpoint with no declared server-history consumer)
+       silently falls back to ``False`` (today's blocking behavior) instead
+       of erroring.
+
+    Presence is read from the raw dict, NOT via ``args.get(...)`` defaults:
+    ``is_truthy_value(args.get("background"), default=...)`` collapses
+    omitted and explicit-false, and only this distinction carries the new
+    semantics. An explicit value is NEVER overridden by config or capability.
+    """
+    raw = (args or {}).get("background")
+    if raw is not None:
+        return is_truthy_value(raw)
+    if config is None:
+        config = _delegation_config()
+    if not is_truthy_value((config or {}).get("default_background"), default=True):
+        return False
+    return _omitted_default_delivery_supported()
 
 
 def register_inline_wait(

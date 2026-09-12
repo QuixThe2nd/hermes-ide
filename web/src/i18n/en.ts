@@ -308,7 +308,8 @@ export const en: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
-      needsHomeChannel: "set a home channel first",
+      customTarget:
+        "Custom target: platform:chat_id[:thread_id] (comma-separate several)",
       noneConfigured:
         "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },

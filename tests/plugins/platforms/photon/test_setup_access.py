@@ -18,26 +18,22 @@ from plugins.platforms.photon import cli
 
 def test_autoconfigure_access_fills_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PHOTON_ALLOWED_USERS", raising=False)
-    monkeypatch.delenv("PHOTON_HOME_CHANNEL", raising=False)
 
     cli._autoconfigure_access("+15551234567")
 
     assert get_env_value("PHOTON_ALLOWED_USERS") == "+15551234567"
-    assert get_env_value("PHOTON_HOME_CHANNEL") == "+15551234567"
 
 
-def test_env_enablement_seeds_home_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_enablement_seeds_project_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "project_123")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "secret_123")
-    monkeypatch.setenv("PHOTON_HOME_CHANNEL", "+15551234567")
-    monkeypatch.setenv("PHOTON_HOME_CHANNEL_NAME", "Primary DM")
 
     seed = _env_enablement()
 
     assert seed is not None
-    assert seed["home_channel"] == {
-        "chat_id": "+15551234567",
-        "name": "Primary DM",
+    assert seed == {
+        "project_id": "project_123",
+        "project_secret": "secret_123",
     }
 
 
