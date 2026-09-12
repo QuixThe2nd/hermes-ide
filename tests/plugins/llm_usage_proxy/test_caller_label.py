@@ -8,8 +8,9 @@ never cause a refusal.
 
 Claude Code's connectivity probes cannot send custom headers at all, so
 their ``claude-cli/…`` User-Agent (and the bare ``axios/…`` of its bundled
-axios) is accepted as a name of last resort.
-Together the two name every caller the proxy knows about — and in
+axios, and Node's own ``node`` fetch UA) is accepted as a name of last
+resort.
+Together the three name every caller the proxy knows about — and in
 key-manager mode a request nothing can name is refused before the upstream
 call, its row recorded under the sentinel caller ``unattributed``.
 """
@@ -330,6 +331,7 @@ def test_routed_traffic_is_labeled_and_the_label_is_stripped(
 
 CLAUDE_CLI_UA = "claude-cli/2.1.226 (external, cli)"
 AXIOS_UA = "axios/1.12.2"
+NODE_UA = "node"
 
 GATE_ERROR = (
     "unattributed request: send a caller token, an 'X-Usage-Caller: <label>'"
@@ -354,6 +356,9 @@ def _managed(tmp_path, *, with_caller):
         ("", None),
         (CLAUDE_CLI_UA, "claude-code"),
         (AXIOS_UA, "claude-code"),
+        (NODE_UA, "claude-code"),
+        ("node/22.14.0", "claude-code"),
+        ("nodejs/22.14.0", None),
         ("Mozilla/5.0", None),
     ],
 )
@@ -397,6 +402,31 @@ def test_axios_probe_user_agent_passes_the_gate_as_claude_code(
 
     assert status == 200
     assert len(upstream.requests) == 1
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "claude-code"
+
+
+def test_node_fetch_probe_user_agent_passes_the_gate_as_claude_code(
+    start_upstream, start_proxy, tmp_path
+):
+    """The CLI's HEAD probes ride on Node's own fetch, which names itself the
+    bare "node"; the attribution gate admits them as claude-code too."""
+    keys_file = _managed(tmp_path, with_caller="alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="node-probe.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, _ = proxy_request(
+        proxy.server_address[1],
+        "HEAD",
+        "/p/zai/chat/completions",
+        headers={"User-Agent": NODE_UA},
+    )
+
+    assert status == 200
+    assert len(upstream.requests) == 1
+    assert upstream.requests[0]["method"] == "HEAD"
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == "claude-code"
 
