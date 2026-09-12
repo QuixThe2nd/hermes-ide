@@ -260,49 +260,17 @@ Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 
 |--------|-------------|---------|
 | `"origin"` | 回传到任务创建的来源 | 消息平台上的默认值 |
 | `"local"` | 仅保存到本地文件（`~/.hermes/cron/output/`） | CLI 上的默认值 |
-| `"telegram"` | Telegram 主频道 | 使用 `TELEGRAM_HOME_CHANNEL` |
 | `"telegram:123456"` | 按 ID 指定的 Telegram 会话 | 直接投递 |
 | `"telegram:-100123:17585"` | 指定 Telegram 话题 | `chat_id:thread_id` 格式 |
-| `"discord"` | Discord 主频道 | 使用 `DISCORD_HOME_CHANNEL` |
 | `"discord:#engineering"` | 按频道名指定的 Discord 频道 | 按频道名 |
-| `"slack"` | Slack 主频道 | |
-| `"whatsapp"` | WhatsApp 主账号 | |
-| `"signal"` | Signal | |
-| `"matrix"` | Matrix 主房间 | |
-| `"mattermost"` | Mattermost 主频道 | |
-| `"email"` | 邮件 | |
-| `"sms"` | 通过 Twilio 发送 SMS | |
-| `"homeassistant"` | Home Assistant | |
-| `"dingtalk"` | 钉钉 | |
-| `"feishu"` | 飞书/Lark | |
-| `"wecom"` | 企业微信 | |
-| `"weixin"` | 微信（WeChat） | |
-| `"bluebubbles"` | BlueBubbles（iMessage） | |
-| `"qqbot"` | QQ Bot（腾讯 QQ） | |
-| `"all"` | 扇出到所有已连接的主频道 | 触发时解析 |
-| `"telegram,discord"` | 扇出到指定的一组频道 | 逗号分隔列表 |
-| `"origin,all"` | 投递到来源**加上**所有其他已连接频道 | 可组合任意 token |
+| `"slack:C0123456789"` | 按 ID 指定的 Slack 频道 | 直接投递 |
+| `"bot-chat"` | 当前 profile 的规范 Bot Chat——bot 读取输出并作出响应 | 机器本地 |
+| `"bot-chat:research"` | 其他本地 profile 的 Bot Chat | 创建时校验 |
+| `"telegram:-100123,discord:#engineering"` | 扇出到指定的一组目标 | 逗号分隔列表 |
+
+每个消息平台目标都必须指明显式聊天——裸平台名（`deliver: "telegram"`）不会解析出任何目标，任务会记录一条投递错误，提示你设置显式的 `platform:chat_id[:thread_id]` 目标（`hermes cron edit <id> --deliver ...`）。
 
 Agent 的最终响应会自动投递，无需在 cron prompt 中调用 `send_message`。
-
-### 路由意图（`all`）
-
-`all` 让你将一个 cron 任务发送到所有已配置的消息频道，无需逐一列举名称。它在**触发时解析**，因此在你配置 `TELEGRAM_HOME_CHANNEL` 之前创建的任务，会在下次 tick 时自动纳入 Telegram。
-
-语义：`all` 展开为所有已配置主频道的平台。零个也没问题；任务只是没有投递目标，并在上游记录为投递失败。
-
-`all` 可与显式目标组合。`origin,all` 投递到来源会话**加上**所有其他已连接的主频道，按 `(platform, chat_id, thread_id)` 去重。
-
-### Telegram cron 话题（`TELEGRAM_CRON_THREAD_ID`）
-
-启用 Telegram 话题模式后，根 DM 被保留为系统大厅——发送到那里的回复会被拒绝并附带大厅提示，`reply_to_message_id` 会被丢弃，因此你无法回复落在主聊天中的 cron 消息。
-
-将 cron 指向专用的论坛话题：
-
-1. 在 Telegram 中打开机器人 DM，创建一个名为 `Cron` 的话题。长按话题标题 → **复制链接**；末尾的整数即为该话题的 `message_thread_id`。
-2. 在 `.env` 中设置 `TELEGRAM_CRON_THREAD_ID=<该 id>`。
-
-这仅适用于 cron 投递。`TELEGRAM_HOME_CHANNEL_THREAD_ID`（用于其他地方，如重启通知）不受影响。显式的 `deliver="telegram:chat_id:thread_id"` 目标仍优先于环境变量。对 cron 消息的回复现在会进入已有的话题会话，你可以直接在其中操作。
 
 ### 响应包装
 
