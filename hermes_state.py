@@ -107,6 +107,15 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_search import SessionSearchMixin
+from hermes_state_messages import SessionMessagesMixin
+from hermes_state_sessions import SessionSessionsMixin
+from hermes_state_fts import SessionFtsSetupMixin
+from hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_state_compression import SessionCompressionMixin
+from hermes_state_gateway import SessionGatewayMixin
+from hermes_state_maintenance import SessionMaintenanceMixin
+from hermes_state_usage import SessionUsageMixin
+from hermes_state_titles import SessionTitlesMixin
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -5323,7 +5332,20 @@ _SAME_KEY_NAMESPACE_SQL = (
 )
 
 
-class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
+class SessionDB(
+    SessionSessionsMixin,
+    SessionFtsSetupMixin,
+    SessionSearchMixin,
+    SessionSchemaMixin,
+    SessionPortabilityMixin,
+    SessionTelegramTopicsMixin,
+    SessionCompressionMixin,
+    SessionGatewayMixin,
+    SessionMaintenanceMixin,
+    SessionUsageMixin,
+    SessionTitlesMixin,
+    SessionMessagesMixin,
+):
     """
     SQLite-backed session storage with FTS5 search.
 
@@ -6446,6 +6468,46 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             else:
                 self._warn_fts5_unavailable(exc)
             return False
+
+    def _write_sql(
+        self,
+        sql: str,
+        params: Any = (),
+        *,
+        many: bool = False,
+        patience_s: Optional[float] = None,
+    ) -> None:
+        """Run one INSERT/UPDATE/DELETE through ``_execute_write``."""
+        def _do(conn):
+            (conn.executemany if many else conn.execute)(sql, params)
+
+        self._execute_write(_do, patience_s=patience_s)
+
+    def _write_rowcount(
+        self, sql: str, params: Any = (), *, patience_s: Optional[float] = None
+    ) -> int:
+        """Run one UPDATE/DELETE through ``_execute_write``; return rows changed.
+
+        Falls back to ``SELECT changes()`` when the driver reports an unknown
+        rowcount (None / negative).
+        """
+        def _do(conn):
+            rowcount = conn.execute(sql, params).rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+
+        return self._execute_write(_do, patience_s=patience_s)
+
+    def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
+        """``fetchone()`` of one read-only statement via ``_read_ctx``."""
+        with self._read_ctx() as conn:
+            return conn.execute(sql, params).fetchone()
+
+    def _read_all(self, sql: str, params: Any = ()) -> List[sqlite3.Row]:
+        """``fetchall()`` of one read-only statement via ``_read_ctx``."""
+        with self._read_ctx() as conn:
+            return conn.execute(sql, params).fetchall()
 
     def _execute_write(
         self,
