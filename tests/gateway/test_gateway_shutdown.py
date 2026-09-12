@@ -232,7 +232,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     restart_source.message_id = "restart-command"
     runner._restart_requested = True
     runner._restart_command_source = restart_source
-    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-chat",
         name="Telegram Home",

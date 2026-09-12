@@ -22,7 +22,6 @@ from gateway.config import (
     StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
-    persist_home_channel,
 )
 
 
@@ -50,10 +49,10 @@ class TestPlatformConfigRoundtrip:
         pc = PlatformConfig(
             enabled=True,
             token="tok_123",
-            home_channel=DeliveryTarget(
+            notification_channel=DeliveryTarget(
                 platform=Platform.TELEGRAM,
                 chat_id="555",
-                name="Home",
+                name="gateway-restarts",
             ),
             extra={"foo": "bar"},
         )
@@ -62,7 +61,7 @@ class TestPlatformConfigRoundtrip:
 
         assert restored.enabled is True
         assert restored.token == "tok_123"
-        assert restored.home_channel.chat_id == "555"
+        assert restored.notification_channel.chat_id == "555"
         assert restored.extra == {"foo": "bar"}
 
     def test_disabled_no_token(self):
@@ -128,13 +127,13 @@ class TestPlatformConfigMalformedSections:
         restored = PlatformConfig.from_dict(
             {
                 "enabled": True,
-                "home_channel": "telegram:123",
+                "notification_channel": "telegram:123",
                 "extra": "oops",
             }
         )
 
         assert restored.enabled is True
-        assert restored.home_channel is None
+        assert restored.notification_channel is None
         assert restored.extra == {}
 
 
@@ -1076,87 +1075,6 @@ class TestWebhookPortBridging:
         # explicit extra: wins over top-level
         assert ms.extra.get("secret") == "extra-secret"
         assert ms.extra.get("client_state") == "my-client-state"
-
-
-class TestDeliveryTargetEnvOverrides:
-    """Home channel env vars should apply even when the platform was already
-    configured via config.yaml (not just when credential env vars create it)."""
-
-    def test_existing_platform_configs_accept_home_channel_env_overrides(self):
-        cases = [
-            (
-                Platform.SLACK,
-                PlatformConfig(enabled=True, token="xoxb-from-config"),
-                {"SLACK_HOME_CHANNEL": "C123", "SLACK_HOME_CHANNEL_NAME": "Ops"},
-                ("C123", "Ops"),
-            ),
-            (
-                Platform.WHATSAPP,
-                PlatformConfig(enabled=True),
-                {
-                    "WHATSAPP_HOME_CHANNEL": "1234567890@lid",
-                    "WHATSAPP_HOME_CHANNEL_NAME": "Owner DM",
-                },
-                ("1234567890@lid", "Owner DM"),
-            ),
-            (
-                Platform.SIGNAL,
-                PlatformConfig(
-                    enabled=True,
-                    extra={"http_url": "http://localhost:9090", "account": "+15551234567"},
-                ),
-                {"SIGNAL_HOME_CHANNEL": "+1555000", "SIGNAL_HOME_CHANNEL_NAME": "Phone"},
-                ("+1555000", "Phone"),
-            ),
-            (
-                Platform.MATTERMOST,
-                PlatformConfig(
-                    enabled=True,
-                    token="mm-token",
-                    extra={"url": "https://mm.example.com"},
-                ),
-                {"MATTERMOST_HOME_CHANNEL": "ch_abc123", "MATTERMOST_HOME_CHANNEL_NAME": "General"},
-                ("ch_abc123", "General"),
-            ),
-            (
-                Platform.MATRIX,
-                PlatformConfig(
-                    enabled=True,
-                    token="syt_abc123",
-                    extra={"homeserver": "https://matrix.example.org"},
-                ),
-                {"MATRIX_HOME_ROOM": "!room123:example.org", "MATRIX_HOME_ROOM_NAME": "Bot Room"},
-                ("!room123:example.org", "Bot Room"),
-            ),
-            (
-                Platform.EMAIL,
-                PlatformConfig(
-                    enabled=True,
-                    extra={
-                        "address": "hermes@test.com",
-                        "imap_host": "imap.test.com",
-                        "smtp_host": "smtp.test.com",
-                    },
-                ),
-                {"EMAIL_HOME_ADDRESS": "user@test.com", "EMAIL_HOME_ADDRESS_NAME": "Inbox"},
-                ("user@test.com", "Inbox"),
-            ),
-            (
-                Platform.SMS,
-                PlatformConfig(enabled=True, api_key="token_abc"),
-                {"SMS_HOME_CHANNEL": "+15559876543", "SMS_HOME_CHANNEL_NAME": "My Phone"},
-                ("+15559876543", "My Phone"),
-            ),
-        ]
-
-        for platform, platform_config, env, expected in cases:
-            config = GatewayConfig(platforms={platform: platform_config})
-            with patch.dict(os.environ, env, clear=True):
-                _apply_env_overrides(config)
-
-            home = config.platforms[platform].home_channel
-            assert home is not None, f"{platform.value}: home_channel should not be None"
-            assert (home.chat_id, home.name) == expected, platform.value
 
 
 class TestMultiplexProfilesEnvOverride:

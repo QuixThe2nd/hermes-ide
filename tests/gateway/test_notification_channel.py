@@ -9,6 +9,7 @@ contracts preserved — and the /setnotify + /clearnotify handlers.
 """
 
 import json
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -214,6 +215,26 @@ async def test_startup_broadcast_routes_to_notification_channel(tmp_path, monkey
     # Thread target keeps its routing metadata on the routed destination.
     _chat_id, _content, metadata = adapter.sent_calls[0]
     assert metadata["thread_id"] == "99"
+
+
+@pytest.mark.asyncio
+async def test_startup_broadcast_skips_with_info_log_when_unset(
+    tmp_path, monkeypatch, caplog
+):
+    """No notification channel anywhere → the broadcast is skipped, with one
+    INFO line saying so (never a fallback destination)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        delivered = await runner._send_notification_channel_startup_notifications()
+
+    assert delivered == set()
+    assert adapter.sent_calls == []
+    assert any(
+        "no notification channel configured" in r.getMessage() for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio

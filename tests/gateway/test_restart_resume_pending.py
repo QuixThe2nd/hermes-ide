@@ -880,22 +880,23 @@ async def test_warmup_disabled_by_nonpositive_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_notifies_home_channel_even_without_active_sessions():
+async def test_restart_notifies_notification_channel_even_without_active_sessions():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
-    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
-        name="Ops Home",
+        name="Ops Restarts",
     )
 
     await runner._notify_active_sessions_of_shutdown()
 
+    assert [chat_id for chat_id, _msg, _metadata in adapter.sent_calls] == ["home-42"]
     assert adapter.sent == ["⚠️ Gateway shutting down"]
 
 
 @pytest.mark.asyncio
-async def test_restart_home_channel_notification_not_deduped_across_threads():
+async def test_restart_notification_channel_broadcast_not_deduped_across_threads():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     session_key = "agent:main:telegram:group:999"
@@ -909,10 +910,10 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
         )
     )
     runner._running_agents[session_key] = MagicMock()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = DeliveryTarget(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="999",
-        name="Ops Home",
+        name="Ops Restarts",
     )
 
     await runner._notify_active_sessions_of_shutdown()
