@@ -1383,7 +1383,7 @@ class GatewayStartupMixin:
         platform_name: str
         transport: Any
         channel: Any
-        home_chat_id: str
+        channel_chat_id: str
         effective_thread_id: Optional[str]
         source: SessionSource
         handoff_config: Any
@@ -1432,12 +1432,12 @@ class GatewayStartupMixin:
                 f"no delivery target configured for {platform_name}; "
                 f"run /setnotify on the destination chat to set one"
             )
-        home_chat_id = str(channel.chat_id)
+        channel_chat_id = str(channel.chat_id)
         # Fresh thread for the handoff's own scrollback; None when unsupported or creation failed.
         cli_title = row.get("title") or cli_session_id[:8]
         try:
             new_thread_id = await transport.adapter.create_handoff_thread(
-                home_chat_id, f"Hermes — {cli_title}",
+                channel_chat_id, f"Hermes — {cli_title}",
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)
@@ -1446,7 +1446,7 @@ class GatewayStartupMixin:
         # Telegram private-chat DM topics use the DM-topic source shape (user_id == chat_id) so the
         # synthetic turn binds the same key later inbound turns arrive on (`dm`, not `thread`).
         is_telegram_private_chat = (
-            platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(home_chat_id)
+            platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(channel_chat_id)
         )
         is_thread = bool(new_thread_id) and not is_telegram_private_chat
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
@@ -1454,15 +1454,15 @@ class GatewayStartupMixin:
             platform=platform,
             chat_id=str(effective_thread_id) if (
                 is_thread and platform == Platform.DISCORD and effective_thread_id
-            ) else home_chat_id,
+            ) else channel_chat_id,
             chat_name=channel.name,
             chat_type="thread" if is_thread else "dm",
-            user_id=home_chat_id if is_telegram_private_chat else "system:handoff",
+            user_id=channel_chat_id if is_telegram_private_chat else "system:handoff",
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
         )
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, channel=channel,
-            home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
+            channel_chat_id=channel_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
             handoff_config=handoff_config,
         )
 
@@ -1523,7 +1523,7 @@ class GatewayStartupMixin:
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(target=%s, thread=%s, session_key=%s)",
-            cli_session_id, dest.platform_name, dest.home_chat_id, dest.effective_thread_id, session_key,
+            cli_session_id, dest.platform_name, dest.channel_chat_id, dest.effective_thread_id, session_key,
         )
         # Inline _handle_message keeps success/failure observable (handle_message would detach it).
         response_text = await self._handle_message(synthetic_event)
@@ -1535,7 +1535,7 @@ class GatewayStartupMixin:
         send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
         try:
             result = await dest.transport.send(
-                dest.platform, str(dest.home_chat_id), response_text, send_metadata,
+                dest.platform, str(dest.channel_chat_id), response_text, send_metadata,
             )
         except Exception as exc:
             raise RuntimeError(f"adapter.send failed: {exc}") from exc

@@ -175,7 +175,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
 # this line via _mission_chat_suppresses_status. Prefix-anchored on purpose:
 # every other status class (retry chatter, warnings, provider errors,
 # compression notices) never matches and keeps today's behavior everywhere,
-# including mission chats. Operator chats (Discord home, ...) without an
+# including mission chats. Operator chats without an
 # active mission keep seeing the notice.
 _FALLBACK_SWITCH_STATUS_RE = re.compile(
     r"^🔄 Switched to fallback model:",
@@ -2268,7 +2268,7 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
     intentionally duplicated as a fail-safe. If a future Slack code path, test
     hook, malformed event, or stale adapter instance bypasses the Slack plugin
     adapter, ignored channels still cannot reach auth, pairing, sessions, or
-    the agent/home-channel prompt pipeline.
+    the agent prompt pipeline.
     """
     platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
     raw = None
@@ -18543,8 +18543,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Delivery target must be configured (the platform's notification
         # channel is the operator-designated destination chat).
-        home = handoff_config.get_notification_channel(platform)
-        if not home or not home.chat_id:
+        channel = handoff_config.get_notification_channel(platform)
+        if not channel or not channel.chat_id:
             raise RuntimeError(
                 f"no delivery target configured for {platform_name}; "
                 f"run /setnotify on the destination chat to set one"
@@ -18561,7 +18561,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         thread_name = f"Hermes — {cli_title}"
         try:
             new_thread_id = await adapter.create_handoff_thread(
-                str(home.chat_id), thread_name,
+                str(channel.chat_id), thread_name,
             )
         except Exception as exc:
             logger.debug(
@@ -18574,7 +18574,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # back to whatever thread (if any) the notification channel was configured
         # with.
         effective_thread_id = new_thread_id or (
-            str(home.thread_id) if home.thread_id else None
+            str(channel.thread_id) if channel.thread_id else None
         )
 
         # Determine chat_type/user_id for the destination source.
@@ -18585,10 +18585,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # source shape as the user's next real message; otherwise the synthetic
         # handoff turn binds a generic `thread` session key while real replies
         # arrive on a `dm` session key.
-        home_chat_id = str(home.chat_id)
+        channel_chat_id = str(channel.chat_id)
         is_telegram_private_chat = (
             platform == Platform.TELEGRAM
-            and looks_like_telegram_private_chat_id(home_chat_id)
+            and looks_like_telegram_private_chat_id(channel_chat_id)
         )
 
         if new_thread_id and not is_telegram_private_chat:
@@ -18600,7 +18600,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # topic-mode checks and binding persistence see the same identity as
             # subsequent inbound user messages.
             dest_chat_type = "dm"
-            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
+            dest_user_id = channel_chat_id if is_telegram_private_chat else "system:handoff"
 
         # Discord thread destinations must key on the thread's OWN id, not the
         # parent channel's, because the Discord adapter builds organic in-thread
@@ -18618,11 +18618,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if platform == Platform.DISCORD and dest_chat_type == "thread" and effective_thread_id:
             dest_chat_id = str(effective_thread_id)
         else:
-            dest_chat_id = home_chat_id
+            dest_chat_id = channel_chat_id
         dest_source = SessionSource(
             platform=platform,
             chat_id=dest_chat_id,
-            chat_name=home.name,
+            chat_name=channel.name,
             chat_type=dest_chat_type,
             user_id=dest_user_id,
             user_name="Handoff",
