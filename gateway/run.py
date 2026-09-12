@@ -17960,7 +17960,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if background is not None:
                 background.add(task)
                 task.add_done_callback(background.discard)
-        except RuntimeError:
+        except (RuntimeError, AttributeError):
+            # Some installations lack the optional sync method; connected
+            # adapters must still finish startup in that case.
             pass
 
         # Build initial channel directory for send_message name resolution
