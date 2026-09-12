@@ -357,12 +357,12 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     # untouched; only the final destination of matching requests changes, and
     # ``None`` (the common case, no routing configured) keeps the SDK's own
     # default client so behaviour is byte-for-byte what it was.
-    if normalized_base_url:
+    if kwargs.get("base_url"):
         try:
             from hermes_cli.llm_usage_routes import build_sync_routed_client
 
             routed_http_client = build_sync_routed_client(
-                normalized_base_url, timeout=kwargs.get("timeout")
+                str(kwargs["base_url"]), timeout=kwargs.get("timeout")
             )
         except ImportError:
             routed_http_client = None
