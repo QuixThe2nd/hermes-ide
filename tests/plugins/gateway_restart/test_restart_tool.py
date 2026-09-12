@@ -380,6 +380,44 @@ def test_handler_persists_restart_notify_from_session_context(
     assert not (tmp_path / ".restart_last_processed.json").exists()
 
 
+def test_notify_marker_write_is_synchronous_on_the_gateway_loop(
+    gateway_loop, monkeypatch
+):
+    """The queued restart's marker write runs on the gateway loop, not a worker.
+
+    A thread-pool write keeps running after the hand-off future is cancelled
+    on timeout, so it can publish ``.restart_notify.json`` for a restart that
+    never started — the next gateway boot would read it as a restart that
+    succeeded. A write with no await point cannot outlive its hand-off that
+    way: it runs inside the coroutine's own step on the gateway loop.
+    """
+    import gateway.restart as gateway_restart
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    _mock_confirm(monkeypatch, "restart")
+    write_loop: dict = {}
+
+    def _sync_only_write(path, data, **kwargs):
+        try:
+            write_loop["value"] = asyncio.get_running_loop()
+        except RuntimeError:
+            # A thread-pool worker has no running loop — the phantom-write
+            # failure mode this test pins out.
+            write_loop["value"] = None
+
+    monkeypatch.setattr(gateway_restart, "atomic_json_write", _sync_only_write)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert write_loop["value"] is gateway_loop
+
+
 # ── the confirm gate ────────────────────────────────────────────────────────
 
 

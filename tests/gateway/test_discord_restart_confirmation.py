@@ -1242,6 +1242,58 @@ async def test_tool_queue_skips_the_offer_for_relay_discord(tmp_path, monkeypatc
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
 
+@pytest.mark.asyncio
+async def test_both_user_restart_entry_points_share_the_gateway_queue_helper(
+    tmp_path, monkeypatch
+):
+    """/restart and the restart tool funnel into ONE gateway-owned sequence.
+
+    The requester-facing queue choreography (comeback routing + notify
+    marker, wind-down offer, drain hand-off) must have a single
+    implementation the slash handler and the tool both call — a private copy
+    in either place is exactly the drift that once crashed the tool when the
+    runner API moved under it.
+    """
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    import gateway.restart as gateway_restart
+    from plugins.gateway_restart import tool as restart_tool
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.restart.user_restart_via_service", lambda: False)
+    shared_calls: list[str] = []
+    real_queue = gateway_restart.queue_user_restart
+
+    async def _spy_queue(runner, source, message_id):
+        shared_calls.append(str(getattr(source, "chat_id", None) or ""))
+        return await real_queue(runner, source, message_id)
+
+    monkeypatch.setattr(gateway_restart, "queue_user_restart", _spy_queue)
+
+    runner, _telegram = make_restart_runner()
+    runner.adapters = {Platform.TELEGRAM: MagicMock()}
+    runner.request_restart = MagicMock(return_value=True)
+
+    # The slash entry point queues through the shared helper.
+    slash_event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="7"),
+        message_id="s-1",
+    )
+    await runner._handle_restart_command(slash_event)
+
+    # The tool's queued restart delegates to the same helper — no private
+    # choreography of its own.
+    status = await restart_tool._queue_user_restart(
+        runner, make_restart_source(chat_id="8"), "t-1"
+    )
+
+    assert status["status"] == "restarting"
+    assert shared_calls == ["7", "8"]
+    assert runner.request_restart.call_count == 2
+
+
 # ── the temporary Restart Pending thread title ───────────────────────────────
 #
 # While the restart confirm gate waits, the calling Discord thread itself is

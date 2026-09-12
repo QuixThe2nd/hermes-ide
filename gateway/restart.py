@@ -1,13 +1,24 @@
 """Shared gateway restart constants and supervisor detection helpers."""
 
+from __future__ import annotations
+
+import dataclasses
+import logging
 import math
 import os
 import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Optional
 
 from hermes_cli.config import DEFAULT_CONFIG
+from utils import atomic_json_write
+
+if TYPE_CHECKING:
+    from gateway.session import SessionSource
+
+logger = logging.getLogger(__name__)
 
 # EX_TEMPFAIL (sysexits.h): ask the service manager to restart after a graceful drain/reload.
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
@@ -282,6 +293,118 @@ def user_restart_via_service() -> bool:
     detached helper with it).
     """
     return is_gateway_supervisor_process() or is_container_restart_context()
+
+
+def _restart_notify_payload(
+    source: Optional[SessionSource], message_id: Optional[str]
+) -> dict:
+    """Requester routing for the comeback notice — the ``/restart`` payload shape.
+
+    Byte-for-byte the payload every user-restart entry point persists
+    (platform, chat, optional relay provenance, thread, triggering message) so
+    the new gateway process notifies a tool-requested restart's requester
+    exactly like a slash-command one.
+    """
+    data: dict = {
+        "platform": source.platform.value if source is not None and source.platform else None,
+        "chat_id": source.chat_id if source is not None else None,
+        "chat_type": source.chat_type if source is not None else None,
+    }
+    if source is not None:
+        if source.delivered_via_upstream_relay is True:
+            data["delivered_via_upstream_relay"] = True
+            if source.user_id:
+                data["user_id"] = source.user_id
+            if source.scope_id:
+                data["scope_id"] = source.scope_id
+        if source.thread_id:
+            data["thread_id"] = source.thread_id
+    if message_id:
+        data["message_id"] = message_id
+    return data
+
+
+async def queue_user_restart(
+    runner: Any, source: Optional[SessionSource], message_id: Optional[str]
+) -> dict:
+    """Queue a confirmed user-requested restart — the ONE shared ``/restart`` sequence.
+
+    Every user-restart entry point (the ``/restart`` slash command and the
+    agent-callable ``restart`` tool) funnels through this helper so their
+    requester setup can never drift apart: persist the comeback routing
+    (the in-memory command source plus the ``.restart_notify.json`` marker the
+    next gateway process consumes), offer the opt-in wind-down prompt, then
+    hand off to ``request_restart``, which opens the shared drain. Must run on
+    the gateway event loop — ``request_restart`` schedules its drain task
+    there.
+
+    The notify-marker write is deliberately synchronous on that loop: an
+    unsuspended write cannot keep running after the calling hand-off times out
+    and is cancelled the way a thread-pool write can, so a failed hand-off can
+    never publish a marker a later gateway boot would read as a restart that
+    succeeded.
+
+    Returns the status dict both entry points derive their reply from:
+    ``status`` ("restarting" / "already_in_progress"), ``active_agents``
+    (counted before the drain closes in), and ``via_service`` (None when
+    nothing was started this call).
+    """
+    from gateway.run import _hermes_home
+
+    if getattr(runner, "_restart_requested", False) or getattr(runner, "_draining", False):
+        return {
+            "status": "already_in_progress",
+            "active_agents": runner._running_agent_count(),
+            "via_service": None,
+        }
+
+    # Save the requester's routing info so the new gateway process can
+    # notify them once it comes back online — best-effort, exactly like
+    # every other step before the drain hand-off.
+    if source is not None:
+        try:
+            runner._restart_command_source = dataclasses.replace(
+                source,
+                message_id=str(message_id)
+                if message_id is not None
+                else source.message_id,
+            )
+        except Exception:
+            runner._restart_command_source = source
+    try:
+        atomic_json_write(
+            _hermes_home / ".restart_notify.json",
+            _restart_notify_payload(source, message_id),
+            indent=None,
+        )
+    except Exception as exc:
+        logger.debug("Failed to write restart notify file: %s", exc)
+
+    active_agents = runner._running_agent_count()
+
+    # Opt-in cooperative wind-down: for a native-Discord requester with at
+    # least one other live chat, offer the ⏸️ pause embed *before*
+    # request_restart() opens the drain, so the offer is bound to this
+    # restart cycle (request_restart re-enters the already-open cycle and
+    # mints no second generation). The embed is the only thing that can
+    # trigger a park steer — without it the restart simply waits for the
+    # live sessions to finish on their own. Runners without the capability
+    # (older cores, foreign objects) skip it, and any failure here just
+    # leaves the restart on the natural-wait drain.
+    send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
+    if callable(send_offer):
+        try:
+            await send_offer(source)
+        except Exception as exc:
+            logger.debug("Restart wind-down offer skipped: %s", exc)
+
+    via_service = user_restart_via_service()
+    started = runner.request_restart(detached=not via_service, via_service=via_service)
+    return {
+        "status": "restarting" if started else "already_in_progress",
+        "active_agents": active_agents,
+        "via_service": via_service,
+    }
 
 
 def _seconds(value: object, fallback: float = 0.0) -> float:
