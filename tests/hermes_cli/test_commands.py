@@ -232,7 +232,7 @@ class TestSlackNativeSlashes:
         slack_names = {n for n, _d, _h in slack_native_slashes()}
         tg_names = {n for n, _d in telegram_bot_commands()}
         # Some Telegram names have underscores where Slack uses hyphens
-        # (e.g. set_home vs sethome). Normalize both sides for comparison.
+        # (e.g. set_notify vs set-notify). Normalize both sides for comparison.
         def _norm(s: str) -> str:
             return s.replace("-", "_").replace("__", "_").strip("_")
 
@@ -417,28 +417,29 @@ class TestSubcommandCompletion:
 
     def _fake_gateway(self, monkeypatch, platforms):
         """Patch load_gateway_config with a fake whose connected platforms are
-        the keys of `platforms` (name -> home as None or a (chat_id, name) tuple).
+        the keys of `platforms` (name -> notification channel as None or a
+        (chat_id, name) tuple).
         """
         from types import SimpleNamespace
 
         enums = {name: SimpleNamespace(value=name) for name in platforms}
-        homes = {
-            name: (None if home is None else SimpleNamespace(chat_id=home[0], name=home[1]))
-            for name, home in platforms.items()
+        channels = {
+            name: (None if channel is None else SimpleNamespace(chat_id=channel[0], name=channel[1]))
+            for name, channel in platforms.items()
         }
         fake = SimpleNamespace(
             get_connected_platforms=lambda: list(enums.values()),
-            get_home_channel=lambda p: homes[p.value],
+            get_notification_channel=lambda p: channels[p.value],
         )
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
 
     def test_handoff_completes_connected_platforms(self, monkeypatch):
-        """`/handoff ` offers connected platforms, with or without a home channel."""
+        """`/handoff ` offers connected platforms, with or without a notification channel."""
         self._fake_gateway(
             monkeypatch,
             {
                 "telegram": ("123", "Me"),
-                "discord": None,  # no home channel yet -> still listed
+                "discord": None,  # no notification channel yet -> still listed
             },
         )
 
