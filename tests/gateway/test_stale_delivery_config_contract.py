@@ -71,13 +71,15 @@ async def test_setnotify_persists_and_loads_unchanged(tmp_path, monkeypatch):
     ))
     assert "Gateway Restarts" in result
 
-    # Reloaded through the real loader, the persisted target is unchanged.
+    # Reloaded through the real loader, the persisted target is unchanged
+    # (including the authenticated-user provenance captured with it).
     reloaded = load_gateway_config()
     assert reloaded.get_notification_channel(Platform.TELEGRAM) == DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="restarts-42",
         name="Gateway Restarts",
         thread_id="topic-7",
+        user_id="u1",
     )
     raw = load_config()
     assert raw["platforms"]["telegram"]["notification_channel"]["thread_id"] == "topic-7"
