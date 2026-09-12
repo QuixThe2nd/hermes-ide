@@ -48,7 +48,6 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
 
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"
-    runner.adapters = {}
     config = GatewayConfig()
     config.platforms[Platform.TELEGRAM] = PlatformConfig(
         enabled=True,
@@ -59,17 +58,15 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     runner.config = config
     sent = []
 
-    class _Transport:
-        is_relay = False
+    class _Adapter:
+        async def send(self, chat_id, message, metadata=None):
+            sent.append(message)
 
-        class adapter:
-            @staticmethod
-            async def send(chat_id, message):
-                sent.append(message)
-
-    monkeypatch.setattr(
-        gateway_run, "resolve_delivery_transport", lambda *a, **k: _Transport()
-    )
+    # The real gateway.delivery resolver returns a transport for a live native
+    # adapter — no monkeypatch needed, and no dependence on the gateway.run
+    # plugin-compat re-export of resolve_delivery_transport (gateway.run binds
+    # the name at import, so patching gateway.delivery would never be seen).
+    runner.adapters = {Platform.TELEGRAM: _Adapter()}
     asyncio.run(runner._send_session_db_warning_notifications())
 
     assert sent, "warning must be broadcast to notification channels"
