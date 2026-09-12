@@ -11,7 +11,7 @@ def test_session_route_anchors_reach_metadata_and_context_then_clear(monkeypatch
     source = SessionSource(platform=Platform.DISCORD, chat_id="post", chat_type="thread",
                            thread_id="post", scope_id="scope", guild_id="guild",
                            parent_chat_id="parent", profile="yuki")
-    context = SessionContext(source=source, connected_platforms=[], home_channels={}, session_key="origin")
+    context = SessionContext(source=source, connected_platforms=[], notification_channels={}, session_key="origin")
     expected = {key: getattr(source, key) for key in ("scope_id", "parent_chat_id")}
     metadata = runner._thread_metadata_for_source(source)
     assert {key: metadata.get(key) for key in expected} == expected

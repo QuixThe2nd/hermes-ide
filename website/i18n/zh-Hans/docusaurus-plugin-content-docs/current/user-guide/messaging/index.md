@@ -139,7 +139,6 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | `/stop` | 停止正在运行的 agent |
 | `/approve` | 批准待执行的危险命令 |
 | `/deny` | 拒绝待执行的危险命令 |
-| `/sethome` | 将此聊天设为主频道 |
 | `/compress` | 手动压缩对话上下文 |
 | `/title [name]` | 设置或显示会话标题 |
 | `/resume [name]` | 恢复之前命名的会话 |
@@ -453,7 +452,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 ### 自动熔断器
 
-每个适配器都包裹在熔断器中。反复出现的可重试失败（网络抖动、限流回复、上游 5xx 响应、websocket 断开）会导致熔断器触发——适配器被自动暂停，当配置了主频道时向另一个存活平台的主频道发送运营通知，并输出结构化日志行。
+每个适配器都包裹在熔断器中。反复出现的可重试失败（网络抖动、限流回复、上游 5xx 响应、websocket 断开）会导致熔断器触发——适配器被自动暂停，并输出结构化日志行。
 
 熔断器**不会自动恢复**——它保持断开状态，直到你手动运行 `/platform resume <name>`。这是有意为之：如果某个平台持续故障，你不希望网关不断重试重连。
 
@@ -469,16 +468,14 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 ### 重启通知
 
-当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的主频道发送一条"agent 已恢复"/"agent 被中断"的一次性消息。这由 `gateway-config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
+当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的**通知频道**——即你通过在该聊天中运行 `/setnotify` 指定的目的地——发送一条"agent 已恢复"/"agent 被中断"的一次性消息。未设置通知频道的平台会直接跳过该广播。这由 `config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
 
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
       gateway_restart_notification: false   # 为此平台关闭
     discord:
-      home_chat_id: "987654321"
       # gateway_restart_notification 未设置 → 默认为 true
 ```
 

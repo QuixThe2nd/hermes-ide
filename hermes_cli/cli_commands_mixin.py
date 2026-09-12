@@ -1119,10 +1119,10 @@ class CLICommandsMixin:
         if not platform_name:
             return self._handoff_keep(
                 "  Usage: /handoff <platform>",
-                "  Hands the current session off to that platform's home channel.",
+                "  Hands the current session off to that platform's notification channel.",
                 "  The CLI session ends here; resume it later with /resume.")
-        home = self._handoff_validate_target(platform_name)
-        if home is None:
+        channel = self._handoff_validate_target(platform_name)
+        if channel is None:
             return True
         session_title = self._handoff_prepare_session()
         if session_title is None:
@@ -1130,13 +1130,14 @@ class CLICommandsMixin:
         if not self._session_db.request_handoff(self.session_id, platform_name):
             return self._handoff_keep(
                 "  Session is already in flight for handoff. Wait for it to settle, then retry.")
-        _cp(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).",
+        _cp(f"  Queued handoff of '{session_title}' → {platform_name} (channel: {channel.name}).",
             "  Waiting for the gateway to pick it up...")
         return self._handoff_wait(platform_name, session_title)
 
     def _handoff_validate_target(self, platform_name: str):
-        """Resolve the destination home channel via the live gateway config; None (after printing
-        the reason) when the platform is unknown, disabled, or has no home channel."""
+        """Resolve the destination notification channel via the live gateway config; None (after
+        printing the reason) when the platform is unknown, disabled, or has no notification
+        channel."""
         try:
             from gateway.config import load_gateway_config, Platform
         except Exception as exc:  # pragma: no cover — gateway pkg always shipped
@@ -1162,11 +1163,11 @@ class CLICommandsMixin:
             if not relay_fronts:
                 return _cp(f"  Platform '{platform_name}' is not configured/enabled in the "
                            "gateway.")
-        home = gw_config.get_home_channel(platform)
-        if not home or not home.chat_id:
-            return _cp(f"  No home channel configured for {platform_name}.",
-                       "  Set one with /sethome on the destination chat first.")
-        return home
+        channel = gw_config.get_notification_channel(platform)
+        if not channel or not channel.chat_id:
+            return _cp(f"  No notification channel configured for {platform_name}.",
+                       "  Set one with /setnotify on the destination chat first.")
+        return channel
 
     def _handoff_prepare_session(self):
         """Refuse mid-turn, make sure a SessionDB handle + session row exist, and return the
@@ -1772,7 +1773,8 @@ class CLICommandsMixin:
     # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):
         """Handle /suggestions — review/accept/dismiss suggested automations via the shared handler.
-        CLI origin is the local platform so an accepted job's "origin" delivery resolves to a home channel."""
+        CLI origin is the local platform, so an accepted job needs an explicit deliver target —
+        an originless "origin" delivery records a delivery error at fire time."""
         args = " ".join(_shlex_args(cmd))
         try:
             from hermes_cli.suggestions_cmd import handle_suggestions_command

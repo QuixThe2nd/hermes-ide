@@ -2292,8 +2292,9 @@ export interface CronJob {
 export interface CronDeliveryTarget {
   id: string;
   name: string;
-  home_target_set: boolean;
-  home_env_var: string | null;
+  /** Legacy home-channel fields — no longer sent by /api/cron/delivery-targets. */
+  home_target_set?: boolean;
+  home_env_var?: string | null;
 }
 
 export interface AutomationBlueprintField {

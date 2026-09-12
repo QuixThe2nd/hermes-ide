@@ -308,7 +308,6 @@ hermes uninstall            Uninstall Hermes
 /approve             Approve a pending command (gateway)
 /deny                Deny a pending command (gateway)
 /restart             Restart gateway (gateway)
-/sethome             Set current chat as home channel (gateway)
 /update              Update Hermes to latest (gateway)
 /topic [sub]         Enable or inspect Telegram DM topic sessions (gateway)
 /platforms (/gateway) Show platform connection status (gateway)

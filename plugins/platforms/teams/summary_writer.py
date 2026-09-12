@@ -80,8 +80,6 @@ class TeamsSummaryWriter:
             merged.update(dict(platform_cfg.extra or {}))
             if platform_cfg.token and "access_token" not in merged:
                 merged["access_token"] = platform_cfg.token
-            if platform_cfg.home_channel:
-                merged.setdefault("channel_id", platform_cfg.home_channel.chat_id)
         merged.update(dict(config or {}))
         for key, env in _ENV_KEYS.items():
             value = _get_scoped_secret(env, "") if key == "access_token" else os.getenv(env, "")

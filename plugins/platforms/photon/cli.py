@@ -225,14 +225,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
 
 def _autoconfigure_access(phone: str) -> None:
-    """Set PHOTON_ALLOWED_USERS and PHOTON_HOME_CHANNEL to the operator's number, each only
-    when unset so a hand-tuned value is never clobbered on re-run."""
+    """Set PHOTON_ALLOWED_USERS to the operator's number, only when unset so a
+    hand-tuned value is never clobbered on re-run."""
     try:
         from hermes_cli.config import get_env_value, save_env_value
     except ImportError:
         return
-    for key, label in (("PHOTON_ALLOWED_USERS", "allowlisted your number"),
-                       ("PHOTON_HOME_CHANNEL", "set your DM as the cron home channel")):
+    for key, label in (("PHOTON_ALLOWED_USERS", "allowlisted your number"),):
         try:
             if get_env_value(key):
                 print(f"      {key} already set — leaving it as-is.")

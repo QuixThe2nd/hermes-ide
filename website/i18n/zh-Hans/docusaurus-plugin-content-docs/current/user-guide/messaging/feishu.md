@@ -117,7 +117,6 @@ FEISHU_CONNECTION_MODE=websocket
 
 # 可选但强烈推荐
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
-FEISHU_HOME_CHANNEL=oc_xxx
 ```
 
 `FEISHU_DOMAIN` 接受：
@@ -133,15 +132,11 @@ hermes gateway
 
 然后从飞书/Lark 向机器人发送消息，确认连接已建立。
 
-## Home Chat
+## 定时投递
 
-在飞书/Lark 聊天中使用 `/set-home` 将其标记为 cron job 结果和跨平台通知的 home channel。
+在飞书/Lark 聊天中使用 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。要投递到其他位置，设置显式目标 — 例如 `hermes cron edit <id> --deliver feishu:oc_xxx`（从聊天信息面板复制的聊天 ID）。
 
-也可以预先配置：
-
-```bash
-FEISHU_HOME_CHANNEL=oc_xxx
-```
+Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标聊天中运行 `/setnotify` 指定它。
 
 ## 安全
 
@@ -490,7 +485,6 @@ platforms:
 | `FEISHU_ALLOWED_USERS` | — | _（空）_ | 用户白名单的逗号分隔 open_id 列表 |
 | `FEISHU_ALLOW_BOTS` | — | `none` | 接受其他机器人消息：`none`、`mentions` 或 `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
-| `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
 | `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | 群消息策略：`open`、`allowlist`、`disabled` |

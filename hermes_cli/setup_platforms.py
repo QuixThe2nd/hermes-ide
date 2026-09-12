@@ -141,7 +141,7 @@ def _obtain_telegram_token():
 
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
-    from hermes_cli.setup import _info, print_info, print_header, print_success, prompt, prompt_yes_no, save_env_value
+    from hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no, save_env_value
     print_header("Telegram")
     if _declines_reconfigure("TELEGRAM_BOT_TOKEN", "Telegram", "Reconfigure Telegram?"):
         _telegram_allowlist_nudge()
@@ -166,18 +166,8 @@ def _setup_telegram():
         "TELEGRAM_ALLOWED_USERS", "Allowed user IDs (comma-separated, leave empty for open access)",
         "Telegram allowlist configured - only listed users can use the bot",
         "⚠️  No allowlist set - anyone who finds your bot can use it!", preset=allowed_users)
-    _info(None, "📬 Home Channel: where Hermes delivers cron job results,",
-          "   cross-platform messages, and notifications.",
-          "   For Telegram DMs, this is your user ID (same as above).")
-    first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
-    if not first_user_id:
-        print_info("   You can also set this later by typing /set-home in your Telegram chat.")
-        _save_prompted("TELEGRAM_HOME_CHANNEL", "Home channel ID (leave empty to set later)")
-    elif prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
-        save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
-        print_success(f"Telegram home channel set to {first_user_id}")
-    else:
-        _save_prompted("TELEGRAM_HOME_CHANNEL", "Home channel ID (or leave empty to set later with /set-home in Telegram)")
+    _info(None, "📬 Notifications: run /setnotify in your Telegram chat to designate",
+          "   where Hermes delivers cron job results and notifications.")
 
 
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack plugin:
@@ -207,9 +197,8 @@ def _setup_bluebubbles():
           "   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)", None)
     _prompt_allowlist("BLUEBUBBLES_ALLOWED_USERS", "Allowed iMessage addresses (comma-separated, leave empty for open access)",
                       "BlueBubbles allowlist configured", "⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
-    _info(None, "📬 Home Channel: phone or email for cron job delivery and notifications.",
-          "   You can also set this later with /set-home in your iMessage chat.")
-    _save_prompted("BLUEBUBBLES_HOME_CHANNEL", "Home channel address (leave empty to set later)")
+    _info(None, "📬 Notifications: run /setnotify in your iMessage chat to designate",
+          "   where Hermes delivers cron job results and notifications.")
     _info(None, "Advanced settings (defaults are fine for most setups):")
     if prompt_yes_no("Configure webhook listener settings?", False):
         _save_port("BLUEBUBBLES_WEBHOOK_PORT", prompt("Webhook listener port (default: 8645)"), "8645")
@@ -249,34 +238,10 @@ def _setup_webhooks():
           "   Open config in your editor:  hermes config edit")
 
 
-# (platform label, credential env var, home-channel env vars — any one satisfies)
-_HOME_CHANNEL_CHECKS = (
-    ("Telegram", "TELEGRAM_BOT_TOKEN", ("TELEGRAM_HOME_CHANNEL",)), ("Discord", "DISCORD_BOT_TOKEN", ("DISCORD_HOME_CHANNEL",)),
-    ("Slack", "SLACK_BOT_TOKEN", ("SLACK_HOME_CHANNEL",)), ("BlueBubbles", "BLUEBUBBLES_SERVER_URL", ("BLUEBUBBLES_HOME_CHANNEL",)),
-    ("QQBot", "QQ_APP_ID", ("QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL")),
-)
-
-
 def _is_progress(status: str) -> bool:
     """A platform counts as configured unless its status says otherwise."""
     s = status.lower()
     return not (s == "not configured" or s.startswith(("partially", "plugin disabled")))
-
-
-def _warn_missing_home_channels() -> None:
-    """Platforms with a token but no home channel."""
-    from hermes_cli.setup import get_env_value, _info, print_warning
-    missing_home = [
-        plat for plat, token_var, home_vars in _HOME_CHANNEL_CHECKS
-        if get_env_value(token_var) and not any(get_env_value(v) for v in home_vars)]
-    if not missing_home:
-        return
-    print()
-    print_warning(f"No home channel set for: {', '.join(missing_home)}")
-    _info("   Without a home channel, cron jobs and cross-platform",
-          "   messages can't be delivered to those platforms.",
-          "   Set one later with /set-home in your chat, or:",
-          *(f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>" for plat in missing_home))
 
 
 def _restart_running_gateway(any_messaging: bool, supports_systemd: bool) -> None:
@@ -340,7 +305,6 @@ def setup_gateway(config: dict):
         print()
         print_info(_RULE)
         print_success("Messaging platforms configured!")
-        _warn_missing_home_channels()
 
     # Gateway service setup runs UNCONDITIONALLY — a gateway with zero platforms is a supported
     # mode (cron keeps running; adapters come up once tokens are added via `hermes import` /

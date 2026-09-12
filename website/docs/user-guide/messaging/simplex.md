@@ -46,7 +46,6 @@ Add these to `~/.hermes/.env`:
 ```
 SIMPLEX_WS_URL=ws://127.0.0.1:5225
 SIMPLEX_ALLOWED_USERS=<contact-id-1>,<contact-id-2>
-SIMPLEX_HOME_CHANNEL=<contact-id>
 ```
 
 | Variable | Required | Description |
@@ -56,8 +55,6 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_ALLOW_ALL_USERS` | Optional | Set `true` to allow every contact (use carefully) |
 | `SIMPLEX_AUTO_ACCEPT` | Optional | Auto-accept incoming contact requests (default: `true`) |
 | `SIMPLEX_GROUP_ALLOWED` | Optional | Comma-separated group IDs the bot participates in, or `*` for any group. Omit to ignore group messages entirely |
-| `SIMPLEX_HOME_CHANNEL` | Optional | Default contact/group ID for cron job delivery |
-| `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Optional | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into one event |
 
 ## Find your contact ID or display name
@@ -93,7 +90,6 @@ but a live gateway is not required for plain text:
 ```bash
 hermes send --to simplex:alice "hello"          # DM by contact display name
 hermes send --to simplex:group:12 "hello"       # group by numeric ID
-hermes send --to simplex "hello"                # SIMPLEX_HOME_CHANNEL
 ```
 
 While the gateway is running, the adapter enumerates your contacts and
@@ -125,7 +121,7 @@ voice note (audio extensions) or a document.
 cronjob(
     action="create",
     schedule="every 1h",
-    deliver="simplex",          # uses SIMPLEX_HOME_CHANNEL
+    deliver="simplex:alice",    # explicit contact or group target
     prompt="Check for alerts and summarise."
 )
 ```

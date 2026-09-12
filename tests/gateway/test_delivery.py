@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 from typing import Any, cast
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.config import (
+    GatewayConfig,
+    DeliveryTarget as ConfigDeliveryTarget,
+    Platform,
+    PlatformConfig,
+)
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import SendResult
 from gateway.relay.adapter import RelayAdapter
@@ -95,7 +100,7 @@ def _make_relay(transport):
 
 @pytest.mark.asyncio
 async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch):
-    """A persisted Slack home must work immediately after a gateway restart."""
+    """A persisted notification target must work immediately after a gateway restart."""
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     transport = _RelayDeliveryTransport()
     relay = _make_relay(transport)
@@ -104,7 +109,7 @@ async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tm
             Platform.RELAY: PlatformConfig(enabled=True),
             Platform.SLACK: PlatformConfig(
                 enabled=False,
-                home_channel=HomeChannel(
+                notification_channel=ConfigDeliveryTarget(
                     platform=Platform.SLACK,
                     chat_id="D123",
                     name="Owner DM",
@@ -184,7 +189,7 @@ async def test_disabled_native_adapter_does_not_shadow_relay(tmp_path, monkeypat
         platforms={
             Platform.SLACK: PlatformConfig(
                 enabled=False,
-                home_channel=HomeChannel(
+                notification_channel=ConfigDeliveryTarget(
                     platform=Platform.SLACK,
                     chat_id="D123",
                     name="Owner DM",

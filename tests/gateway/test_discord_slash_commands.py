@@ -143,9 +143,9 @@ async def test_registers_native_thread_slash_command(adapter):
 
 @pytest.mark.asyncio
 async def test_registers_native_sethomeserver_slash_command(adapter):
-    # /sethomeserver must sit on the native tree next to /sethome (Discord-only
-    # provisioning), forwarding its optional confirm arg verbatim so the
-    # dispatcher's canonical routing decides what it means.
+    # /sethomeserver must sit on the native tree (Discord-only provisioning),
+    # forwarding its optional confirm arg verbatim so the dispatcher's
+    # canonical routing decides what it means.
     adapter._run_simple_slash = AsyncMock()
     adapter._register_slash_commands()
 

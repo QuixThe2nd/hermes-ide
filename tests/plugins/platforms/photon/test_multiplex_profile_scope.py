@@ -1,7 +1,7 @@
 """Multiplex secondary-profile scope tests for the Photon adapter + auth module.
 
 __init__'s project_id, check_requirements'/validate_config's node_bin/
-project_id, _env_enablement's home_channel, _reactions_enabled's
+project_id, _env_enablement's project credentials, _reactions_enabled's
 PHOTON_REACTIONS, __init__'s require_mention, and _standalone_send's
 sidecar_port, plus auth.py's load_project_credentials/
 load_dashboard_project_id, all previously read raw os.getenv
@@ -38,8 +38,6 @@ _PHOTON_ENV = (
     "PHOTON_DASHBOARD_PROJECT_ID",
     "PHOTON_REQUIRE_MENTION",
     "PHOTON_REACTIONS",
-    "PHOTON_HOME_CHANNEL",
-    "PHOTON_HOME_CHANNEL_NAME",
     "PHOTON_SIDECAR_PORT",
 )
 

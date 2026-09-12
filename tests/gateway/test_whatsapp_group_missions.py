@@ -363,7 +363,7 @@ class TestGroupMissionRoutingAndSessionKeys:
 
 
 def _context_for(source):
-    return SessionContext(source=source, connected_platforms=[], home_channels={})
+    return SessionContext(source=source, connected_platforms=[], notification_channels={})
 
 
 class TestGroupMissionPrompt:

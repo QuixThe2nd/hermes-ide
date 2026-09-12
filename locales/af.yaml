@@ -305,11 +305,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     no_changes:            "Geen veranderinge nie."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Kon nie tuiste-kanaal stoor nie: {error}"
-    success:               "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."
-    discord_pointer:       "💡 Wil jy die volledige opstelling hê? `/sethomeserver` beyder 'n hele tuisteserver — klets, geheue, kwota's en snelhede — alles aanmekaargekoppel."
-
   set_home_server:
     discord_only:         "⚠️ `/sethomeserver` werk net op Discord — dit beyder Discord-kategorieë, kanale en webhooks."
     relay_blocked:        "⚠️ Dié boodskap het via 'n relê aangekom wat Discord-gildteikens nie kan bevestig nie. Voer `/sethomeserver` vanaf 'n natiewe Discord-boodskap uit."
@@ -324,7 +319,7 @@ Voer `/sethomeserver confirm` uit om dit na gild `{guild_id}` te skuif. Niks wor
 **Welkomsboodskappe geplaas:** {embeds_count}
 **Gekoppel:** {wired_list} ({wired_count})
 **Geaktiveerde modules:** {modules_count}/5
-Tuiskanaal: {home_channel_state} — bestaande tuiskanale word nooit oorskryf nie.
+Bestaande kennisgewingskanale word nooit oorskryf nie.
 Hersinchronisasie loop outomaties hoogstens een keer per uur."
   context:
     header:                "🧠 **Context Window**"

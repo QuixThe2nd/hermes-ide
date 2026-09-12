@@ -13,10 +13,10 @@ and keeps in sync the whole structure:
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
-``hermes_starts`` targets the shared inbox, the Discord home channel and
-lifecycle-notification channel point at Notifications/``other`` and
-Notifications/``gateway-restarts``, ``gateway.restart_channel_rename``
-points at that same channel so it shows ``agents-N`` while the gateway
+``hermes_starts`` targets the shared inbox, the lifecycle-notification
+channel points at Notifications/``gateway-restarts``,
+``gateway.restart_channel_rename`` points at that same channel so it shows
+``agents-N`` while the gateway
 is up and ``restarting-N-agents`` while it drains, each memory channel gets
 a Discord webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and
 the ``quota_channels`` / ``speed_channels`` config sections are pointed at
@@ -700,53 +700,6 @@ def _merge_config_section(section: str, updates: Mapping[str, Any]) -> bool:
     return changed
 
 
-# ---------------------------------------------------------------------------
-# Home channel link
-# ---------------------------------------------------------------------------
-
-
-def existing_discord_home_channel() -> Optional[Dict[str, Any]]:
-    """The raw ``platforms.discord.home_channel`` mapping, or None.
-
-    Read from the same document ``persist_home_channel`` writes to, so the
-    no-clobber rule and the write agree on one source of truth.
-    """
-    from hermes_cli.config import load_config_readonly
-
-    raw = load_config_readonly()
-    platforms = raw.get("platforms") if isinstance(raw, Mapping) else None
-    discord_cfg = platforms.get("discord") if isinstance(platforms, Mapping) else None
-    if not isinstance(discord_cfg, Mapping):
-        return None
-    home = discord_cfg.get("home_channel")
-    if isinstance(home, Mapping) and str(home.get("chat_id") or "").strip():
-        return dict(home)
-    return None
-
-
-def link_home_channel(guild_id: str, channel_id: str) -> str:
-    """Point ``platforms.discord.home_channel`` at Notifications/other.
-
-    No-clobber: an existing Discord home channel is never silently replaced.
-    Returns "set" or "kept".
-    """
-    if existing_discord_home_channel() is not None:
-        return "kept"
-
-    from gateway.config import HomeChannel, persist_home_channel
-    from gateway.platforms.base import Platform
-
-    persist_home_channel(
-        HomeChannel(
-            platform=Platform.DISCORD,
-            chat_id=str(channel_id),
-            name="other",
-        ),
-        enabled_if_new=False,
-    )
-    return "set"
-
-
 def existing_discord_notification_channel() -> Optional[Dict[str, Any]]:
     """The raw ``platforms.discord.notification_channel`` mapping, or None.
 
@@ -775,11 +728,11 @@ def link_notification_channel(guild_id: str, channel_id: str) -> str:
     if existing_discord_notification_channel() is not None:
         return "kept"
 
-    from gateway.config import HomeChannel, persist_notification_channel
+    from gateway.config import DeliveryTarget, persist_notification_channel
     from gateway.platforms.base import Platform
 
     persist_notification_channel(
-        HomeChannel(
+        DeliveryTarget(
             platform=Platform.DISCORD,
             chat_id=str(channel_id),
             name="gateway-restarts",
@@ -1277,7 +1230,6 @@ def reconcile(
         "positioned": [],
         "embeds_posted": [],
         "wired": {},
-        "home_channel": "skipped",
         "notification_channel": "skipped",
         "restart_channel_rename": "skipped",
         "modules": {key: modules[key] for key in MODULE_KEYS},
@@ -1349,10 +1301,6 @@ def reconcile(
 
     if modules["notifications"]:
         notify_channels = state["channels"].get("notifications") or {}
-        if notify_channels.get("other"):
-            report["home_channel"] = link_home_channel(
-                guild_id, notify_channels["other"]
-            )
         if notify_channels.get("gateway-restarts"):
             report["notification_channel"] = link_notification_channel(
                 guild_id, notify_channels["gateway-restarts"]

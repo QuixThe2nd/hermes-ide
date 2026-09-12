@@ -143,8 +143,8 @@ def _tools_completions(sub_text: str, sub_lower: str):
 
 
 def _handoff_completions(sub_text: str, sub_lower: str):
-    """/handoff — connected gateway platforms, first arg only. A home channel is not required
-    (often learned at runtime); the meta hints whether one is set."""
+    """/handoff — connected gateway platforms, first arg only. A notification channel is not
+    required (often learned at runtime); the meta hints whether one is set."""
     completed, partial = _split_args(sub_text)
     if completed:
         return
@@ -159,12 +159,12 @@ def _handoff_completions(sub_text: str, sub_lower: str):
         if not name.startswith(partial.lower()):
             continue
         try:
-            home = gw.get_home_channel(platform)
+            channel = gw.get_notification_channel(platform)
         except Exception:
-            home = None
-        home_name = getattr(home, "name", None) if home else None
+            channel = None
+        channel_name = getattr(channel, "name", None) if channel else None
         yield _completion(
-            name, partial, name, f"→ {home_name}" if home_name else "send this session here")
+            name, partial, name, f"→ {channel_name}" if channel_name else "send this session here")
 
 
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only

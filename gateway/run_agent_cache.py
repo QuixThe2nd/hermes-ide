@@ -501,7 +501,7 @@ class GatewayAgentCacheMixin:
 
     def _pinned_session_context_prompt(self, context, redact_pii: bool, session_key: Optional[str]) -> str:
         """Session-context prompt pinned per session: key hit → pinned bytes reused VERBATIM (immune
-        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome)."""
+        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit)."""
         _eph_key = self._ephemeral_change_key(context, redact_pii)
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
@@ -552,10 +552,6 @@ class GatewayAgentCacheMixin:
             _s(src.user_name), _s(src.user_id), _s(getattr(src, "profile", None)),
             bool(context.shared_multi_user_session), discord_ids, discord_tools, slack_tools,
             tuple(p.value for p in context.connected_platforms),
-            tuple(
-                (p.value, _s(getattr(hc, "name", "")), _s(getattr(hc, "chat_id", "")))
-                for p, hc in context.home_channels.items()
-            ),
             bool(redact_pii), home_display,
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()

@@ -254,7 +254,7 @@ This mirrors the gateway's behavior — without it, cron agents would fail on ra
 
 Cron job results can be delivered to any supported platform.
 
-A bare platform name (`slack`, `telegram`, …) delivers to that platform's configured **home channel**. To target a **specific** destination instead, append a target after a colon: `platform:<target>`. The target is resolved at fire time (not when the job is created), so a job can name a destination on a platform that isn't connected yet and start delivering once it comes online.
+A delivery target must be **explicit**: `platform:<target>` names the destination directly. A bare platform name (`slack`, `telegram`, …) resolves to nothing — there is no per-platform default destination — and the job records a delivery error telling the operator to set an explicit target. Targets are resolved at fire time (not when the job is created), so a job can name a destination on a platform that isn't connected yet and start delivering once it comes online.
 
 Most platforms also accept an optional thread/topic as a third segment: `platform:<chat_id>:<thread_id>`.
 
@@ -262,25 +262,25 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 |--------|--------|---------|
 | Origin chat | `origin` | Deliver to the chat where the job was created |
 | Local file | `local` | Save to `~/.hermes/cron/output/` |
-| Telegram | `telegram`, `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
-| Discord | `discord`, `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
-| Slack | `slack`, `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
-| Matrix | `matrix`, `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
-| Feishu | `feishu`, `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
-| WhatsApp | `whatsapp`, `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
-| Signal | `signal`, `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
-| SMS | `sms`, `sms:+<E.164>` | `sms:+<E.164 number>` |
-| Email | `email`, `email:<address>` | `email:alerts@example.com` |
-| Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
-| Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
-| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
-| DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
-| WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
-| BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
-| QQ Bot | `qqbot` or `qqbot:<chat_id>` | Bare name delivers to QQ (Tencent) via Official API v2 |
+| Telegram | `telegram:<chat_id>`, `telegram:<chat_id>:<thread_id>`, `telegram:@username` | `telegram:-1001234567890:17585` |
+| Discord | `discord:#channel`, `discord:<channel_id>`, `discord:<channel_id>:<thread_id>` | `discord:#engineering` |
+| Slack | `slack:#channel`, `slack:<channel_id>`, `slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
+| Matrix | `matrix:<!room_id:server>`, `matrix:<@user:server>` | `matrix:!abc123:example.org` |
+| Feishu | `feishu:<chat_id>`, `feishu:<chat_id>:<thread_id>` | `feishu:oc_abc123def` |
+| WhatsApp | `whatsapp:<jid>`, `whatsapp:+<E.164>` | `whatsapp:123456@g.us` |
+| Signal | `signal:group:<id>`, `signal:+<E.164>` | `signal:group:aBcD==` |
+| SMS | `sms:+<E.164>` | `sms:+15551234567` |
+| Email | `email:<address>` | `email:alerts@example.com` |
+| Weixin | `weixin:<wxid>` | `weixin:wxid_abc123` |
+| Mattermost | `mattermost:<channel_id>` | Specific Mattermost channel |
+| Home Assistant | `homeassistant:<conversation>` | Specific HA conversation |
+| DingTalk | `dingtalk:<chat_id>` | Specific DingTalk chat |
+| WeCom | `wecom:<chat_id>` | Specific WeCom chat |
+| BlueBubbles | `bluebubbles:<chat_guid>` | iMessage chat via BlueBubbles |
+| QQ Bot | `qqbot:<chat_id>` | QQ (Tencent) chat via Official API v2 |
 | Bot Chat | `bot-chat` or `bot-chat:<profile>` | Inject into a local profile's canonical Bot Chat (the bot responds) |
 
-Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID); a bare platform name always delivers to the home channel.
+Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID). Every messaging target names its destination explicitly; a bare platform name is not a valid delivery target.
 
 **Named channels** (`slack:#engineering`, `discord:#engineering`, or a friendly name like `slack:engineering`) are resolved against the channel directory the gateway builds from connected adapters, so the gateway must have discovered the channel for name resolution to succeed; raw IDs (`slack:C0123ABCD45`) always work.
 

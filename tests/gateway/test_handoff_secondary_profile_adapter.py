@@ -4,10 +4,10 @@ Regression guard for the third `/handoff` multi-profile bug. Even after the
 watcher polls the right ``state.db`` and the session key carries the profile
 namespace, ``_process_handoff`` still resolved delivery from ``self.adapters``
 and ``self.config`` — which on a multiplexed gateway hold ONLY the primary
-profile's adapters and home channel. A medicina handoff was therefore sent by
-the default profile's bot, to the default profile's chat, while persisting a
-``agent:medicina:...`` key and reporting ``handoff_state='completed'``: a
-false positive that looks fine in the database and is wrong on the wire.
+profile's adapters and notification channel. A medicina handoff was therefore
+sent by the default profile's bot, to the default profile's chat, while
+persisting a ``agent:medicina:...`` key and reporting ``handoff_state='completed'``:
+a false positive that looks fine in the database and is wrong on the wire.
 
 This was caught by an adversarial review reading gateway.log, not by the
 end-to-end test — the log line showed ``hermes_plugins.telegram_platform``
@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry
 
@@ -39,15 +39,15 @@ def _config(chat_id):
     cfg = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
-    cfg.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM, chat_id=chat_id, name=f"home-{chat_id}",
+    cfg.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
+        platform=Platform.TELEGRAM, chat_id=chat_id, name=f"restarts-{chat_id}",
     )
     return cfg
 
 
 def _make_multiplex_runner():
     runner = object.__new__(GatewayRunner)
-    runner.config = _config("1111")          # primary/default home
+    runner.config = _config("1111")          # primary/default notification channel
     runner.config.multiplex_profiles = True
     runner.adapters = {Platform.TELEGRAM: _adapter("primary")}
     runner._profile_adapters = {
@@ -106,7 +106,7 @@ def _spy_transport_factory(used):
     def _spy(platform, config, adapters):
         adapter = adapters[platform]
         used["adapter_tag"] = adapter.tag
-        used["home_chat_id"] = config.get_home_channel(platform).chat_id
+        used["notify_chat_id"] = config.get_notification_channel(platform).chat_id
 
         async def _send(_platform, _chat_id, _text, _metadata=None):
             used["sent_via"] = adapter.tag
@@ -117,15 +117,27 @@ def _spy_transport_factory(used):
     return _spy
 
 
+def _patch_transport_spy(monkeypatch, used):
+    """Install the spy where the handoff actually resolves it.
+
+    ``gateway.run`` binds ``resolve_delivery_transport`` at module import, so
+    patching only ``gateway.delivery`` never intercepts the operative call
+    (the spy silently never ran and the tests failed with KeyError). Patch the
+    ``gateway.run`` global; the delivery module is patched too for any
+    late-bound importers.
+    """
+    spy = _spy_transport_factory(used)
+    monkeypatch.setattr("gateway.run.resolve_delivery_transport", spy)
+    monkeypatch.setattr("gateway.delivery.resolve_delivery_transport", spy)
+
+
 @pytest.mark.asyncio
 async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
     """medicina's handoff must NOT be delivered by the primary's adapter."""
     runner, captured = _make_multiplex_runner()
 
     used = {}
-    monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
-    )
+    _patch_transport_spy(monkeypatch, used)
     # The watcher would already be inside _profile_runtime_scope here, so a
     # fresh load resolves the secondary's config.
     monkeypatch.setattr("gateway.run.load_gateway_config", lambda: _config("2222"))
@@ -139,8 +151,8 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
         "delivery must use the secondary profile's own adapter, not the primary's"
     )
     assert used["sent_via"] == "medicina", "the message went out on the wrong bot"
-    assert used["home_chat_id"] == "2222", (
-        "delivery must use the secondary profile's own home channel"
+    assert used["notify_chat_id"] == "2222", (
+        "delivery must use the secondary profile's own notification channel"
     )
     assert captured["session_key"].startswith("agent:medicina:"), (
         f"session key must carry the profile namespace, got {captured['session_key']}"
@@ -154,9 +166,7 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
     runner, captured = _make_multiplex_runner()
 
     used = {}
-    monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
-    )
+    _patch_transport_spy(monkeypatch, used)
 
     await runner._process_handoff(
         {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
@@ -164,7 +174,7 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
     )
 
     assert used["adapter_tag"] == "primary"
-    assert used["home_chat_id"] == "1111"
+    assert used["notify_chat_id"] == "1111"
 
 
 @pytest.mark.asyncio
@@ -172,7 +182,7 @@ async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
     """A secondary profile whose config cannot load must fail the handoff.
 
     Falling back to the primary's config delivers through the right bot to
-    the WRONG chat (the primary's home channel) and reports completed.
+    the WRONG chat (the primary's notification channel) and reports completed.
     """
     runner, _ = _make_multiplex_runner()
     used = {}
@@ -180,9 +190,7 @@ async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
     def _boom():
         raise RuntimeError("config.yaml exploded")
 
-    monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
-    )
+    _patch_transport_spy(monkeypatch, used)
     monkeypatch.setattr("gateway.run.load_gateway_config", _boom)
 
     with pytest.raises(RuntimeError, match="could not load config"):

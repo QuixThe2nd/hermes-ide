@@ -2068,7 +2068,7 @@ export const ja = defineLocale({
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',
-    deliverNeedsHomeChannel: '先にホームチャンネルを設定してください',
+    deliverCustomTarget: 'カスタム配信先: platform:chat_id[:thread_id]（カンマ区切りで複数指定可）',
     modelLabel: 'モデル',
     modelDefault: 'デフォルト（グローバルモデル）',
     customScheduleLabel: 'カスタムスケジュール',

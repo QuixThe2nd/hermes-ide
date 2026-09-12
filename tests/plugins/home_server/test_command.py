@@ -1,8 +1,8 @@
 """Behavior contracts for the /sethomeserver slash command.
 
-Guards pinned here: Discord-only rejection (including a relay-fronted source,
-matching the /sethome relay posture), the confirm-to-move flow, and that
-authorization rides the same slash gates sethome uses.
+Guards pinned here: Discord-only rejection (including a relay-fronted source),
+the confirm-to-move flow, and that authorization rides the same slash gates
+the operator commands use.
 """
 
 from __future__ import annotations
@@ -83,7 +83,6 @@ def stub_reconcile(monkeypatch):
             "created": ["category:Lounges", "channel:inbox"],
             "embeds_posted": ["Lounges/inbox"],
             "wired": {"hermes_starts": "wired", "quota_channels": True},
-            "home_channel": "set",
             "notification_channel": "set",
             "modules": {
                 "chat": True,
@@ -120,10 +119,10 @@ async def test_relay_fronted_source_is_rejected(runner, stub_reconcile):
 
 @pytest.mark.asyncio
 async def test_relay_delivered_discord_source_is_rejected(runner, stub_reconcile):
-    """Relay-guard parity with /sethome: a Discord-platform source that
-    arrived via an upstream relay passes the platform check, so it must be
-    refused unless the relay actually fronts Discord AND authenticated the
-    sender. Here no relay adapter fronts Discord, so nothing may run."""
+    """Relay guard: a Discord-platform source that arrived via an upstream
+    relay passes the platform check, so it must be refused unless the relay
+    actually fronts Discord AND authenticated the sender. Here no relay
+    adapter fronts Discord, so nothing may run."""
     runner._adapter_for_source = lambda source: None
     result = await runner._handle_set_home_server_command(
         _event(Platform.DISCORD, scope_id="900000000000000001", via_relay=True)
@@ -146,8 +145,8 @@ async def test_relay_delivered_discord_source_is_rejected(runner, stub_reconcile
 async def test_authenticating_relay_fronting_discord_is_allowed(
     runner, hermes, stub_reconcile
 ):
-    """The other side of parity: a relay that fronts Discord and authenticated
-    the sender may drive provisioning, exactly as it may set a home channel."""
+    """The other side of the guard: a relay that fronts Discord and
+    authenticated the sender may drive provisioning."""
     fronting = MagicMock()
     fronting.fronts_platform = lambda platform: platform is Platform.DISCORD
     runner._adapter_for_source = lambda source: fronting
@@ -233,25 +232,3 @@ async def test_provisioning_failure_is_surfaced(runner, hermes, monkeypatch):
     assert "403" in result
     # The failing message must not leak the bot token.
     assert "t0ken" not in result
-
-
-@pytest.mark.asyncio
-async def test_sethome_pointer_is_discord_only(runner, hermes):
-    """The /sethomeserver hint rides set_home.success on Discord only, so
-    non-Discord platform copy is byte-identical to before."""
-    # sethome also updates the in-memory gateway config.
-    from gateway.config import GatewayConfig
-
-    runner.config = GatewayConfig()
-    discord_result = await runner._handle_set_home_command(
-        _event(Platform.DISCORD, scope_id="g1", chat_id="c9")
-    )
-    telegram_result = await runner._handle_set_home_command(
-        _event(Platform.TELEGRAM, chat_id="c9")
-    )
-
-    assert "/sethomeserver" in discord_result
-    assert "/sethomeserver" not in telegram_result
-    # The shared success line still reaches both platforms.
-    for result in (discord_result, telegram_result):
-        assert "Home channel set" in result

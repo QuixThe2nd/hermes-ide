@@ -1238,8 +1238,8 @@ def _run_no_agent_job(
     """no_agent short-circuit — the script IS the job (no AIAgent, no tokens). stdout → delivered
     verbatim; empty stdout or wakeAgent=false → silent success; non-zero exit/timeout → error alert.
     """
-    # Load .env first so auto-delivery can resolve *_HOME_CHANNEL: the agent path's per-run dotenv
-    # reload never runs for no_agent jobs. Does not override existing values.
+    # Load .env first so standalone delivery senders see platform credentials: the agent path's
+    # per-run dotenv reload never runs for no_agent jobs. Does not override existing values.
     try:
         from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -3781,7 +3781,7 @@ def _parse_thread_deliver_token(part: str):
     """Parse a ``thread:`` deliver token into ``(platform, parent_chat_ref)``.
 
     ``platform`` is ``None`` for the bare form (derived at resolve time from
-    configured home channels) and the named platform for the explicit form.
+    the job's origin chat) and the named platform for the explicit form.
     Returns ``None`` when ``part`` is not a ``thread:`` token at all, and
     ``("", "")`` for a bare ``thread:`` with no parent chat id.
     """
@@ -3885,20 +3885,17 @@ def _resolve_thread_delivery_target(
         # path): the token's whole point is a FRESH thread under the parent.
         return _thread_target(platform_arg, chat_id, thread_id)
 
-    # Bare form: derive the platform by matching the parent chat id against
-    # configured home channels — the same home-target machinery the
-    # deliver=origin fallback uses, so the token adds no config surface.
-    from cron.scheduler_delivery import (
-        _get_home_target_chat_id, _iter_home_target_platforms,
-    )
-    for platform_name in _iter_home_target_platforms():
-        home_chat_id = _get_home_target_chat_id(platform_name)
-        if home_chat_id and str(home_chat_id) == parent_ref:
-            return _thread_target(platform_name, home_chat_id, None)
+    # Bare form: derive the platform from the job's origin — the parent chat must BE the
+    # origin conversation, otherwise the platform is ambiguous and the token must name it
+    # explicitly (``thread:<platform>:<parent>``).
+    from cron.scheduler_delivery import _resolve_origin
+    origin = _resolve_origin(job) or {}
+    if origin.get("platform") and str(origin.get("chat_id")) == str(parent_ref):
+        return _thread_target(str(origin["platform"]).lower(), parent_ref, None)
     logger.warning(
-        "Job '%s': thread: deliver token '%s' matches no configured home "
-        "channel — skipping target",
-        job.get("name", job.get("id", "?")), deliver_value,
+        "Job '%s': thread: deliver token '%s' names no platform and its parent chat "
+        "is not the job's origin chat — use thread:<platform>:%s",
+        job.get("name", job.get("id", "?")), deliver_value, parent_ref,
     )
     return None
 

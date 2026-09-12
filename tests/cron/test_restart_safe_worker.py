@@ -527,7 +527,6 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     gateway_config.platforms = {
         Platform.TELEGRAM: PlatformConfig(enabled=True),
     }
-    gateway_config.get_home_channel = lambda _platform: None
     monkeypatch.setattr(
         "gateway.config.load_gateway_config", lambda: gateway_config
     )

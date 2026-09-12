@@ -51,7 +51,6 @@ def _run(job, adapters):
 
     config = MagicMock()
     config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
-    config.get_home_channel = lambda p: None
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \

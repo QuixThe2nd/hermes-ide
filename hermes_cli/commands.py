@@ -141,11 +141,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
                busy_policy="dispatch", execute="profile"),
-    CommandDef("sethome", "Set this chat as the home channel", "Session",
-               gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("setnotify", "Set this chat as the gateway lifecycle-notification channel", "Session",
                gateway_only=True, aliases=("set-notify",)),
-    CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel (back to home)", "Session",
+    CommandDef("clearnotify", "Clear the gateway lifecycle-notification channel", "Session",
                gateway_only=True, aliases=("clear-notify",)),
     CommandDef("sethomeserver", "Provision and wire the Discord home server", "Session",
                gateway_only=True, args_hint="[confirm]"),
@@ -412,7 +410,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
     (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset)
+    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /reset)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue
     #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
     explicit Level-2 handlers; the rest fall through to the catch-all.
@@ -732,3 +730,21 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+# ``gateway/run.py`` telegramizes help-text command mentions through
+# ``from hermes_cli.commands import _sanitize_telegram_name`` — a path that predates the
+# commands_platforms split.  Re-export the real object lazily: commands_platforms imports
+# this module at its top, so an eager import here would be circular.  Chained onto the
+# PLUGIN-COMPAT ``__getattr__`` above; the ``globals().get`` capture keeps this hook
+# standing after that block is reverted away.
+_prev_module_getattr = globals().get("__getattr__")
+
+
+def __getattr__(name):  # PEP 562 — chained onto the PLUGIN-COMPAT hook above
+    if name == "_sanitize_telegram_name":
+        import importlib
+        return getattr(importlib.import_module("hermes_cli.commands_platforms"), name)
+    if _prev_module_getattr is not None:
+        return _prev_module_getattr(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

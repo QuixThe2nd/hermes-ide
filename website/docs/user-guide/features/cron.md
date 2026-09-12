@@ -435,30 +435,15 @@ When scheduling jobs, you specify where the output goes:
 |--------|-------------|---------|
 | `"origin"` | Back to where the job was created | Default on messaging platforms |
 | `"local"` | Save to local files only (`~/.hermes/cron/output/`) | Default on CLI |
-| `"telegram"` | Telegram home channel | Uses `TELEGRAM_HOME_CHANNEL` |
 | `"telegram:123456"` | Specific Telegram chat by ID | Direct delivery |
 | `"telegram:-100123:17585"` | Specific Telegram topic | `chat_id:thread_id` format |
-| `"discord"` | Discord home channel | Uses `DISCORD_HOME_CHANNEL` |
 | `"discord:#engineering"` | Specific Discord channel | By channel name |
-| `"slack"` | Slack home channel | |
-| `"whatsapp"` | WhatsApp home | |
-| `"signal"` | Signal | |
-| `"matrix"` | Matrix home room | |
-| `"mattermost"` | Mattermost home channel | |
-| `"email"` | Email | |
-| `"sms"` | SMS via Twilio | |
-| `"homeassistant"` | Home Assistant | |
-| `"dingtalk"` | DingTalk | |
-| `"feishu"` | Feishu/Lark | |
-| `"wecom"` | WeCom | |
-| `"weixin"` | Weixin (WeChat) | |
-| `"bluebubbles"` | BlueBubbles (iMessage) | |
-| `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"slack:C0123456789"` | Specific Slack channel by ID | Direct delivery |
 | `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
 | `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
-| `"all"` | Fan out to every connected home channel | Resolved at fire time |
-| `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
-| `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
+| `"telegram:-100123,discord:#engineering"` | Fan out to a specific set of targets | Comma-separated list |
+
+Every messaging target must name an explicit chat — a bare platform name (`deliver: "telegram"`) resolves to nothing and the job records a delivery error telling you to set an explicit `platform:chat_id[:thread_id]` target (`hermes cron edit <id> --deliver ...`).
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
@@ -487,24 +472,16 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
 - Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
-### Routing intent (`all`)
-
-`all` lets you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. It is **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.
-
-Semantics: `all` expands to every platform with a configured home channel. Zero is fine; the job simply produces no delivery targets and is recorded as a delivery failure upstream.
-
-`all` composes with explicit targets. `origin,all` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
-
-### Telegram cron topic (`TELEGRAM_CRON_THREAD_ID`)
+### Telegram cron deliveries in topic mode
 
 When Telegram topic mode is enabled, the root DM is reserved as a system lobby — replies sent there are rebuffed with a lobby reminder and `reply_to_message_id` is dropped, so you cannot reply to a cron message that landed in the main chat.
 
 Point cron at a dedicated forum topic instead:
 
 1. In Telegram, open the bot DM and create a topic named e.g. `Cron`. Long-press the topic header → **Copy link**; the trailing integer is the topic's `message_thread_id`.
-2. Set `TELEGRAM_CRON_THREAD_ID=<that id>` in your `.env`.
+2. Aim the job's delivery at that topic: `hermes cron edit <id> --deliver telegram:<chat_id>:<thread_id>` (or set `deliver="telegram:<chat_id>:<thread_id>"` when creating the job).
 
-This applies only to cron deliveries. `TELEGRAM_HOME_CHANNEL_THREAD_ID` (used elsewhere, e.g. restart notifications) is unchanged. Explicit `deliver="telegram:chat_id:thread_id"` targets continue to win over the env var. Replies to cron messages now arrive in the existing topic session, so you can act on them directly.
+Replies to cron messages arrive in the existing topic session, so you can act on them directly.
 
 ### Response wrapping
 
@@ -595,18 +572,15 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
 Only the job's **own conversation** is ever touched:
 
 - the **origin chat** the job was created in;
-- the **home-channel fallback** when `deliver: origin` captured no origin (jobs
-  created by scripts or the API rather than from a live gateway chat) — the
-  user's primary conversation standing in for the origin;
 - a job's **single explicit `platform:chat` target**, but only when the job
   itself opts in with `attach_to_session: true` — the job author declares that
   target a conversation. The global `mirror_delivery` flag alone never makes an
   explicitly-addressed chat continuable.
 
-Broadcast expansions (`all`) are never made continuable. A user-written bare
-platform name (`deliver: slack`) addresses that platform's home channel
-deliberately and follows the same rules as the home-channel fallback above.
-After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery: true`
+Broadcast expansions (`all`) are never made continuable. A job whose `deliver:
+origin` captured no origin (jobs created by scripts or the API rather than from
+a live gateway chat) records a delivery error instead of guessing a chat.
+After upgrading, existing jobs with `cron.mirror_delivery: true`
 can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
 on a job to opt out of this thread-per-run behaviour.
 

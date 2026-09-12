@@ -17,6 +17,9 @@ from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
+# Once-per-process guard for the cron_deliver_env_var deprecation warning.
+_cron_deliver_env_var_warned = False
+
 _LoadKey = tuple[Optional[str], str]
 _Loader = Callable[[], None]
 
@@ -84,7 +87,6 @@ class PlatformEntry:
     # after the shared-key loop, before ``_apply_env_overrides``. May set ``os.environ`` (guard
     # with ``not os.getenv(...)`` to keep env > YAML). Contract: docs/developer-guide/adding-platform-adapters.md.
     apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
-    cron_deliver_env_var: str = ""  # home-channel env var read for cron ``deliver=<name>``
     # ``(target_ref) -> Optional[(chat_id, thread_id)]`` run before channel-directory
     # fallback so plugins can declare native target syntax; None = continue resolution.
     parse_target_ref_fn: Optional[Callable[[str], Optional[tuple[str, Optional[str]]]]] = None
@@ -97,6 +99,24 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Deprecated home-channel cron deliver env var; accepted and IGNORED (no
+    # per-platform default destination exists — jobs deliver to explicit
+    # ``platform:chat_id[:thread_id]`` targets). See __post_init__.
+    cron_deliver_env_var: str = ""
+
+    def __post_init__(self) -> None:
+        global _cron_deliver_env_var_warned
+        # Deprecated no-op field: accepted so external plugins passing the old
+        # home-channel kwarg keep registering instead of hitting a TypeError, but
+        # nothing reads it. Removal follows the native-plugin policy (two minor
+        # releases after the deprecation warning).
+        if self.cron_deliver_env_var and not _cron_deliver_env_var_warned:
+            _cron_deliver_env_var_warned = True
+            logger.warning(
+                "PlatformEntry.cron_deliver_env_var is deprecated and ignored: "
+                "home-channel cron delivery was removed. Replace it with explicit "
+                "'platform:chat_id[:thread_id]' deliver targets on the cron job."
+            )
 
 
 class PlatformRegistry:

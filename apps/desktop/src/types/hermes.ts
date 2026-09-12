@@ -995,12 +995,12 @@ export interface CronJobUpdates {
 
 // A cron delivery target from GET /api/cron/delivery-targets — the single
 // source of truth (cron.scheduler.cron_delivery_targets) for where a cron job
-// can auto-deliver. Only 'local' plus configured gateway platforms appear; a
-// configured platform without a cron home channel comes back with
-// home_target_set=false so the UI can flag it.
+// can auto-deliver: 'local' plus Bot Chat profiles. Explicit
+// platform:chat_id[:thread_id] targets are free text, not listed here. The
+// legacy home-channel fields are no longer sent by the endpoint.
 export interface CronDeliveryTarget {
-  home_env_var: null | string
-  home_target_set: boolean
+  home_env_var?: null | string
+  home_target_set?: boolean
   id: string
   name: string
 }

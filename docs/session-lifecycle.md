@@ -492,7 +492,7 @@ def build_session_context(source, config, session_entry=None) -> SessionContext
 ```
 
 1. Collects connected platforms from config.
-2. Collects home channels for each platform.
+2. Collects notification channels for each platform.
 3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
 4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
 

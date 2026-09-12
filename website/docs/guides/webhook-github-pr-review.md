@@ -248,15 +248,15 @@ Replace the `deliver` and `deliver_extra` fields inside your route with your tar
 # Slack
 deliver: slack
 deliver_extra:
-  chat_id: "C0123456789"   # Slack channel ID (omit to use the configured home channel)
+  chat_id: "C0123456789"   # Slack channel ID (required)
 
 # Discord
 deliver: discord
 deliver_extra:
-  chat_id: "987654321012345678"  # Discord channel ID (omit to use home channel)
+  chat_id: "987654321012345678"  # Discord channel ID (required)
 ```
 
-The target platform must also be enabled and connected in the gateway. If `chat_id` is omitted, the response is sent to that platform's configured home channel.
+The target platform must also be enabled and connected in the gateway. The `chat_id` is required — without it the delivery fails with an error telling you to set an explicit delivery target.
 
 Valid `deliver` values: `log` · `github_comment` · `telegram` · `discord` · `slack` · `signal` · `sms`
 

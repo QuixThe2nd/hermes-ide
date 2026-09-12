@@ -1532,8 +1532,6 @@ class TestDoctorDeprecatedConfigAndEnv:
             "HERMES_TOOL_PROGRESS_MODE",
             "TERMINAL_CWD",
             "MESSAGING_CWD",
-            "QQ_HOME_CHANNEL",
-            "QQ_HOME_CHANNEL_NAME",
         ):
             monkeypatch.delenv(k, raising=False)
 

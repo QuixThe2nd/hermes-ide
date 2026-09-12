@@ -1986,7 +1986,7 @@ export const zhHant = defineLocale({
     promptPlaceholder: '代理每次執行時應做什麼？',
     frequencyLabel: '頻率',
     deliverLabel: '傳遞至',
-    deliverNeedsHomeChannel: '請先設定主頻道',
+    deliverCustomTarget: '自訂目標：platform:chat_id[:thread_id]（多個以逗號分隔）',
     modelLabel: '模型',
     modelDefault: '預設（全域模型）',
     customScheduleLabel: '自訂排程',

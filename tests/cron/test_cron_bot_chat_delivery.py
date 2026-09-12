@@ -65,11 +65,10 @@ def test_unknown_profile_resolves_to_none():
 
 
 def test_resolve_delivery_targets_combines_with_platform_targets():
-    """bot-chat rides the same comma-separated deliver string as platforms."""
-    job = {"id": "j1", "deliver": "bot-chat,telegram"}
-    with mock.patch.object(sched_delivery, "_get_home_target_chat_id", return_value="-100123"), \
-         mock.patch.object(sched_delivery, "_get_home_target_thread_id", return_value=None), \
-         mock.patch.object(sched_delivery, "_is_known_delivery_platform", return_value=True), \
+    """bot-chat rides the same comma-separated deliver string as explicit
+    platform targets."""
+    job = {"id": "j1", "deliver": "bot-chat,telegram:-100123"}
+    with mock.patch.object(sched_delivery, "_is_known_delivery_platform", return_value=True), \
          mock.patch.object(sched_delivery, "_resolve_origin", return_value=None):
         targets = _resolve_delivery_targets(job)
     platforms = {t["platform"] for t in targets}
@@ -213,5 +212,5 @@ def test_delivery_targets_include_local_profiles():
     assert f"{BOT_CHAT_PLATFORM}:default" in ids
     assert f"{BOT_CHAT_PLATFORM}:research" in ids
     bot_chat_entries = [t for t in targets if t["id"].startswith(BOT_CHAT_PLATFORM)]
-    # No gateway home channel needed for bot-chat targets.
-    assert all(t["home_target_set"] for t in bot_chat_entries)
+    # Bot Chat targets are machine-local: no gateway config needed to use one.
+    assert all(t["name"].startswith("Bot Chat (") for t in bot_chat_entries)

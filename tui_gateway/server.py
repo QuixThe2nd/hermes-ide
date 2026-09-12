@@ -3216,7 +3216,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
     return _ok(rid, {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev, **({"coalesced": True} if coalesced else {})})
 
 
-_TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})
+_TUI_HIDDEN: frozenset[str] = frozenset({"commands", "approve", "deny"})
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/density", "Toggle compact display mode", "TUI"),

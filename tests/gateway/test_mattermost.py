@@ -59,28 +59,6 @@ class TestMattermostDisplayHygiene:
         ) is True
 
 
-# ---------------------------------------------------------------------------
-# Platform & Config
-# ---------------------------------------------------------------------------
-
-class TestMattermostConfigLoading:
-
-
-    def test_mattermost_home_channel(self, monkeypatch):
-        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
-        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-        monkeypatch.setenv("MATTERMOST_HOME_CHANNEL", "ch_abc123")
-        monkeypatch.setenv("MATTERMOST_HOME_CHANNEL_NAME", "General")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        home = config.get_home_channel(Platform.MATTERMOST)
-        assert home is not None
-        assert home.chat_id == "ch_abc123"
-        assert home.name == "General"
-
 
 # ---------------------------------------------------------------------------
 # Adapter format / truncate

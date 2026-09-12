@@ -105,7 +105,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     home = types.SimpleNamespace(chat_id="123", name="home", thread_id=None)
     gw_config = MagicMock()
     gw_config.platforms = {}
-    gw_config.get_home_channel.return_value = home
+    gw_config.get_notification_channel.return_value = home
 
     import gateway.config as gwc
 

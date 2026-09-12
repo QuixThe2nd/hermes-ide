@@ -770,9 +770,9 @@ class WebhookAdapter(BasePlatformAdapter):
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
         if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
-            if not home:
-                return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
-            chat_id = home.chat_id
+            return SendResult(
+                success=False,
+                error=f"No chat_id for {platform_name}; set an explicit delivery target",
+            )
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
         return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)

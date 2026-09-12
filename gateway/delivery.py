@@ -1,5 +1,5 @@
 """Delivery routing for cron job outputs and agent responses, by target: explicit ("telegram:123456789"),
-platform home channel ("telegram"), origin (back to where the job was created), or local (files)."""
+origin (back to where the job was created), or local (files)."""
 
 import logging
 import os
@@ -100,9 +100,9 @@ def _send_result_error(result: Any) -> Optional[str]:
 
 @dataclass
 class DeliveryTarget:
-    """One target: "origin", "local", "telegram" (home channel) or "telegram:123456[:thread]"."""
+    """One target: "origin", "local" or "telegram:123456[:thread]"."""
     platform: Platform
-    chat_id: Optional[str] = None  # None means use home channel
+    chat_id: Optional[str] = None  # None means no concrete chat was specified
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
@@ -277,9 +277,9 @@ class DeliveryRouter:
             return {"success": True, "filtered": "silence_narration", "delivered": False}
 
         send_metadata = dict(metadata or {})
-        home = self.config.get_home_channel(target.platform) if transport.is_relay else None
-        if home is not None and home.chat_id == target.chat_id:
-            send_metadata.update({k: v for k, v in (("user_id", home.user_id), ("scope_id", home.scope_id)) if v})
+        channel = self.config.get_notification_channel(target.platform) if transport.is_relay else None
+        if channel is not None and channel.chat_id == target.chat_id:
+            send_metadata.update({k: v for k, v in (("user_id", channel.user_id), ("scope_id", channel.scope_id)) if v})
 
         # Caller-supplied thread routing always wins over target.thread_id.
         named_topic: Optional[str] = None  # named Telegram private topic created for this send

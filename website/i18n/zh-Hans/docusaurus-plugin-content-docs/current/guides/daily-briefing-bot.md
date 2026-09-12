@@ -35,7 +35,7 @@ description: "构建一个自动化每日简报机器人，研究主题、汇总
   hermes gateway           # Run in foreground
   ```
 - **Firecrawl API 密钥** — 在环境变量中设置 `FIRECRAWL_API_KEY` 以启用网页搜索
-- **已配置消息推送**（可选但推荐）— 已设置 [Telegram](/user-guide/messaging/telegram) 或 Discord 并配置了 home channel
+- **已配置消息推送**（可选但推荐）— 已设置 [Telegram](/user-guide/messaging/telegram) 或 Discord，并有一个可用作 cron 投递目标的聊天 ID
 
 :::tip 没有消息推送？没关系
 你仍然可以使用 `deliver: "local"` 跟随本教程。简报将保存至 `~/.hermes/cron/output/`，你可以随时查阅。

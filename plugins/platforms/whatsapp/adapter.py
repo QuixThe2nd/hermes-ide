@@ -902,7 +902,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Guide the user through WhatsApp setup (CLI helpers lazy-imported)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success
     print_header("WhatsApp")
     print_info("WhatsApp uses a local Node.js bridge (WhatsApp Web client).")
@@ -921,11 +921,6 @@ def interactive_setup() -> None:
     if allowed_users:
         save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("WhatsApp allowlist configured")
-    home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)").strip()
-    if home_channel:
-        save_env_value("WHATSAPP_HOME_CHANNEL", home_channel)
-    elif remove_env_value("WHATSAPP_HOME_CHANNEL"):
-        print_info("Home channel cleared.")
 
 
 # config.yaml whatsapp: key → env var. Env vars take precedence over YAML.
@@ -971,6 +966,6 @@ def register(ctx) -> None:
         is_connected=_is_connected, required_env=["WHATSAPP_ENABLED"],
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="WHATSAPP_ALLOWED_USERS",
-        allow_all_env="WHATSAPP_ALLOW_ALL_USERS", cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
+        allow_all_env="WHATSAPP_ALLOW_ALL_USERS",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="💬", allow_update_command=True,
     )

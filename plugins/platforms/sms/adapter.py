@@ -6,7 +6,7 @@ Env vars — shared with the telephony skill: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TO
 TWILIO_PHONE_NUMBER (E.164 from-number). Gateway-specific: SMS_WEBHOOK_PORT (8080),
 SMS_WEBHOOK_HOST (127.0.0.1), SMS_WEBHOOK_URL (public URL for Twilio signature
 validation — required), SMS_INSECURE_NO_SIGNATURE (true disables validation — dev only),
-SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS, SMS_HOME_CHANNEL (cron).
+SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS.
 """
 
 from __future__ import annotations
@@ -339,6 +339,6 @@ def register(ctx) -> None:
         check_fn=check_sms_requirements, is_connected=_is_connected,
         required_env=["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
         install_hint="pip install aiohttp", allowed_users_env="SMS_ALLOWED_USERS",
-        allow_all_env="SMS_ALLOW_ALL_USERS", cron_deliver_env_var="SMS_HOME_CHANNEL",
+        allow_all_env="SMS_ALLOW_ALL_USERS",
         standalone_sender_fn=_standalone_send, max_message_length=MAX_SMS_LENGTH, pii_safe=True,
         emoji="📱", allow_update_command=True)

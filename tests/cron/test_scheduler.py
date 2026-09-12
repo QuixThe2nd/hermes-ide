@@ -197,10 +197,10 @@ class TestResolveDeliveryTarget:
         }
 
 
-    def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):
-        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-parent")
-        monkeypatch.delenv("DISCORD_HOME_CHANNEL_THREAD_ID", raising=False)
-
+    def test_bare_platform_delivery_resolves_nothing_even_with_origin(self):
+        """A bare platform token (``deliver: discord``) has no default destination to
+        fall back to — not even the job's own origin — so nothing resolves and the
+        caller records an actionable delivery error."""
         job = {
             "deliver": "discord",
             "origin": {
@@ -210,24 +210,23 @@ class TestResolveDeliveryTarget:
             },
         }
 
-        assert _resolve_delivery_target(job) == {
-            "platform": "discord",
-            "chat_id": "home-parent",
-            "thread_id": None,
-            "_resolved_from": "home",
+        assert _resolve_delivery_target(job) is None
+
+    def test_explicit_platform_target_resolves_verbatim(self):
+        job = {
+            "deliver": "discord:dest-parent",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "origin-parent",
+                "thread_id": "origin-thread",
+            },
         }
 
-    def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
-        """TELEGRAM_CRON_THREAD_ID wins over TELEGRAM_HOME_CHANNEL_THREAD_ID for cron (#24409)."""
-        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
-        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "5")
-        monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "42")
-
-        assert _resolve_delivery_target({"deliver": "telegram"}) == {
-            "platform": "telegram",
-            "chat_id": "-1001234567890",
-            "thread_id": "42",
-            "_resolved_from": "home",
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "dest-parent",
+            "thread_id": None,
+            "_resolved_from": "explicit",
         }
 
 
@@ -297,16 +296,15 @@ class TestResolveDeliveryTarget:
 
 
     def test_list_form_deliver_is_normalized(self, monkeypatch):
-        """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
+        """deliver=['telegram:-4004'] (Python list) should resolve like the string form.
 
         Regression test for #17139: MCP clients / scripts that pass the deliver
         field as an array-shaped value used to fail with "no delivery target
         resolved for deliver=['telegram']" because ``str(['telegram'])`` was
         passed through to ``split(',')`` verbatim.
         """
-        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-4004")
         job = {
-            "deliver": ["telegram"],
+            "deliver": ["telegram:-4004"],
             "origin": None,
         }
 
@@ -314,32 +312,8 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-4004",
             "thread_id": None,
-            "_resolved_from": "home",
+            "_resolved_from": "explicit",
         }
-
-
-class TestRoutingIntents:
-    """``all`` routing intent expands at fire time."""
-
-    def test_all_expands_to_every_connected_home_channel(self, monkeypatch):
-        """deliver='all' fans out to every platform with a configured home channel."""
-        from cron.scheduler import _resolve_delivery_targets
-
-        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
-        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
-        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C333")
-        # Sanity: platforms without the env var must NOT appear in the expansion.
-        monkeypatch.delenv("SIGNAL_HOME_CHANNEL", raising=False)
-        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
-
-        targets = _resolve_delivery_targets({"deliver": "all", "origin": None})
-        platforms = sorted(t["platform"] for t in targets)
-
-        assert "telegram" in platforms
-        assert "discord" in platforms
-        assert "slack" in platforms
-        assert "signal" not in platforms
-        assert "matrix" not in platforms
 
 
 class TestDeliverResultWrapping:
@@ -384,11 +358,12 @@ class TestDeliverResultWrapping:
         assert "To stop or manage this job" in sent_content
 
 
-    def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
-        """Persisted Slack home survives restart without native Slack config."""
+    def test_relay_fronted_notification_chat_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
+        """A relay-fronted delivery to the persisted notification-channel chat rides its
+        authenticated-user metadata — no native Slack config needed."""
         from concurrent.futures import Future
 
-        from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+        from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
 
         relay = MagicMock()
         relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
@@ -404,7 +379,7 @@ class TestDeliverResultWrapping:
                 Platform.RELAY: PlatformConfig(enabled=True),
                 Platform.SLACK: PlatformConfig(
                     enabled=False,
-                    home_channel=HomeChannel(
+                    notification_channel=DeliveryTarget(
                         platform=Platform.SLACK,
                         chat_id="D123",
                         name="Owner DM",
@@ -428,10 +403,9 @@ class TestDeliverResultWrapping:
 
         standalone_send = AsyncMock(return_value={"success": True})
         media_path = self._safe_media_path(tmp_path, monkeypatch, "relay-voice.mp3")
-        monkeypatch.setenv("SLACK_HOME_CHANNEL", "D123")
         job = {
             "id": "relay-cron",
-            "deliver": "slack",
+            "deliver": "slack:D123",
         }
 
         with (
@@ -783,18 +757,16 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] is False  # success should be False
         assert "empty" in call_args[0][2].lower()  # error should mention empty
 
-    def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
+    def test_run_job_sets_auto_delivery_env_from_explicit_deliver(self, tmp_path, monkeypatch):
         job = {
             "id": "test-job",
             "name": "test",
             "prompt": "hello",
-            "deliver": "telegram",
+            "deliver": "telegram:-2002",
         }
         fake_db = MagicMock()
         seen = {}
 
-        (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n")
-        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
@@ -2143,27 +2115,32 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         standalone_send.assert_awaited_once()
 
 
-class TestDeliverOriginUnresolvableIsLocal:
+class TestDeliverOriginUnresolvableRecordsError:
     """Regression for #43014.
 
-    A cron job created in a CLI session has no {platform, chat_id} origin.
-    With ``deliver=origin`` (or auto-detect / deliver=None) and no configured
-    platform home channel, delivery is unresolvable — but that is the EXPECTED
-    state for CLI jobs, not an error.  _deliver_result must return None (treat
-    as local; output stays in last_output), not the "no delivery target
-    resolved" error string that previously fired on every run.
+    A cron job created in a CLI session carries a provenance string, not a
+    {platform, chat_id} origin. With ``deliver=origin`` there is no captured
+    origin chat and no default destination to fall back to — the run must
+    record an actionable delivery error (never crash on ``origin.get``, never
+    silently drop; the output still lands in last_output).
     """
 
-    def _deliver(self, job, monkeypatch):
-        import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
-        # No home channel for any platform → origin is unresolvable.
-        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+    def _deliver(self, job, monkeypatch, tmp_path):
+        import cron.scheduler_delivery as sched_delivery
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(sched_delivery._sched, "load_config", lambda: {})
+        monkeypatch.setattr(
+            sched_delivery, "_record_delivery_verification", lambda *_args, **_kwargs: None
+        )
         return _deliver_result(job, "CLI bulletin")
 
-    def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
+    def test_originless_origin_records_actionable_error(self, monkeypatch, tmp_path):
         job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
-        assert self._deliver(job, monkeypatch) is None
+        error = self._deliver(job, monkeypatch, tmp_path)
+        assert error is not None
+        assert "no captured origin" in error
+        assert "hermes cron edit cli-job" in error
+        assert "--deliver platform:chat_id[:thread_id]" in error
 
 
 class TestSendMediaTimeoutCancelsFuture:
@@ -2235,9 +2212,10 @@ class TestSendMediaTimeoutCancelsFuture:
 class TestCronDeliveryTargets:
     """``cron_delivery_targets`` powers the dashboard delivery dropdown.
 
-    It must list every configured + cron-deliverable platform (no hardcoded
-    set), flag whether each has its home channel set, and never include
-    platforms whose gateway isn't configured.
+    It must list only machine-local Bot Chat targets: gateway platforms have
+    no implicit destination anymore, so even configured + connected platforms
+    must not appear — an explicit ``platform:chat_id[:thread_id]`` target is
+    free-text, not a listed option.
     """
 
     def _patch_connected(self, monkeypatch, names):
@@ -2255,36 +2233,21 @@ class TestCronDeliveryTargets:
             gateway_config, "load_gateway_config", lambda: _GatewayConfig()
         )
 
-    def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
+    def test_configured_gateway_platforms_are_not_listed_as_targets(self, monkeypatch):
         from cron.scheduler_delivery import cron_delivery_targets
 
         self._patch_connected(monkeypatch, ["matrix", "telegram"])
-        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
-        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
 
-        targets = {t["id"]: t for t in cron_delivery_targets()}
+        with patch("hermes_cli.profiles.list_profile_names", return_value=["default"]):
+            targets = cron_delivery_targets()
 
-        # bot-chat:<profile> entries (machine-local Bot Chat injection) ride
-        # the same listing but are not gateway platforms — scope the
-        # platform assertions to the gateway entries.
-        platform_targets = {k: v for k, v in targets.items() if not k.startswith("bot-chat")}
-
-        assert set(platform_targets) == {"matrix", "telegram"}
-        # Configured but no home channel → surfaced, flagged for the UI.
-        assert platform_targets["matrix"]["home_target_set"] is False
-        assert platform_targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
-        assert platform_targets["telegram"]["home_target_set"] is False
-        # Bot Chat targets need no home channel: whatever profiles exist on
-        # this machine must all be listed as ready.
-        bot_chat = [v for k, v in targets.items() if k.startswith("bot-chat")]
-        assert all(t["home_target_set"] for t in bot_chat)
-
-
-class TestHomeTargetEnvVarRegistry:
-    """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
-    platform that supports cron-driven outbound delivery. Missing an
-    entry means ``hermes cron create --deliver=<platform>`` silently
-    fails to route through the platform's home channel."""
+        ids = [t["id"] for t in targets]
+        # Connected gateway platforms are NOT deliver targets: there is no
+        # per-platform default destination to offer the UI.
+        assert "matrix" not in ids
+        assert "telegram" not in ids
+        # Only Bot Chat entries (machine-local, one per profile) are listed.
+        assert ids == ["bot-chat:default"]
 
 
 class TestCronDeliveryMirror:
@@ -2611,12 +2574,12 @@ class TestCronContinuableSurfaceInChannel:
         """REGRESSION (restart-shaped): the connector's fail-closed tenant
         guard resolves the workspace from metadata.scope_id. After a gateway
         restart the RelayAdapter's per-chat scope cache is cold, and
-        DeliveryRouter stamps scope only for the configured HOME channel —
-        so a scoped Slack origin that is NOT the home chat egressed with no
-        scope_id and could be rejected before delivery. The scheduler must
-        stamp the persisted origin scope onto origin-matching routing
-        metadata (and never onto fan-out targets, which the origin-match
-        gate already excludes)."""
+        DeliveryRouter stamps scope only for the configured notification
+        channel — so a scoped Slack origin that is NOT the notification chat
+        egressed with no scope_id and could be rejected before delivery. The
+        scheduler must stamp the persisted origin scope onto origin-matching
+        routing metadata (and never onto fan-out targets, which the
+        origin-match gate already excludes)."""
         captured = {}
 
         class _SpyRouter:
@@ -2631,7 +2594,7 @@ class TestCronContinuableSurfaceInChannel:
         scoped_origin = {
             "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
             # Persisted workspace scope (captured at job creation). C123 is
-            # not any configured home channel in this harness.
+            # not the configured notification channel in this harness.
             "scope_id": "T0AAAA111",
         }
         with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
@@ -2647,8 +2610,8 @@ class TestCronContinuableSurfaceInChannel:
 
     def test_legacy_origin_without_scope_stamps_nothing(self):
         """Legacy jobs (origin persisted before scope capture) must not gain
-        a scope_id key — the relay's per-chat cache / home-channel stamping
-        remain the only sources, exactly today's behavior."""
+        a scope_id key — the relay's per-chat cache / notification-channel
+        stamping remain the only sources, exactly today's behavior."""
         captured = {}
 
         class _SpyRouter:

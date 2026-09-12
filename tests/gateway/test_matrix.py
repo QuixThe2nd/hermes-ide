@@ -285,22 +285,6 @@ class TestMatrixConfigLoading:
         assert mc.extra.get("e2ee_mode") == "optional"
 
 
-    def test_matrix_home_room(self, monkeypatch):
-        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")
-        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org")
-        monkeypatch.setenv("MATRIX_HOME_ROOM_NAME", "Bot Room")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        home = config.get_home_channel(Platform.MATRIX)
-        assert home is not None
-        assert home.chat_id == "!room123:example.org"
-        assert home.name == "Bot Room"
-
-
 # ---------------------------------------------------------------------------
 # Adapter helpers
 # ---------------------------------------------------------------------------

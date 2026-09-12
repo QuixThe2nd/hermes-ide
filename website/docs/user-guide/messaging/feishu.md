@@ -151,7 +151,6 @@ FEISHU_CONNECTION_MODE=websocket
 
 # Optional but strongly recommended
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
-FEISHU_HOME_CHANNEL=oc_xxx
 ```
 
 `FEISHU_DOMAIN` accepts:
@@ -167,15 +166,11 @@ hermes gateway
 
 Then message the bot from Feishu/Lark to confirm that the connection is live.
 
-## Home Chat
+## Scheduled Delivery
 
-Use `/set-home` in a Feishu/Lark chat to mark it as the home channel for cron job results and cross-platform notifications.
+Cron jobs created with `/cron` in a Feishu/Lark chat deliver their results back to that chat (the job's captured origin). To deliver somewhere else, set an explicit target — for example `hermes cron edit <id> --deliver feishu:oc_xxx` (a chat ID copied from the chat's info panel).
 
-You can also preconfigure it:
-
-```bash
-FEISHU_HOME_CHANNEL=oc_xxx
-```
+Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination chat to designate it.
 
 ## Security
 
@@ -547,7 +542,6 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
-| `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | Group message policy: `open`, `allowlist`, `disabled` |
