@@ -5,6 +5,12 @@ ledger row whether or not the proxy runs in key-manager mode, a matched
 caller token wins over it, and it is stripped before anything is forwarded
 upstream — it is a name, not a credential, so it can never authenticate and
 never cause a refusal.
+
+Claude Code's connectivity probes cannot send custom headers at all, so
+their ``claude-cli/…`` User-Agent is accepted as a name of last resort.
+Together the two name every caller the proxy knows about — and in
+key-manager mode a request nothing can name is refused before the upstream
+call, its row recorded under the sentinel caller ``unattributed``.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from plugins.llm_usage_proxy.server import (
     CALLER_LABEL_MAX_CHARS,
     CALLER_TOKEN_HEADER,
     KeyStore,
+    caller_label_from_user_agent,
     sanitize_caller_label,
 )
 
@@ -316,3 +323,186 @@ def test_routed_traffic_is_labeled_and_the_label_is_stripped(
     assert CALLER_LABEL_HEADER.lower() not in seen
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == HERMES_CALLER_LABEL
+
+
+# ── 5. The harness User-Agent, and the managed-mode attribution gate ─────────
+
+CLAUDE_CLI_UA = "claude-cli/2.1.226 (external, cli)"
+
+GATE_ERROR = (
+    "unattributed request: send a caller token, an 'X-Usage-Caller: <label>'"
+    " header, or a known harness User-Agent"
+)
+
+
+def _managed(tmp_path, *, with_caller):
+    """A key store for managed mode, with a caller token minted or not."""
+    keys_file = str(tmp_path / "keys" / "keys.json")
+    store = KeyStore(keys_file)
+    store.set_route_keys("zai", [STORE_KEY])
+    if with_caller is not None:
+        store.create_caller(with_caller)
+    return keys_file
+
+
+@pytest.mark.parametrize(
+    "user_agent, expected",
+    [
+        (None, None),
+        ("", None),
+        (CLAUDE_CLI_UA, "claude-code"),
+        ("Mozilla/5.0", None),
+    ],
+)
+def test_only_the_cli_probe_user_agent_names_a_caller(user_agent, expected):
+    assert caller_label_from_user_agent(user_agent) == expected
+
+
+def test_probe_user_agent_names_the_row_and_travels_upstream(
+    start_upstream, start_proxy, tmp_path
+):
+    """The CLI's probes cannot send custom headers; their UA is their name."""
+    keys_file = _managed(tmp_path, with_caller="alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="probe.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, _ = _post(proxy.server_address[1], headers={"User-Agent": CLAUDE_CLI_UA})
+
+    assert status == 200
+    assert len(upstream.requests) == 1
+    seen = _upstream_headers(upstream)
+    # The UA is a name for the proxy, not a credential to hide from the provider.
+    assert seen["user-agent"] == CLAUDE_CLI_UA
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "claude-code"
+
+
+def test_unattributed_request_is_refused_before_the_upstream_call(
+    start_upstream, start_proxy, tmp_path
+):
+    keys_file = _managed(tmp_path, with_caller="alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="gate.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, body = _post(proxy.server_address[1], headers={})
+
+    assert status == 401
+    assert json.loads(body)["error"] == GATE_ERROR
+    assert upstream.requests == []
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "unattributed"
+    assert rows[0]["outcome"] == "rejected"
+    assert rows[0]["status_code"] == 401
+
+
+def test_gate_follows_manage_keys_even_with_zero_caller_tokens(
+    start_upstream, start_proxy, tmp_path
+):
+    """Managed mode requires attribution on its own; a caller-token-count
+    condition would leave the gate inert on the tokenless live deployment,
+    where Hermes's traffic is label-attributed and nothing else should pass."""
+    keys_file = _managed(tmp_path, with_caller=None)
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="gate0.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, body = _post(proxy.server_address[1], headers={})
+
+    assert status == 401
+    assert json.loads(body)["error"] == GATE_ERROR
+    assert upstream.requests == []
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "unattributed"
+
+
+def test_token_name_beats_label_and_user_agent(start_upstream, start_proxy, tmp_path):
+    """A matched token is proof; label and UA are only claims."""
+    keys_file = str(tmp_path / "keys" / "keys.json")
+    store = KeyStore(keys_file)
+    store.set_route_keys("zai", [STORE_KEY])
+    token, _ = store.create_caller("alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="precedence.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, _ = _post(
+        proxy.server_address[1],
+        headers={
+            "Authorization": f"Bearer {token}",
+            CALLER_LABEL_HEADER: "something-else",
+            "User-Agent": CLAUDE_CLI_UA,
+        },
+    )
+
+    assert status == 200
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "alice"
+
+
+def test_label_beats_user_agent(start_upstream, start_proxy, tmp_path):
+    """A label carries tokenless managed traffic (Hermes's own shape) even
+    when the UA names no harness."""
+    keys_file = _managed(tmp_path, with_caller=None)
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream),
+        db_name="label-ua.sqlite",
+        manage_keys=True,
+        keys_path=keys_file,
+    )
+
+    status, _, _ = _post(
+        proxy.server_address[1],
+        headers={CALLER_LABEL_HEADER: "claude-code", "User-Agent": "totally-other/1.0"},
+    )
+
+    assert status == 200
+    assert len(upstream.requests) == 1
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "claude-code"
+
+
+def test_label_wins_over_a_known_harness_user_agent(start_upstream, start_proxy):
+    """The resolution order is token → label → UA, so an explicit label is
+    recorded even when the UA alone would have named a harness."""
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(_zai(upstream))
+
+    _post(
+        proxy.server_address[1],
+        headers={CALLER_LABEL_HEADER: LABEL, "User-Agent": CLAUDE_CLI_UA},
+    )
+
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == LABEL
+
+
+def test_invalid_label_with_no_other_name_hits_the_gate(
+    start_upstream, start_proxy, tmp_path
+):
+    """An unusable label sanitizes to nothing, so with no token and no known
+    UA the request is as nameless as one that sent no header at all."""
+    keys_file = _managed(tmp_path, with_caller="alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream),
+        db_name="badlabel.sqlite",
+        manage_keys=True,
+        keys_path=keys_file,
+    )
+
+    status, _, body = _post(
+        proxy.server_address[1], headers={CALLER_LABEL_HEADER: "bad label!"}
+    )
+
+    assert status == 401
+    assert json.loads(body)["error"] == GATE_ERROR
+    assert upstream.requests == []
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "unattributed"

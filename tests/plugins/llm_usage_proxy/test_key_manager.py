@@ -16,6 +16,7 @@ import stat
 import pytest
 
 from plugins.llm_usage_proxy.server import (
+    CALLER_LABEL_HEADER,
     CALLER_TOKEN_HEADER,
     KeyRotator,
     KeyStore,
@@ -466,10 +467,11 @@ def test_non_ascii_token_is_a_401_not_a_crash(start_upstream, start_proxy, keys_
     assert upstream.requests == []
 
 
-def test_no_caller_tokens_configured_accepts_anything(
+def test_no_caller_tokens_configured_accepts_labeled_traffic(
     start_upstream, start_proxy, keys_file
 ):
-    """Compat: Hermes's in-process routing sends no caller token at all."""
+    """Compat: Hermes's in-process routing sends no caller token — its
+    X-Usage-Caller label is what attributes the row while no tokens exist."""
     upstream = start_upstream(respond_json({"ok": True}))
     store = KeyStore(keys_file)
     store.set_route_keys("zai", [STORE_KEY_A])
@@ -485,12 +487,15 @@ def test_no_caller_tokens_configured_accepts_anything(
         "POST",
         "/p/zai/chat/completions",
         body=b"{}",
-        headers={"Authorization": f"Bearer {CLIENT_KEY}"},
+        headers={
+            "Authorization": f"Bearer {CLIENT_KEY}",
+            CALLER_LABEL_HEADER: "hermes",
+        },
     )
 
     assert status == 200
     rows = wait_for_row_count(proxy.store.path, 1)
-    assert rows[0]["caller"] is None
+    assert rows[0]["caller"] == "hermes"
     assert _upstream_auth_headers(upstream)["authorization"] == f"Bearer {STORE_KEY_A}"
 
 

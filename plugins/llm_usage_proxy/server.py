@@ -168,6 +168,10 @@ OUTCOME_ABORTED = "aborted"  # client connection lost during relay
 OUTCOME_UPSTREAM_ERROR = "upstream_error"  # connect/read failure upstream
 OUTCOME_REJECTED = "rejected"  # refused locally (unknown caller token), no upstream attempt
 
+# Caller recorded on a row the attribution gate refused: the request named
+# nothing, and the ledger still needs a readable, label-shaped caller for it.
+UNATTRIBUTED_CALLER = "unattributed"
+
 # Upstream statuses that make key-manager mode try the route's next stored
 # key — once per request, so a dead key cannot turn into a retry storm.
 KEY_RETRY_STATUSES = frozenset({401, 429})
@@ -888,6 +892,24 @@ def sanitize_caller_label(value: Any) -> Optional[str]:
     return candidate
 
 
+# The Claude Code CLI names itself "claude-cli/<version> …" on its
+# connectivity probes — requests that bypass the Anthropic SDK client and so
+# cannot carry X-Usage-Caller. That prefix is the one UA the proxy recognizes.
+UA_LABEL_RE = re.compile(r"claude-cli/")
+
+
+def caller_label_from_user_agent(user_agent: Optional[str]) -> Optional[str]:
+    """Attribute the well-known CLI probe UA to its harness, else None.
+
+    The harness — not the CLI version — is the caller the ledger wants, so
+    every ``claude-cli/…`` string maps to the one label "claude-code".
+    Anything else (including no UA at all) is not attribution.
+    """
+    if not user_agent:
+        return None
+    return "claude-code" if UA_LABEL_RE.match(user_agent.strip()) else None
+
+
 def _ensure_mode_0700(path: str) -> None:
     try:
         os.chmod(path, 0o700)
@@ -1425,9 +1447,14 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         Caller tokens gate the proxy only once one has been issued: a request
         must then name a known caller, because the ledger has to say who made
         it and an unattributable request cannot be told apart from a forged
-        one. With no caller tokens configured anything is accepted, which is
-        what keeps Hermes's own in-process routed traffic (provider
-        credentials, no caller token) working unchanged.
+        one. A presented-but-unknown token, or a bare label with no token, is
+        refused here. Two tokenless requests pass instead: one carrying the
+        well-known harness User-Agent (the CLI's probes cannot send custom
+        headers, so their UA is the only name they can give), and one that
+        names nothing at all — the attribution gate in ``_proxy`` is what
+        refuses that one, with the sentinel caller on its row. With no caller
+        tokens configured everything passes this check; the gate is what then
+        requires a name.
         """
         presented = self._presented_caller_token()
         if not key_store.caller_count():
@@ -1435,9 +1462,13 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         name = key_store.caller_for_token(presented or "")
         if name is not None:
             return name, None
-        if not presented:
+        if presented:
+            return None, "unknown caller token"
+        if caller_label_from_user_agent(self.headers.get("User-Agent")) is not None:
+            return None, None
+        if self._presented_caller_label() is not None:
             return None, "missing caller token"
-        return None, "unknown caller token"
+        return None, None
 
     def _record_rejection(
         self,
@@ -1501,16 +1532,19 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
 
         # Key-manager mode. The caller is identified first (and refused before
         # anything is sent upstream), then the incoming credential is swapped
-        # for one of the route's own keys. Without --manage-keys neither step
-        # runs: this is a credential passthrough and the client's Authorization
-        # reaches the upstream exactly as it arrived.
+        # for one of the route's own keys. Without --manage-keys the swap and
+        # the gate below do not run: this is a credential passthrough and the
+        # client's Authorization reaches the upstream exactly as it arrived.
         #
-        # Attribution is wider than that gate: a caller *label* is recorded on
-        # every row, managed mode or not. A matched caller token wins — it is
-        # proof of who held the token — and the label is what is left when
-        # there is no token or no match. The label is never itself a
-        # credential, so it never authenticates and never causes a 401.
+        # Attribution is wider than the token check: every row gets a caller,
+        # managed mode or not. A matched caller token wins — it is proof of
+        # who held the token — then the X-Usage-Caller label, then the
+        # well-known harness User-Agent. The label and the UA are never
+        # credentials, so neither authenticates against the token check; they
+        # name the row, and in managed mode they are what the attribution gate
+        # accepts in place of a token.
         label = self._presented_caller_label()
+        ua_caller = caller_label_from_user_agent(self.headers.get("User-Agent"))
         caller: Optional[str] = None
         managed_key: Optional[str] = None
         managed_position = -1
@@ -1529,12 +1563,43 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     caller=caller or label,
                 )
                 return
+        if caller is None:
+            caller = label if label is not None else ua_caller
+
+        # The attribution gate. Managed mode must be able to say who is
+        # calling before anything leaves the proxy: token, label, or known
+        # harness UA — any one names the row, and a request nothing can name
+        # is refused (still a ledger row, under the sentinel caller) rather
+        # than forwarded as traffic the ledger cannot attribute. It gates on
+        # --manage-keys alone, not on caller tokens existing: the deployment
+        # runs tokenless (Hermes's routed traffic is label-attributed), and a
+        # token-count condition would leave this gate forever inert there.
+        if self.manage_keys and caller is None:
+            self._send_json(
+                401,
+                {
+                    "error": (
+                        "unattributed request: send a caller token, an"
+                        " 'X-Usage-Caller: <label>' header, or a known harness"
+                        " User-Agent"
+                    )
+                },
+            )
+            self._record_rejection(
+                upstream=upstream_name,
+                path=routed_path,
+                model=model,
+                status=401,
+                started=started,
+                caller=UNATTRIBUTED_CALLER,
+            )
+            return
+
+        if key_store is not None:
             route_keys = key_store.route_keys(upstream_name)
             route_key_count = len(route_keys)
             if route_keys and self.rotator is not None:
                 managed_key, managed_position = self.rotator.issue(upstream_name)
-        if caller is None:
-            caller = label
 
         conn: Optional[HTTPConnection] = None
         status_code: Optional[int] = None
