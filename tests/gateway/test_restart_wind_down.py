@@ -779,8 +779,8 @@ def _discord_runner(tmp_path, monkeypatch, *, user_id="111222333444555666", **kw
     )
     for key, value in kwargs.items():
         setattr(source, key, value)
-    # begin_user_restart records the requester's routing before it offers, so
-    # the wind-down snapshot knows whose turn to skip.
+    # The user-restart path records the requester's routing before it
+    # offers, so the wind-down snapshot knows whose turn to skip.
     runner._restart_command_source = source
     return runner, adapter, source
 

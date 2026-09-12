@@ -683,8 +683,8 @@ async def test_a_send_that_lands_after_the_reaction_wait_timed_out_never_registe
     send_task = asyncio.create_task(runner._send_restart_wind_down_prompt(source))
     await seed_in_flight.wait()
     # The restart is requested while the embed is still delivering — the
-    # same window begin_user_restart leaves open between its offer send and
-    # the request_restart() call behind it (or any concurrent restart
+    # same window the user-restart paths leave open between their offer send
+    # and the request_restart() call behind it (or any concurrent restart
     # trigger). Set before the send the eligibility gate would refuse the
     # offer outright and there would be no race to run.
     runner._restart_requested = True
@@ -1113,15 +1113,19 @@ async def test_unrelated_emoji_costs_one_check_and_touches_nothing():
     partial.edit.assert_not_awaited()
 
 
-# ── begin_user_restart offers exactly one prompt ──────────────────────────
+# ── the user-restart paths offer exactly one prompt ────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_begin_user_restart_offers_the_pause_embed_for_native_discord(
+async def test_slash_restart_offers_the_pause_embed_for_native_discord(
     tmp_path, monkeypatch
 ):
+    """/restart offers the ⏸️ embed too, not just the restart tool path."""
+    from gateway.platforms.base import MessageEvent, MessageType
+
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.restart.user_restart_via_service", lambda: False)
+    monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda: False)
+    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
     adapter = MagicMock()
     adapter.send_restart_wind_down_offer = AsyncMock(return_value="m-1")
     adapter.finalize_restart_wind_down_offer = AsyncMock(return_value=True)
@@ -1138,12 +1142,19 @@ async def test_begin_user_restart_offers_the_pause_embed_for_native_discord(
     other = MagicMock()
     other.steer.return_value = True
     runner._running_agents["agent:main:discord:thread:other"] = other
-    runner._restart_command_source = source
     runner.request_restart = MagicMock(return_value=True)
 
-    status = await runner.begin_user_restart(source=source, message_id="m-0")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m-0",
+        platform_update_id=4242,
+    )
+    result = await runner._handle_restart_command(event)
 
-    assert status["status"] == "restarting"
+    # A peer chat is live, so the reply is the draining notice.
+    assert "1" in result
     adapter.send_restart_wind_down_offer.assert_awaited_once()
     kwargs = adapter.send_restart_wind_down_offer.await_args.kwargs
     assert kwargs["channel_id"] == "9001"
@@ -1156,18 +1167,21 @@ async def test_begin_user_restart_offers_the_pause_embed_for_native_discord(
         "channel_id": "9001",
         "requester_user_id": _REQUESTER_ID,
     }
-    # request_restart re-entered the same cycle rather than orphaning the
-    # offer behind a fresh generation.
+    # request_restart re-entered the already-open cycle rather than orphaning
+    # the offer behind a fresh generation.
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
     assert runner._restart_generation == 1
 
 
 @pytest.mark.asyncio
-async def test_begin_user_restart_skips_the_offer_with_no_other_live_chat(
+async def test_slash_restart_skips_the_offer_with_no_other_live_chat(
     tmp_path, monkeypatch
 ):
+    from gateway.platforms.base import MessageEvent, MessageType
+
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.restart.user_restart_via_service", lambda: False)
+    monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda: False)
+    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
     adapter = MagicMock()
     adapter.send_restart_wind_down_offer = AsyncMock(return_value="m-1")
     runner, _telegram = make_restart_runner()
@@ -1184,7 +1198,13 @@ async def test_begin_user_restart_skips_the_offer_with_no_other_live_chat(
     runner._running_agents[runner._session_key_for_source(source)] = MagicMock()
     runner.request_restart = MagicMock(return_value=True)
 
-    await runner.begin_user_restart(source=source, message_id="m-0")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m-0",
+    )
+    await runner._handle_restart_command(event)
 
     adapter.send_restart_wind_down_offer.assert_not_awaited()
     assert runner._restart_wind_down_offer is None
@@ -1192,9 +1212,10 @@ async def test_begin_user_restart_skips_the_offer_with_no_other_live_chat(
 
 
 @pytest.mark.asyncio
-async def test_begin_user_restart_skips_the_offer_for_relay_discord(
-    tmp_path, monkeypatch
-):
+async def test_tool_queue_skips_the_offer_for_relay_discord(tmp_path, monkeypatch):
+    """Relay-fronted Discord is not a surface the ⏸️ prompt may land on."""
+    from plugins.gateway_restart.tool import _queue_user_restart
+
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr("gateway.restart.user_restart_via_service", lambda: False)
     adapter = MagicMock()
@@ -1213,9 +1234,12 @@ async def test_begin_user_restart_skips_the_offer_for_relay_discord(
     runner._running_agents["agent:main:discord:thread:other"] = MagicMock()
     runner.request_restart = MagicMock(return_value=True)
 
-    await runner.begin_user_restart(source=source, message_id="m-0")
+    status = await _queue_user_restart(runner, source, "m-0")
 
+    assert status["status"] == "restarting"
     adapter.send_restart_wind_down_offer.assert_not_awaited()
+    assert runner._restart_wind_down_offer is None
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
 
 # ── the temporary Restart Pending thread title ───────────────────────────────
@@ -1502,7 +1526,7 @@ def test_rename_response_lost_after_discord_applied_it_still_restores(
     restore still fires on the way out — and the restart is only queued once
     the thread carries its exact original name again. Dropping the captured
     name on the stalled edit is the bug this pins: the exact-word
-    confirmation would queue ``begin_user_restart`` over a thread still
+    confirmation would queue the restart over a thread still
     titled ``Restart Pending``, which then never comes back.
 
     The round-trip bound is scaled down (not the waits up) so the stalled
@@ -1544,19 +1568,19 @@ def test_rename_response_lost_after_discord_applied_it_still_restores(
     runner, _telegram_adapter = make_restart_runner()
     runner.adapters = {Platform.DISCORD: adapter}
     runner._gateway_loop = gateway_loop
-    real_begin = runner.begin_user_restart
-    # The spy below must wrap the REAL begin_user_restart (it is the unit
+    # The spy below must wrap the REAL queued restart (it is the unit
     # under observation), but its request_restart call stays a mock so the
     # test never queues an actual drain/restart.
     runner.request_restart = MagicMock(return_value=True)
     observed: list[str] = []
+    real_queue = restart_tool._queue_user_restart
 
-    async def _begin_spy(**kwargs):
+    async def _queue_spy(runner_arg, source, message_id):
         observed.append(thread.name)
-        calls.append(("begin_user_restart", thread.name))
-        return await real_begin(**kwargs)
+        calls.append(("queue_user_restart", thread.name))
+        return await real_queue(runner_arg, source, message_id)
 
-    runner.begin_user_restart = _begin_spy
+    monkeypatch.setattr(restart_tool, "_queue_user_restart", _queue_spy)
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
 
     set_session_vars(**_DISCORD_SESSION)
@@ -1572,13 +1596,13 @@ def test_rename_response_lost_after_discord_applied_it_still_restores(
         ("edit", "Restart Pending"),
         ("send", "embed"),
         ("edit", "Deploy check"),
-        ("begin_user_restart", "Deploy check"),
+        ("queue_user_restart", "Deploy check"),
     ]
     # The restart was queued over the exact original name, and the thread
     # keeps it — the pending title never outlived the confirm wait.
     assert observed == ["Deploy check"]
     assert thread.name == "Deploy check"
-    # The real begin_user_restart ran to completion and queued exactly one
+    # The real queued restart ran to completion and queued exactly one
     # restart — not zero (the gate never opened) and not two.
     assert runner.request_restart.call_count == 1
 

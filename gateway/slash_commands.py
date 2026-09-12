@@ -170,7 +170,7 @@ def _home_thread_from_source(source) -> Optional[str]:
 class _RestartMarkerAttempt:
     """Attempt-scoped identity for one begin's authoritative marker writes.
 
-    Cancelling ``begin_user_restart`` cannot stop an ``asyncio.to_thread``
+    Cancelling a queued user restart cannot stop an ``asyncio.to_thread``
     worker, so a worker whose coroutine was cancelled may still be mid-write
     when the abort rollback runs — and a direct authoritative write would let
     it re-create a marker the rollback just removed. Every marker write in
@@ -588,6 +588,18 @@ class GatewaySlashCommandsMixin(
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
         await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
         active_agents = self._running_agent_count()
+        # Opt-in cooperative wind-down, same offer the restart tool path sends:
+        # post the ⏸️ pause embed before request_restart() opens the drain, so
+        # the offer is bound to this restart cycle (request_restart re-enters
+        # the already-open cycle and mints no second generation). The prompt
+        # send itself gates eligibility and opens the cycle idempotently; any
+        # failure here just leaves the restart on the natural-wait drain.
+        send_offer = getattr(self, "_send_restart_wind_down_prompt", None)
+        if callable(send_offer):
+            try:
+                await send_offer(event.source)
+            except Exception as exc:
+                logger.debug("Restart wind-down offer skipped: %s", exc)
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
