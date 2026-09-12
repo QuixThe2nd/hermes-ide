@@ -2354,16 +2354,7 @@ def ensure_task_env(task_id: Optional[str] = None):
         return existing
 
     overrides = resolve_task_overrides(task_id)
-    if env_type == "docker":
-        image = overrides.get("docker_image") or config["docker_image"]
-    elif env_type == "singularity":
-        image = overrides.get("singularity_image") or config["singularity_image"]
-    elif env_type == "modal":
-        image = overrides.get("modal_image") or config["modal_image"]
-    elif env_type == "daytona":
-        image = overrides.get("daytona_image") or config["daytona_image"]
-    else:
-        image = ""
+    image = _select_image(env_type, overrides, config)
 
     _start_cleanup_thread()
 
@@ -2979,18 +2970,7 @@ def terminal_tool(
         # ``"default"``) is still found under its originating session id while
         # isolation-keyed RL/benchmark overrides keep resolving as before.
         overrides = resolve_task_overrides(task_id)
-        
-        # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
+        image = _select_image(env_type, overrides, config)
 
         cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
         # Session-scoped mount resolution (single owner: _resolve_task_host_cwd).
