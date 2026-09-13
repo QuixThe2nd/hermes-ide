@@ -86,7 +86,12 @@ def _queue_in_draining_process(event: MessageEvent, session_key: str, runner=Non
         runner, adapter = make_restart_runner()
     else:
         adapter = runner._adapter_for_source(event.source)
+    # The production drain-queue posture: a confirmed restart whose busy
+    # policy says messages survive it (the idle seam queues only then —
+    # same condition the busy path applies).
     runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
     ack = queue_drain_refused_message(runner, event, session_key)
     assert ack is not None and QUEUED_MARKER in ack
     assert session_key in adapter._pending_messages  # live process queued it too
@@ -194,6 +199,140 @@ async def test_cap_reached_during_drain_refuses_honestly_without_file_growth():
     # The in-memory FIFO is unchanged too — no phantom queue either side.
     assert session_key in adapter._pending_messages
     assert adapter._pending_messages[session_key].text == "first fits"
+
+
+@pytest.mark.asyncio
+async def test_drain_cap_counts_inmemory_and_durable_backlog_together():
+    """One ``_BUSY_QUEUE_MAX_PENDING`` budget across both pools: a session
+    that already holds an in-memory backlog when the drain starts must not
+    get a second full cap's worth of durable appends (the 2× window)."""
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    runner._BUSY_QUEUE_MAX_PENDING = 2
+    source = make_restart_source(chat_id="combined-cap-chat")
+    session_key = runner._session_key_for_source(source)
+
+    # One follow-up already parked in the FIFO before the restart request.
+    runner._enqueue_fifo(
+        session_key,
+        _event("pre-drain backlog", source=source, message_id="m-0"),
+        adapter,
+    )
+    # First drain-time message fits the combined budget (1 in memory + 1).
+    assert await runner._handle_active_session_busy_message(
+        _event("drain one", source=source, message_id="m-1"), session_key
+    )
+    # The second would make 3 pending against a cap of 2: honest refusal.
+    await runner._handle_active_session_busy_message(
+        _event("drain two", source=source, message_id="m-2"), session_key
+    )
+
+    assert any(REFUSAL_MARKER in msg for msg in adapter.sent[-1:])
+    assert [e["event"]["text"] for e in _snapshot_events()] == ["drain one"]
+    assert adapter._pending_messages[session_key].text == "pre-drain backlog"
+
+
+@pytest.mark.asyncio
+async def test_full_routing_metadata_and_thread_prospect_survive_the_roundtrip():
+    """Routing metadata beyond the security keys (``whatsapp_from_owner``)
+    and ``SessionSource.prospective_thread_id`` decide where and how a
+    replayed message lands — they persist too. The wire-invisible trust
+    flags never do: restoring them from disk would re-grant an
+    authorization the new process was never given."""
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(
+        chat_id="meta-chat",
+        prospective_thread_id="pm-77",
+        auto_thread_created=True,
+        auto_thread_initial_name="new thread",
+        bot_display_name="Hermes Bot",
+        delivered_via_upstream_relay=True,  # must NOT survive the snapshot
+        profile_route_rejected=True,  # must NOT survive the snapshot
+    )
+    session_key = runner._session_key_for_source(source)
+    event = _event("metadata please", source=source)
+    event.metadata = {
+        "whatsapp_from_owner": True,
+        "gateway_session_key": "agent:main:whatsapp:dm:meta-chat",
+        "slack_team_id": "T123",
+        "hermes_plugin_id": "p-1",
+    }
+
+    record = serialize_drain_event(session_key, event)
+    assert record["event"]["metadata"] == event.metadata
+    assert record["source"]["prospective_thread_id"] == "pm-77"
+    assert record["source"]["auto_thread_created"] is True
+    assert record["source"]["bot_display_name"] == "Hermes Bot"
+    assert "delivered_via_upstream_relay" not in record["source"]
+    assert "profile_route_rejected" not in record["source"]
+
+    _key, rebuilt = deserialize_drain_event(record)
+    assert rebuilt.metadata == event.metadata
+    assert rebuilt.source.prospective_thread_id == "pm-77"
+    assert rebuilt.source.auto_thread_created is True
+    assert rebuilt.source.auto_thread_initial_name == "new thread"
+    assert rebuilt.source.bot_display_name == "Hermes Bot"
+    assert rebuilt.source.delivered_via_upstream_relay is False
+    assert rebuilt.source.profile_route_rejected is False
+
+
+@pytest.mark.asyncio
+async def test_corrupt_snapshot_is_quarantined_not_overwritten():
+    """The unreadable bytes still hold the only copy of what the previous
+    process queued — the next append must move them aside, not pave over
+    them."""
+    drain_queue_path().parent.mkdir(parents=True, exist_ok=True)
+    drain_queue_path().write_text("{corrupt beyond repair", encoding="utf-8")
+    runner, _adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source(chat_id="quarantine-chat")
+    session_key = runner._session_key_for_source(source)
+
+    ack = queue_drain_refused_message(
+        runner, _event("queued after the corruption", source=source), session_key
+    )
+
+    assert ack is not None and QUEUED_MARKER in ack
+    siblings = list(drain_queue_path().parent.glob("drain_message_queue.json.bad-*"))
+    assert len(siblings) == 1
+    assert siblings[0].read_text(encoding="utf-8") == "{corrupt beyond repair"
+    assert [e["event"]["text"] for e in _snapshot_events()] == [
+        "queued after the corruption"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_releases_the_preclaimed_slot(monkeypatch, caplog):
+    """If the replay turn's task cannot even be created, the sentinel
+    pre-claim must be released — otherwise the session reads as running
+    until the process dies."""
+    source = make_restart_source(chat_id="dispatch-fail-chat")
+    runner, adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("never dispatched", source=source), session_key
+    )
+    adapter.handle_message = AsyncMock()
+
+    def _no_task(coro):
+        coro.close()
+        raise RuntimeError("event loop refused the task")
+
+    monkeypatch.setattr(asyncio, "create_task", _no_task)
+    with caplog.at_level("WARNING", logger="gateway.run_drain_queue"):
+        assert replay_drain_queue(runner) == 0
+
+    assert any(
+        "dispatch failed" in record.message.lower() for record in caplog.records
+    )
+    assert not runner._is_session_running(session_key)
+    adapter.handle_message.assert_not_called()
+    # The event was injected but never dispatched — the snapshot is spent
+    # (at-most-once), and nothing else claims the session is busy.
 
 
 @pytest.mark.asyncio

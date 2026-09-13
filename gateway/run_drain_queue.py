@@ -57,22 +57,17 @@ DRAIN_QUEUE_CLAIMED_FILENAME = "drain_message_queue.replaying.json"
 
 _SNAPSHOT_VERSION = 1
 
-# Same keys ``GatewayRunner._queue_or_replace_pending_event`` compares when
-# deciding whether a queued follow-up may merge into the head slot. They are
-# persisted so a replayed event re-enters the FIFO with an equivalent
-# security context (plugin injection markers, explicit session routing).
-SECURITY_METADATA_KEYS = (
-    "hermes_plugin_id",
-    "hermes_plugin_injection",
-    "gateway_session_key",
-    "gateway_session_id",
-    "gateway_session_strict",
-)
-
 # Routing-relevant SessionSource fields. Session-key derivation
 # (``build_session_key``) and reply anchoring must see the same values the
 # live event carried, or a replayed message would land on a different
 # session than the one the user was talking to.
+#
+# Deliberately EXCLUDED (the source dataclass's own wire-invisible trust
+# signals — its field docs say they must never be restorable from
+# persistence, and the snapshot is a persistence medium):
+# ``delivered_via_upstream_relay`` and ``profile_route_rejected``. A record
+# carrying either would hand whatever process reads it an authorization it
+# was never re-granted.
 _SOURCE_FIELDS = (
     "platform",
     "chat_id",
@@ -85,11 +80,16 @@ _SOURCE_FIELDS = (
     "user_id_alt",
     "chat_id_alt",
     "scope_id",
+    "guild_id",
     "parent_chat_id",
     "message_id",
     "role_authorized",
     "profile",
     "is_bot",
+    "auto_thread_created",
+    "auto_thread_initial_name",
+    "prospective_thread_id",
+    "bot_display_name",
 )
 
 # MessageEvent fields persisted for replay. Media paths survive the bounce
@@ -126,8 +126,38 @@ def claimed_drain_queue_path() -> Path:
 # ── (de)serialization — the single pair, built on the existing event model ──
 
 
+def _json_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep the JSON-encodable metadata entries (ids, flags, short strings).
+
+    Metadata is free-form; a connector could stash an exotic object there.
+    Dropping the exotic entry keeps the WHOLE event queueable — the honest
+    alternative (fail the append) would refuse the message over a
+    decoration. Observed keys across the platform connectors are plain
+    routing ids/flags, so this drops nothing in practice.
+    """
+    kept: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        if isinstance(value, (str, int, float, bool)):
+            kept[str(key)] = value
+        elif isinstance(value, list) and all(
+            isinstance(item, (str, int, float, bool)) for item in value
+        ):
+            kept[str(key)] = list(value)
+    return kept
+
+
 def serialize_drain_event(session_key: str, event: MessageEvent) -> Dict[str, Any]:
-    """Flatten one queued event + its source into a JSON-safe record."""
+    """Flatten one queued event + its source into a JSON-safe record.
+
+    The FULL metadata dict is persisted, not just the security keys
+    ``_queue_or_replace_pending_event`` compares: routing metadata such as
+    ``whatsapp_from_owner`` decides how the replayed message is treated, and
+    the snapshot already lives in the gateway state dir beside auth.json at
+    the same trust level. A survey of the connectors found no display
+    secrets in metadata — only ids and flags — so no denylist is needed;
+    ``_SOURCE_FIELDS`` documents the two source-level trust flags that stay
+    off disk.
+    """
     source = getattr(event, "source", None)
     if source is None:
         raise ValueError("drain queue: event has no source")
@@ -158,11 +188,8 @@ def serialize_drain_event(session_key: str, event: MessageEvent) -> Dict[str, An
         if value is not None and not (isinstance(value, (list, str)) and not value):
             event_data[field] = value
     metadata = getattr(event, "metadata", None) or {}
-    security_metadata = {
-        key: metadata[key] for key in SECURITY_METADATA_KEYS if metadata.get(key) is not None
-    }
-    if security_metadata:
-        event_data["security_metadata"] = security_metadata
+    if metadata:
+        event_data["metadata"] = _json_safe_metadata(metadata)
     timestamp = getattr(event, "timestamp", None)
     return {
         "session_key": str(session_key or ""),
@@ -222,10 +249,10 @@ def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
         value = event_data.get(field)
         if isinstance(value, list):
             event_kwargs[field] = list(value)
-    security_metadata = event_data.get("security_metadata")
-    if isinstance(security_metadata, dict):
+    metadata = event_data.get("metadata")
+    if isinstance(metadata, dict):
         event_kwargs["metadata"] = {
-            str(key): value for key, value in security_metadata.items()
+            str(key): value for key, value in metadata.items()
         }
     timestamp = record.get("event_timestamp")
     if isinstance(timestamp, str) and timestamp:
@@ -239,8 +266,38 @@ def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
 # ── drain-time append ────────────────────────────────────────────────────────
 
 
+def _quarantine_snapshot(path: Path, reason: str) -> None:
+    """Rename an unreadable snapshot aside instead of overwriting it.
+
+    A corrupt file still holds the only copy of whatever the previous
+    process queued; letting the next append overwrite it would discard the
+    bytes silently. The timestamped ``.bad`` sibling keeps them for
+    forensics while the caller proceeds with a fresh snapshot. Best effort:
+    a quarantine failure is logged and never raises.
+    """
+    sibling = path.with_name(f"{path.name}.bad-{time.time_ns()}")
+    try:
+        os.replace(path, sibling)
+    except OSError:
+        logger.warning(
+            "Drain queue snapshot unreadable (%s) and could not be "
+            "quarantined; starting a fresh one",
+            reason,
+            exc_info=True,
+        )
+        return
+    logger.warning(
+        "Drain queue snapshot unreadable (%s); quarantined as %s and "
+        "starting a fresh one",
+        reason,
+        sibling.name,
+    )
+
+
 def _load_snapshot_events(path: Path) -> List[Dict[str, Any]]:
-    """Read the events list from *path*; missing/corrupt file → empty list."""
+    """Read the events list from *path*; missing → empty; corrupt → the file
+    is quarantined as a ``.bad`` sibling (unreadable data is never
+    overwritten in place) and a fresh snapshot starts."""
     import json
 
     try:
@@ -248,12 +305,13 @@ def _load_snapshot_events(path: Path) -> List[Dict[str, Any]]:
     except FileNotFoundError:
         return []
     except (OSError, ValueError) as exc:
-        logger.warning("Drain queue snapshot unreadable; starting a fresh one: %s", exc)
+        _quarantine_snapshot(path, str(exc))
         return []
-    if not isinstance(data, dict):
+    events = data.get("events") if isinstance(data, dict) else None
+    if not isinstance(events, list):
+        _quarantine_snapshot(path, "'events' missing or not a list")
         return []
-    events = data.get("events")
-    return [event for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    return [event for event in events if isinstance(event, dict)]
 
 
 def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bool:
@@ -262,18 +320,36 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     Returns True only when the event is durably on disk; the caller must
     answer with the OLD refusal on False so the ack never promises a queue
     that does not exist. The per-session cap reuses the runner's
-    ``_BUSY_QUEUE_MAX_PENDING`` (the same bound the in-memory FIFO applies).
+    ``_BUSY_QUEUE_MAX_PENDING`` and counts the in-memory FIFO depth and the
+    durable snapshot TOGETHER against that one budget — the two pools are
+    two copies of the same backlog, so counting each separately would allow
+    up to 2× the cap per session across a drain window.
     """
     path = drain_queue_path()
     events = _load_snapshot_events(path)
     cap = int(getattr(runner, "_BUSY_QUEUE_MAX_PENDING", 32))
     session = str(session_key or "")
     durable_depth = sum(1 for item in events if item.get("session_key") == session)
-    if durable_depth >= cap:
+    in_memory_depth = 0
+    depth_of = getattr(runner, "_queue_depth", None)
+    adapter = None
+    if callable(depth_of):
+        try:
+            adapter = runner._adapter_for_source(event.source)
+            in_memory_depth = int(depth_of(session, adapter=adapter) or 0)
+        except Exception:
+            logger.debug(
+                "Drain queue in-memory depth check failed for %s", session, exc_info=True
+            )
+            in_memory_depth = 0
+    if durable_depth + in_memory_depth >= cap:
         logger.warning(
-            "Dropping drain-time message for session %s — durable queue at cap (%d).",
+            "Dropping drain-time message for session %s — pending backlog at "
+            "cap (%d across in-memory FIFO + durable snapshot; %d + %d).",
             session,
             cap,
+            in_memory_depth,
+            durable_depth,
         )
         return False
     try:
@@ -302,11 +378,28 @@ def queue_drain_refused_message(
 ) -> Optional[str]:
     """Idle-path drain admission for a plain-text/media event the gate refused.
 
-    Returns the queued-for-next-turn ack, or None when queueing failed — the
-    caller then answers with the drain-gate notice it already built (honest
-    refusal instead of a false promise).
+    Returns the queued-for-next-turn ack, or None when queueing is not
+    allowed or failed — the caller then answers with the drain-gate notice
+    it already built (honest refusal instead of a false promise).
+
+    Posture (aligned with the busy path's ``_queue_during_drain_enabled``):
+    the queued ack is promised only when a RESTART was requested and the
+    effective busy input mode says messages survive it (queue/steer). An
+    external quiesce (``_enter_external_drain`` sets ``_draining`` without
+    ``_restart_requested``) gets None — the caller's plain drain notice, the
+    same honest refusal the busy path gives under that state — because an
+    externally stopped gateway has no restart of its own that would replay
+    this snapshot; queueing would park the message for a comeback nobody
+    promised (it would replay only at some LATER restart).
     """
     if not getattr(runner, "_draining", False):
+        return None
+    enabled = getattr(runner, "_queue_during_drain_enabled", None)
+    if not callable(enabled):
+        return None
+    mode_of = getattr(runner, "_effective_busy_input_mode", None)
+    effective_mode = mode_of(event.source) if callable(mode_of) else None
+    if not enabled(effective_mode):
         return None
     if not record_drain_event(runner, session_key, event):
         return None
@@ -635,6 +728,17 @@ def _dispatch_replay_turn(runner: Any, adapter: Any, event: MessageEvent, sessio
         )
     except Exception:
         logger.warning("Drain replay turn dispatch failed for %s", session_key, exc_info=True)
+        # The pre-claim above holds the running-agent slot and the task that
+        # would normally clear it was never created — release it here or the
+        # session stays "running" until the process dies.
+        release = getattr(runner, "_release_running_agent_state", None)
+        if callable(release):
+            try:
+                release(session_key)
+            except Exception:
+                logger.debug(
+                    "Drain replay slot release failed for %s", session_key, exc_info=True
+                )
         return False
     background = getattr(runner, "_background_tasks", None)
     if background is not None:

@@ -215,6 +215,10 @@ async def test_cold_plain_text_after_confirmation_is_queued_durably():
 
     runner, mock_adapter = _make_gate_runner()
     runner._draining = True
+    # The idle seam queues only under the busy path's drain policy: a
+    # confirmed restart whose busy mode says messages survive it.
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
 
     result = await runner._handle_message(_make_event("one more thing…"))
 
@@ -225,6 +229,45 @@ async def test_cold_plain_text_after_confirmation_is_queued_durably():
     events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
     assert events[0]["event"]["text"] == "one more thing…"
     assert events[0]["session_key"] == session_key
+
+
+@pytest.mark.asyncio
+async def test_cold_plain_text_during_external_quiesce_refuses_like_the_busy_path():
+    """Parity with the busy path's drain policy: an external quiesce
+    (``_enter_external_drain`` sets ``_draining`` without a restart request)
+    gets the honest drain notice — never a queued-for-the-restart promise
+    for a restart that was not requested."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    runner._draining = True
+    runner._restart_requested = False  # external quiesce, not /restart
+    runner._busy_input_mode = "queue"
+
+    result = await runner._handle_message(_make_event("are you going away?"))
+
+    assert isinstance(result, str) and _DRAIN_NOTICE_MARKER in result
+    assert not drain_queue_path().exists()
+    assert not mock_adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_cold_plain_text_in_interrupt_mode_during_restart_refuses_honestly():
+    """Same parity for the third policy state: with the default interrupt
+    mode even a confirmed restart does not promise a queue — the idle gate
+    refuses exactly like the busy path does."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "interrupt"  # the default posture
+
+    result = await runner._handle_message(_make_event("interrupt mode drops"))
+
+    assert isinstance(result, str) and _DRAIN_NOTICE_MARKER in result
+    assert not drain_queue_path().exists()
+    assert not mock_adapter._pending_messages
 
 
 @pytest.mark.asyncio
