@@ -1928,6 +1928,10 @@ def _rearm_background_cursor(
             "[System note: Re-arming an interrupted background "
             f"delegate_cursor_agent run was refused: {payload.get('error')}]"
         )
+    cloud_agent_id = str(receipt.get("cloud_agent_id") or "")
+    progress_url = f"https://cursor.com/agents/{cloud_agent_id}" if cloud_agent_id else ""
+    if progress_url:
+        _emit_progress_notice(f"{CURSOR_AGENT_VIEWER_STATUS_PREFIX}{progress_url}")
     return (
         "[System note: Re-armed an interrupted background "
         "delegate_cursor_agent cloud run under the same handle "
