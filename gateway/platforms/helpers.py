@@ -4,6 +4,7 @@ compilation, and fence-aware markdown chunking."""
 
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -81,25 +82,64 @@ def strip_markdown(text: str) -> str:
 
 class ThreadParticipationTracker:
     """Persistent set of threads the bot has participated in (``<platform>_threads.json``);
-    ``thread_id in tracker`` checks membership, ``tracker.mark(thread_id)`` persists."""
+    ``thread_id in tracker`` checks membership, ``tracker.mark(thread_id)`` persists.
+
+    Other processes (plugins creating threads via REST, sibling gateways) mark
+    threads by writing the same file, so every membership check re-reads it when
+    it changed on disk since this instance last loaded/saved it. Writes go
+    through atomic temp-file+replace, so the stamp tracks mtime, size AND inode
+    (mtime alone shares the kernel's coarse clock granularity: two writes inside
+    the same tick get identical mtimes, while the replace always mints a new inode)."""
 
     _MAX_TRACKED = 500
 
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
-        self._threads: dict[str, None] = dict.fromkeys(str(t) for t in self._load())
+        self._threads: dict[str, None] = dict.fromkeys(self._load() or [])
+        self._state_stamp: "tuple[int, int, int] | None" = self._stamp()
 
     def _state_path(self) -> Path:
         from hermes_constants import get_hermes_home
         return get_hermes_home() / f"{self._platform}_threads.json"
 
-    def _load(self) -> list[str]:
+    def _stamp(self) -> "tuple[int, int, int] | None":
+        """Current (mtime_ns, size, inode) of the state file; None when missing."""
+        try:
+            stat = os.stat(self._state_path())
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+    def _load(self) -> "list[str] | None":
+        """Thread ids persisted on disk; None when the file is unreadable/corrupt."""
         try:
             data = json.loads(self._state_path().read_text(encoding="utf-8"))
         except Exception:
-            return []
-        return [str(thread_id) for thread_id in data] if isinstance(data, list) else []
+            return None
+        if not isinstance(data, list):
+            return None
+        return [str(thread_id) for thread_id in data]
+
+    def _maybe_reload(self) -> None:
+        """Re-read the state file when another instance changed it on disk.
+
+        Fail-safe: a vanished, unreadable, or corrupt file keeps the current
+        in-memory set (the stamp is left untouched on read/parse failure so the
+        next check retries)."""
+        stamp = self._stamp()
+        if stamp == self._state_stamp:
+            return
+        if stamp is None:
+            # File vanished: keep the set, but forget the old stamp so a
+            # recreated file is picked up.
+            self._state_stamp = None
+            return
+        loaded = self._load()
+        if loaded is None:
+            return
+        self._state_stamp = stamp
+        self._threads = dict.fromkeys(loaded)
 
     def _save(self) -> None:
         thread_list = list(self._threads)
@@ -107,14 +147,17 @@ class ThreadParticipationTracker:
             thread_list = thread_list[-self._max_tracked:]
             self._threads = dict.fromkeys(thread_list)
         atomic_json_write(self._state_path(), thread_list, indent=None)
+        self._state_stamp = self._stamp()
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""
+        self._maybe_reload()  # merge marks made by other instances, don't clobber them
         if thread_id not in self._threads:
             self._threads[thread_id] = None
             self._save()
 
     def __contains__(self, thread_id: str) -> bool:
+        self._maybe_reload()
         return thread_id in self._threads
 
     def clear(self) -> None:
