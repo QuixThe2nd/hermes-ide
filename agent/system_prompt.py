@@ -486,6 +486,61 @@ def _memory_parts(agent: Any) -> List[str]:
     return parts
 
 
+# Canonical built-in memory-block header (the "═" * 46 fences around a titled
+# usage line that MemoryStore._render_block emits); lets the memory band be
+# recovered from a persisted prompt on the restore path.
+_STORED_MEMORY_BLOCK_RE = re.compile(
+    r"^═{46}\n(?:MEMORY \(your personal notes\)|USER PROFILE \(who the user is\)) \[[^\]\n]*\]\n═{46}$",
+    re.MULTILINE,
+)
+
+
+def _stored_prompt_memory_blocks(stored: str) -> List[str]:
+    """Recover the memory blocks a persisted prompt actually carries.
+
+    ``reconstruct_static_prefix`` rebuilds its tiers from memory freshly loaded
+    from disk while the STORED bytes keep going to the model, so if MEMORY.md /
+    USER.md / an external provider changed since the prompt was persisted, a
+    stash taken from that rebuild would display — and claim as injected —
+    content the model never receives.  The built-in blocks are self-identifying
+    (``_STORED_MEMORY_BLOCK_RE``), so the band is re-derived from the stored
+    bytes instead: from the first canonical header up to the plugin-sections
+    anchor or the timestamp line, whichever closes the volatile tail.  Blocks
+    are split at the canonical headers; the external provider block has no
+    canonical delimiter and stays joined to the last built-in one (the card
+    re-joins with ``\\n\\n`` anyway, so the bytes it displays are identical).
+    Returns [] when no canonical header exists — memory off/empty, or an
+    external-only band that cannot be located honestly.
+    """
+    if not stored:
+        return []
+    try:
+        from hermes_cli.plugins import PLUGIN_SECTIONS_START
+    except Exception:
+        PLUGIN_SECTIONS_START = "<!-- hermes-plugin-sections:start -->"
+    end = stored.rfind(PLUGIN_SECTIONS_START)
+    if end < 0:
+        # No plugin sections rendered: the timestamp line closes the volatile
+        # tail.  rfind lands on the real one — it trails the memory band.
+        end = stored.rfind("Conversation started:")
+    window = stored[:end] if end > 0 else stored
+    starts = [m.start() for m in _STORED_MEMORY_BLOCK_RE.finditer(window)]
+    if not starts:
+        return []
+    band = window[starts[0]:]
+    blocks: List[str] = []
+    prev = 0
+    for bound in (*[s - starts[0] for s in starts[1:]], len(band)):
+        piece = band[prev:bound]
+        # _join_tier strips every part it joins; mirror that so an unchanged
+        # memory file derives byte-identical blocks.
+        piece = (piece[2:] if piece.startswith("\n\n") else piece).strip()
+        if piece:
+            blocks.append(piece)
+        prev = bound
+    return blocks
+
+
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool]:
     """SOUL.md (primary identity; cron keeps the persona while skipping cwd
     instructions, scoped to the agent's OWN home) or the default identity.
@@ -654,7 +709,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
-    volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
+    memory_blocks = _memory_parts(agent)
+    # Stash the exact block list for the turn prologue's injection observability
+    # (agent/turn_context.py): these blocks ride in the system prompt, so they
+    # never diverge the user message and the card there reads them from this
+    # stash instead of re-parsing prompt text. Empty list when memory is off.
+    # Mid-session rebuilds are byte-identical (the store snapshot is frozen),
+    # so measurement re-renders cannot drift it; the one divergent caller —
+    # prefix reconstruction, which keeps sending the STORED bytes — overwrites
+    # the stash with blocks derived from those bytes (reconstruct_static_prefix).
+    agent._last_memory_blocks = memory_blocks
+    volatile_parts: List[str] = [skills_prompt, *memory_blocks]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
@@ -720,6 +785,14 @@ def reconstruct_static_prefix(agent: Any, system_message: Optional[str] = None, 
         return
     try:
         static = build_system_prompt_parts(agent, system_message=system_message)["stable"]
+        # The rebuild above stashed memory freshly loaded from disk, but the
+        # STORED prompt is what keeps going to the model on this path (restore /
+        # keep-prompt compression / cache-on failover); when memory changed
+        # since the prompt was persisted, that stash would hand the injection
+        # card content the model never receives.  Re-derive it from the stored
+        # bytes so only memory the restored prompt actually carries can be
+        # announced.
+        agent._last_memory_blocks = _stored_prompt_memory_blocks(stored)
         if static and stored.startswith(static):
             agent._cached_system_prompt_static = static
             agent._static_rebuild_failed_for = None
