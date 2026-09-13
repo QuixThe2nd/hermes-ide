@@ -1303,6 +1303,37 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
+def _resolve_hook_timeout_suppression_seconds() -> float:
+    """Effective post-timeout suppression window from ``plugins.hook_timeout_suppression_seconds``
+    (default 60s; ``<= 0`` uses the default; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS`` — the
+    same max as ``hook_callback_timeout``). The window is the pile-up guard; once it expires the
+    next invocation supersedes any abandoned worker (never joined)."""
+    default = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+    try:
+        from hermes_cli.config import load_config_readonly
+        plugins_cfg = (load_config_readonly() or {}).get("plugins")
+        if not isinstance(plugins_cfg, dict) or plugins_cfg.get("hook_timeout_suppression_seconds") is None:
+            return default
+        seconds = float(plugins_cfg["hook_timeout_suppression_seconds"])
+    except (TypeError, ValueError):
+        logger.warning(
+            "plugins.hook_timeout_suppression_seconds is not a number; using default %gs", default)
+        return default
+    except Exception:
+        return default
+    if seconds <= 0:
+        logger.warning(
+            "plugins.hook_timeout_suppression_seconds=%g is not positive; using default %gs",
+            seconds, default)
+        return default
+    if seconds > _MAX_HOOK_CALLBACK_TIMEOUT_SECS:
+        logger.warning(
+            "plugins.hook_timeout_suppression_seconds=%g exceeds max %gs; clamping", seconds,
+            _MAX_HOOK_CALLBACK_TIMEOUT_SECS)
+        return _MAX_HOOK_CALLBACK_TIMEOUT_SECS
+    return seconds
+
+
 class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
@@ -1872,8 +1903,10 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hook ``pre_tool_call`` are
     bounded by ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker is abandoned (not
-    joined) so we do not reintroduce the #6622 hang. Timed-out or still-running ``pre_tool_call`` callbacks
-    fail closed with a block directive; other bounded hooks fail open (skip).
+    joined) so we do not reintroduce the #6622 hang, and the callback is suppressed for
+    ``plugins.hook_timeout_suppression_seconds`` (default 60s) — after that window the hook self-heals.
+    Timed-out or suppressed ``pre_tool_call`` callbacks fail closed with a block directive naming the
+    hook and callback; other bounded hooks fail open (skip).
     Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).

@@ -1,7 +1,8 @@
 """Plugin hook / middleware / event-bus / system-prompt-section dispatch.
 
-Mixed into :class:`hermes_cli.plugins.PluginManager`. ``_resolve_hook_callback_timeout`` stays on
-the origin (tests patch it there) and is looked up lazily.
+Mixed into :class:`hermes_cli.plugins.PluginManager`. ``_resolve_hook_callback_timeout`` and
+``_resolve_hook_timeout_suppression_seconds`` stay on the origin (tests patch them there) and are
+looked up lazily.
 """
 
 from __future__ import annotations
@@ -48,7 +49,10 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
-# After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
+# After a timeout, suppress the same callback this long so a hung hook cannot pile up threads — the
+# window IS the pile-up guard: once it expires a fresh invocation proceeds even while the abandoned
+# worker is still alive (its stale token is superseded, never joined). Default for
+# ``plugins.hook_timeout_suppression_seconds``.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
@@ -168,26 +172,40 @@ class PluginDispatchMixin:
 
         Payloads evolve additively: ``**kwargs`` callbacks get everything, narrow signatures only
         what they declare. Each callback is isolated. Bounded hooks and ``pre_tool_call`` run under
-        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
-        closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
+        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); a timed-out callback is
+        suppressed for ``plugins.hook_timeout_suppression_seconds`` (the pile-up guard) and the hook
+        self-heals once that window expires. ``pre_tool_call`` fails closed with a block directive
+        naming the hook and callback; others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
-        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        from hermes_cli.plugins import (
+            _resolve_hook_callback_timeout, _resolve_hook_timeout_suppression_seconds,
+        )
         # Gateway platform events define event-local envelopes; a bus-wide version here would turn
         # unrelated adapter payloads into one monolithic compatibility contract.
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
+        suppression = _resolve_hook_timeout_suppression_seconds()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout, suppression)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            callback_name = getattr(cb, "__name__", repr(cb))
+                            results.append({
+                                "action": "block",
+                                "message": (
+                                    f"{_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}: "
+                                    f"{callback_name} (hook '{hook_name}')"),
+                            })
+                            logger.warning(
+                                "Hook '%s' callback %s timed out or is still running "
+                                "— blocking tool call", hook_name, callback_name)
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -199,24 +217,33 @@ class PluginDispatchMixin:
         return results
 
     def _run_hook_callback_bounded(
-        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float,
+        suppression: Optional[float] = None,
     ) -> Any:
-        """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, timed out (worker abandoned, never joined), or the worker
-        could not be started. Exceptions propagate."""
+        """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when the
+        callback is still inside the post-timeout suppression window (the pile-up guard), when this
+        invocation times out (worker abandoned, never joined), or when the worker could not be
+        started. The window is the ONLY skip: once it expires a fresh invocation proceeds even while
+        a previously abandoned worker is still alive — its stale token is superseded below and its
+        late ``_release_token()`` is a no-op, so the latch self-heals instead of sticking until
+        process restart. Exceptions propagate."""
+        if suppression is None:
+            suppression = self._hook_timeout_suppression_seconds
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-            running = callback_key in self._hook_running_callbacks
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
+            if suppressed_until is not None and suppressed_until > time.monotonic():
                 logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
+                    "Hook '%s' callback %s skipped: within the %gs post-timeout "
+                    "suppression window", hook_name, callback_name, suppression)
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(callback_key, None)
+            # A worker abandoned by an earlier timeout may still hold this key — do not join it
+            # (see #6622). Writing the fresh token supersedes the stale one; ``is token`` in
+            # ``_release_token`` keeps the stale worker's eventual exit from clobbering this entry.
             self._hook_running_callbacks[callback_key] = token
 
         context = contextvars.copy_context()
@@ -251,9 +278,10 @@ class PluginDispatchMixin:
             with self._hook_timeout_lock:
                 # See #6622.
                 self._hook_timeout_suppressed_until[callback_key] = (
-                    time.monotonic() + self._hook_timeout_suppression_seconds)
+                    time.monotonic() + suppression)
             logger.warning(
-                "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
+                "Hook '%s' callback %s timed out after %gs — skipping (retry suppressed for %gs)",
+                hook_name, callback_name, timeout, suppression)
             return _HOOK_SKIPPED
         if "exc" in failure:
             raise failure["exc"]
