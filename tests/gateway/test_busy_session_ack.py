@@ -685,6 +685,17 @@ class TestLongRunningNotificationOwnership:
     'running: delegate_agent' bubble outlives the run that spawned it (#12029).
     """
 
+    @staticmethod
+    def _qualifying_runner(agent):
+        """Bare runner whose 'sess' turn slot is owned by ``agent`` — state
+        that otherwise qualifies the heartbeat for emission."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._running_agents["sess"] = agent
+        return runner
+
     def test_notification_stops_after_session_ownership_moves(self):
         from gateway.run import GatewayRunner
 
@@ -698,5 +709,32 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
+
+    def test_notification_suppressed_while_restart_requested(self):
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is False
+
+    def test_notification_emitted_when_restart_not_requested(self):
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = False
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
+
+    def test_notification_emitted_when_restart_flag_missing(self):
+        # Back-compat: bare runners built without the attribute still heartbeat.
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
 
 

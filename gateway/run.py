@@ -14780,6 +14780,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         or the session key has been rebound to a different live agent (e.g. the
         user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
         """
+        if getattr(self, "_restart_requested", False):
+            # Restart drain: the user already knows the gateway is winding
+            # down; a "still working" heartbeat reads as noise.
+            return False
         if agent is None:
             return False
         if executor_task is not None and executor_task.done():
