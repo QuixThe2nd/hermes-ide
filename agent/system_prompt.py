@@ -654,7 +654,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
-    volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
+    memory_blocks = _memory_parts(agent)
+    # Stash the exact block list for the turn prologue's injection observability
+    # (agent/turn_context.py): these blocks ride in the system prompt, so they
+    # never diverge the user message and the card there reads them from this
+    # stash instead of re-parsing prompt text. Empty list when memory is off.
+    agent._last_memory_blocks = memory_blocks
+    volatile_parts: List[str] = [skills_prompt, *memory_blocks]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))

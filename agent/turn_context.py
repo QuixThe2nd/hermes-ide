@@ -8,6 +8,7 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 import threading
@@ -1102,6 +1103,43 @@ def build_turn_context(
             plugin_user_context, preflight_compressed=compaction.compressed,
         )
 
+    # ── System-prompt memory card ──
+    # The blocks composed by ``_memory_parts`` (MEMORY / USER PROFILE /
+    # external provider) ride in the system prompt and never diverge the user
+    # message, so the diff-based card below cannot see them. Emit their own
+    # ``context.injected`` card, hash-gated per session: the first turn and the
+    # first turn after a memory edit each fire exactly one card, while
+    # steady-state turns with identical memory content stay silent. Same
+    # API-path gate as the card below (MoA and codex_app_server bypass the
+    # api_messages build, so claiming an injection there would be a lie).
+    _progress_callback = getattr(agent, "tool_progress_callback", None)
+    if (
+        not _moa_turn
+        and not continue_interrupted_turn
+        and getattr(agent, "api_mode", None) != "codex_app_server"
+        and callable(_progress_callback)
+    ):
+        try:
+            _mem_blocks = getattr(agent, "_last_memory_blocks", []) or []
+            _mem_content = "\n\n".join(_mem_blocks)
+            if _mem_content:
+                _mem_sha = hashlib.sha256(_mem_content.encode("utf-8")).hexdigest()
+                if getattr(agent, "_memory_card_state", None) != _mem_sha:
+                    agent._memory_card_state = _mem_sha
+                    _progress_callback(
+                        "context.injected",
+                        "context",
+                        None,
+                        {
+                            "content": _mem_content,
+                            "injected_chars": len(_mem_content),
+                            "sources": ["memory"],
+                        },
+                    )
+        except Exception:
+            # Display plumbing must never block the model call.
+            logger.debug("memory card progress callback failed", exc_info=True)
+
     # ── Injection observability ──
     # Two injection families can make the API-bound user message diverge from
     # the clean transcript text:
@@ -1118,7 +1156,6 @@ def build_turn_context(
     # on API paths where the composed content is actually sent (same gate as
     # the sidecar stamp: MoA and codex_app_server bypass the api_messages
     # build, so claiming an injection there would be a lie).
-    _progress_callback = getattr(agent, "tool_progress_callback", None)
     if (
         not _moa_turn
         and not continue_interrupted_turn
