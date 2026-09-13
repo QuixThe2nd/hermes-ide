@@ -4,12 +4,14 @@ A loopback reverse proxy that records **real** provider-reported token usage fro
 HTTP traffic on the wire — not estimates. It runs as its own systemd unit (one per
 profile), forwards `http://127.0.0.1:<port>/p/<route>/<rest>` to the route's real
 provider endpoint, and tees the usage object out of every response into a local
-SQLite ledger (`<HERMES_HOME>/usage-proxy/usage.sqlite`).
+SQLite ledger (`<HERMES_HOME>/usage-proxy/usage.sqlite`). Measurement is on by
+default per profile; opt out with `hermes llm_usage_proxy disable`, an explicit
+`llm_usage_proxy.enabled: false`, or a `plugins.disabled` entry.
 
 ```bash
-hermes llm_usage_proxy enable      # install + start this profile's unit
+hermes llm_usage_proxy enable      # (re-)install + start this profile's unit
 hermes llm_usage_proxy status      # bind address, SQLite path, unit state, routes
-hermes llm_usage_proxy disable     # stop + disable
+hermes llm_usage_proxy disable     # stop + disable (explicit opt-out)
 hermes llm_usage_proxy reconcile   # rewrite the unit idempotently after config changes
 hermes llm_usage_proxy serve       # foreground, no systemd (handy for testing)
 

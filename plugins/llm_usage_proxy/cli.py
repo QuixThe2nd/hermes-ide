@@ -129,8 +129,9 @@ def cmd_status() -> int:
         print("  Explicit disable: yes (config/plugins.disabled)")
     if not cfg["enabled"]:
         print(
-            "  Routing is opt-in per profile: `hermes llm_usage_proxy enable`"
-            " writes llm_usage_proxy.enabled: true into this profile's config."
+            "  Routing is off via explicit opt-out (enabled: false or the"
+            " plugins deny-list). `hermes llm_usage_proxy enable` writes"
+            " llm_usage_proxy.enabled: true into this profile's config."
         )
     return 0
 

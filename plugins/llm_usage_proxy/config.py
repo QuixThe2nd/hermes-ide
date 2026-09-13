@@ -57,10 +57,12 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
                 upstreams[str(name)] = base.strip()
 
     return {
-        # Opt-in, per profile: this config section lives in the profile's own
-        # HERMES_HOME, so each named profile decides for itself. Nothing in
-        # the global environment can turn routing on.
-        "enabled": _coerce_bool(raw.get("enabled"), False),
+        # On by default, per profile: this config section lives in the
+        # profile's own HERMES_HOME, so each named profile decides for itself.
+        # Opt out with an explicit ``enabled: false`` or a plugins.disabled
+        # entry (plugin_explicitly_disabled still wins). Nothing in the
+        # global environment can force routing off.
+        "enabled": _coerce_bool(raw.get("enabled"), True),
         "port": _coerce_port(raw.get("port")),
         "upstreams": upstreams,
         # Key-manager mode: the proxy owns the provider keys and clients hold
