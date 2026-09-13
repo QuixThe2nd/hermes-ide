@@ -14067,101 +14067,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ):
             return False
 
-        # Steer mode: inject mid-run via running_agent.steer() instead of
-        # queueing + interrupting.  If the agent isn't running yet
-        # (sentinel) or lacks steer(), or the payload is empty, fall back
-        # to queue semantics so nothing is lost.
-        # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
-        # to every entry in the parent's ``_active_children`` list and
-        # aborts in-flight ``delegate_agent`` work. Demote ``interrupt``
-        # to ``queue`` when the parent is currently driving subagents so
-        # a conversational follow-up doesn't destroy minutes of subagent
-        # work. Explicit ``/stop`` and ``/new`` slash commands go through
-        # ``_interrupt_and_clear_session`` and are unaffected — the
-        # operator still has a way to force-cancel everything.
-        demoted_for_subagents = (
-            effective_mode == "interrupt"
-            and self._agent_has_active_subagents(running_agent)
+        # Steer injects mid-run via running_agent.steer() (falling back to
+        # queue semantics so nothing is lost); interrupt is demoted to queue
+        # while subagents run (#30170 — ``AIAgent.interrupt()`` cascades
+        # through ``_active_children`` and aborts in-flight ``delegate_agent``
+        # work; explicit ``/stop`` and ``/new`` still cancel everything) or
+        # while context compression is in flight (#56391). One shared resolver
+        # owns that logic for every busy entry point so the paths cannot drift.
+        _outcome = await self._resolve_busy_steer_or_redirect(
+            event, session_key, effective_mode, running_agent
         )
-        if demoted_for_subagents:
-            logger.info(
-                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
-                "because the running agent has active subagents (#30170)",
-                session_key,
-            )
-            effective_mode = "queue"
-        demoted_for_compression = (
-            effective_mode == "interrupt"
-            and await self._session_has_compression_in_flight(session_key)
-        )
-        if demoted_for_compression:
-            logger.info(
-                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
-                "because context compression is in flight (#56391)",
-                session_key,
-            )
-            effective_mode = "queue"
-        steered = False
-        redirected = False
-        if effective_mode == "steer":
-            steer_text = await self._prepare_busy_steer_text(event)
-            # A follow-up qualifies for steering when it is plain text, OR
-            # when every attachment is STT-eligible voice media whose
-            # transcript was just folded into steer_text — otherwise a voice
-            # note in steer mode silently degrades to queue mode (#58780).
-            _steer_media_urls = getattr(event, "media_urls", None) or []
-            _steer_all_voice = bool(_steer_media_urls) and (
-                len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
-            )
-            can_steer = (
-                steer_text
-                and (
-                    (
-                        event.message_type == MessageType.TEXT
-                        and not event.media_urls
-                        and not event.media_types
-                    )
-                    or _steer_all_voice
-                )
-                and running_agent is not None
-                and running_agent is not _AGENT_PENDING_SENTINEL
-                and hasattr(running_agent, "steer")
-            )
-            if can_steer:
-                try:
-                    steered = bool(
-                        running_agent.steer(self._steer_text_with_origin(steer_text, event))
-                    )
-                except Exception as exc:
-                    logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
-                    steered = False
-                if steered and self._steer_delivered_ack_enabled(event):
-                    # The busy-steer bubble below promises FUTURE delivery;
-                    # schedule the one-shot follow-up ack for the moment the
-                    # text actually lands in the model's context.
-                    self._register_steer_delivered_ack(event, session_key, running_agent)
-            if not steered:
-                # Fall back to queue (merge into pending messages, no interrupt)
-                effective_mode = "queue"
-        elif (
-            effective_mode == "interrupt"
-            and event.message_type == MessageType.TEXT
-            and not event.media_urls
-            and not event.media_types
-            and running_agent is not None
-            and running_agent is not _AGENT_PENDING_SENTINEL
-            and getattr(running_agent, "_supports_active_turn_redirect", False) is True
-            and hasattr(running_agent, "redirect")
-        ):
-            try:
-                redirected = bool(
-                    running_agent.redirect(
-                        self._steer_text_with_origin((event.text or "").strip(), event)
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
-                redirected = False
+        effective_mode = _outcome.effective_mode
+        demoted_for_subagents = _outcome.demoted_for_subagents
+        demoted_for_compression = _outcome.demoted_for_compression
+        steered = _outcome.steered
+        redirected = _outcome.redirected
+        if steered and self._steer_delivered_ack_enabled(event):
+            # The busy-steer bubble below promises FUTURE delivery;
+            # schedule the one-shot follow-up ack for the moment the
+            # text actually lands in the model's context.
+            self._register_steer_delivered_ack(event, session_key, running_agent)
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -23152,83 +23077,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Steer mode: inject text into the running agent mid-run via
                 # agent.steer().  Falls back to queue semantics if the payload
                 # is empty, the agent lacks steer(), or steer() rejects.
-                steer_text = (event.text or "").strip()
-                steered = False
-                if (
-                    event.message_type == MessageType.TEXT
-                    and not event.media_urls
-                    and not event.media_types
-                    and steer_text
-                    and hasattr(running_agent, "steer")
-                ):
-                    try:
-                        steered = bool(
-                            running_agent.steer(self._steer_text_with_origin(steer_text, event))
-                        )
-                    except Exception as exc:
-                        logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-                        steered = False
-                if steered:
+                _outcome = await self._resolve_busy_steer_or_redirect(
+                    event, _quick_key, "steer", running_agent
+                )
+                if _outcome.steered:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            # #30170 — Subagent protection (PRIORITY path). Same rationale
-            # as ``_handle_active_session_busy_message``: an interrupt
-            # cascades through ``_active_children`` and aborts in-flight
-            # delegate_agent work. Demote to queue semantics when the
-            # parent is currently driving subagents so a conversational
-            # follow-up doesn't destroy minutes of subagent progress.
-            # /stop reaches its dedicated handler above, so the operator
-            # still has a clean escape hatch.
-            if self._agent_has_active_subagents(running_agent):
-                logger.info(
-                    "PRIORITY interrupt demoted to queue for session %s "
-                    "because the running agent has active subagents (#30170)",
-                    _quick_key,
-                )
+            # Interrupt mode, through the same resolver
+            # ``_handle_active_session_busy_message`` uses so the two busy
+            # paths can never drift: #30170 demotes to queue while the agent
+            # drives subagents (an interrupt cascades through
+            # ``_active_children`` and aborts in-flight delegate_agent work),
+            # #56391 demotes while context compression is in flight (an
+            # interrupt here would start a new turn against the pre-rotation
+            # parent session, forking orphaned compression siblings), and
+            # text-only corrections redirect the live turn when the runtime
+            # supports it. /stop reaches its dedicated handler above, so the
+            # operator still has a clean escape hatch.
+            _outcome = await self._resolve_busy_steer_or_redirect(
+                event, _quick_key, "interrupt", running_agent
+            )
+            if _outcome.redirected:
+                logger.debug("PRIORITY redirect for session %s", _quick_key)
+                return None
+            if _outcome.effective_mode == "queue":
+                # An #30170/#56391 demotion (the resolver logged which) —
+                # the follow-up waits its turn, nothing is lost.
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            # #56391 — Compression protection (PRIORITY path). Same
-            # rationale as ``_handle_active_session_busy_message``: context
-            # compression is interrupt-protected (#23975), but an interrupt
-            # here starts a new turn against the pre-rotation parent
-            # session while the still-running compression later rotates
-            # the id out from under it, forking orphaned compression
-            # siblings. Demote to queue semantics so the follow-up waits
-            # for the in-flight compression + rotation to land.
-            if await self._session_has_compression_in_flight(_quick_key):
-                logger.info(
-                    "PRIORITY interrupt demoted to queue for session %s "
-                    "because context compression is in flight (#56391)",
-                    _quick_key,
-                )
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            # Text-only corrections redirect the live turn (preserving
-            # displayed context) when the runtime supports it; media/voice and
-            # older runtimes fall back to the proven interrupt path below.
-            if (
-                event.message_type == MessageType.TEXT
-                and not event.media_urls
-                and not event.media_types
-                and getattr(running_agent, "_supports_active_turn_redirect", False)
-                is True
-                and hasattr(running_agent, "redirect")
-            ):
-                try:
-                    if running_agent.redirect(
-                        self._steer_text_with_origin((event.text or "").strip(), event)
-                    ):
-                        logger.debug("PRIORITY redirect for session %s", _quick_key)
-                        return None
-                except Exception as exc:
-                    logger.warning(
-                        "PRIORITY redirect failed for session %s: %s",
-                        _quick_key,
-                        exc,
-                    )
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
