@@ -26,6 +26,7 @@ Launch flags are unchanged — see ``usage-proxy-webui.service``.
 import argparse
 import html
 import json
+from pathlib import Path
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -36,9 +37,9 @@ from zoneinfo import ZoneInfo
 
 SYDNEY = ZoneInfo("Australia/Sydney")
 UNATTRIBUTED = "unattributed"
-DEFAULT_HOST = "192.168.30.20"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9136
-DEFAULT_DB = "/root/.hermes/usage-proxy/usage.sqlite"
+DEFAULT_DB = str(Path.home() / ".hermes" / "usage-proxy" / "usage.sqlite")
 
 POLL_SECONDS = 5
 FETCH_TIMEOUT_MS = 4500

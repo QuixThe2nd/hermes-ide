@@ -7,19 +7,20 @@ A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. It sh
 ## Run
 
 ```bash
-cd /root/.hermes/scratch/usage-proxy-webui
 python3 server.py
 ```
+
+Defaults: binds `127.0.0.1:9136` and reads `~/.hermes/usage-proxy/usage.sqlite`.
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host` | `192.168.30.20` | Bind address |
+| `--host` | `127.0.0.1` | Bind address |
 | `--port` | `9136` | HTTP port |
-| `--db` | `/root/.hermes/usage-proxy/usage.sqlite` | Path to the ledger SQLite file (opened read-only) |
+| `--db` | `~/.hermes/usage-proxy/usage.sqlite` | Path to the ledger SQLite file (opened read-only) |
 
-Example (local testing):
+Example:
 
 ```bash
 python3 server.py --host 127.0.0.1 --port 9136 --db /tmp/my-usage-copy.sqlite
@@ -30,10 +31,21 @@ python3 server.py --host 127.0.0.1 --port 9136 --db /tmp/my-usage-copy.sqlite
 - `GET /` — HTML dashboard (auto-refreshes every 30 seconds)
 - `GET /api/summary` — JSON summary (`last_24h`, `all_time`)
 - `GET /api/events?limit=N` — JSON events (default 200, max 1000)
+- `GET /api/timeseries` — JSON hourly buckets for the chart (last 24 h, per-harness/model splits)
+
+## Hourly chart
+
+The "Tokens per hour" stacked column chart has a segmented toggle with four breakdown modes:
+
+- **harness** / **model** — tokens stacked per harness or per model (stable per-name colors)
+- **in/out** — prompt tokens (input) vs completion tokens (output)
+- **cache** — cached vs uncached prompt tokens (uncached = prompt − cached; columns are shorter because they sum prompt tokens only)
+
+Tooltip, the screen-reader table, and aria-labels follow the active mode.
 
 ## systemd (optional, not installed by default)
 
-See `usage-proxy-webui.service` in this directory. Example unit:
+Example unit:
 
 ```ini
 [Unit]
@@ -42,8 +54,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/.hermes/scratch/usage-proxy-webui
-ExecStart=/usr/bin/python3 server.py --host 192.168.30.20 --port 9136
+WorkingDirectory=/opt/usage-proxy-webui
+ExecStart=/usr/bin/python3 server.py --port 9136
 Restart=always
 RestartSec=2
 
@@ -51,7 +63,7 @@ RestartSec=2
 WantedBy=multi-user.target
 ```
 
-Copy to `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now usage-proxy-webui` if you want it managed — **only on a trusted LAN**.
+Copy to `/etc/systemd/system/`, adjust `--host` to a private interface if you want LAN access, then `systemctl daemon-reload && systemctl enable --now usage-proxy-webui` — **only on a trusted LAN**.
 
 ## Security note
 
