@@ -515,7 +515,10 @@ class TestSteerDeliveredAck:
         # Only the immediate busy-steer bubble so far — delivery hasn't happened.
         assert adapter._send_with_retry.await_count == 1
         assert "Steered" in adapter._send_with_retry.call_args.kwargs["content"]
-        assert agent.steer_calls == ["also check the tests"]
+        # Steer payload carries the message-origin preamble (see TestBusySessionAck).
+        assert len(agent.steer_calls) == 1
+        assert agent.steer_calls[0].endswith("also check the tests")
+        assert '"chat_id": "123"' in agent.steer_calls[0]
         assert len(agent.listeners) == 1
 
         # Mid-run injection fires the listener (agent thread); the follow-up
@@ -553,7 +556,8 @@ class TestSteerDeliveredAck:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        assert agent.steer_calls == ["also check the tests"]
+        assert len(agent.steer_calls) == 1
+        assert agent.steer_calls[0].endswith("also check the tests")
         assert agent.listeners == []
         assert runner._session_state(sk).turn.steer_delivered_listener is None
         assert adapter._send_with_retry.await_count == 1  # immediate ack only
@@ -614,7 +618,9 @@ class TestSteerDeliveredAck:
         )
         await runner._handle_active_session_busy_message(second, sk)
 
-        assert agent.steer_calls == ["also check the tests", "and the migrations"]
+        assert len(agent.steer_calls) == 2
+        assert agent.steer_calls[0].endswith("also check the tests")
+        assert agent.steer_calls[1].endswith("and the migrations")
         assert len(agent.listeners) == 1
         assert runner._session_state(sk).turn.steer_delivered_listener is not first
 
