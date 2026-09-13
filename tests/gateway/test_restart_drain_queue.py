@@ -33,9 +33,11 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart_wind_down import write_resume_allowlist
 from gateway.run_drain_queue import (
     claimed_drain_queue_path,
+    deserialize_drain_event,
     drain_queue_path,
     queue_drain_refused_message,
     replay_drain_queue,
+    serialize_drain_event,
 )
 from gateway.session import SessionEntry
 from tests.gateway.restart_test_helpers import (
@@ -233,6 +235,43 @@ async def test_photo_burst_during_drain_merges_and_survives_the_restart():
     assert "look at this" in replayed.text and "and this too" in replayed.text
 
 
+@pytest.mark.asyncio
+async def test_captionless_photo_roundtrips_and_replays():
+    """A photo with no caption is media with ``text=""`` — the record must
+    carry the empty string, because ``MessageEvent`` takes ``text`` as a
+    required positional (a record without the key could never be rebuilt)."""
+    source = make_restart_source(chat_id="silent-photo-chat")
+    runner, _adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    event = _event(
+        "",
+        source=source,
+        message_type=MessageType.PHOTO,
+        media=["/tmp/hermes/media/silent.jpg"],
+        message_id="m-silent",
+    )
+
+    record = serialize_drain_event(session_key, event)
+    assert record["event"]["text"] == ""  # the key itself, not a dropped field
+
+    key, rebuilt = deserialize_drain_event(record)
+    assert key == session_key
+    assert rebuilt.text == ""
+    assert rebuilt.message_type == MessageType.PHOTO
+    assert rebuilt.media_urls == ["/tmp/hermes/media/silent.jpg"]
+
+    # End to end: the draining process queues it, the fresh one replays it.
+    fresh, fresh_adapter = make_restart_runner()
+    fresh_adapter.handle_message = AsyncMock()
+    _queue_in_draining_process(event, session_key)
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+    replayed = fresh_adapter.handle_message.await_args.args[0]
+    assert replayed.message_type == MessageType.PHOTO
+    assert replayed.text == ""
+    assert replayed.media_urls == ["/tmp/hermes/media/silent.jpg"]
+
+
 # ── startup replay ───────────────────────────────────────────────────────────
 
 
@@ -330,6 +369,47 @@ async def test_corrupt_snapshot_is_logged_and_startup_proceeds(caplog):
     adapter.handle_message.assert_not_called()
     # The claim is cleaned up: the next boot must not treat the corpse as a
     # crashed replay and skip a fresh snapshot.
+    assert not claimed_drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_one_corrupt_record_does_not_discard_the_good_ones(caplog):
+    """A single torn row costs only itself: the good records in the same
+    snapshot still replay (the whole-file drop used to discard them all)."""
+    source = make_restart_source(chat_id="mixed-snapshot-chat")
+    runner, adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    good = serialize_drain_event(
+        session_key, _event("the good one", source=source, message_id="m-ok")
+    )
+    # The corrupt row is hand-written on purpose: production never writes
+    # one, so only a test can put a torn record beside a real one.
+    drain_queue_path().parent.mkdir(parents=True, exist_ok=True)
+    drain_queue_path().write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "events": [
+                    {"session_key": "", "source": "not-an-object", "event": None},
+                    good,
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter.handle_message = AsyncMock()
+
+    with caplog.at_level("WARNING", logger="gateway.run_drain_queue"):
+        assert replay_drain_queue(runner) == 1
+    await _settle(runner)
+
+    replayed = adapter.handle_message.await_args.args[0]
+    assert replayed.text == "the good one"
+    assert replayed.message_id == "m-ok"
+    assert any(
+        "record unreadable" in record.message.lower() for record in caplog.records
+    )
+    assert not drain_queue_path().exists()
     assert not claimed_drain_queue_path().exists()
 
 

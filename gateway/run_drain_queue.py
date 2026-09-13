@@ -89,9 +89,11 @@ _SOURCE_FIELDS = (
 
 # MessageEvent fields persisted for replay. Media paths survive the bounce
 # (they live under HERMES_HOME), so the replayed event re-enters the same
-# vision/STT preprocessing a fresh message would.
+# vision/STT preprocessing a fresh message would. ``text`` is deliberately
+# NOT in this tuple: it is a required positional on ``MessageEvent`` and the
+# generic skip-empty filter below would drop an empty caption, so serialize
+# always emits it explicitly (empty string included).
 _EVENT_FIELDS = (
-    "text",
     "message_id",
     "ledger_message_id",
     "user_id",
@@ -137,6 +139,10 @@ def serialize_drain_event(session_key: str, event: MessageEvent) -> Dict[str, An
             source_data[field] = value
 
     event_data: Dict[str, Any] = {
+        # Always present, empty string included: ``text`` is a required
+        # positional on ``MessageEvent``, so a record without the key could
+        # never be rebuilt (a caption-less photo used to die right here).
+        "text": str(getattr(event, "text", "") or ""),
         "message_type": (getattr(event, "message_type", None) or MessageType.TEXT).value,
         "media_urls": list(getattr(event, "media_urls", None) or []),
         "media_types": list(getattr(event, "media_types", None) or []),
@@ -195,6 +201,9 @@ def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
     source = SessionSource(platform=platform, **source_kwargs)
 
     event_kwargs: Dict[str, Any] = {"source": source}
+    # Mirror of serialize: the key is always emitted, but tolerate a record
+    # from an older writer that omitted it for an empty caption.
+    event_kwargs["text"] = str(event_data.get("text") or "")
     message_type_name = event_data.get("message_type") or MessageType.TEXT.value
     try:
         event_kwargs["message_type"] = MessageType(str(message_type_name))
@@ -327,7 +336,10 @@ def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent]]]:
     Claiming renames the live file to the claim marker, so an injection
     crash can never be re-read as a fresh queue. A leftover marker from a
     previous crashed replay is discarded (never re-injected — at-most-once).
-    A corrupt snapshot is logged and dropped: startup must proceed.
+    An unreadable SNAPSHOT is logged and dropped: startup must proceed. A
+    single unreadable RECORD only costs that record — the good ones in the
+    same file still replay, so one torn row cannot discard a whole drain
+    window's messages.
     """
     claimed = claimed_drain_queue_path()
     if claimed.exists():
@@ -356,7 +368,6 @@ def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent]]]:
         raw_events = data.get("events") if isinstance(data, dict) else None
         if not isinstance(raw_events, list):
             raise ValueError("snapshot 'events' is not a list")
-        parsed = [deserialize_drain_event(item) for item in raw_events]
     except Exception as exc:
         logger.warning(
             "Drain queue snapshot corrupt after claim; dropping %s queued "
@@ -366,6 +377,24 @@ def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent]]]:
         )
         clear_claimed_drain_queue()
         return None
+    parsed: List[Tuple[str, MessageEvent]] = []
+    dropped = 0
+    for item in raw_events:
+        try:
+            parsed.append(deserialize_drain_event(item))
+        except Exception as exc:
+            dropped += 1
+            logger.warning(
+                "Drain queue record unreadable; dropping that record and "
+                "replaying the rest: %s",
+                exc,
+            )
+    if dropped:
+        logger.warning(
+            "Dropped %d unreadable drain queue record(s) out of %d",
+            dropped,
+            len(raw_events),
+        )
     return parsed
 
 
