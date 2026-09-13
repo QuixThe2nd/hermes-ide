@@ -10,6 +10,17 @@ first turn after any memory edit, and silence while the memory content is
 unchanged. The prompt build stashes the exact block list on the agent
 (``_last_memory_blocks``) so the card never re-parses prompt text.
 
+Two invariants beyond the single-instance case:
+
+* The hash gate spans agent instances — the api_server creates a fresh AIAgent
+  per turn, so the last announced hash is remembered per session id in process
+  scope (``agent/turn_context.py``) instead of living only on the instance.
+* The stash is only ever written from bytes that become the outgoing prompt:
+  ``build_system_prompt`` stashes the freshly composed blocks, while
+  ``reconstruct_static_prefix`` derives them from the STORED prompt (the model
+  keeps receiving the stored bytes there, so freshly-loaded memory that
+  diverged since persist must never be displayed as injected).
+
 Follows the fake-agent ``build_turn_context`` pattern of
 tests/agent/test_api_content_sidecar.py; no network.
 """
@@ -22,7 +33,11 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.system_prompt import build_system_prompt_parts
+from agent.system_prompt import (
+    build_system_prompt,
+    build_system_prompt_parts,
+    reconstruct_static_prefix,
+)
 from agent.turn_context import build_turn_context
 
 
@@ -129,6 +144,18 @@ def _stub_runtime_main():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_session_memory_card_state():
+    """The session-scoped hash registry is process state; every test starts dry
+    (all fake agents share session id "sess-1", so leakage would cross-contaminate
+    the emission assertions)."""
+    from agent import turn_context as _tc
+
+    _tc._MEMORY_CARD_STATE.clear()
+    yield
+    _tc._MEMORY_CARD_STATE.clear()
+
+
 class TestMemoryCardEmission:
     def test_first_turn_with_memory_blocks_emits_exactly_one_card(self):
         agent = _FakeAgent()
@@ -175,6 +202,78 @@ class TestMemoryCardEmission:
             "injected_chars": len("MEMORY-BLOCK\n\nEDITED-BLOCK"),
             "sources": ["memory"],
         }
+
+    # ── Cross-instance gating (api_server builds a fresh agent per turn) ──
+
+    def test_fresh_agent_same_session_does_not_reemit(self):
+        """A new AIAgent for an existing session must not re-announce unchanged
+        memory: the hash gate is remembered per session id, not per instance."""
+        first = _FakeAgent()
+        first._last_memory_blocks = ["MEMORY-BLOCK"]
+        second = _FakeAgent()  # same session_id ("sess-1"), fresh instance
+        second._last_memory_blocks = ["MEMORY-BLOCK"]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(first)
+            _build(second)
+        assert len(first.tool_progress_events) == 1
+        assert second.tool_progress_events == []
+
+    def test_memory_edit_seen_by_fresh_agent_fires_again(self):
+        first = _FakeAgent()
+        first._last_memory_blocks = ["MEMORY-BLOCK"]
+        second = _FakeAgent()
+        second._last_memory_blocks = ["MEMORY-BLOCK", "EDITED-BLOCK"]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(first)
+            _build(second)
+        assert len(first.tool_progress_events) == 1
+        assert len(second.tool_progress_events) == 1
+        assert second.tool_progress_events[0][0][3]["content"] == (
+            "MEMORY-BLOCK\n\nEDITED-BLOCK"
+        )
+
+    def test_different_sessions_do_not_share_the_gate(self):
+        """Each conversation announces its own first card even for identical
+        memory content (memory scope spans transcripts; the card is per chat)."""
+        agent_a = _FakeAgent()
+        agent_a._last_memory_blocks = ["MEMORY-BLOCK"]
+        agent_b = _FakeAgent()
+        agent_b.session_id = "sess-2"
+        agent_b._last_memory_blocks = ["MEMORY-BLOCK"]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(agent_a)
+            _build(agent_b)
+        assert len(agent_a.tool_progress_events) == 1
+        assert len(agent_b.tool_progress_events) == 1
+
+    def test_sessionless_agents_stay_instance_scoped(self):
+        """No session id (ephemeral runs): nothing to key the registry on, so
+        the pre-registry instance-only behaviour is preserved."""
+        agent_one = _FakeAgent()
+        agent_one.session_id = ""
+        agent_one._last_memory_blocks = ["MEMORY-BLOCK"]
+        agent_two = _FakeAgent()
+        agent_two.session_id = ""
+        agent_two._last_memory_blocks = ["MEMORY-BLOCK"]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(agent_one)
+            _build(agent_two)
+        assert len(agent_one.tool_progress_events) == 1
+        assert len(agent_two.tool_progress_events) == 1
+
+    def test_moa_turn_does_not_prime_the_session_registry(self):
+        """The gated turn must leave the registry untouched, or it would swallow
+        the first normal turn's card for that session."""
+        agent = _FakeAgent()
+        agent._last_memory_blocks = ["MEMORY-BLOCK"]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(agent, moa_active=True)
+        from agent.turn_context import _MEMORY_CARD_STATE
+
+        assert _MEMORY_CARD_STATE == {}
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(agent)
+        assert len(agent.tool_progress_events) == 1
 
     def test_empty_blocks_emit_no_card_and_no_state_churn(self):
         agent = _FakeAgent()
@@ -314,6 +413,17 @@ class _FakeMemoryStore:
         return self._blocks.get(kind)
 
 
+_SEP = "═" * 46
+MEMORY_TITLE = "MEMORY (your personal notes)"
+USER_TITLE = "USER PROFILE (who the user is)"
+
+
+def _builtin_block(title, content, usage="3% — 900/24,576 chars"):
+    """A block shaped exactly like ``MemoryStore._render_block`` output — the
+    canonical form ``_stored_prompt_memory_blocks`` recovers from stored bytes."""
+    return f"{_SEP}\n{title} [{usage}]\n{_SEP}\n{content}"
+
+
 def _make_prompt_agent(**overrides):
     """SimpleNamespace covering what build_system_prompt_parts touches
     (mirrors tests/agent/test_system_prompt.py); no tools, so neither the
@@ -340,6 +450,9 @@ def _make_prompt_agent(**overrides):
 
 
 class TestMemoryBlocksStash:
+    """The stash is written where the built parts become the OUTGOING prompt
+    (``build_system_prompt``) — never by measurement rebuilds."""
+
     def test_prompt_build_stashes_exact_block_list(self):
         agent = _make_prompt_agent(
             _memory_enabled=True,
@@ -349,8 +462,10 @@ class TestMemoryBlocksStash:
             ),
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
+            prompt = build_system_prompt(agent)
         assert agent._last_memory_blocks == ["MEMORY-BLOCK", "PROFILE-BLOCK"]
+        # The stashed blocks are the bytes the outgoing prompt carries.
+        assert "MEMORY-BLOCK" in prompt and "PROFILE-BLOCK" in prompt
 
     def test_prompt_build_stashes_empty_list_without_memory(self):
         agent = _make_prompt_agent(
@@ -359,7 +474,7 @@ class TestMemoryBlocksStash:
             _memory_store=_FakeMemoryStore({}),
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
+            build_system_prompt(agent)
         assert agent._last_memory_blocks == []
 
     def test_disabled_kinds_are_not_stashed(self):
@@ -371,7 +486,7 @@ class TestMemoryBlocksStash:
             ),
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
+            build_system_prompt(agent)
         assert agent._last_memory_blocks == ["PROFILE-BLOCK"]
 
     def test_rebuild_replaces_the_stash(self):
@@ -382,7 +497,171 @@ class TestMemoryBlocksStash:
             _memory_store=store,
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
+            build_system_prompt(agent)
             store._blocks["memory"] = "EDITED-BLOCK"
-            build_system_prompt_parts(agent)
+            build_system_prompt(agent)
         assert agent._last_memory_blocks == ["EDITED-BLOCK"]
+
+    def test_measurement_rebuild_does_not_touch_the_stash(self):
+        """``build_system_prompt_parts`` callers that only MEASURE (context
+        breakdown, prompt sizing) must not overwrite the stash with a fresh
+        render: the outgoing prompt (and therefore the honest card content)
+        is still the one the full build stashed."""
+        store = _FakeMemoryStore({"memory": "MEMORY-BLOCK"})
+        agent = _make_prompt_agent(
+            _memory_enabled=True,
+            _user_profile_enabled=False,
+            _memory_store=store,
+        )
+        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
+            build_system_prompt(agent)
+        assert agent._last_memory_blocks == ["MEMORY-BLOCK"]
+        store._blocks["memory"] = "DRIFTED-ON-DISK"
+        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
+            build_system_prompt_parts(agent)  # measurement path
+        assert agent._last_memory_blocks == ["MEMORY-BLOCK"]
+
+
+class TestStoredPromptStash:
+    """``reconstruct_static_prefix`` keeps sending the STORED prompt, so its
+    stash must be derived from those bytes — never from memory freshly loaded
+    from disk (which may have drifted since the prompt was persisted)."""
+
+    def _persisted_agent(self, store, *, user_profile=False):
+        agent = _make_prompt_agent(
+            _use_prompt_caching=True,
+            _memory_enabled=True,
+            _user_profile_enabled=user_profile,
+            _memory_store=store,
+        )
+        with patch(
+            "hermes_cli.plugins.render_system_prompt_sections", return_value=()
+        ), patch("agent.prompt_builder.build_environment_hints", return_value=""):
+            parts = build_system_prompt_parts(agent)
+        stored = "\n\n".join(
+            p for p in (parts["stable"], parts["context"], parts["volatile"]) if p
+        )
+        agent._cached_system_prompt = stored
+        agent._cached_system_prompt_static = None
+        return agent, parts
+
+    def _restore(self, agent):
+        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
+            reconstruct_static_prefix(agent)
+
+    def test_restore_stashes_the_persisted_bytes_not_current_disk(self):
+        old = _builtin_block(MEMORY_TITLE, "OLD-NOTES")
+        store = _FakeMemoryStore({"memory": old})
+        agent, parts = self._persisted_agent(store)
+        # MEMORY.md changed on disk AFTER the prompt was persisted.
+        store._blocks["memory"] = _builtin_block(MEMORY_TITLE, "NEW-NOTES")
+        self._restore(agent)
+        assert agent._cached_system_prompt_static == parts["stable"]
+        # The model keeps receiving the stored prompt: the card may only show
+        # the OLD bytes — never content that was not injected.
+        assert agent._last_memory_blocks == [old]
+
+    def test_restore_of_unchanged_memory_is_byte_stable(self):
+        block = _builtin_block(MEMORY_TITLE, "SAME-NOTES")
+        store = _FakeMemoryStore({"memory": block})
+        agent, parts = self._persisted_agent(store)
+        self._restore(agent)
+        assert agent._last_memory_blocks == parts["memory_blocks"] == [block]
+
+    def test_stored_prompt_without_memory_band_stashes_empty(self):
+        """Memory was off when the prompt was persisted and enabled on disk
+        since: the restored prompt carries no memory, so nothing may be
+        displayed as injected — even though the fresh rebuild inside the
+        restore does render the new block."""
+        store = _FakeMemoryStore({})
+        agent, _parts = self._persisted_agent(store)
+        store._blocks["memory"] = _builtin_block(MEMORY_TITLE, "GREW-LATER")
+        self._restore(agent)
+        assert agent._last_memory_blocks == []
+
+    def test_band_stops_at_plugin_sections_anchor(self):
+        block = _builtin_block(MEMORY_TITLE, "NOTES")
+        store = _FakeMemoryStore({"memory": block})
+        agent, parts = self._persisted_agent(store)
+        stored = agent._cached_system_prompt
+        ts = stored.rfind("Conversation started:")
+        plugin_container = (
+            "<!-- hermes-plugin-sections:start -->\n"
+            "## Plugin Context: demo\n<!-- hermes-plugin-section-chars:2 -->\n\n"
+            "ok\n<!-- hermes-plugin-sections:end -->\n\n"
+        )
+        agent._cached_system_prompt = stored[:ts] + plugin_container + stored[ts:]
+        self._restore(agent)
+        assert agent._last_memory_blocks == [block]
+
+    def test_external_block_rides_with_the_band_joined(self):
+        """The external provider block has no canonical delimiter, so it stays
+        joined to the last built-in block — the card re-joins with ``\\n\\n``
+        anyway, which is what makes the displayed bytes identical."""
+        mem = _builtin_block(MEMORY_TITLE, "NOTES")
+        user = _builtin_block(USER_TITLE, "FACTS")
+        store = _FakeMemoryStore({"memory": mem, "user": user})
+        agent, _parts = self._persisted_agent(store, user_profile=True)
+        ts = agent._cached_system_prompt.rfind("Conversation started:")
+        agent._cached_system_prompt = (
+            agent._cached_system_prompt[:ts] + "EXTERNAL-PROVIDER-BLOCK\n\n"
+            + agent._cached_system_prompt[ts:]
+        )
+        self._restore(agent)
+        assert "\n\n".join(agent._last_memory_blocks) == (
+            f"{mem}\n\n{user}\n\nEXTERNAL-PROVIDER-BLOCK"
+        )
+
+    def test_non_caching_restore_leaves_the_stash_unset(self):
+        """Without prompt caching the restore path never rebuilds the parts, so
+        a fresh agent carries no stash and the card stays silent (unchanged
+        pre-existing behaviour — only the caching routes reconstructed it)."""
+        agent = _make_prompt_agent(
+            _use_prompt_caching=False,
+            _memory_enabled=True,
+            _user_profile_enabled=False,
+            _memory_store=_FakeMemoryStore({"memory": _builtin_block(MEMORY_TITLE, "X")}),
+        )
+        agent._cached_system_prompt = "STORED"
+        self._restore(agent)
+        assert not hasattr(agent, "_last_memory_blocks")
+
+
+class TestSessionMemoryCardRegistry:
+    """Unit coverage for the process-scoped per-session hash registry."""
+
+    def test_remember_and_lookup_roundtrip(self):
+        from agent.turn_context import (
+            _remember_session_memory_card_sha,
+            _session_memory_card_sha,
+        )
+
+        assert _session_memory_card_sha("sess-1") is None
+        _remember_session_memory_card_sha("sess-1", "abc")
+        assert _session_memory_card_sha("sess-1") == "abc"
+
+    def test_sessionless_keys_are_ignored(self):
+        from agent.turn_context import (
+            _MEMORY_CARD_STATE,
+            _remember_session_memory_card_sha,
+            _session_memory_card_sha,
+        )
+
+        for absent in (None, "", "   ", 123):
+            assert _session_memory_card_sha(absent) is None
+            _remember_session_memory_card_sha(absent, "abc")
+        assert _MEMORY_CARD_STATE == {}
+
+    def test_registry_is_bounded_and_evicts_oldest_first(self):
+        from agent.turn_context import (
+            _MEMORY_CARD_STATE,
+            _remember_session_memory_card_sha,
+            _session_memory_card_sha,
+        )
+
+        with patch("agent.turn_context._MEMORY_CARD_STATE_MAX", 1):
+            _remember_session_memory_card_sha("sess-old", "h1")
+            _remember_session_memory_card_sha("sess-new", "h2")
+        assert sorted(_MEMORY_CARD_STATE) == ["sess-new"]
+        # An evicted session re-announces once — restart semantics.
+        assert _session_memory_card_sha("sess-old") is None

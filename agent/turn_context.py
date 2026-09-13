@@ -30,6 +30,40 @@ from agent.turn_author import parse_turn_author
 
 logger = logging.getLogger(__name__)
 
+# ── Session memory-card state ──
+# The api_server builds a fresh AIAgent for every turn, so a hash held only on
+# the instance can never gate the memory card there: prompt-prefix
+# reconstruction repopulates ``_last_memory_blocks`` on each new instance while
+# ``_memory_card_state`` is always absent, and unchanged memory would be
+# re-announced every turn.  Remember the last announced hash per session id in
+# process scope instead (the gateway process outlives its per-turn agents);
+# agents without a session id keep the instance-only behaviour.  Bounded FIFO —
+# an evicted long-idle session simply re-announces once, like a restart.
+_MEMORY_CARD_STATE: Dict[str, str] = {}
+_MEMORY_CARD_STATE_LOCK = threading.Lock()
+_MEMORY_CARD_STATE_MAX = 1024
+
+
+def _session_memory_card_sha(session_id: Any) -> Optional[str]:
+    """Last hash the memory card announced for *session_id* (None if unseen)."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    with _MEMORY_CARD_STATE_LOCK:
+        return _MEMORY_CARD_STATE.get(session_id.strip())
+
+
+def _remember_session_memory_card_sha(session_id: Any, sha: str) -> None:
+    """Record an announced hash for *session_id* (no-op for session-less agents)."""
+    if not isinstance(session_id, str):
+        return
+    key = session_id.strip()
+    if not key:
+        return
+    with _MEMORY_CARD_STATE_LOCK:
+        _MEMORY_CARD_STATE[key] = sha
+        while len(_MEMORY_CARD_STATE) > _MEMORY_CARD_STATE_MAX:
+            _MEMORY_CARD_STATE.pop(next(iter(_MEMORY_CARD_STATE)))
+
 
 def _str_attr(agent: Any, name: str) -> str:
     """``getattr(agent, name, "") or ""`` — route facts read off partial agents/doubles."""
@@ -1109,9 +1143,12 @@ def build_turn_context(
     # message, so the diff-based card below cannot see them. Emit their own
     # ``context.injected`` card, hash-gated per session: the first turn and the
     # first turn after a memory edit each fire exactly one card, while
-    # steady-state turns with identical memory content stay silent. Same
-    # API-path gate as the card below (MoA and codex_app_server bypass the
-    # api_messages build, so claiming an injection there would be a lie).
+    # steady-state turns with identical memory content stay silent. The gate
+    # spans agent instances — the api_server creates a fresh agent per turn, so
+    # the hash is remembered per session id in process scope (instance state
+    # alone would re-announce unchanged memory every turn there). Same API-path
+    # gate as the card below (MoA and codex_app_server bypass the api_messages
+    # build, so claiming an injection there would be a lie).
     _progress_callback = getattr(agent, "tool_progress_callback", None)
     if (
         not _moa_turn
@@ -1124,8 +1161,15 @@ def build_turn_context(
             _mem_content = "\n\n".join(_mem_blocks)
             if _mem_content:
                 _mem_sha = hashlib.sha256(_mem_content.encode("utf-8")).hexdigest()
-                if getattr(agent, "_memory_card_state", None) != _mem_sha:
+                if (
+                    getattr(agent, "_memory_card_state", None) != _mem_sha
+                    and _session_memory_card_sha(getattr(agent, "session_id", None)) != _mem_sha
+                ):
+                    # Record BEFORE the callback so a broken presenter cannot
+                    # retry the card next turn (it is a view of a fact that
+                    # already happened).
                     agent._memory_card_state = _mem_sha
+                    _remember_session_memory_card_sha(getattr(agent, "session_id", None), _mem_sha)
                     _progress_callback(
                         "context.injected",
                         "context",
