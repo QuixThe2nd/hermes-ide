@@ -36146,8 +36146,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _phase_snapshot = _a
                         _parts = []
                         if _want_iteration_detail:
+                            # sys.maxsize means unbounded — render "iteration N"
+                            # without the sentinel denominator (#102806).
+                            from agent.session_activity import format_iteration_progress
+
                             _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+                                format_iteration_progress(
+                                    _a.get("api_call_count", 0), _a.get("max_iterations", 0)
+                                )
                             )
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
