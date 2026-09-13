@@ -7,8 +7,10 @@ upstream — it is a name, not a credential, so it can never authenticate and
 never cause a refusal.
 
 Claude Code's connectivity probes cannot send custom headers at all, so
-their ``claude-cli/…`` User-Agent is accepted as a name of last resort.
-Together the two name every caller the proxy knows about — and in
+their ``claude-cli/…`` User-Agent (and the bare ``axios/…`` of its bundled
+axios, and Node's own ``node`` fetch UA) is accepted as a name of last
+resort.
+Together the three name every caller the proxy knows about — and in
 key-manager mode a request nothing can name is refused before the upstream
 call, its row recorded under the sentinel caller ``unattributed``.
 """
@@ -328,6 +330,8 @@ def test_routed_traffic_is_labeled_and_the_label_is_stripped(
 # ── 5. The harness User-Agent, and the managed-mode attribution gate ─────────
 
 CLAUDE_CLI_UA = "claude-cli/2.1.226 (external, cli)"
+AXIOS_UA = "axios/1.12.2"
+NODE_UA = "node"
 
 GATE_ERROR = (
     "unattributed request: send a caller token, an 'X-Usage-Caller: <label>'"
@@ -351,10 +355,14 @@ def _managed(tmp_path, *, with_caller):
         (None, None),
         ("", None),
         (CLAUDE_CLI_UA, "claude-code"),
+        (AXIOS_UA, "claude-code"),
+        (NODE_UA, "claude-code"),
+        ("node/22.14.0", "claude-code"),
+        ("nodejs/22.14.0", None),
         ("Mozilla/5.0", None),
     ],
 )
-def test_only_the_cli_probe_user_agent_names_a_caller(user_agent, expected):
+def test_only_the_harness_probe_user_agents_name_a_caller(user_agent, expected):
     assert caller_label_from_user_agent(user_agent) == expected
 
 
@@ -375,6 +383,50 @@ def test_probe_user_agent_names_the_row_and_travels_upstream(
     seen = _upstream_headers(upstream)
     # The UA is a name for the proxy, not a credential to hide from the provider.
     assert seen["user-agent"] == CLAUDE_CLI_UA
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "claude-code"
+
+
+def test_axios_probe_user_agent_passes_the_gate_as_claude_code(
+    start_upstream, start_proxy, tmp_path
+):
+    """The CLI's bundled axios probes with a bare "axios/<version>" UA; the
+    attribution gate admits them as claude-code like the claude-cli probes."""
+    keys_file = _managed(tmp_path, with_caller="alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="axios-probe.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, _ = _post(proxy.server_address[1], headers={"User-Agent": AXIOS_UA})
+
+    assert status == 200
+    assert len(upstream.requests) == 1
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "claude-code"
+
+
+def test_node_fetch_probe_user_agent_passes_the_gate_as_claude_code(
+    start_upstream, start_proxy, tmp_path
+):
+    """The CLI's HEAD probes ride on Node's own fetch, which names itself the
+    bare "node"; the attribution gate admits them as claude-code too."""
+    keys_file = _managed(tmp_path, with_caller="alice")
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(
+        _zai(upstream), db_name="node-probe.sqlite", manage_keys=True, keys_path=keys_file
+    )
+
+    status, _, _ = proxy_request(
+        proxy.server_address[1],
+        "HEAD",
+        "/p/zai/chat/completions",
+        headers={"User-Agent": NODE_UA},
+    )
+
+    assert status == 200
+    assert len(upstream.requests) == 1
+    assert upstream.requests[0]["method"] == "HEAD"
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == "claude-code"
 
