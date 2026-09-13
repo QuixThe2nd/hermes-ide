@@ -28,6 +28,9 @@ Ownership of the underlying semantics stays where it was:
 Replay is at-most-once: the snapshot is claimed by an atomic rename BEFORE
 any event is injected and deleted after, so a crash mid-replay can never
 double-deliver (a leftover claim file is discarded on the next boot).
+Events whose adapter is not live are retained, not dropped: their records
+return to the live snapshot and retry at the platform's reconnect or the
+next boot.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -330,8 +334,12 @@ def queue_drain_busy_message(runner: Any, event: MessageEvent, session_key: str)
 # ── startup replay ───────────────────────────────────────────────────────────
 
 
-def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent]]]:
+def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent, Dict[str, Any]]]]:
     """Claim the snapshot atomically; None when there was nothing to replay.
+
+    Returns ``(session_key, event, raw_record)`` triples — the raw record
+    rides along so a pass that cannot inject an event can write the ORIGINAL
+    bytes back without a re-serialize round trip.
 
     Claiming renames the live file to the claim marker, so an injection
     crash can never be re-read as a fresh queue. A leftover marker from a
@@ -377,11 +385,12 @@ def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent]]]:
         )
         clear_claimed_drain_queue()
         return None
-    parsed: List[Tuple[str, MessageEvent]] = []
+    parsed: List[Tuple[str, MessageEvent, Dict[str, Any]]] = []
     dropped = 0
     for item in raw_events:
         try:
-            parsed.append(deserialize_drain_event(item))
+            session_key, event = deserialize_drain_event(item)
+            parsed.append((session_key, event, item))
         except Exception as exc:
             dropped += 1
             logger.warning(
@@ -427,7 +436,38 @@ def _pop_replay_head(runner: Any, adapter: Any, session_key: str) -> Optional[Me
     return None
 
 
-def replay_drain_queue(runner: Any) -> int:
+def _write_back_retained_records(records: List[Dict[str, Any]]) -> None:
+    """Return never-injected records to the live snapshot (merge, never clobber).
+
+    The write happens BEFORE the claim marker is cleared, so a crash between
+    the two leaves the records in the live snapshot — the next replay pass
+    (platform reconnect or next boot) retries them; nothing is lost and,
+    because only never-injected records are written back, nothing is
+    delivered twice.
+    """
+    path = drain_queue_path()
+    events = _load_snapshot_events(path)
+    events.extend(records)
+    try:
+        atomic_json_write(
+            path,
+            {"version": _SNAPSHOT_VERSION, "events": events},
+            indent=None,
+        )
+    except Exception:
+        # The claim marker still holds the records; the caller clears it as
+        # usual (at-most-once outranks retention). A write failure on the
+        # same directory means the next boot could not have replayed them
+        # either — fail loud, never silently pretend they were kept.
+        logger.error(
+            "Drain queue write-back failed; %d retained message(s) cannot be "
+            "retried automatically",
+            len(records),
+            exc_info=True,
+        )
+
+
+def replay_drain_queue(runner: Any, platform: Optional[Platform] = None) -> int:
     """Replay the drain snapshot into the live queues; returns turns started.
 
     Called from gateway ``start()`` after adapters are ready and before the
@@ -438,37 +478,55 @@ def replay_drain_queue(runner: Any) -> int:
     drain. Every other affected session gets a turn started for its head
     event through the resume scheduler's dispatch path, so the queued text
     is answered without waiting for the user to speak again.
+
+    Events whose adapter is not live (platform down at boot) are NOT
+    dropped: their records are written back to the live snapshot and retried
+    at the next natural point — the platform's reconnect (the reconnect
+    watcher calls this again scoped to ``platform``) or the next boot.
+    ``platform`` scopes a retry pass to one platform; other platforms'
+    records stay queued untouched.
     """
     claimed = claim_drain_queue()
     if not claimed:
         return 0
 
-    grouped: Dict[str, List[MessageEvent]] = {}
-    for session_key, event in claimed:
-        grouped.setdefault(session_key, []).append(event)
+    grouped: Dict[str, List[Tuple[MessageEvent, Dict[str, Any]]]] = {}
+    for session_key, event, record in claimed:
+        grouped.setdefault(session_key, []).append((event, record))
 
     injected: Dict[str, Any] = {}
-    for session_key, events in grouped.items():
-        adapter = runner._adapter_for_source(events[0].source)
+    retained_records: List[Dict[str, Any]] = []
+    for session_key, items in grouped.items():
+        source = items[0][0].source
+        if platform is not None and getattr(source, "platform", None) != platform:
+            # Scoped pass (platform reconnect): other platforms keep waiting.
+            retained_records.extend(record for _event, record in items)
+            continue
+        adapter = runner._adapter_for_source(source)
         if adapter is None:
             logger.warning(
-                "Dropping %d drain-queued message(s) for %s: no live adapter",
-                len(events),
+                "Retaining %d drain-queued message(s) for %s: no live adapter "
+                "yet — retried on reconnect or at next boot",
+                len(items),
                 session_key,
             )
+            retained_records.extend(record for _event, record in items)
             continue
-        for event in events:
+        for event, _record in items:
             runner._queue_or_replace_pending_event(session_key, event)
         injected[session_key] = adapter
 
-    # Injection finished — close the at-most-once window before any turn
-    # starts, so a crash during replay dispatch cannot re-read these events.
+    # Close the at-most-once window: retained records go back to the live
+    # snapshot first, then the claim is cleared — a crash in between leaves
+    # them retryable, never lost, and injected records never return.
+    if retained_records:
+        _write_back_retained_records(retained_records)
     clear_claimed_drain_queue()
     if not injected:
         return 0
     logger.info(
         "Replaying %d drain-queued message(s) across %d session(s)",
-        len(claimed),
+        len(claimed) - len(retained_records),
         len(injected),
     )
 

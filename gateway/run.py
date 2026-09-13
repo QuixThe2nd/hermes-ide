@@ -19626,6 +19626,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # connected yet. Now that it's back, retry the
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
+                        # Drain-queued messages retained for the same reason
+                        # (no live adapter at replay time) retry here too.
+                        try:
+                            replay_drain_queue(self, platform=platform)
+                        except Exception:
+                            logger.debug(
+                                "drain-queue retry after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                         try:
                             self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:

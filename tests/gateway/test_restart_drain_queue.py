@@ -73,15 +73,19 @@ def _snapshot_events() -> list:
     return data["events"]
 
 
-def _queue_in_draining_process(event: MessageEvent, session_key: str) -> str:
+def _queue_in_draining_process(event: MessageEvent, session_key: str, runner=None):
     """Write one event to the drain snapshot the way the draining gateway does.
 
     Uses the real idle-path admission (the cold gate's seam) on a throwaway
     runner, so the file this leaves behind is byte-for-byte what production
     writes. The in-memory FIFO that runner also fills is discarded with it —
-    exactly the process bounce.
+    exactly the process bounce. (A caller with multi-platform adapters may
+    pass its own ``runner`` — the draining process that owns them all.)
     """
-    runner, adapter = make_restart_runner()
+    if runner is None:
+        runner, adapter = make_restart_runner()
+    else:
+        adapter = runner._adapter_for_source(event.source)
     runner._draining = True
     ack = queue_drain_refused_message(runner, event, session_key)
     assert ack is not None and QUEUED_MARKER in ack
@@ -353,6 +357,81 @@ async def test_missing_snapshot_is_a_silent_no_op():
 
     adapter.handle_message.assert_not_called()
     assert not claimed_drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_adapter_retains_records_until_the_platform_returns():
+    """A platform that is down at boot must not cost its users their queued
+    messages: the record survives in the live snapshot and replays once the
+    adapter exists (the reconnect watcher retries scoped to the platform)."""
+    source = make_restart_source(chat_id="offline-chat")
+    runner, _adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("queued while platform down", source=source, message_id="m-off"), session_key
+    )
+
+    offline, _offline_adapter = make_restart_runner()
+    offline.adapters = {}  # the platform never came up this boot
+    assert replay_drain_queue(offline) == 0
+
+    # Retained, not dropped: the record is back in the LIVE snapshot and the
+    # claim is closed (at-most-once window ended).
+    events = _snapshot_events()
+    assert [e["event"]["text"] for e in events] == ["queued while platform down"]
+    assert not claimed_drain_queue_path().exists()
+
+    # The platform returns (next boot or reconnect): the retained record
+    # finally replays, and the snapshot is gone for real.
+    fresh, fresh_adapter = make_restart_runner()
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+    assert (
+        fresh_adapter.handle_message.await_args.args[0].text
+        == "queued while platform down"
+    )
+    assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_scoped_retry_replays_only_that_platform():
+    """``replay_drain_queue(platform=...)`` is the reconnect retry: it takes
+    its platform's records and leaves every other platform's untouched."""
+    from gateway.config import Platform, PlatformConfig
+
+    telegram_src = make_restart_source(chat_id="tg-chat")
+    discord_src = make_restart_source(
+        chat_id="dc-chat", platform=Platform.DISCORD, thread_id="dc-thread"
+    )
+    runner, telegram_adapter = make_restart_runner()
+    runner.config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True, token="***")
+    discord_adapter = type(telegram_adapter)(Platform.DISCORD)
+    discord_adapter.set_message_handler(AsyncMock(return_value=None))
+    runner.adapters[Platform.DISCORD] = discord_adapter
+    tg_key = runner._session_key_for_source(telegram_src)
+    dc_key = runner._session_key_for_source(discord_src)
+    _queue_in_draining_process(_event("telegram one", source=telegram_src), tg_key, runner)
+    _queue_in_draining_process(
+        _event("discord one", source=discord_src, message_id="m-dc"), dc_key, runner
+    )
+
+    telegram_adapter.handle_message = AsyncMock()
+    discord_adapter.handle_message = AsyncMock()
+    # Discord reconnects first: only its record replays; Telegram's waits.
+    assert replay_drain_queue(runner, platform=Platform.DISCORD) == 1
+    await _settle(runner)
+    discord_adapter.handle_message.assert_awaited_once()
+    assert discord_adapter.handle_message.await_args.args[0].text == "discord one"
+    telegram_adapter.handle_message.assert_not_called()
+    assert [e["event"]["text"] for e in _snapshot_events()] == ["telegram one"]
+
+    # Telegram comes back: the retained record finally replays.
+    assert replay_drain_queue(runner, platform=Platform.TELEGRAM) == 1
+    await _settle(runner)
+    assert telegram_adapter.handle_message.await_args.args[0].text == "telegram one"
+    assert not drain_queue_path().exists()
 
 
 @pytest.mark.asyncio
