@@ -14067,21 +14067,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ):
             return False
 
-        # Steer injects mid-run via running_agent.steer() (falling back to
-        # queue semantics so nothing is lost); interrupt is demoted to queue
-        # while subagents run (#30170 — ``AIAgent.interrupt()`` cascades
-        # through ``_active_children`` and aborts in-flight ``delegate_agent``
-        # work; explicit ``/stop`` and ``/new`` still cancel everything) or
-        # while context compression is in flight (#56391). One shared resolver
-        # owns that logic for every busy entry point so the paths cannot drift.
-        _outcome = await self._resolve_busy_steer_or_redirect(
+        # Steer mode: inject mid-run via running_agent.steer() instead of
+        # queueing + interrupting.  If the agent isn't running yet
+        # (sentinel) or lacks steer(), or the payload is empty, fall back
+        # to queue semantics so nothing is lost.
+        # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
+        # to every entry in the parent's ``_active_children`` list and
+        # aborts in-flight ``delegate_agent`` work. Demote ``interrupt``
+        # to ``queue`` when the parent is currently driving subagents so
+        # a conversational follow-up doesn't destroy minutes of subagent
+        # work. Explicit ``/stop`` and ``/new`` slash commands go through
+        # ``_interrupt_and_clear_session`` and are unaffected — the
+        # operator still has a way to force-cancel everything.
+        # #56391 — Compression protection: context compression is
+        # interrupt-protected (#23975), but an interrupt here starts a new
+        # turn against the pre-rotation parent session while the
+        # still-running compression later rotates the id out from under
+        # it, forking orphaned compression siblings.
+        # Demotions, the steer attempt (with voice transcripts folded in,
+        # #58780) and the text-only redirect are shared with the
+        # _handle_message priority fast-path: one resolver, not two
+        # hand-maintained copies.
+        outcome = await self._resolve_busy_steer_or_redirect(
             event, session_key, effective_mode, running_agent
         )
-        effective_mode = _outcome.effective_mode
-        demoted_for_subagents = _outcome.demoted_for_subagents
-        demoted_for_compression = _outcome.demoted_for_compression
-        steered = _outcome.steered
-        redirected = _outcome.redirected
+        effective_mode = outcome.effective_mode
+        demoted_for_subagents = outcome.demoted_for_subagents
+        demoted_for_compression = outcome.demoted_for_compression
+        steered = outcome.steered
+        redirected = outcome.redirected
         if steered and self._steer_delivered_ack_enabled(event):
             # The busy-steer bubble below promises FUTURE delivery;
             # schedule the one-shot follow-up ack for the moment the
@@ -14840,32 +14854,63 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent, context="shutdown finalize"
             )
 
-    def _restart_notified_session_keys(self) -> frozenset:
-        """Session keys that already know a restart is winding the gateway down.
+    @staticmethod
+    def _format_long_running_status_detail(
+        activity: Optional[dict], *, include_iterations: bool
+    ) -> str:
+        """Render the `` — iteration N/M, <action>`` suffix for the long-running
+        heartbeat bubble from an agent activity summary.
 
-        Shutdown/drain notices are only sent once ``stop()`` begins, but
-        ``_await_active_work_before_restart`` waits for in-flight turns
-        without a timeout BEFORE that. Until ``stop()`` runs, the only record
-        of who has actually been told is: the requester's own session, the
-        sessions the cooperative-restart park steer was attempted on, and the
-        subset whose agent accepted it. Heartbeat suppression during a pending
-        restart is scoped to exactly these sessions — everyone else still
-        gets liveness heartbeats for the whole pre-stop wait.
+        ``sys.maxsize`` means the iteration cap is unbounded, so the shared
+        ``format_iteration_progress`` drops the sentinel denominator instead of
+        printing it (#102806) — the same contract the busy acknowledgement
+        already honors. Empty summary or a malformed snapshot renders no
+        detail, never an error.
         """
-        keys: set = set()
+        if not activity:
+            return ""
         try:
-            from gateway.restart_wind_down import requester_session_key
+            parts: list = []
+            if include_iterations:
+                from agent.session_activity import format_iteration_progress
 
-            _requester = requester_session_key(self)
-            if _requester:
-                keys.add(_requester)
+                parts.append(
+                    format_iteration_progress(
+                        activity["api_call_count"], activity["max_iterations"]
+                    )
+                )
+            action = activity.get("current_tool") or activity.get("last_activity_desc")
+            if action:
+                parts.append(str(action))
         except Exception:
-            logger.debug("restart-notified requester resolution failed", exc_info=True)
-        for _attr in ("_cooperative_restart_steered_sessions", "_cooperative_restart_sessions"):
-            for _key in getattr(self, _attr, None) or []:
-                if _key:
-                    keys.add(str(_key))
-        return frozenset(keys)
+            return ""
+        return " — " + ", ".join(parts) if parts else ""
+
+    def _session_has_pending_drain_notice(self, session_key: Optional[str]) -> bool:
+        """True only when this session's chat was actually told a restart drain is pending.
+
+        A restart can arrive from surfaces that notify no chat (SIGUSR1, the
+        updater, the control socket) or from a different chat than the one
+        mid-turn; shutdown notices go out only once the drain reaches
+        ``stop()``, and the drain itself waits without a timeout. Keying the
+        heartbeat suppression off the bare process-wide restart flag would
+        silence those un-notified sessions' liveness signal for the entire
+        drain. The notified set is exactly the lanes that carry a drain
+        notice today: the requester's chat (the restart wind-down embed
+        target), the sessions the cooperative park steer was ATTEMPTED on,
+        and the subset whose agent accepted it.
+        """
+        if not session_key or not getattr(self, "_restart_requested", False):
+            return False
+        if session_key in (
+            getattr(self, "_cooperative_restart_sessions", None) or []
+        ) or session_key in (
+            getattr(self, "_cooperative_restart_steered_sessions", None) or []
+        ):
+            return True
+        from gateway.restart_wind_down import requester_session_key
+
+        return requester_session_key(self) == session_key
 
     def _should_emit_long_running_notification(
         self,
@@ -14882,15 +14927,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         While a restart is pending, only sessions that were actually told about
         it (requester + cooperative park-steer targets — see
-        ``_restart_notified_session_keys``) are silenced; an unrelated
+        ``_session_has_pending_drain_notice``) are silenced; an unrelated
         long-running turn must keep its heartbeat or it goes quiet for the
         whole unbounded pre-stop wait.
         """
-        if getattr(self, "_restart_requested", False):
-            # Restart drain: the user already knows the gateway is winding
-            # down; a "still working" heartbeat reads as noise.
-            if session_key in self._restart_notified_session_keys():
-                return False
+        if self._session_has_pending_drain_notice(session_key):
+            # A restart drain this session's chat was told about (wind-down
+            # embed / park steer): the user already knows the gateway is
+            # winding down, so a "still working" heartbeat reads as noise.
+            # Sessions with no drain notice keep their normal heartbeat.
+            return False
         if agent is None:
             return False
         if executor_task is not None and executor_task.done():
@@ -36142,26 +36188,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _phase_snapshot = _a
-                        _parts = []
-                        if _want_iteration_detail:
-                            # sys.maxsize means unbounded — render "iteration N"
-                            # without the sentinel denominator (#102806).
-                            from agent.session_activity import format_iteration_progress
-
-                            _parts.append(
-                                format_iteration_progress(
-                                    _a.get("api_call_count", 0), _a.get("max_iterations", 0)
-                                )
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
+                        _phase_snapshot = _agent_ref.get_activity_summary()
                     except Exception:
                         pass
+                _status_detail = self._format_long_running_status_detail(
+                    _phase_snapshot, include_iterations=_want_iteration_detail
+                )
                 if _long_running_mode == "phase":
                     # Phase heartbeat (Discord default): one line naming the
                     # current wait (tool / model / packing) and its elapsed
