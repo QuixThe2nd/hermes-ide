@@ -799,6 +799,18 @@ h1 .accent { color: var(--accent-bright); }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .card-meta { display: flex; gap: 14px; flex-wrap: wrap; }
 .win { color: var(--muted); font-size: 0.73rem; }
+
+/* harness/model segmented toggle in the hourly chart card head */
+.chart-mode { display: inline-flex; gap: 2px; padding: 2px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 7px; }
+.chart-mode .mode-btn {
+  appearance: none; border: 0; padding: 3px 10px; border-radius: 5px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-family: var(--mono); font-size: 0.66rem; font-weight: 600;
+  letter-spacing: 0.05em; line-height: 1.5;
+}
+.chart-mode .mode-btn:hover { color: var(--text-2); }
+.chart-mode .mode-btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); outline: none; }
+.chart-mode .mode-btn.active { background: rgba(57, 135, 229, 0.28); color: var(--text); }
 .stat .label { color: var(--muted); font-size: 0.71rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
 .stat .value { font-family: var(--mono); font-size: 1.78rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin-top: 9px; font-variant-numeric: tabular-nums; }
 .stat .hint { color: var(--muted); font-size: 0.74rem; margin-top: 7px; font-variant-numeric: tabular-nums; }
@@ -967,11 +979,15 @@ JS = r"""
   }
 
   /* same djb2 as the server's harness_color_idx, so chip colours agree */
+  function djb2(name) {
+    var h = 5381;
+    for (var i = 0; i < name.length; i++) h = (h * 33 + name.charCodeAt(i)) % 2147483647;
+    return h;
+  }
+
   function harnessClass(caller) {
     if (!caller || caller === UNATTR) return 'h-unattr';
-    var h = 5381;
-    for (var i = 0; i < caller.length; i++) h = (h * 33 + caller.charCodeAt(i)) % 2147483647;
-    return 'h' + (h % N_COLORS);
+    return 'h' + (djb2(caller) % N_COLORS);
   }
 
   /* hex mirror of the .h0…h5/.h-unattr CSS palette — a canvas cannot read
@@ -984,6 +1000,10 @@ JS = r"""
   function harnessHex(caller) {
     return HARNESS_HEX[harnessClass(caller)] || HARNESS_HEX['h-unattr'];
   }
+
+  /* hex mirror of the server's MODEL_COLORS + MODEL_OTHER_COLOR — the chart's
+     per-model mode hashes into these instead of the harness palette */
+  var MODEL_HEXES = ['#bd8714', '#d46c8b', '#5b8def', '#2ea79a', '#9a7be0', '#65a46c', '#66738a'];
 
   function hexToRgba(hex, alpha) {
     var n = parseInt(hex.slice(1), 16);
@@ -1250,6 +1270,7 @@ JS = r"""
 
   var chartGeom = null;
   var hoverIdx = -1;
+  var chartMode = 'harness';   /* breakdown dimension: 'harness' | 'model' */
 
   function barTopPath(ctx, x, y, w, h) {
     var r = Math.min(3, w / 2, h);
@@ -1265,30 +1286,42 @@ JS = r"""
     ctx.fill();
   }
 
-  /* one stacked-segment entry per harness present in the bucket, tokens desc */
+  /* one stacked-segment entry per member of the active breakdown dimension
+     present in the bucket, name ascending — the fixed bottom-to-top stack
+     order, independent of segment size */
   function bucketSegments(b) {
-    var byCaller = {};
+    var byKey = {};
     (b && b.series ? b.series : []).forEach(function (s) {
       var t = Number(s.tokens) || 0;
       if (t <= 0) return;
-      var c = s.caller || UNATTR;
-      byCaller[c] = (byCaller[c] || 0) + t;
+      var k = chartMode === 'model' ? (s.model || 'unknown') : (s.caller || UNATTR);
+      byKey[k] = (byKey[k] || 0) + t;
     });
-    return Object.keys(byCaller)
-      .map(function (c) { return { caller: c, tokens: byCaller[c] }; })
-      .sort(function (a, c) { return c.tokens - a.tokens || (a.caller < c.caller ? -1 : a.caller > c.caller ? 1 : 0); });
+    return Object.keys(byKey)
+      .map(function (k) { return { name: k, tokens: byKey[k] }; })
+      .sort(function (a, k) { return a.name < k.name ? -1 : a.name > k.name ? 1 : 0; });
   }
 
-  /* per-model token totals for one bucket, tokens desc (tooltip + sr table) */
-  function modelTotals(b) {
-    var byModel = {};
-    (b && b.series ? b.series : []).forEach(function (s) {
-      var m = s.model || 'unknown';
-      byModel[m] = (byModel[m] || 0) + (Number(s.tokens) || 0);
+  /* segment colours for one bar: the harness palette in harness mode; in
+     model mode a stable djb2 hash of the model name into MODEL_HEXES, where
+     a slot already claimed by an earlier (alphabetical) model in this bar is
+     advanced +1 so stacked neighbours stay distinguishable */
+  function segmentHexes(segs) {
+    var out = {};
+    if (chartMode !== 'model') {
+      segs.forEach(function (s) { out[s.name] = harnessHex(s.name); });
+      return out;
+    }
+    var taken = [];
+    segs.forEach(function (s) {
+      var idx = djb2(s.name) % MODEL_HEXES.length;
+      for (var bump = 0; taken[idx] && bump < MODEL_HEXES.length; bump++) {
+        idx = (idx + 1) % MODEL_HEXES.length;
+      }
+      taken[idx] = true;
+      out[s.name] = MODEL_HEXES[idx];
     });
-    return Object.keys(byModel)
-      .map(function (m) { return { model: m, tokens: byModel[m] }; })
-      .sort(function (a, m) { return m.tokens - a.tokens || (a.model < m.model ? -1 : a.model > m.model ? 1 : 0); });
+    return out;
   }
 
   /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness — textContent
@@ -1383,12 +1416,14 @@ JS = r"""
         var x = padL + i * band + (band - barW) / 2;
         var segs = bucketSegments(b);
         if (segs.length) {
-          /* stacked per-harness segments, largest at the base; only the
-             topmost keeps the rounded top, lower ones butt squarely */
+          /* stacked segments of the active dimension, alphabetical from the
+             base up; only the topmost keeps the rounded top, lower ones butt
+             squarely */
+          var hexes = segmentHexes(segs);
           var y = baseY;
           segs.forEach(function (s, si) {
             var sh = (s.tokens / v) * h;
-            var color = harnessHex(s.caller);
+            var color = hexes[s.name];
             ctx.fillStyle = b.partial ? hexToRgba(color, 0.45) : color;
             if (si === segs.length - 1) {
               barTopPath(ctx, x, y - sh, barW, sh);
@@ -1474,21 +1509,18 @@ JS = r"""
     tip.appendChild(el('div', 'tv', fmtCompact(chartGeom.tokens[i]) + ' tokens'));
     tip.appendChild(el('div', 'tl',
       bucketLabel(b) + ' · ' + fmtInt(b.requests) + ' req' + (b.partial ? ' · partial' : '')));
-    /* one line per harness present in that hour, dot coloured like its segment */
-    bucketSegments(b).forEach(function (seg) {
+    /* one line per member of the active dimension present in that hour,
+       dot coloured like its segment */
+    var segs = bucketSegments(b);
+    var hexes = segmentHexes(segs);
+    segs.forEach(function (seg) {
       var line = el('div', 'tl');
       var dot = el('span', 'tl-dot');
-      dot.style.background = harnessHex(seg.caller);
+      dot.style.background = hexes[seg.name];
       line.appendChild(dot);
-      line.appendChild(document.createTextNode(seg.caller + ' · ' + fmtCompact(seg.tokens)));
+      line.appendChild(document.createTextNode(seg.name + ' · ' + fmtCompact(seg.tokens)));
       tip.appendChild(line);
     });
-    var models = modelTotals(b);
-    if (models.length) {
-      tip.appendChild(el('div', 'tl', models.map(function (m) {
-        return m.model + ' ' + fmtCompact(m.tokens);
-      }).join(' · ')));
-    }
     tip.hidden = false;
     var centre = chartGeom.padL + i * chartGeom.band + chartGeom.band / 2;
     var h = chartGeom.tokens[i] > 0 ? (chartGeom.tokens[i] / chartGeom.peak) * chartGeom.plotH : 0;
@@ -1504,12 +1536,37 @@ JS = r"""
     if (chartGeom) renderChart(buckets());
   }
 
+  /* switch the hourly chart's breakdown dimension; the poll re-render reads
+     chartMode on every tick, so the choice survives without a reload */
+  function setChartMode(mode) {
+    if (mode !== 'harness' && mode !== 'model') return;
+    chartMode = mode;
+    [['mode-harness', 'harness'], ['mode-model', 'model']].forEach(function (p) {
+      var btn = $(p[0]);
+      if (!btn) return;
+      btn.classList.toggle('active', mode === p[1]);
+      btn.setAttribute('aria-pressed', mode === p[1] ? 'true' : 'false');
+    });
+    var wrap = $('chart-wrap');
+    if (wrap) wrap.setAttribute('aria-label',
+      'Column chart of tokens per hour over the last 24 hours, ' +
+      (mode === 'model' ? 'broken down by model' : 'broken down by harness') +
+      '. Use the left and right arrow keys to read values.');
+    hoverIdx = -1;
+    var tip = $('chart-tip');
+    if (tip) tip.hidden = true;
+    renderChart(buckets());
+  }
+
   var lastSeries = null;
   function buckets() { return lastSeries || bootBuckets; }
 
   function wireChart() {
     var canvas = $('chart'), wrap = $('chart-wrap');
     if (!canvas || !wrap) return;
+    var modeHarness = $('mode-harness'), modeModel = $('mode-model');
+    if (modeHarness) modeHarness.addEventListener('click', function () { setChartMode('harness'); });
+    if (modeModel) modeModel.addEventListener('click', function () { setChartMode('model'); });
     canvas.addEventListener('pointermove', function (ev) {
       if (!chartGeom || !chartGeom.n) return;
       var rect = canvas.getBoundingClientRect();
@@ -1793,6 +1850,10 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <section class="card chart-card" aria-label="Tokens per hour">
   <div class="card-head">
     <h2>Tokens per hour</h2>
+    <div class="chart-mode" role="group" aria-label="Chart breakdown dimension">
+      <button type="button" class="mode-btn active" id="mode-harness" aria-pressed="true">harness</button>
+      <button type="button" class="mode-btn" id="mode-model" aria-pressed="false">model</button>
+    </div>
     <div class="card-meta">
       <span class="win" id="chart-peak">"""
         + esc(peak_note)
@@ -1800,7 +1861,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
       <span class="win">last 24 h &middot; 1 h buckets &middot; axis in Sydney time</span>
     </div>
   </div>
-  <div class="chart-wrap" id="chart-wrap" tabindex="0" role="group" aria-label="Column chart of tokens per hour over the last 24 hours. Use the left and right arrow keys to read values.">
+  <div class="chart-wrap" id="chart-wrap" tabindex="0" role="group" aria-label="Column chart of tokens per hour over the last 24 hours, broken down by harness. Use the left and right arrow keys to read values.">
     <canvas id="chart" width="800" height="260"></canvas>
     <div class="tooltip" id="chart-tip" hidden></div>
   </div>
