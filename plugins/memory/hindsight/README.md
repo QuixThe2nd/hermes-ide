@@ -83,6 +83,8 @@ Failures log a warning and never surface in chat.
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
+| `recall_min_scores` | — | Per-stage score floors for recall (inclusive, AND-ed): results scoring below any floor are dropped server-side. Keys: `semantic`, `keyword`, `reranker`, `final`. Object or JSON string, e.g. `{"final": 0.5}`. Unset/empty = no floors; invalid JSON is logged and ignored (recall proceeds unfloored). Applies to both auto-recall and the `hindsight_recall` tool. |
+| `recall_max_results` | `0` | Keep only the top N ranked recall results after score filtering (applied client-side; the recall API has no server-side cap). `0` = no cap. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
 | `recall_indicator` | `true` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Turn off for customer-facing agents. |
@@ -154,4 +156,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.9.2`. The plugin auto-upgrades on session start if an older version is detected.

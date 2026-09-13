@@ -43,8 +43,8 @@ from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
     _PROVIDER_DEFAULT_MODELS, _VALID_BUDGETS, _daemon_llm_provider,
-    _normalize_observation_scopes, _normalize_retain_tags, _parse_int_setting,
-    _resolve_bank_id_template,
+    _normalize_min_scores, _normalize_observation_scopes, _normalize_retain_tags,
+    _parse_int_setting, _resolve_bank_id_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -927,6 +927,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
+            {"key": "recall_min_scores", "description": "Per-stage score floors for recall (inclusive, AND-ed) — drop results scoring below any floor. Keys: semantic, keyword, reranker, final. Object or JSON string, e.g. {\"final\": 0.5} or {\"semantic\": 0.2, \"final\": 0.5}. Unset/empty = no floors.", "default": ""},
+            {"key": "recall_max_results", "description": "Keep only the top N ranked recall results after score filtering (0 = no cap)", "default": 0},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
             {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory (turn off for customer-facing agents)", "default": True},
@@ -2337,10 +2339,11 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._chat_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, "
+                     "recall_min_scores=%s, recall_max_results=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
-                     self._tags, self._recall_tags)
+                     self._recall_min_scores, self._recall_max_results, self._tags, self._recall_tags)
 
         if self._mode == "local_embedded":
             self._start_embedded_daemon()
@@ -2420,6 +2423,12 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
         self._recall_indicator = bool(cfg.get("recall_indicator", True))
+        # Strictness knobs (hindsight-client >= 0.9.2): server-side inclusive
+        # AND-ed per-stage score floors, and a client-side top-N cap applied
+        # after floor filtering. Unset/empty = exact pre-knob behavior.
+        self._recall_min_scores = _normalize_min_scores(cfg.get("recall_min_scores"))
+        max_results = cfg.get("recall_max_results")
+        self._recall_max_results = max(0, int(max_results)) if max_results else 0
 
     def _start_embedded_daemon(self) -> None:
         """Start the embedded daemon on a background thread (Rich output -> log file)."""
@@ -2490,6 +2499,8 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
+        if self._recall_min_scores is not None:
+            kwargs["min_scores"] = self._recall_min_scores
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
@@ -2511,6 +2522,11 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Recall: calling recall (bank=%s, query_len=%d, budget=%s)",
                          self._bank_id, len(query), self._budget)
             results = self._recall(query)
+            # The recall API has no server-side max-results param; the server
+            # ranks by final score descending, so a client-side slice after
+            # floor filtering keeps the highest-ranked N.
+            if self._recall_max_results:
+                results = results[:self._recall_max_results]
             logger.debug("Recall: returned %d results", len(results))
             return "\n".join(f"- {r.text}" for r in results if r.text), len(results)
         except Exception as e:
