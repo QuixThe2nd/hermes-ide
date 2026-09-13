@@ -14079,89 +14079,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # work. Explicit ``/stop`` and ``/new`` slash commands go through
         # ``_interrupt_and_clear_session`` and are unaffected — the
         # operator still has a way to force-cancel everything.
-        demoted_for_subagents = (
-            effective_mode == "interrupt"
-            and self._agent_has_active_subagents(running_agent)
+        # #56391 — Compression protection: context compression is
+        # interrupt-protected (#23975), but an interrupt here starts a new
+        # turn against the pre-rotation parent session while the
+        # still-running compression later rotates the id out from under
+        # it, forking orphaned compression siblings.
+        # Demotions, the steer attempt (with voice transcripts folded in,
+        # #58780) and the text-only redirect are shared with the
+        # _handle_message priority fast-path: one resolver, not two
+        # hand-maintained copies.
+        outcome = await self._resolve_busy_steer_or_redirect(
+            event, session_key, effective_mode, running_agent
         )
-        if demoted_for_subagents:
-            logger.info(
-                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
-                "because the running agent has active subagents (#30170)",
-                session_key,
-            )
-            effective_mode = "queue"
-        demoted_for_compression = (
-            effective_mode == "interrupt"
-            and await self._session_has_compression_in_flight(session_key)
-        )
-        if demoted_for_compression:
-            logger.info(
-                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
-                "because context compression is in flight (#56391)",
-                session_key,
-            )
-            effective_mode = "queue"
-        steered = False
-        redirected = False
-        if effective_mode == "steer":
-            steer_text = await self._prepare_busy_steer_text(event)
-            # A follow-up qualifies for steering when it is plain text, OR
-            # when every attachment is STT-eligible voice media whose
-            # transcript was just folded into steer_text — otherwise a voice
-            # note in steer mode silently degrades to queue mode (#58780).
-            _steer_media_urls = getattr(event, "media_urls", None) or []
-            _steer_all_voice = bool(_steer_media_urls) and (
-                len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
-            )
-            can_steer = (
-                steer_text
-                and (
-                    (
-                        event.message_type == MessageType.TEXT
-                        and not event.media_urls
-                        and not event.media_types
-                    )
-                    or _steer_all_voice
-                )
-                and running_agent is not None
-                and running_agent is not _AGENT_PENDING_SENTINEL
-                and hasattr(running_agent, "steer")
-            )
-            if can_steer:
-                try:
-                    steered = bool(
-                        running_agent.steer(self._steer_text_with_origin(steer_text, event))
-                    )
-                except Exception as exc:
-                    logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
-                    steered = False
-                if steered and self._steer_delivered_ack_enabled(event):
-                    # The busy-steer bubble below promises FUTURE delivery;
-                    # schedule the one-shot follow-up ack for the moment the
-                    # text actually lands in the model's context.
-                    self._register_steer_delivered_ack(event, session_key, running_agent)
-            if not steered:
-                # Fall back to queue (merge into pending messages, no interrupt)
-                effective_mode = "queue"
-        elif (
-            effective_mode == "interrupt"
-            and event.message_type == MessageType.TEXT
-            and not event.media_urls
-            and not event.media_types
-            and running_agent is not None
-            and running_agent is not _AGENT_PENDING_SENTINEL
-            and getattr(running_agent, "_supports_active_turn_redirect", False) is True
-            and hasattr(running_agent, "redirect")
-        ):
-            try:
-                redirected = bool(
-                    running_agent.redirect(
-                        self._steer_text_with_origin((event.text or "").strip(), event)
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
-                redirected = False
+        effective_mode = outcome.effective_mode
+        demoted_for_subagents = outcome.demoted_for_subagents
+        demoted_for_compression = outcome.demoted_for_compression
+        steered = outcome.steered
+        redirected = outcome.redirected
+        if steered and self._steer_delivered_ack_enabled(event):
+            # The busy-steer bubble below promises FUTURE delivery;
+            # schedule the one-shot follow-up ack for the moment the
+            # text actually lands in the model's context.
+            self._register_steer_delivered_ack(event, session_key, running_agent)
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -14915,6 +14854,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent, context="shutdown finalize"
             )
 
+    @staticmethod
+    def _format_long_running_status_detail(
+        activity: Optional[dict], *, include_iterations: bool
+    ) -> str:
+        """Render the `` — iteration N/M, <action>`` suffix for the long-running
+        heartbeat bubble from an agent activity summary.
+
+        ``sys.maxsize`` means the iteration cap is unbounded, so the shared
+        ``format_iteration_progress`` drops the sentinel denominator instead of
+        printing it (#102806) — the same contract the busy acknowledgement
+        already honors. Empty summary or a malformed snapshot renders no
+        detail, never an error.
+        """
+        if not activity:
+            return ""
+        try:
+            parts: list = []
+            if include_iterations:
+                from agent.session_activity import format_iteration_progress
+
+                parts.append(
+                    format_iteration_progress(
+                        activity["api_call_count"], activity["max_iterations"]
+                    )
+                )
+            action = activity.get("current_tool") or activity.get("last_activity_desc")
+            if action:
+                parts.append(str(action))
+        except Exception:
+            return ""
+        return " — " + ", ".join(parts) if parts else ""
+
+    def _session_has_pending_drain_notice(self, session_key: Optional[str]) -> bool:
+        """True only when this session's chat was actually told a restart drain is pending.
+
+        A restart can arrive from surfaces that notify no chat (SIGUSR1, the
+        updater, the control socket) or from a different chat than the one
+        mid-turn; shutdown notices go out only once the drain reaches
+        ``stop()``, and the drain itself waits without a timeout. Keying the
+        heartbeat suppression off the bare process-wide restart flag would
+        silence those un-notified sessions' liveness signal for the entire
+        drain. The notified set is exactly the two lanes that carry a drain
+        notice today: the requester's chat (the restart wind-down embed
+        target) and the sessions whose agent accepted the cooperative park
+        steer.
+        """
+        if not session_key or not getattr(self, "_restart_requested", False):
+            return False
+        if session_key in (
+            getattr(self, "_cooperative_restart_steered_sessions", None) or []
+        ):
+            return True
+        from gateway.restart_wind_down import requester_session_key
+
+        return requester_session_key(self) == session_key
+
     def _should_emit_long_running_notification(
         self,
         session_key: Optional[str],
@@ -14928,9 +14923,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         or the session key has been rebound to a different live agent (e.g. the
         user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
         """
-        if getattr(self, "_restart_requested", False):
-            # Restart drain: the user already knows the gateway is winding
-            # down; a "still working" heartbeat reads as noise.
+        if self._session_has_pending_drain_notice(session_key):
+            # A restart drain this session's chat was told about (wind-down
+            # embed / park steer): the user already knows the gateway is
+            # winding down, so a "still working" heartbeat reads as noise.
+            # Sessions with no drain notice keep their normal heartbeat.
             return False
         if agent is None:
             return False
@@ -23148,87 +23145,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            if effective_busy_input_mode == "steer":
-                # Steer mode: inject text into the running agent mid-run via
-                # agent.steer().  Falls back to queue semantics if the payload
-                # is empty, the agent lacks steer(), or steer() rejects.
-                steer_text = (event.text or "").strip()
-                steered = False
-                if (
-                    event.message_type == MessageType.TEXT
-                    and not event.media_urls
-                    and not event.media_types
-                    and steer_text
-                    and hasattr(running_agent, "steer")
-                ):
-                    try:
-                        steered = bool(
-                            running_agent.steer(self._steer_text_with_origin(steer_text, event))
-                        )
-                    except Exception as exc:
-                        logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-                        steered = False
-                if steered:
-                    logger.debug("PRIORITY steer for session %s", _quick_key)
-                    return None
-                logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+            # Steer/redirect resolution is shared with the adapter busy
+            # handler (_handle_active_session_busy_message): one resolver
+            # applies the interrupt->queue demotions (#30170 subagents,
+            # #56391 in-flight compression), attempts the mid-run steer
+            # (steer mode, voice transcripts folded in per #58780) or the
+            # text-only redirect (interrupt mode), and falls back to queue
+            # semantics when neither lands. /stop reaches its dedicated
+            # handler above, so the operator keeps a clean escape hatch.
+            outcome = await self._resolve_busy_steer_or_redirect(
+                event, _quick_key, effective_busy_input_mode, running_agent
+            )
+            if outcome.steered:
+                logger.debug("PRIORITY steer for session %s", _quick_key)
+                return None
+            if outcome.redirected:
+                logger.debug("PRIORITY redirect for session %s", _quick_key)
+                return None
+            if outcome.effective_mode == "queue":
+                logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            # #30170 — Subagent protection (PRIORITY path). Same rationale
-            # as ``_handle_active_session_busy_message``: an interrupt
-            # cascades through ``_active_children`` and aborts in-flight
-            # delegate_agent work. Demote to queue semantics when the
-            # parent is currently driving subagents so a conversational
-            # follow-up doesn't destroy minutes of subagent progress.
-            # /stop reaches its dedicated handler above, so the operator
-            # still has a clean escape hatch.
-            if self._agent_has_active_subagents(running_agent):
-                logger.info(
-                    "PRIORITY interrupt demoted to queue for session %s "
-                    "because the running agent has active subagents (#30170)",
-                    _quick_key,
-                )
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            # #56391 — Compression protection (PRIORITY path). Same
-            # rationale as ``_handle_active_session_busy_message``: context
-            # compression is interrupt-protected (#23975), but an interrupt
-            # here starts a new turn against the pre-rotation parent
-            # session while the still-running compression later rotates
-            # the id out from under it, forking orphaned compression
-            # siblings. Demote to queue semantics so the follow-up waits
-            # for the in-flight compression + rotation to land.
-            if await self._session_has_compression_in_flight(_quick_key):
-                logger.info(
-                    "PRIORITY interrupt demoted to queue for session %s "
-                    "because context compression is in flight (#56391)",
-                    _quick_key,
-                )
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            # Text-only corrections redirect the live turn (preserving
-            # displayed context) when the runtime supports it; media/voice and
-            # older runtimes fall back to the proven interrupt path below.
-            if (
-                event.message_type == MessageType.TEXT
-                and not event.media_urls
-                and not event.media_types
-                and getattr(running_agent, "_supports_active_turn_redirect", False)
-                is True
-                and hasattr(running_agent, "redirect")
-            ):
-                try:
-                    if running_agent.redirect(
-                        self._steer_text_with_origin((event.text or "").strip(), event)
-                    ):
-                        logger.debug("PRIORITY redirect for session %s", _quick_key)
-                        return None
-                except Exception as exc:
-                    logger.warning(
-                        "PRIORITY redirect failed for session %s: %s",
-                        _quick_key,
-                        exc,
-                    )
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
@@ -36240,20 +36177,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _phase_snapshot = _a
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
+                        _phase_snapshot = _agent_ref.get_activity_summary()
                     except Exception:
                         pass
+                _status_detail = self._format_long_running_status_detail(
+                    _phase_snapshot, include_iterations=_want_iteration_detail
+                )
                 if _long_running_mode == "phase":
                     # Phase heartbeat (Discord default): one line naming the
                     # current wait (tool / model / packing) and its elapsed
