@@ -1,8 +1,17 @@
 # Fork-only workflow: keeps QuixThe2nd/hermes-ide main in sync with
 # NousResearch/hermes-agent main. Do not upstream this file.
 #
-# Merges upstream/main hourly and pushes. On merge conflict the job fails
-# without pushing — the fork falls behind until someone resolves by hand.
+# Imports upstream ONE original commit at a time: every missing commit is
+# merged with --no-ff (upstream identity preserved verbatim as the second
+# parent) and pushed individually, in dependency order. The first conflict
+# or rejected push stops the run — commits already pushed stay pushed, and
+# the next run resumes purely from Git ancestry (no cursor). Conflicts are
+# resolved by hand as single-commit merges; the next run skips them.
+#
+# The merge loop lives in .github/scripts/fork-sync-sequential.sh so the
+# acceptance harness can execute the exact product logic with local bare
+# remotes. Inputs reach it as validated environment values only — never
+# interpolated into a shell string.
 #
 # Pushes use FORK_SYNC_TOKEN (a user PAT with `workflow` scope) instead of
 # the default GITHUB_TOKEN, because upstream changes to workflow files are
@@ -13,28 +22,72 @@ on:
   schedule:
     - cron: "23 * * * *"
   workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Fork branch to update (scheduled runs always use main)"
+        required: false
+        default: "main"
+        type: string
+      max_commits:
+        description: "Stop after this many merge+push units (0 = unlimited, bounded by job timeout)"
+        required: false
+        default: "0"
+        type: string
+      dry_run:
+        description: "Merge locally but do not push or notify (conflict detection without side effects)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
+# Exactly one sync at a time, never cancelled mid-import: a cancelled run
+# between merge and push would strand local-only state. Runs that queue up
+# behind an in-flight one simply resume from Git ancestry afterwards.
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Bounded so an hourly run can never overlap into the next hour's queue
+    # indefinitely; each merge+push unit inside is atomic.
+    timeout-minutes: 50
+    env:
+      # Scheduled runs always target main; dispatch may pick a test branch.
+      SYNC_TARGET_BRANCH: ${{ github.event_name == 'schedule' && 'main' || inputs.target_branch || 'main' }}
+      SYNC_MAX_COMMITS: ${{ inputs.max_commits || '0' }}
+      SYNC_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+      SYNC_UPSTREAM_URL: https://github.com/NousResearch/hermes-agent.git
+      SYNC_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      # Explicit latest target-branch ref (github.sha would be stale by the
+      # time the job starts); the script re-fetches and aligns anyway.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'schedule' && 'main' || inputs.target_branch || 'main' }}
           token: ${{ secrets.FORK_SYNC_TOKEN }}
 
-      - name: Merge upstream main
+      # Self-contained failure handling (detail JSON + Discord alert) lives in
+      # the script; git identity is the only prerequisite configured here.
+      - name: Import upstream commits one at a time
+        id: sync
+        env:
+          SYNC_ALERT_WEBHOOK: ${{ secrets.DISCORD_SYNC_ALERT }}
+          SYNC_DETAIL_FILE: ${{ runner.temp }}/fork-sync-failure.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/NousResearch/hermes-agent.git
-          git fetch upstream main
-          if git merge-base --is-ancestor upstream/main HEAD; then
-            echo "Already up to date."
-            exit 0
-          fi
-          git merge upstream/main --no-edit
-          git push origin main
+          bash .github/scripts/fork-sync-sequential.sh
+
+      # Only fires when the sync step itself never ran (checkout failure).
+      # Sync-step failures already alerted inside the script; this step must
+      # not mask anything, so it always exits 0.
+      - name: Alert when the sync step never ran
+        if: failure() && steps.sync.outcome == 'skipped'
+        env:
+          SYNC_ALERT_WEBHOOK: ${{ secrets.DISCORD_SYNC_ALERT }}
+        run: bash .github/scripts/fork-sync-sequential.sh alert "fork-sync failed before the sync step ran (checkout/setup)"
