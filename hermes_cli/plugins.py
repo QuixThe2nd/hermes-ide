@@ -1303,6 +1303,37 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
+def _resolve_hook_timeout_suppression_seconds() -> float:
+    """Effective post-timeout suppression window from ``plugins.hook_timeout_suppression_seconds``
+    (default 60s; ``<= 0`` uses the default; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS`` — the
+    same max as ``hook_callback_timeout``). The window is the pile-up guard; once it expires the
+    next invocation supersedes any abandoned worker (never joined)."""
+    default = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+    try:
+        from hermes_cli.config import load_config_readonly
+        plugins_cfg = (load_config_readonly() or {}).get("plugins")
+        if not isinstance(plugins_cfg, dict) or plugins_cfg.get("hook_timeout_suppression_seconds") is None:
+            return default
+        seconds = float(plugins_cfg["hook_timeout_suppression_seconds"])
+    except (TypeError, ValueError):
+        logger.warning(
+            "plugins.hook_timeout_suppression_seconds is not a number; using default %gs", default)
+        return default
+    except Exception:
+        return default
+    if seconds <= 0:
+        logger.warning(
+            "plugins.hook_timeout_suppression_seconds=%g is not positive; using default %gs",
+            seconds, default)
+        return default
+    if seconds > _MAX_HOOK_CALLBACK_TIMEOUT_SECS:
+        logger.warning(
+            "plugins.hook_timeout_suppression_seconds=%g exceeds max %gs; clamping", seconds,
+            _MAX_HOOK_CALLBACK_TIMEOUT_SECS)
+        return _MAX_HOOK_CALLBACK_TIMEOUT_SECS
+    return seconds
+
+
 class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
@@ -1346,8 +1377,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
+        # Latch cells (_HookGenerationState) for bounded-hook callbacks keyed by (hook_name,
+        # id(cb)): a still-executing generation blocks duplicate fires, and only a timed-out one
+        # is superseded once the suppression window expires — a stuck policy hook can neither run
+        # twice concurrently nor spawn a new abandoned thread on every fire.
         self._hook_running_callbacks: Dict[tuple, object] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
@@ -1871,9 +1904,12 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
 
     Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hook ``pre_tool_call`` are
-    bounded by ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker is abandoned (not
-    joined) so we do not reintroduce the #6622 hang. Timed-out or still-running ``pre_tool_call`` callbacks
-    fail closed with a block directive; other bounded hooks fail open (skip).
+    bounded by ``plugins.hook_callback_timeout`` (default 30s). While a callback generation is still
+    executing, concurrent fires skip (no duplicate workers); on timeout the worker is abandoned (not
+    joined) so we do not reintroduce the #6622 hang, and the callback is suppressed for
+    ``plugins.hook_timeout_suppression_seconds`` (default 60s) — after that window the hook self-heals.
+    Still-executing, timed-out or suppressed ``pre_tool_call`` callbacks fail closed with a block
+    directive naming the hook and callback; other bounded hooks fail open (skip).
     Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).

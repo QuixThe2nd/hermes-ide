@@ -828,7 +828,23 @@ class TestPluginHooks:
         mgr.discover_and_load()
 
         assert mgr.has_hook("pre_api_request") is True
-        assert mgr.has_hook("post_api_request") is False
+        # The plugin registers only pre_api_request — its callback must not leak to the sibling
+        # hook. Assert on this plugin's answer (not on the hook being globally empty): other
+        # plugins installed in the environment (e.g. pip entry-point plugins) may legitimately
+        # register post_api_request too.
+        sibling_results = mgr.invoke_hook(
+            "post_api_request",
+            session_id="s1",
+            task_id="t1",
+            model="test",
+            api_call_count=2,
+            message_count=5,
+            tool_count=3,
+            approx_input_tokens=100,
+            request_char_count=400,
+            max_tokens=8192,
+        )
+        assert {"seen": 2, "mc": 5, "tc": 3} not in sibling_results
         results = mgr.invoke_hook(
             "pre_api_request",
             session_id="s1",
@@ -1144,6 +1160,212 @@ class TestForceReloadSymmetry:
         assert elapsed < 5.0
         hold.set()
 
+    def test_timed_out_callback_self_heals_after_suppression_window(self, monkeypatch):
+        """After the suppression window expires the next invocation runs again even though the
+        abandoned worker is still alive; that stale worker finishing late must not corrupt the
+        fresh result or leave the latch stuck."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_timeout_suppression_seconds", lambda: 0.2
+        )
+
+        state = {"reply": "old-reply"}
+        first_started = threading.Event()
+        hold_first = threading.Event()
+
+        def slow(**_kwargs):
+            if not first_started.is_set():
+                first_started.set()
+                hold_first.wait(timeout=10.0)  # first generation hangs until released
+            return state["reply"]
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow]
+
+        assert mgr.invoke_hook("post_tool_call") == []  # times out; suppression armed
+        assert first_started.wait(timeout=1.0)
+        assert mgr.invoke_hook("post_tool_call") == []  # inside the window: pile-up guard skips
+
+        time.sleep(0.3)  # window expires while the abandoned worker is STILL hung
+        state["reply"] = "fresh-reply"  # only a fresh worker run can observe this
+        assert mgr.invoke_hook("post_tool_call") == ["fresh-reply"]  # self-healed
+
+        hold_first.set()  # abandoned worker completes very late — must not clobber anything
+        time.sleep(0.05)  # let its no-op token release land
+        assert mgr._hook_running_callbacks == {}
+        assert mgr._hook_timeout_suppressed_until == {}
+        assert mgr.invoke_hook("post_tool_call") == ["fresh-reply"]  # latch still healthy
+
+    def test_concurrent_fire_inside_timeout_still_skips(self, monkeypatch):
+        """While a generation is CURRENTLY EXECUTING inside its timeout window no suppression
+        deadline exists yet, yet a concurrent fire must skip — never supersede the live token
+        and run a second worker alongside the first (PR #234 review finding 1)."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+        starts = []
+
+        def slow(**_kwargs):
+            starts.append(1)
+            started.set()
+            release.wait(timeout=10.0)
+            return "first"
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow]
+
+        first = threading.Thread(target=lambda: mgr.invoke_hook("post_tool_call"))
+        first.start()
+        assert started.wait(timeout=10.0)  # generation 1 executing, far from its 5s timeout
+
+        t0 = time.monotonic()
+        assert mgr.invoke_hook("post_tool_call") == []  # duplicate skips; no deadline armed
+        assert time.monotonic() - t0 < 4.0
+        assert mgr._hook_timeout_suppressed_until == {}  # skip came from the live-generation guard
+
+        release.set()
+        first.join(timeout=10.0)
+        assert not first.is_alive()
+        assert len(starts) == 1  # exactly one worker ran the callback
+
+        # The executing generation completed normally — the next fire runs again.
+        assert mgr.invoke_hook("post_tool_call") == ["first"]
+        assert len(starts) == 2
+
+    def test_concurrent_pre_tool_call_fire_inside_timeout_fails_closed(self, monkeypatch):
+        """The same concurrent-skip fails CLOSED for the policy hook: while another generation
+        is executing pre-timeout, a duplicate fire gets the block directive — never a second
+        worker and never an allow."""
+        import time
+
+        from hermes_cli.plugins import (
+            _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
+            resolve_pre_tool_block,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+        starts = []
+
+        def hung_policy(**_kwargs):
+            starts.append(1)
+            started.set()
+            release.wait(timeout=10.0)
+            return None
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [hung_policy]
+
+        import hermes_cli.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        first = threading.Thread(
+            target=lambda: resolve_pre_tool_block("web_search", {"query": "x"}))
+        first.start()
+        assert started.wait(timeout=10.0)
+
+        t0 = time.monotonic()
+        msg = resolve_pre_tool_block("terminal", {"command": "ls"})
+        elapsed = time.monotonic() - t0
+        assert msg.startswith(_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE + ":")
+        assert "hung_policy" in msg
+        assert "(hook 'pre_tool_call')" in msg
+        assert elapsed < 4.0  # skipped via the live guard; did not wait out the 5s timeout
+
+        release.set()
+        first.join(timeout=10.0)
+        assert not first.is_alive()
+        assert len(starts) == 1  # the policy callback ran exactly once
+
+    def test_suppression_window_still_skips_repeat_fires(self, monkeypatch):
+        """Pile-up guard intact: while the post-timeout suppression window is active, repeated
+        fires skip instead of spawning a worker each time."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_timeout_suppression_seconds", lambda: 5.0
+        )
+
+        hold = threading.Event()
+        starts = []
+
+        def blocker(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=10.0)
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hooks["pre_llm_call"] = [blocker]
+
+        assert mgr.invoke_hook("pre_llm_call") == []  # times out; suppression armed
+        assert mgr.invoke_hook("pre_llm_call") == []  # within the window: skipped
+        assert mgr.invoke_hook("pre_llm_call") == []  # still within the window: skipped
+        assert len(starts) == 1  # no worker pile-up
+        hold.set()
+
+    def test_hook_timeout_suppression_seconds_resolution(self, tmp_path, monkeypatch, caplog):
+        """``plugins.hook_timeout_suppression_seconds``: absent → default, ``<= 0`` → default with
+        a warning, over max → clamped to the ``hook_callback_timeout`` max."""
+        import hermes_cli.config as config_mod
+        import hermes_cli.plugins as plugins_mod
+
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        config_path = hermes_home / "config.yaml"
+
+        def _write_plugins_cfg(value):
+            config_path.write_text(
+                yaml.safe_dump({"plugins": {"hook_timeout_suppression_seconds": value}})
+            )
+            config_mod._LOAD_CONFIG_CACHE.clear()
+            config_mod._RAW_CONFIG_CACHE.clear()
+
+        # No key configured → default.
+        config_path.write_text(yaml.safe_dump({"plugins": {}}))
+        config_mod._LOAD_CONFIG_CACHE.clear()
+        config_mod._RAW_CONFIG_CACHE.clear()
+        assert plugins_mod._resolve_hook_timeout_suppression_seconds() == (
+            plugins_mod._HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        )
+
+        # Negative / zero → default with a warning.
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            _write_plugins_cfg(-5.0)
+            assert plugins_mod._resolve_hook_timeout_suppression_seconds() == (
+                plugins_mod._HOOK_TIMEOUT_SUPPRESSION_SECONDS
+            )
+            _write_plugins_cfg(0.0)
+            assert plugins_mod._resolve_hook_timeout_suppression_seconds() == (
+                plugins_mod._HOOK_TIMEOUT_SUPPRESSION_SECONDS
+            )
+        assert any("hook_timeout_suppression_seconds" in rec.message for rec in caplog.records)
+
+        # Over max → clamped to the same max as hook_callback_timeout.
+        _write_plugins_cfg(99_999.0)
+        assert plugins_mod._resolve_hook_timeout_suppression_seconds() == (
+            plugins_mod._MAX_HOOK_CALLBACK_TIMEOUT_SECS
+        )
+
+        # A sane explicit value passes through unchanged.
+        _write_plugins_cfg(0.5)
+        assert plugins_mod._resolve_hook_timeout_suppression_seconds() == 0.5
+
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time
@@ -1174,12 +1396,17 @@ class TestForceReloadSymmetry:
         msg = resolve_pre_tool_block("web_search", {"query": "x"})
         elapsed = time.monotonic() - t0
 
-        assert msg == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        # Stable prefix survives; the directive names the hook and the callback.
+        assert msg.startswith(_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE + ":")
+        assert "hung_policy" in msg
+        assert "(hook 'pre_tool_call')" in msg
         assert elapsed < 5.0
 
-        # Still-running / suppression window must also fail closed.
+        # Still-running / suppression window must also fail closed, with the same detail.
         msg2 = resolve_pre_tool_block("web_search", {"query": "y"})
-        assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        assert msg2.startswith(_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE + ":")
+        assert "hung_policy" in msg2
+        assert "(hook 'pre_tool_call')" in msg2
         hold.set()
 
     def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
@@ -1213,9 +1440,12 @@ class TestForceReloadSymmetry:
         mgr = PluginManager()
         mgr._hooks["pre_tool_call"] = [policy]
 
-        assert mgr.invoke_hook("pre_tool_call") == [
-            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
-        ]
+        blocked = mgr.invoke_hook("pre_tool_call")
+        assert len(blocked) == 1
+        assert blocked[0]["action"] == "block"
+        assert blocked[0]["message"].startswith(_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE + ":")
+        assert "policy" in blocked[0]["message"]
+        assert "(hook 'pre_tool_call')" in blocked[0]["message"]
         assert mgr.invoke_hook("pre_tool_call") == []
         assert calls == [1]
 
@@ -1263,6 +1493,7 @@ class TestForceReloadSymmetry:
 
         assert dispatch_calls == []
         assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in result
+        assert "hung_policy" in result  # the culprit is identifiable from the tool result
         hold.set()
 
     def test_force_reload_of_one_profile_does_not_orphan_another(self, monkeypatch):
