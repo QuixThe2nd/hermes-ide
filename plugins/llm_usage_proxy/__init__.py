@@ -19,11 +19,12 @@ def register(ctx) -> None:
             "Run the bundled loopback reverse proxy that measures actual "
             "request tokens on the wire for z.ai, Kimi, Codex, and xAI, "
             "recording them to <HERMES_HOME>/usage-proxy/usage.sqlite. Binds "
-            "127.0.0.1 only and is opt-in per profile (`hermes llm_usage_proxy "
-            "enable`): provider base URLs, auth, and API modes are untouched — "
-            "matching requests are rerouted to the proxy at the final HTTP "
-            "transport boundary, and disabling it returns traffic to the real "
-            "provider endpoints."
+            "127.0.0.1 only and is on by default per profile (`hermes "
+            "llm_usage_proxy disable`, `llm_usage_proxy.enabled: false`, or "
+            "the plugins deny-list to opt out): provider base URLs, auth, "
+            "and API modes are untouched — matching requests are rerouted to "
+            "the proxy at the final HTTP transport boundary, and disabling it "
+            "returns traffic to the real provider endpoints."
         ),
     )
 
