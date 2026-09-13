@@ -1200,6 +1200,97 @@ class TestForceReloadSymmetry:
         assert mgr._hook_timeout_suppressed_until == {}
         assert mgr.invoke_hook("post_tool_call") == ["fresh-reply"]  # latch still healthy
 
+    def test_concurrent_fire_inside_timeout_still_skips(self, monkeypatch):
+        """While a generation is CURRENTLY EXECUTING inside its timeout window no suppression
+        deadline exists yet, yet a concurrent fire must skip — never supersede the live token
+        and run a second worker alongside the first (PR #234 review finding 1)."""
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+        starts = []
+
+        def slow(**_kwargs):
+            starts.append(1)
+            started.set()
+            release.wait(timeout=10.0)
+            return "first"
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow]
+
+        first = threading.Thread(target=lambda: mgr.invoke_hook("post_tool_call"))
+        first.start()
+        assert started.wait(timeout=10.0)  # generation 1 executing, far from its 5s timeout
+
+        t0 = time.monotonic()
+        assert mgr.invoke_hook("post_tool_call") == []  # duplicate skips; no deadline armed
+        assert time.monotonic() - t0 < 4.0
+        assert mgr._hook_timeout_suppressed_until == {}  # skip came from the live-generation guard
+
+        release.set()
+        first.join(timeout=10.0)
+        assert not first.is_alive()
+        assert len(starts) == 1  # exactly one worker ran the callback
+
+        # The executing generation completed normally — the next fire runs again.
+        assert mgr.invoke_hook("post_tool_call") == ["first"]
+        assert len(starts) == 2
+
+    def test_concurrent_pre_tool_call_fire_inside_timeout_fails_closed(self, monkeypatch):
+        """The same concurrent-skip fails CLOSED for the policy hook: while another generation
+        is executing pre-timeout, a duplicate fire gets the block directive — never a second
+        worker and never an allow."""
+        import time
+
+        from hermes_cli.plugins import (
+            _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
+            resolve_pre_tool_block,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+        starts = []
+
+        def hung_policy(**_kwargs):
+            starts.append(1)
+            started.set()
+            release.wait(timeout=10.0)
+            return None
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [hung_policy]
+
+        import hermes_cli.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        first = threading.Thread(
+            target=lambda: resolve_pre_tool_block("web_search", {"query": "x"}))
+        first.start()
+        assert started.wait(timeout=10.0)
+
+        t0 = time.monotonic()
+        msg = resolve_pre_tool_block("terminal", {"command": "ls"})
+        elapsed = time.monotonic() - t0
+        assert msg.startswith(_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE + ":")
+        assert "hung_policy" in msg
+        assert "(hook 'pre_tool_call')" in msg
+        assert elapsed < 4.0  # skipped via the live guard; did not wait out the 5s timeout
+
+        release.set()
+        first.join(timeout=10.0)
+        assert not first.is_alive()
+        assert len(starts) == 1  # the policy callback ran exactly once
+
     def test_suppression_window_still_skips_repeat_fires(self, monkeypatch):
         """Pile-up guard intact: while the post-timeout suppression window is active, repeated
         fires skip instead of spawning a worker each time."""

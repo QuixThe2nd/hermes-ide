@@ -1377,8 +1377,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
+        # Latch cells (_HookGenerationState) for bounded-hook callbacks keyed by (hook_name,
+        # id(cb)): a still-executing generation blocks duplicate fires, and only a timed-out one
+        # is superseded once the suppression window expires — a stuck policy hook can neither run
+        # twice concurrently nor spawn a new abandoned thread on every fire.
         self._hook_running_callbacks: Dict[tuple, object] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
@@ -1902,11 +1904,12 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
 
     Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hook ``pre_tool_call`` are
-    bounded by ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker is abandoned (not
+    bounded by ``plugins.hook_callback_timeout`` (default 30s). While a callback generation is still
+    executing, concurrent fires skip (no duplicate workers); on timeout the worker is abandoned (not
     joined) so we do not reintroduce the #6622 hang, and the callback is suppressed for
     ``plugins.hook_timeout_suppression_seconds`` (default 60s) — after that window the hook self-heals.
-    Timed-out or suppressed ``pre_tool_call`` callbacks fail closed with a block directive naming the
-    hook and callback; other bounded hooks fail open (skip).
+    Still-executing, timed-out or suppressed ``pre_tool_call`` callbacks fail closed with a block
+    directive naming the hook and callback; other bounded hooks fail open (skip).
     Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).
