@@ -1726,6 +1726,39 @@ def test_progress_url_is_exact_api_value(monkeypatch, tmp_path):
     assert notices == [f"Cursor Cloud Agent: {expected}"]
 
 
+def test_rearm_background_cursor_emits_viewer_status_notice(monkeypatch, tmp_path):
+    from tools import cursor_agent_tool
+
+    notices: list[str] = []
+    monkeypatch.setattr(cursor_agent_tool, "_emit_progress_notice", lambda message: notices.append(message))
+    monkeypatch.setattr(cursor_agent_tool, "load_cursor_api_key", lambda: "test-key")
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "_dispatch_cursor_background",
+        lambda **kwargs: json.dumps({"status": "dispatched", "delegation_id": "deleg_x"}),
+    )
+    receipt = {
+        "delivery_mode": "background",
+        "cloud_agent_id": "bc-test123",
+        "cloud_run_id": "run-x",
+        "delegation_id": "deleg_x",
+    }
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    note = cursor_agent_tool._rearm_background_cursor(
+        hermes_session_id="sess",
+        tool_call_id="call-1",
+        receipt_path=receipt_path,
+        receipt=receipt,
+        args={},
+    )
+
+    assert note is not None
+    assert "Re-armed" in note
+    assert notices == ["Cursor Cloud Agent: https://cursor.com/agents/bc-test123"]
+
+
 def test_is_terminal_run_status():
     from tools.cursor_agent_tool import is_terminal_run_status
 
