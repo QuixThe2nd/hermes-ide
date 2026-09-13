@@ -870,9 +870,9 @@ class TestLongRunningNotificationOwnership:
             "sess", agent, executor_task=None
         ) is False
 
-    def test_notification_suppressed_for_park_steer_attempted_sessions(self):
-        """Sessions the park steer was ATTEMPTED on were told too, even when
-        their agent never accepted it."""
+    def test_notification_emitted_for_park_steer_rejected_session(self):
+        """A rejected park steer delivered no notice to that chat, so its
+        liveness heartbeat continues."""
         agent = MagicMock()
         runner = self._qualifying_runner(agent)
         runner._restart_requested = True
@@ -880,7 +880,7 @@ class TestLongRunningNotificationOwnership:
 
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=None
-        ) is False
+        ) is True
 
     def test_notification_emitted_when_restart_not_requested(self):
         agent = MagicMock()

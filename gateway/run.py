@@ -14897,14 +14897,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         silence those un-notified sessions' liveness signal for the entire
         drain. The notified set is exactly the lanes that carry a drain
         notice today: the requester's chat (the restart wind-down embed
-        target), the sessions the cooperative park steer was ATTEMPTED on,
-        and the subset whose agent accepted it.
+        target) and the sessions whose agent ACCEPTED the cooperative park
+        steer. Attempted-but-rejected chats were never told anything, so they
+        keep their heartbeat.
         """
         if not session_key or not getattr(self, "_restart_requested", False):
             return False
         if session_key in (
-            getattr(self, "_cooperative_restart_sessions", None) or []
-        ) or session_key in (
             getattr(self, "_cooperative_restart_steered_sessions", None) or []
         ):
             return True
