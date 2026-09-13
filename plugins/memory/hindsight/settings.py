@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__.rpartition(".")[0])
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.6.1"
+_MIN_CLIENT_VERSION = "0.9.2"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` on retained memories is OPT-IN (AGENTS.md forbids
@@ -104,6 +104,33 @@ def _normalize_observation_scopes(value: Any) -> Any:
         for entry in value
     ]
     return [s for s in scopes if s] or None
+
+
+def _normalize_min_scores(value: Any) -> dict[str, float] | None:
+    """Normalize recall_min_scores to ``{stage: floor}`` floats, or ``None`` (no floors).
+
+    Accepts a dict (pass-through) or a JSON-object string; absent/empty/None and any
+    malformed input (invalid JSON, non-object, non-numeric floor) warn once and behave
+    as unset so recall still runs — the server treats the floors as inclusive AND-ed
+    per-stage cutoffs (hindsight-client >= 0.9.2 ``min_scores``)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value.strip())
+        except Exception:
+            logger.warning("Invalid recall_min_scores %r (not valid JSON) — no score floors applied", value)
+            return None
+    if not isinstance(value, dict):
+        logger.warning("Invalid recall_min_scores %r (not an object) — no score floors applied", value)
+        return None
+    try:
+        floors = {str(stage): float(floor) for stage, floor in value.items()}
+    except (TypeError, ValueError):
+        logger.warning("Invalid recall_min_scores %r (floors must be numbers) — no score floors applied", value)
+        return None
+    # An all-empty object means "no floors" exactly like an absent key.
+    return floors or None
 
 
 def _sanitize_bank_segment(value: str) -> str:

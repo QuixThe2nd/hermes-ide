@@ -449,7 +449,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
+The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.9.2` (auto-upgraded on session start if outdated).
 
 **Local mode UI:** `hindsight-embed -p hermes ui start`
 
@@ -470,6 +470,8 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `recall_min_scores` | — | Per-stage score floors for recall (inclusive, AND-ed); results below any floor are dropped server-side. Keys: `semantic`, `keyword`, `reranker`, `final`. Object or JSON string, e.g. `{"final": 0.5}`. Unset = no floors. |
+| `recall_max_results` | `0` | Keep only the top N ranked recall results after score filtering (`0` = no cap) |
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 
