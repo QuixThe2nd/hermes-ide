@@ -1,6 +1,7 @@
 """Tests for gateway/shutdown_flush.py — pending message durability (#72680)."""
 
 import json
+import logging
 import os
 import stat
 import time
@@ -10,11 +11,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.shutdown_flush import (
+    TRANSCRIPT_CAP_DROP_REASON,
     _serialise_value,
     flush_overflow_to_file,
     flush_pending_to_file,
     recover_pending_to_db,
 )
+from hermes_state import SessionDB
 
 
 def _make_flush_dir(tmp_path: Path) -> Path:
@@ -238,3 +241,148 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+# ── session_key → session_id resolution for plain-string slots ───────────
+
+
+def _write_flush_file(flush_dir: Path, payload: dict, name: str = "pending-test.json") -> Path:
+    path = flush_dir / name
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _message_rows(db, session_id: str):
+    return [tuple(r) for r in db._conn.execute(
+        "SELECT role, content FROM messages WHERE session_id = ?", (session_id,)
+    ).fetchall()]
+
+
+def test_recover_resolves_string_slot_via_session_key(tmp_path, monkeypatch):
+    """Plain-string slots carry no session_id; recovery resolves the newest session
+    row for the routing key instead of dropping the message."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("20260910_100000_aaa", "telegram",
+                      session_key="agent:main:discord:thread:111:222")
+    flush_file = _write_flush_file(flush_dir, {
+        "session_key": "agent:main:discord:thread:111:222",
+        "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "plain string slot"},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert not flush_file.exists()
+    assert _message_rows(db, "20260910_100000_aaa") == [("user", "plain string slot")]
+
+
+def test_recover_keeps_file_when_session_key_has_no_session(tmp_path, monkeypatch, caplog):
+    """No session row for the key: warn (resolution attempted, none found) and keep the file."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    flush_file = _write_flush_file(flush_dir, {
+        "session_key": "agent:main:telegram:dm:nobody",
+        "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "orphaned"},
+    })
+
+    with caplog.at_level(logging.WARNING, logger="gateway.shutdown_flush"):
+        count = recover_pending_to_db(db)
+
+    assert count == 0
+    assert flush_file.exists()
+    assert "found no session for the key" in caplog.text
+
+
+def test_recover_prefers_serialised_session_id_over_key_resolution(tmp_path, monkeypatch):
+    """MessageEvent-shaped payloads (session_id present in data) are unchanged — the
+    serialised session_id stays authoritative even when the key resolves elsewhere."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("key-resolved-sid", "telegram",
+                      session_key="agent:main:telegram:supergroup:123")
+    db.create_session("data-sid", "telegram")
+    flush_file = _write_flush_file(flush_dir, {
+        "session_key": "agent:main:telegram:supergroup:123",
+        "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "event message", "session_id": "data-sid"},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert not flush_file.exists()
+    assert _message_rows(db, "data-sid") == [("user", "event message")]
+    assert _message_rows(db, "key-resolved-sid") == []
+
+
+def test_recover_transcript_cap_drop_payload_unchanged(tmp_path, monkeypatch):
+    """Transcript cap-drop payloads still replay the spooled message dict directly."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("cap-sid", "telegram")
+    ts = int(time.time())
+    flush_file = _write_flush_file(flush_dir, {
+        "session_key": "cap-sid",
+        "reason": TRANSCRIPT_CAP_DROP_REASON, "ts": ts, "seq": 0,
+        "data": {"session_id": "cap-sid",
+                 "message": {"role": "assistant", "content": "evicted turn",
+                             "timestamp": ts}},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert not flush_file.exists()
+    assert _message_rows(db, "cap-sid") == [("assistant", "evicted turn")]
+
+
+def test_recover_uses_session_key_directly_when_it_is_a_session_id(tmp_path, monkeypatch):
+    """Guard: a session_key that already IS a raw session id is used directly, so
+    transcript-spool-shaped payloads without data.session_id are not rerouted."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("raw-sid", "telegram")
+    db.create_session("other-sid", "telegram", session_key="raw-sid")
+    _write_flush_file(flush_dir, {
+        "session_key": "raw-sid", "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "spooled"},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert _message_rows(db, "raw-sid") == [("user", "spooled")]
+    assert _message_rows(db, "other-sid") == []
+
+
+def test_recover_resolves_newest_session_for_key(tmp_path, monkeypatch):
+    """Multiple session rows for one key: the newest started_at wins (same rule as
+    SessionDB.list_gateway_sessions)."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    key = "agent:main:telegram:dm:5"
+    db.create_session("old-sid", "telegram", session_key=key)
+    db.create_session("new-sid", "telegram", session_key=key)
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1000, "old-sid"))
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (2000, "new-sid"))
+        db._conn.commit()
+    _write_flush_file(flush_dir, {
+        "session_key": key, "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "goes to newest"},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert _message_rows(db, "new-sid") == [("user", "goes to newest")]
+    assert _message_rows(db, "old-sid") == []

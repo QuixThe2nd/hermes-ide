@@ -231,6 +231,27 @@ def recover_pending_to_db(session_db=None) -> int:
     return recovered
 
 
+def _resolve_session_id_for_key(session_db, session_key: str) -> str:
+    """Resolve a gateway routing key to a sessions row id; ``""`` when nothing matches.
+
+    A ``session_key`` that already IS a raw session id (transcript-spool payloads store the
+    real session_id there) is used directly. Otherwise the newest row for the key wins — the
+    same newest-row-per-key rule as ``SessionDB.list_gateway_sessions``. Lookup failures
+    degrade to ``""`` (caller keeps the flush file) rather than aborting recovery.
+    """
+    try:
+        row = session_db._read_one("SELECT id FROM sessions WHERE id = ? LIMIT 1",
+                                   (session_key,))
+        if row is None:
+            row = session_db._read_one(
+                "SELECT id FROM sessions WHERE session_key = ? "
+                "ORDER BY started_at DESC LIMIT 1", (session_key,))
+    except Exception as exc:
+        logger.debug("session_key-to-id resolution failed for %s: %s", session_key, exc)
+        return ""
+    return str(row[0]) if row else ""
+
+
 def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> bool:
     """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id — replay directly
@@ -254,11 +275,15 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> boo
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id, which only the serialised data can supply at this stage.
+    # needs the real session_id. MessageEvent slots carry it in the serialised data; plain-string
+    # slots (runner-level _pending_messages) do not, so fall back to resolving the newest
+    # session row for the routing key.
     session_id = data.get("session_id", "")
     if not session_id:
+        session_id = _resolve_session_id_for_key(session_db, session_key)
+    if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
-                       "session_key-to-id resolution is not available at this recovery stage. "
+                       "session_key-to-id resolution found no session for the key. "
                        "The message text is preserved in %s", session_key, path)
         return False
     session_db.append_message(session_id=session_id, role="user", content=text,
