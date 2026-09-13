@@ -683,6 +683,12 @@ class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the
     session slot or the executor finished — otherwise a stale
     'running: delegate_agent' bubble outlives the run that spawned it (#12029).
+
+    While a restart is pending, suppression is scoped to sessions that were
+    actually told about it (the requester + the cooperative park-steer
+    targets): shutdown/drain notices only go out once stop() begins, so an
+    unrelated long-running turn must keep its liveness heartbeat for the
+    whole unbounded pre-stop wait.
     """
 
     @staticmethod
@@ -710,10 +716,63 @@ class TestLongRunningNotificationOwnership:
             "sess", original_agent, executor_task=None
         ) is False
 
-    def test_notification_suppressed_while_restart_requested(self):
+    def test_notification_suppressed_for_restart_requester(self):
         agent = MagicMock()
         runner = self._qualifying_runner(agent)
         runner._restart_requested = True
+        runner._restart_command_source = MagicMock()
+        runner._session_key_for_source = lambda _source: "sess"
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is False
+
+    def test_notification_emitted_for_session_unaware_of_restart(self):
+        """Restart pending, but nobody told this session — keep the heartbeat.
+
+        No _restart_command_source and no cooperative-steer sets: the drain
+        notice only goes out later, in stop().
+        """
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
+
+    def test_notification_scoped_to_requester_while_other_session_heartbeat(self):
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+        runner._restart_command_source = MagicMock()
+        runner._session_key_for_source = lambda _source: "requester"
+        runner._running_agents["requester"] = agent
+
+        assert runner._should_emit_long_running_notification(
+            "requester", agent, executor_task=None
+        ) is False
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
+
+    def test_notification_suppressed_for_park_steer_accepted_sessions(self):
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+        runner._cooperative_restart_steered_sessions = ["sess"]
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is False
+
+    def test_notification_suppressed_for_park_steer_attempted_sessions(self):
+        """Sessions the park steer was ATTEMPTED on were told too, even when
+        their agent never accepted it."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+        runner._cooperative_restart_sessions = ["sess"]
 
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=None

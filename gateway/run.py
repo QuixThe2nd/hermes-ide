@@ -14840,6 +14840,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent, context="shutdown finalize"
             )
 
+    def _restart_notified_session_keys(self) -> frozenset:
+        """Session keys that already know a restart is winding the gateway down.
+
+        Shutdown/drain notices are only sent once ``stop()`` begins, but
+        ``_await_active_work_before_restart`` waits for in-flight turns
+        without a timeout BEFORE that. Until ``stop()`` runs, the only record
+        of who has actually been told is: the requester's own session, the
+        sessions the cooperative-restart park steer was attempted on, and the
+        subset whose agent accepted it. Heartbeat suppression during a pending
+        restart is scoped to exactly these sessions — everyone else still
+        gets liveness heartbeats for the whole pre-stop wait.
+        """
+        keys: set = set()
+        try:
+            from gateway.restart_wind_down import requester_session_key
+
+            _requester = requester_session_key(self)
+            if _requester:
+                keys.add(_requester)
+        except Exception:
+            logger.debug("restart-notified requester resolution failed", exc_info=True)
+        for _attr in ("_cooperative_restart_steered_sessions", "_cooperative_restart_sessions"):
+            for _key in getattr(self, _attr, None) or []:
+                if _key:
+                    keys.add(str(_key))
+        return frozenset(keys)
+
     def _should_emit_long_running_notification(
         self,
         session_key: Optional[str],
@@ -14852,11 +14879,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run that started it: stop once the executor finishes, the agent is gone,
         or the session key has been rebound to a different live agent (e.g. the
         user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
+
+        While a restart is pending, only sessions that were actually told about
+        it (requester + cooperative park-steer targets — see
+        ``_restart_notified_session_keys``) are silenced; an unrelated
+        long-running turn must keep its heartbeat or it goes quiet for the
+        whole unbounded pre-stop wait.
         """
         if getattr(self, "_restart_requested", False):
             # Restart drain: the user already knows the gateway is winding
             # down; a "still working" heartbeat reads as noise.
-            return False
+            if session_key in self._restart_notified_session_keys():
+                return False
         if agent is None:
             return False
         if executor_task is not None and executor_task.done():
