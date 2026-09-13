@@ -22881,6 +22881,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+                if self._draining:
+                    # Drain window: an in-memory-only merge would die with the
+                    # process bounce. Route through the durable drain queue
+                    # when the busy policy allows it (the photo merge happens
+                    # inside it); cap/IO failure gets the honest drain refusal,
+                    # same answer text follow-ups get — never a silent loss.
+                    if self._queue_during_drain_enabled(
+                        self._effective_busy_input_mode(source)
+                    ) and queue_drain_busy_message(self, event, _quick_key):
+                        return (
+                            f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                        )
+                    return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)

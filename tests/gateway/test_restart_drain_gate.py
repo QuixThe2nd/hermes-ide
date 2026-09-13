@@ -16,6 +16,7 @@ other work). Allowed commands (restart entry, in-flight-work lifecycle,
 read-only visibility) keep dispatching.
 """
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -206,13 +207,43 @@ async def test_cold_background_spawn_after_confirmation_never_runs():
 
 
 @pytest.mark.asyncio
-async def test_cold_plain_text_after_confirmation_gets_the_notice():
-    runner, _adapter = _make_gate_runner()
+async def test_cold_plain_text_after_confirmation_is_queued_durably():
+    """Plain text during drain is no longer refused-and-forgotten: it lands
+    in the durable drain snapshot AND the in-memory FIFO, and the ack says
+    so (the drain-queue tests cover the post-restart replay side)."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
     runner._draining = True
 
     result = await runner._handle_message(_make_event("one more thing…"))
 
+    assert isinstance(result, str)
+    assert "queued for the next turn after it comes back" in result
+    session_key = runner._session_key_for_source(make_restart_source())
+    assert session_key in mock_adapter._pending_messages
+    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
+    assert events[0]["event"]["text"] == "one more thing…"
+    assert events[0]["session_key"] == session_key
+
+
+@pytest.mark.asyncio
+async def test_cold_disallowed_command_during_drain_is_refused_and_not_persisted():
+    """Commands keep the gate's refusal (lifecycle-sensitive during drain) —
+    and are never written to the durable queue."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    runner._draining = True
+    heavy = AsyncMock(return_value="compressed")
+    runner._handle_compress_command = heavy
+
+    result = await runner._handle_message(_make_event("/compress secret context"))
+
     assert isinstance(result, str) and _DRAIN_NOTICE_MARKER in result
+    heavy.assert_not_awaited()
+    assert not drain_queue_path().exists()
+    assert not mock_adapter._pending_messages
 
 
 @pytest.mark.asyncio
@@ -278,6 +309,29 @@ async def test_busy_plain_text_after_confirmation_gets_the_notice():
     result = await runner._handle_message(_make_event("and another thing"))
 
     assert isinstance(result, str) and "not accepting another turn" in result
+
+
+@pytest.mark.asyncio
+async def test_busy_plain_text_in_queue_mode_during_drain_is_queued_durably():
+    """With the busy path's queue-during-drain policy active, the same
+    fast-path answers with the queued ack and persists the event — the
+    in-memory-only promise is gone."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    _mark_busy(runner)
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+
+    result = await runner._handle_message(_make_event("queue me please"))
+
+    assert isinstance(result, str)
+    assert "queued for the next turn after it comes back" in result
+    session_key = runner._session_key_for_source(make_restart_source())
+    assert session_key in mock_adapter._pending_messages
+    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
+    assert events[0]["event"]["text"] == "queue me please"
 
 
 @pytest.mark.asyncio

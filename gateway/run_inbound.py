@@ -524,6 +524,20 @@ class GatewayInboundMixin:
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+            if self._draining:
+                # Drain window: an in-memory-only merge would die with the
+                # process bounce. Route through the durable drain queue when
+                # the busy policy allows it; otherwise the honest refusal,
+                # same answer text follow-ups get — never a silent loss.
+                from gateway.run_drain_queue import queue_drain_busy_message
+
+                if self._queue_during_drain_enabled(
+                    self._effective_busy_input_mode(source)
+                ) and queue_drain_busy_message(self, event, _quick_key):
+                    return True, (
+                        f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                    )
+                return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
         return False, None
