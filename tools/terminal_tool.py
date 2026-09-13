@@ -1567,6 +1567,23 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     )
 
 
+# Backends that take an image, keyed to the override/config key carrying it.
+_IMAGE_KEY_BY_BACKEND = {
+    "docker": "docker_image",
+    "singularity": "singularity_image",
+    "modal": "modal_image",
+    "daytona": "daytona_image",
+}
+
+
+def _select_image(env_type: str, overrides: Dict[str, Any], config: Dict[str, Any]) -> str:
+    """Image for *env_type*: per-task override first, then config; "" for imageless backends."""
+    key = _IMAGE_KEY_BY_BACKEND.get(env_type)
+    if key is None:
+        return ""
+    return overrides.get(key) or config[key]
+
+
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
     """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
 
