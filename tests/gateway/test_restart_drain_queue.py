@@ -349,6 +349,63 @@ async def test_cooperative_resume_session_enqueues_without_a_second_turn():
 
 
 @pytest.mark.asyncio
+async def test_cooperative_session_the_scheduler_would_skip_still_gets_its_turn():
+    """Allowlist presence alone must not leave the message unconsumed: the
+    allowlist names the session, but the scheduler refuses suspended
+    entries — so replay owns the turn."""
+    source = make_restart_source(chat_id="suspended-coop-chat")
+    runner, adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("queued while parked", source=source), session_key
+    )
+    assert write_resume_allowlist([session_key])
+    entry = _resume_entry(source, session_key)
+    entry.suspended = True  # the scheduler's candidate filter skips this
+    runner.session_store._entries = {session_key: entry}
+    adapter.handle_message = AsyncMock()
+
+    assert replay_drain_queue(runner) == 1
+    await _settle(runner)
+
+    assert adapter.handle_message.await_count == 1
+    assert adapter.handle_message.await_args.args[0].text == "queued while parked"
+    assert not drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_cooperative_session_with_stale_marker_still_gets_its_turn(
+    monkeypatch,
+):
+    """Same rule for the freshness gate: a resume marker older than the
+    auto-continue window makes the scheduler skip the session, so the drain
+    queue — not a resume that will never come — answers the user."""
+    from datetime import timedelta
+
+    monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+    source = make_restart_source(chat_id="stale-coop-chat")
+    runner, adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("queued before the long pause", source=source), session_key
+    )
+    assert write_resume_allowlist([session_key])
+    entry = _resume_entry(source, session_key)
+    entry.last_resume_marked_at = datetime.now() - timedelta(hours=6)
+    runner.session_store._entries = {session_key: entry}
+    adapter.handle_message = AsyncMock()
+
+    assert replay_drain_queue(runner) == 1
+    await _settle(runner)
+
+    assert adapter.handle_message.await_count == 1
+    assert (
+        adapter.handle_message.await_args.args[0].text == "queued before the long pause"
+    )
+    assert not drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
 async def test_missing_snapshot_is_a_silent_no_op():
     runner, adapter = make_restart_runner()
     adapter.handle_message = AsyncMock()

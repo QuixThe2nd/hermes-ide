@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -228,8 +229,6 @@ def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
         }
     timestamp = record.get("event_timestamp")
     if isinstance(timestamp, str) and timestamp:
-        from datetime import datetime
-
         try:
             event_kwargs["timestamp"] = datetime.fromisoformat(timestamp)
         except ValueError:
@@ -467,6 +466,56 @@ def _write_back_retained_records(records: List[Dict[str, Any]]) -> None:
         )
 
 
+def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> bool:
+    """True when the resume scheduler would resume ``session_key`` THIS boot.
+
+    Mirrors ``GatewayRunner._schedule_resume_pending_sessions`` exactly —
+    the candidate filter (``resume_pending``, not suspended, origin present,
+    reason in ``_AUTO_RESUME_REASONS``, allowlist membership) plus the
+    freshness gate on ``last_resume_marked_at or updated_at``. Replay may
+    only leave a queued message for the scheduler when the scheduler will
+    ACTUALLY take it: an allowlist entry alone is not enough, because a
+    suspended entry or a stale marker makes the scheduler skip the session —
+    and then nobody would ever consume the queued message.
+    """
+    from gateway.restart_wind_down import should_auto_resume_session
+    from gateway.session import auto_continue_freshness_window
+
+    store = getattr(runner, "session_store", None)
+    if store is None:
+        return False
+    try:
+        with store._lock:  # noqa: SLF001 — same locked snapshot the scheduler reads
+            store._ensure_loaded_locked()  # noqa: SLF001
+            entries = store._entries  # noqa: SLF001
+            entry = entries.get(session_key) if isinstance(entries, dict) else None
+            resume_pending = bool(getattr(entry, "resume_pending", False))
+            suspended = bool(getattr(entry, "suspended", False))
+            origin = getattr(entry, "origin", None)
+            reason = getattr(entry, "resume_reason", None)
+            marker = getattr(entry, "last_resume_marked_at", None) or getattr(
+                entry, "updated_at", None
+            )
+    except Exception:
+        logger.debug(
+            "Drain replay: resume-pending lookup failed for %s; replay owns "
+            "the turn",
+            session_key,
+            exc_info=True,
+        )
+        return False
+    reasons = getattr(runner, "_AUTO_RESUME_REASONS", frozenset())
+    if not resume_pending or suspended or origin is None or reason not in reasons:
+        return False
+    if not should_auto_resume_session(session_key, allowlist):
+        return False
+    if marker is not None:
+        window = auto_continue_freshness_window()
+        if (datetime.now() - marker).total_seconds() > window:
+            return False
+    return True
+
+
 def replay_drain_queue(runner: Any, platform: Optional[Platform] = None) -> int:
     """Replay the drain snapshot into the live queues; returns turns started.
 
@@ -531,12 +580,16 @@ def replay_drain_queue(runner: Any, platform: Optional[Platform] = None) -> int:
     )
 
     allowlist = getattr(runner, "_resume_allowlist_for_this_boot", None)
-    cooperative = set(allowlist() or set()) if callable(allowlist) else set()
+    raw_allowlist = allowlist() if callable(allowlist) else None
+    cooperative = set(raw_allowlist or set())
 
     started = 0
     for session_key, adapter in injected.items():
-        if session_key in cooperative:
-            # The cooperative-resume turn drains the FIFO after it finishes.
+        if session_key in cooperative and _scheduler_will_resume(
+            runner, session_key, raw_allowlist
+        ):
+            # The scheduler resumes this session THIS boot; that turn drains
+            # the FIFO after it finishes — no second turn from replay.
             continue
         if runner._is_session_running(session_key):
             # Already busy (e.g. boot auto-resume claimed it): the FIFO is
