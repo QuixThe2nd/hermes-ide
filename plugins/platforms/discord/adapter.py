@@ -6378,7 +6378,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return self._thread_created(thread, name)
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                seed_content = starter_message or f"\U0001f9f5 Creating thread: **{name}**"
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
                     name=name, auto_archive_duration=auto_archive_duration, reason=reason,
@@ -6524,7 +6524,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 last_direct_error = direct_error
                 try:
                     seed_msg = await message.channel.send(
-                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
+                        f"\U0001f9f5 Creating thread: **{thread_name}**"
                     )
                     thread = await seed_msg.create_thread(
                         name=thread_name,
