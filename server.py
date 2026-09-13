@@ -146,12 +146,16 @@ SQL_MODEL_SINCE = """
 # The buckets themselves are labelled in Sydney time (see hour_buckets).
 # caller+model are grouped too, so each hour folds into the per-harness /
 # per-model "series" that stacks the chart columns (see query_timeseries).
+# The input/output/cached sums feed the chart's in/out and cache breakdowns.
 SQL_PER_HOUR = """
     SELECT strftime('%Y-%m-%dT%H', ts) AS hour_key,
            caller,
            model,
            COUNT(*)                    AS requests,
-           SUM(total_tokens)           AS tokens
+           SUM(total_tokens)           AS tokens,
+           COALESCE(SUM(prompt_tokens), 0)     AS input_tokens,
+           COALESCE(SUM(completion_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cached_tokens), 0)     AS cached_tokens
     FROM usage_events
     WHERE ts >= ?
     GROUP BY hour_key, caller, model
@@ -309,6 +313,12 @@ def hour_buckets() -> list[dict[str, Any]]:
                 "day_sydney": local.strftime("%a") if local.hour == 0 else None,
                 "requests": 0,
                 "tokens": 0,
+                # input/output/cached hour totals behind the chart's in/out
+                # and cache breakdowns; the series entries carry the same
+                # splits per (harness, model) group (query_timeseries)
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
                 # per-(harness, model) token groups behind the hour total —
                 # the stacked segments of the chart column (query_timeseries)
                 "series": [],
@@ -328,27 +338,36 @@ def query_timeseries(conn: sqlite3.Connection, since_ts: str) -> list[dict[str, 
     buckets.  Each bucket's ``series`` aggregates tokens per (caller,
     model) within the hour — sorted tokens desc, zero-token groups
     dropped — while ``requests``/``tokens`` stay the plain hour totals.
+    Each series entry also carries the hour group's input/output/cached
+    splits so the chart can re-stack the columns by those dimensions.
     """
     rows = conn.execute(SQL_PER_HOUR, (since_ts,)).fetchall()
-    groups_by_key: dict[str, dict[tuple[str, str], int]] = {}
+    groups_by_key: dict[str, dict[tuple[str, str], dict[str, int]]] = {}
     requests_by_key: dict[str, int] = {}
-    for hour_key, caller, model, requests, tokens in rows:
+    for hour_key, caller, model, requests, tokens, input_t, output_t, cached_t in rows:
         groups = groups_by_key.setdefault(hour_key, {})
         pair = (caller_label(caller), str(model) if model else "unknown")
-        groups[pair] = groups.get(pair, 0) + (tokens or 0)
+        agg = groups.setdefault(pair, {"tokens": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0})
+        agg["tokens"] += tokens or 0
+        agg["input_tokens"] += input_t or 0
+        agg["output_tokens"] += output_t or 0
+        agg["cached_tokens"] += cached_t or 0
         requests_by_key[hour_key] = requests_by_key.get(hour_key, 0) + (requests or 0)
 
     buckets = hour_buckets()
     for bucket in buckets:
         key = bucket["hour_bucket"][:13]
         series = [
-            {"caller": caller, "model": model, "tokens": tokens}
-            for (caller, model), tokens in groups_by_key.get(key, {}).items()
-            if tokens > 0
+            {"caller": caller, "model": model, **agg}
+            for (caller, model), agg in groups_by_key.get(key, {}).items()
+            if agg["tokens"] > 0
         ]
         series.sort(key=lambda s: (-s["tokens"], s["caller"], s["model"]))
         bucket["requests"] = requests_by_key.get(key, 0)
         bucket["tokens"] = sum(s["tokens"] for s in series)
+        bucket["input_tokens"] = sum(s["input_tokens"] for s in series)
+        bucket["output_tokens"] = sum(s["output_tokens"] for s in series)
+        bucket["cached_tokens"] = sum(s["cached_tokens"] for s in series)
         bucket["series"] = series
     return buckets
 
@@ -646,7 +665,7 @@ def chart_data_table(buckets: list[dict[str, Any]]) -> str:
     return (
         '<table class="sr-only"><caption>Tokens per hour, last 24 hours (Australia/Sydney)</caption>'
         '<thead><tr><th scope="col">Hour</th><th scope="col">Requests</th><th scope="col">Tokens</th>'
-        '<th scope="col">Per-harness tokens (per model)</th></tr></thead>'
+        '<th scope="col" id="chart-table-series-head">Per-harness tokens (per model)</th></tr></thead>'
         f'<tbody id="chart-table-body">{"".join(rows)}</tbody></table>'
     )
 
@@ -1005,6 +1024,12 @@ JS = r"""
      per-model mode hashes into these instead of the harness palette */
   var MODEL_HEXES = ['#bd8714', '#d46c8b', '#5b8def', '#2ea79a', '#9a7be0', '#65a46c', '#66738a'];
 
+  /* fixed two-slot palettes for the in/out and cache breakdowns — the
+     accent/input blue and the --stale amber are var() values the canvas
+     cannot read, mirrored here as hex like the palettes above */
+  var INOUT_HEXES = { input: '#3987e5', output: '#2ea79a' };
+  var CACHE_HEXES = { cached: '#d29922', uncached: '#6d7889' };
+
   function hexToRgba(hex, alpha) {
     var n = parseInt(hex.slice(1), 16);
     return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + alpha + ')';
@@ -1270,7 +1295,7 @@ JS = r"""
 
   var chartGeom = null;
   var hoverIdx = -1;
-  var chartMode = 'harness';   /* breakdown dimension: 'harness' | 'model' */
+  var chartMode = 'harness';   /* breakdown dimension: 'harness' | 'model' | 'inout' | 'cache' */
 
   function barTopPath(ctx, x, y, w, h) {
     var r = Math.min(3, w / 2, h);
@@ -1288,15 +1313,36 @@ JS = r"""
 
   /* one stacked-segment entry per member of the active breakdown dimension
      present in the bucket, name ascending — the fixed bottom-to-top stack
-     order, independent of segment size */
+     order, independent of segment size.  The in/out and cache dimensions
+     aggregate the per-series input/output/cached splits instead of the
+     (harness, model) names; cache's uncached = prompt tokens not served
+     from the cache (clamped at 0 against odd rows) */
   function bucketSegments(b) {
     var byKey = {};
-    (b && b.series ? b.series : []).forEach(function (s) {
-      var t = Number(s.tokens) || 0;
-      if (t <= 0) return;
-      var k = chartMode === 'model' ? (s.model || 'unknown') : (s.caller || UNATTR);
-      byKey[k] = (byKey[k] || 0) + t;
-    });
+    var series = b && b.series ? b.series : [];
+    if (chartMode === 'inout' || chartMode === 'cache') {
+      var input = 0, output = 0, cached = 0;
+      series.forEach(function (s) {
+        input += Number(s.input_tokens) || 0;
+        output += Number(s.output_tokens) || 0;
+        cached += Number(s.cached_tokens) || 0;
+      });
+      if (chartMode === 'inout') {
+        if (input > 0) byKey.input = input;
+        if (output > 0) byKey.output = output;
+      } else {
+        if (cached > 0) byKey.cached = cached;
+        var uncached = Math.max(input - cached, 0);
+        if (uncached > 0) byKey.uncached = uncached;
+      }
+    } else {
+      series.forEach(function (s) {
+        var t = Number(s.tokens) || 0;
+        if (t <= 0) return;
+        var k = chartMode === 'model' ? (s.model || 'unknown') : (s.caller || UNATTR);
+        byKey[k] = (byKey[k] || 0) + t;
+      });
+    }
     return Object.keys(byKey)
       .map(function (k) { return { name: k, tokens: byKey[k] }; })
       .sort(function (a, k) { return a.name < k.name ? -1 : a.name > k.name ? 1 : 0; });
@@ -1305,9 +1351,15 @@ JS = r"""
   /* segment colours for one bar: the harness palette in harness mode; in
      model mode a stable djb2 hash of the model name into MODEL_HEXES, where
      a slot already claimed by an earlier (alphabetical) model in this bar is
-     advanced +1 so stacked neighbours stay distinguishable */
+     advanced +1 so stacked neighbours stay distinguishable; the in/out and
+     cache modes have fixed two-slot palettes */
   function segmentHexes(segs) {
     var out = {};
+    if (chartMode === 'inout' || chartMode === 'cache') {
+      var pal = chartMode === 'inout' ? INOUT_HEXES : CACHE_HEXES;
+      segs.forEach(function (s) { if (pal[s.name]) out[s.name] = pal[s.name]; });
+      return out;
+    }
     if (chartMode !== 'model') {
       segs.forEach(function (s) { out[s.name] = harnessHex(s.name); });
       return out;
@@ -1325,8 +1377,21 @@ JS = r"""
   }
 
   /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness — textContent
-     twin of the server's bucket_series_lines for the sr-only chart table */
+     twin of the server's bucket_series_lines for the sr-only chart table.
+     In the in/out and cache modes the row collapses to the same two
+     segments the columns stack, e.g. "output 12.3k · input 45.6k" */
   function seriesLines(b) {
+    if (chartMode === 'inout' || chartMode === 'cache') {
+      var segs = bucketSegments(b);
+      if (!segs.length) return [];
+      var order = chartMode === 'inout' ? ['output', 'input'] : ['cached', 'uncached'];
+      var byName = {};
+      segs.forEach(function (s) { byName[s.name] = s.tokens; });
+      return [order
+        .filter(function (k) { return byName[k] !== undefined; })
+        .map(function (k) { return k + ' ' + fmtCompact(byName[k]); })
+        .join(' · ')];
+    }
     var byCaller = {};
     (b && b.series ? b.series : []).forEach(function (s) {
       var t = Number(s.tokens) || 0;
@@ -1418,11 +1483,15 @@ JS = r"""
         if (segs.length) {
           /* stacked segments of the active dimension, alphabetical from the
              base up; only the topmost keeps the rounded top, lower ones butt
-             squarely */
+             squarely.  Heights are the segments' own tokens against the
+             shared peak, so a dimension whose segments sum below the hour
+             total (cache = prompt tokens only) draws a proportionally
+             shorter column instead of a rescaled one */
           var hexes = segmentHexes(segs);
           var y = baseY;
+          var topY = baseY;
           segs.forEach(function (s, si) {
-            var sh = (s.tokens / v) * h;
+            var sh = (s.tokens / peak) * plotH;
             var color = hexes[s.name];
             ctx.fillStyle = b.partial ? hexToRgba(color, 0.45) : color;
             if (si === segs.length - 1) {
@@ -1432,14 +1501,15 @@ JS = r"""
               ctx.fillRect(x, y - sh, barW, sh + 0.5);
             }
             y -= sh;
+            topY = y;
           });
           if (i === hoverIdx) {
             /* barHot treatment for a stacked bar: one translucent lift pass
                over the whole column lightens every segment at once */
             ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-            barTopPath(ctx, x, baseY - h, barW, h);
+            barTopPath(ctx, x, topY, barW, baseY - topY);
           }
-        } else {
+        } else if (!b.series || !b.series.length) {
           /* legacy shape (no series): one solid column exactly as before */
           ctx.fillStyle = i === hoverIdx ? C.barHot : (b.partial ? C.barPartial : C.bar);
           barTopPath(ctx, x, baseY - h, barW, h);
@@ -1480,6 +1550,9 @@ JS = r"""
   function renderChartTable(buckets) {
     var tbody = $('chart-table-body');
     if (!tbody) return;
+    setText('chart-table-series-head', chartMode === 'inout'
+      ? 'Input / output tokens'
+      : chartMode === 'cache' ? 'Cached / uncached tokens' : 'Per-harness tokens (per model)');
     tbody.textContent = '';
     buckets.forEach(function (b) {
       var tr = el('tr');
@@ -1538,10 +1611,17 @@ JS = r"""
 
   /* switch the hourly chart's breakdown dimension; the poll re-render reads
      chartMode on every tick, so the choice survives without a reload */
+  var MODE_LABELS = {
+    harness: 'broken down by harness',
+    model: 'broken down by model',
+    inout: 'broken down by input and output tokens',
+    cache: 'broken down by cached and uncached prompt tokens'
+  };
+
   function setChartMode(mode) {
-    if (mode !== 'harness' && mode !== 'model') return;
+    if (!MODE_LABELS[mode]) return;
     chartMode = mode;
-    [['mode-harness', 'harness'], ['mode-model', 'model']].forEach(function (p) {
+    [['mode-harness', 'harness'], ['mode-model', 'model'], ['mode-inout', 'inout'], ['mode-cache', 'cache']].forEach(function (p) {
       var btn = $(p[0]);
       if (!btn) return;
       btn.classList.toggle('active', mode === p[1]);
@@ -1549,8 +1629,7 @@ JS = r"""
     });
     var wrap = $('chart-wrap');
     if (wrap) wrap.setAttribute('aria-label',
-      'Column chart of tokens per hour over the last 24 hours, ' +
-      (mode === 'model' ? 'broken down by model' : 'broken down by harness') +
+      'Column chart of tokens per hour over the last 24 hours, ' + MODE_LABELS[mode] +
       '. Use the left and right arrow keys to read values.');
     hoverIdx = -1;
     var tip = $('chart-tip');
@@ -1567,6 +1646,9 @@ JS = r"""
     var modeHarness = $('mode-harness'), modeModel = $('mode-model');
     if (modeHarness) modeHarness.addEventListener('click', function () { setChartMode('harness'); });
     if (modeModel) modeModel.addEventListener('click', function () { setChartMode('model'); });
+    var modeInout = $('mode-inout'), modeCache = $('mode-cache');
+    if (modeInout) modeInout.addEventListener('click', function () { setChartMode('inout'); });
+    if (modeCache) modeCache.addEventListener('click', function () { setChartMode('cache'); });
     canvas.addEventListener('pointermove', function (ev) {
       if (!chartGeom || !chartGeom.n) return;
       var rect = canvas.getBoundingClientRect();
@@ -1853,6 +1935,8 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
     <div class="chart-mode" role="group" aria-label="Chart breakdown dimension">
       <button type="button" class="mode-btn active" id="mode-harness" aria-pressed="true">harness</button>
       <button type="button" class="mode-btn" id="mode-model" aria-pressed="false">model</button>
+      <button type="button" class="mode-btn" id="mode-inout" aria-pressed="false">in/out</button>
+      <button type="button" class="mode-btn" id="mode-cache" aria-pressed="false">cache</button>
     </div>
     <div class="card-meta">
       <span class="win" id="chart-peak">"""
