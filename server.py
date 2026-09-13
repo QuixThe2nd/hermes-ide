@@ -8,7 +8,8 @@ Single file, Python stdlib only (http.server + sqlite3 + json):
 * ``GET /`` serves the single-page dark dashboard.  Its JavaScript polls
   ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s and
   updates the stat cards, the per-harness bars, the canvas charts (tokens
-  per hour and the model-usage donut) and the event table in place — no
+  per hour, stacked by harness, and the model-usage donut) and the event
+  table in place — no
   full page reloads.  The first paint is
   server-rendered from the same data, so the page is meaningful even with
   JavaScript disabled (the chart then shows as an accessible data table);
@@ -143,13 +144,17 @@ SQL_MODEL_SINCE = """
 # Every ts is a UTC ISO-8601 string written by the proxy, so a plain
 # strftime bucket on the raw text is the UTC hour key ("YYYY-MM-DDTHH").
 # The buckets themselves are labelled in Sydney time (see hour_buckets).
+# caller+model are grouped too, so each hour folds into the per-harness /
+# per-model "series" that stacks the chart columns (see query_timeseries).
 SQL_PER_HOUR = """
     SELECT strftime('%Y-%m-%dT%H', ts) AS hour_key,
+           caller,
+           model,
            COUNT(*)                    AS requests,
            SUM(total_tokens)           AS tokens
     FROM usage_events
     WHERE ts >= ?
-    GROUP BY hour_key
+    GROUP BY hour_key, caller, model
 """
 
 SQL_EVENTS = """
@@ -304,6 +309,9 @@ def hour_buckets() -> list[dict[str, Any]]:
                 "day_sydney": local.strftime("%a") if local.hour == 0 else None,
                 "requests": 0,
                 "tokens": 0,
+                # per-(harness, model) token groups behind the hour total —
+                # the stacked segments of the chart column (query_timeseries)
+                "series": [],
                 # The first bucket is truncated by the rolling cutoff and the
                 # last is still in progress — both drawn at half strength.
                 "partial": i in (0, HOURS - 1),
@@ -313,15 +321,35 @@ def hour_buckets() -> list[dict[str, Any]]:
 
 
 def query_timeseries(conn: sqlite3.Connection, since_ts: str) -> list[dict[str, Any]]:
-    """Tokens and requests per hour over the last 24 h (this is /api/timeseries)."""
+    """Tokens, requests and per-harness/model groups per hour (this is
+    /api/timeseries).
+
+    Rows arrive grouped by hour × caller × model and fold into the 24
+    buckets.  Each bucket's ``series`` aggregates tokens per (caller,
+    model) within the hour — sorted tokens desc, zero-token groups
+    dropped — while ``requests``/``tokens`` stay the plain hour totals.
+    """
     rows = conn.execute(SQL_PER_HOUR, (since_ts,)).fetchall()
-    by_key = {r[0]: (r[1] or 0, r[2] or 0) for r in rows}
+    groups_by_key: dict[str, dict[tuple[str, str], int]] = {}
+    requests_by_key: dict[str, int] = {}
+    for hour_key, caller, model, requests, tokens in rows:
+        groups = groups_by_key.setdefault(hour_key, {})
+        pair = (caller_label(caller), str(model) if model else "unknown")
+        groups[pair] = groups.get(pair, 0) + (tokens or 0)
+        requests_by_key[hour_key] = requests_by_key.get(hour_key, 0) + (requests or 0)
 
     buckets = hour_buckets()
     for bucket in buckets:
-        requests, tokens = by_key.get(bucket["hour_bucket"][:13], (0, 0))
-        bucket["requests"] = requests
-        bucket["tokens"] = tokens
+        key = bucket["hour_bucket"][:13]
+        series = [
+            {"caller": caller, "model": model, "tokens": tokens}
+            for (caller, model), tokens in groups_by_key.get(key, {}).items()
+            if tokens > 0
+        ]
+        series.sort(key=lambda s: (-s["tokens"], s["caller"], s["model"]))
+        bucket["requests"] = requests_by_key.get(key, 0)
+        bucket["tokens"] = sum(s["tokens"] for s in series)
+        bucket["series"] = series
     return buckets
 
 
@@ -578,20 +606,48 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
     return "".join(out)
 
 
+def bucket_series_lines(bucket: dict[str, Any]) -> list[str]:
+    """Per-harness token totals with per-model detail, e.g.
+    ``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one line per harness.
+
+    The text twin of the canvas stacking (and of the browser-side
+    ``seriesLines``) for the sr-only chart table.
+    """
+    by_caller: dict[str, dict[str, int]] = {}
+    for s in bucket.get("series") or []:
+        tokens = int(s.get("tokens") or 0)
+        if tokens <= 0:
+            continue
+        models = by_caller.setdefault(s.get("caller") or UNATTRIBUTED, {})
+        name = s.get("model") or "unknown"
+        models[name] = models.get(name, 0) + tokens
+    lines = []
+    for caller, models in sorted(by_caller.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
+        detail = " · ".join(
+            f"{m} {fmt_compact(t)}" for m, t in sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        lines.append(f"{caller} {fmt_compact(sum(models.values()))} ({detail})")
+    return lines
+
+
 def chart_data_table(buckets: list[dict[str, Any]]) -> str:
-    """Screen-reader table twin of the canvas chart."""
-    rows = "".join(
-        "<tr>"
-        f"<td>{esc(bucket_label(b))}</td>"
-        f'<td class="num">{fmt_int(b.get("requests"))}</td>'
-        f'<td class="num">{fmt_int(b.get("tokens"))}</td>'
-        "</tr>"
-        for b in buckets
-    )
+    """Screen-reader table twin of the stacked canvas chart."""
+    rows = []
+    for b in buckets:
+        cell = "".join(f"<div>{esc(line)}</div>" for line in bucket_series_lines(b)) or "—"
+        rows.append(
+            "<tr>"
+            f"<td>{esc(bucket_label(b))}</td>"
+            f'<td class="num">{fmt_int(b.get("requests"))}</td>'
+            f'<td class="num">{fmt_int(b.get("tokens"))}</td>'
+            f"<td>{cell}</td>"
+            "</tr>"
+        )
     return (
         '<table class="sr-only"><caption>Tokens per hour, last 24 hours (Australia/Sydney)</caption>'
-        '<thead><tr><th scope="col">Hour</th><th scope="col">Requests</th><th scope="col">Tokens</th></tr></thead>'
-        f'<tbody id="chart-table-body">{rows}</tbody></table>'
+        '<thead><tr><th scope="col">Hour</th><th scope="col">Requests</th><th scope="col">Tokens</th>'
+        '<th scope="col">Per-harness tokens (per model)</th></tr></thead>'
+        f'<tbody id="chart-table-body">{"".join(rows)}</tbody></table>'
     )
 
 
@@ -820,6 +876,8 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 }
 .tooltip .tv { font-weight: 650; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .tooltip .tl { color: var(--text-2); margin-top: 2px; }
+/* harness swatch inside a chart-tooltip line — colour set from JS */
+.tooltip .tl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 
 .badge { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
 .dot-s { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
@@ -914,6 +972,22 @@ JS = r"""
     var h = 5381;
     for (var i = 0; i < caller.length; i++) h = (h * 33 + caller.charCodeAt(i)) % 2147483647;
     return 'h' + (h % N_COLORS);
+  }
+
+  /* hex mirror of the .h0…h5/.h-unattr CSS palette — a canvas cannot read
+     CSS custom properties, so the chart resolves harnessClass() to hex here */
+  var HARNESS_HEX = {
+    h0: '#5b8def', h1: '#3fb0a3', h2: '#9a7be0',
+    h3: '#d9a13b', h4: '#d9708f', h5: '#7fae83', 'h-unattr': '#66738a'
+  };
+
+  function harnessHex(caller) {
+    return HARNESS_HEX[harnessClass(caller)] || HARNESS_HEX['h-unattr'];
+  }
+
+  function hexToRgba(hex, alpha) {
+    var n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + alpha + ')';
   }
 
   function bucketLabel(b) {
@@ -1191,6 +1265,64 @@ JS = r"""
     ctx.fill();
   }
 
+  /* one stacked-segment entry per harness present in the bucket, tokens desc */
+  function bucketSegments(b) {
+    var byCaller = {};
+    (b && b.series ? b.series : []).forEach(function (s) {
+      var t = Number(s.tokens) || 0;
+      if (t <= 0) return;
+      var c = s.caller || UNATTR;
+      byCaller[c] = (byCaller[c] || 0) + t;
+    });
+    return Object.keys(byCaller)
+      .map(function (c) { return { caller: c, tokens: byCaller[c] }; })
+      .sort(function (a, c) { return c.tokens - a.tokens || (a.caller < c.caller ? -1 : a.caller > c.caller ? 1 : 0); });
+  }
+
+  /* per-model token totals for one bucket, tokens desc (tooltip + sr table) */
+  function modelTotals(b) {
+    var byModel = {};
+    (b && b.series ? b.series : []).forEach(function (s) {
+      var m = s.model || 'unknown';
+      byModel[m] = (byModel[m] || 0) + (Number(s.tokens) || 0);
+    });
+    return Object.keys(byModel)
+      .map(function (m) { return { model: m, tokens: byModel[m] }; })
+      .sort(function (a, m) { return m.tokens - a.tokens || (a.model < m.model ? -1 : a.model > m.model ? 1 : 0); });
+  }
+
+  /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness — textContent
+     twin of the server's bucket_series_lines for the sr-only chart table */
+  function seriesLines(b) {
+    var byCaller = {};
+    (b && b.series ? b.series : []).forEach(function (s) {
+      var t = Number(s.tokens) || 0;
+      if (t <= 0) return;
+      var c = s.caller || UNATTR;
+      var models = byCaller[c] || (byCaller[c] = {});
+      var m = s.model || 'unknown';
+      models[m] = (models[m] || 0) + t;
+    });
+    return Object.keys(byCaller)
+      .sort(function (a, c) {
+        return modelsTotal(byCaller[c]) - modelsTotal(byCaller[a]) || (a < c ? -1 : a > c ? 1 : 0);
+      })
+      .map(function (c) {
+        var models = byCaller[c];
+        var detail = Object.keys(models)
+          .sort(function (a, m) { return models[m] - models[a] || (a < m ? -1 : a > m ? 1 : 0); })
+          .map(function (m) { return m + ' ' + fmtCompact(models[m]); })
+          .join(' · ');
+        return c + ' ' + fmtCompact(modelsTotal(models)) + ' (' + detail + ')';
+      });
+  }
+
+  function modelsTotal(models) {
+    var t = 0;
+    for (var m in models) t += models[m];
+    return t;
+  }
+
   function renderChart(buckets) {
     var canvas = $('chart'), wrap = $('chart-wrap');
     if (!canvas || !wrap || !buckets) return;
@@ -1249,8 +1381,34 @@ JS = r"""
       if (v > 0) {
         var h = (v / peak) * plotH;
         var x = padL + i * band + (band - barW) / 2;
-        ctx.fillStyle = i === hoverIdx ? C.barHot : (b.partial ? C.barPartial : C.bar);
-        barTopPath(ctx, x, baseY - h, barW, h);
+        var segs = bucketSegments(b);
+        if (segs.length) {
+          /* stacked per-harness segments, largest at the base; only the
+             topmost keeps the rounded top, lower ones butt squarely */
+          var y = baseY;
+          segs.forEach(function (s, si) {
+            var sh = (s.tokens / v) * h;
+            var color = harnessHex(s.caller);
+            ctx.fillStyle = b.partial ? hexToRgba(color, 0.45) : color;
+            if (si === segs.length - 1) {
+              barTopPath(ctx, x, y - sh, barW, sh);
+            } else {
+              /* +0.5 px overlap hides the hairline seam under the segment above */
+              ctx.fillRect(x, y - sh, barW, sh + 0.5);
+            }
+            y -= sh;
+          });
+          if (i === hoverIdx) {
+            /* barHot treatment for a stacked bar: one translucent lift pass
+               over the whole column lightens every segment at once */
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+            barTopPath(ctx, x, baseY - h, barW, h);
+          }
+        } else {
+          /* legacy shape (no series): one solid column exactly as before */
+          ctx.fillStyle = i === hoverIdx ? C.barHot : (b.partial ? C.barPartial : C.bar);
+          barTopPath(ctx, x, baseY - h, barW, h);
+        }
       }
       var centre = padL + i * band + band / 2;
       var hour = parseInt(b.label_sydney, 10) || 0;
@@ -1293,6 +1451,14 @@ JS = r"""
       tr.appendChild(el('td', '', bucketLabel(b)));
       tr.appendChild(el('td', 'num', fmtInt(b.requests)));
       tr.appendChild(el('td', 'num', fmtInt(b.tokens)));
+      var td = el('td');
+      var lines = seriesLines(b);
+      if (lines.length) {
+        lines.forEach(function (l) { td.appendChild(el('div', '', l)); });
+      } else {
+        td.textContent = '—';
+      }
+      tr.appendChild(td);
       tbody.appendChild(tr);
     });
   }
@@ -1308,6 +1474,21 @@ JS = r"""
     tip.appendChild(el('div', 'tv', fmtCompact(chartGeom.tokens[i]) + ' tokens'));
     tip.appendChild(el('div', 'tl',
       bucketLabel(b) + ' · ' + fmtInt(b.requests) + ' req' + (b.partial ? ' · partial' : '')));
+    /* one line per harness present in that hour, dot coloured like its segment */
+    bucketSegments(b).forEach(function (seg) {
+      var line = el('div', 'tl');
+      var dot = el('span', 'tl-dot');
+      dot.style.background = harnessHex(seg.caller);
+      line.appendChild(dot);
+      line.appendChild(document.createTextNode(seg.caller + ' · ' + fmtCompact(seg.tokens)));
+      tip.appendChild(line);
+    });
+    var models = modelTotals(b);
+    if (models.length) {
+      tip.appendChild(el('div', 'tl', models.map(function (m) {
+        return m.model + ' ' + fmtCompact(m.tokens);
+      }).join(' · ')));
+    }
     tip.hidden = false;
     var centre = chartGeom.padL + i * chartGeom.band + chartGeom.band / 2;
     var h = chartGeom.tokens[i] > 0 ? (chartGeom.tokens[i] / chartGeom.peak) * chartGeom.plotH : 0;
