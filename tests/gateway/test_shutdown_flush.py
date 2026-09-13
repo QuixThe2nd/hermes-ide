@@ -386,3 +386,55 @@ def test_recover_resolves_newest_session_for_key(tmp_path, monkeypatch):
     assert count == 1
     assert _message_rows(db, "new-sid") == [("user", "goes to newest")]
     assert _message_rows(db, "old-sid") == []
+
+
+def test_recover_skips_session_switch_ended_row_for_resumed_target(tmp_path, monkeypatch):
+    """After /resume, switch_session ends the outgoing row with 'session_switch' and reopens
+    the OLDER target row; recovery must append to that open target, not the just-ended row."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    key = "agent:main:telegram:dm:7"
+    db.create_session("target-sid", "telegram", session_key=key)
+    db.create_session("ended-sid", "telegram", session_key=key)
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1000, "target-sid"))
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (2000, "ended-sid"))
+        db._conn.commit()
+    db.end_session("ended-sid", "session_switch")
+    _write_flush_file(flush_dir, {
+        "session_key": key, "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "goes to resumed target"},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert _message_rows(db, "target-sid") == [("user", "goes to resumed target")]
+    assert _message_rows(db, "ended-sid") == []
+
+
+def test_recover_still_selects_newest_row_ended_by_recoverable_accident(tmp_path, monkeypatch):
+    """The recoverable arm of the filter: a newest row ended by an accidental reason
+    ('agent_close') stays selectable, so those messages still land on the newest row."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    key = "agent:main:telegram:dm:9"
+    db.create_session("older-sid", "telegram", session_key=key)
+    db.create_session("accident-sid", "telegram", session_key=key)
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1000, "older-sid"))
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (2000, "accident-sid"))
+        db._conn.commit()
+    db.end_session("accident-sid", "agent_close")
+    _write_flush_file(flush_dir, {
+        "session_key": key, "reason": "shutdown", "ts": int(time.time()),
+        "data": {"text": "accidental ends stay selectable"},
+    })
+
+    count = recover_pending_to_db(db)
+
+    assert count == 1
+    assert _message_rows(db, "accident-sid") == [("user", "accidental ends stay selectable")]
+    assert _message_rows(db, "older-sid") == []

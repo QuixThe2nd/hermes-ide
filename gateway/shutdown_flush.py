@@ -235,16 +235,20 @@ def _resolve_session_id_for_key(session_db, session_key: str) -> str:
     """Resolve a gateway routing key to a sessions row id; ``""`` when nothing matches.
 
     A ``session_key`` that already IS a raw session id (transcript-spool payloads store the
-    real session_id there) is used directly. Otherwise the newest row for the key wins — the
-    same newest-row-per-key rule as ``SessionDB.list_gateway_sessions``. Lookup failures
+    real session_id there) is used directly. Otherwise the newest live row for the key wins
+    (open, or ended only by a recoverable accident like ``agent_close``) — deliberate ends
+    such as ``session_switch`` and ``new_session`` are skipped, so a row a /resume switched
+    away from never steals the message from the reopened older target. Lookup failures
     degrade to ``""`` (caller keeps the flush file) rather than aborting recovery.
     """
+    from hermes_state_common import _RECOVERABLE_END_REASONS_SQL
     try:
         row = session_db._read_one("SELECT id FROM sessions WHERE id = ? LIMIT 1",
                                    (session_key,))
         if row is None:
             row = session_db._read_one(
                 "SELECT id FROM sessions WHERE session_key = ? "
+                f"AND (ended_at IS NULL OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL})) "
                 "ORDER BY started_at DESC LIMIT 1", (session_key,))
     except Exception as exc:
         logger.debug("session_key-to-id resolution failed for %s: %s", session_key, exc)
