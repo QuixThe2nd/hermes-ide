@@ -524,20 +524,6 @@ class GatewayInboundMixin:
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-            if self._draining:
-                # Drain window: an in-memory-only merge would die with the
-                # process bounce. Route through the durable drain queue when
-                # the busy policy allows it; otherwise the honest refusal,
-                # same answer text follow-ups get — never a silent loss.
-                from gateway.run_drain_queue import queue_drain_busy_message
-
-                if self._queue_during_drain_enabled(
-                    self._effective_busy_input_mode(source)
-                ) and queue_drain_busy_message(self, event, _quick_key):
-                    return True, (
-                        f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                    )
-                return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
         return False, None
@@ -639,11 +625,9 @@ class GatewayInboundMixin:
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
         if self._draining:
-            from gateway.run_drain_queue import queue_drain_busy_message
-
-            queue_during_drain = self._queue_during_drain_enabled(
-                effective_busy_input_mode
-            ) and queue_drain_busy_message(self, event, _quick_key)
+            queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
+            if queue_during_drain:
+                self._queue_or_replace_pending_event(_quick_key, event)
             return (
                 f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                 if queue_during_drain
@@ -971,16 +955,6 @@ class GatewayInboundMixin:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:
-            # Plain text reaching this sink is queued durably for the post-restart
-            # replay (commands keep the refusal — lifecycle-sensitive during drain).
-            if not command:
-                from gateway.run_drain_queue import queue_drain_refused_message
-
-                _queued_ack = queue_drain_refused_message(
-                    self, event, self._session_key_for_source(source)
-                )
-                if _queued_ack is not None:
-                    return True, _queued_ack, command
             return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
 
         # User-defined quick commands (bypass agent loop, no LLM call)

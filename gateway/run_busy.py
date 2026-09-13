@@ -402,14 +402,11 @@ class GatewayBusySessionMixin:
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
         """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
-        from gateway.run_drain_queue import queue_drain_busy_message
-
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return
-        if self._queue_during_drain_enabled(effective_mode) and queue_drain_busy_message(
-            self, event, session_key
-        ):
+        if self._queue_during_drain_enabled(effective_mode):
+            self._queue_or_replace_pending_event(session_key, event)
             message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
         else:
             message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
