@@ -84,10 +84,20 @@ jobs:
           bash .github/scripts/fork-sync-sequential.sh
 
       # Only fires when the sync step itself never ran (checkout failure).
-      # Sync-step failures already alerted inside the script; this step must
-      # not mask anything, so it always exits 0.
+      # Sync-step failures already alerted inside the script. Self-contained
+      # on purpose: a failed checkout leaves NO workspace, so this step must
+      # not depend on any checked-out file. Delivery failure is downgraded to
+      # a warning so the original failure stays visible; never exits nonzero.
       - name: Alert when the sync step never ran
         if: failure() && steps.sync.outcome == 'skipped'
         env:
           SYNC_ALERT_WEBHOOK: ${{ secrets.DISCORD_SYNC_ALERT }}
-        run: bash .github/scripts/fork-sync-sequential.sh alert "fork-sync failed before the sync step ran (checkout/setup)"
+          SYNC_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          payload=$(jq -cn --arg content "fork-sync FAILED: pre-sync failure (checkout/setup) | branch: ${SYNC_TARGET_BRANCH:-main} | run: ${SYNC_RUN_URL:-n/a}" \
+            '{content: $content, allowed_mentions: {parse: []}}')
+          if ! curl --fail --silent --show-error --max-time 20 \
+               -H 'Content-Type: application/json' \
+               -d "$payload" "$SYNC_ALERT_WEBHOOK" >/dev/null 2>&1; then
+            echo "::warning::alert delivery failed; the original failure above is the real problem"
+          fi
