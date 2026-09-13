@@ -17168,7 +17168,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # if the loop somehow isn't live, startup has NOT reached the
             # milestone and the watchdog must stay armed.
             try:
-                from gateway.startup_watchdog import disarm_startup_watchdog
+                from hermes_startup_watchdog import disarm_startup_watchdog
 
                 disarm_startup_watchdog()
             except Exception:
@@ -38731,7 +38731,7 @@ def main():
     # fast-path in hermes_cli.main.) Disarmed by GatewayRunner once the
     # event loop is confirmed live.
     try:
-        from gateway.startup_watchdog import arm_startup_watchdog
+        from hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()
     except Exception:
         pass
