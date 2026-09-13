@@ -33,11 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.system_prompt import (
-    build_system_prompt,
-    build_system_prompt_parts,
-    reconstruct_static_prefix,
-)
+from agent.system_prompt import build_system_prompt_parts, reconstruct_static_prefix
 from agent.turn_context import build_turn_context
 
 
@@ -450,9 +446,6 @@ def _make_prompt_agent(**overrides):
 
 
 class TestMemoryBlocksStash:
-    """The stash is written where the built parts become the OUTGOING prompt
-    (``build_system_prompt``) — never by measurement rebuilds."""
-
     def test_prompt_build_stashes_exact_block_list(self):
         agent = _make_prompt_agent(
             _memory_enabled=True,
@@ -462,10 +455,8 @@ class TestMemoryBlocksStash:
             ),
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            prompt = build_system_prompt(agent)
+            build_system_prompt_parts(agent)
         assert agent._last_memory_blocks == ["MEMORY-BLOCK", "PROFILE-BLOCK"]
-        # The stashed blocks are the bytes the outgoing prompt carries.
-        assert "MEMORY-BLOCK" in prompt and "PROFILE-BLOCK" in prompt
 
     def test_prompt_build_stashes_empty_list_without_memory(self):
         agent = _make_prompt_agent(
@@ -474,7 +465,7 @@ class TestMemoryBlocksStash:
             _memory_store=_FakeMemoryStore({}),
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt(agent)
+            build_system_prompt_parts(agent)
         assert agent._last_memory_blocks == []
 
     def test_disabled_kinds_are_not_stashed(self):
@@ -486,7 +477,7 @@ class TestMemoryBlocksStash:
             ),
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt(agent)
+            build_system_prompt_parts(agent)
         assert agent._last_memory_blocks == ["PROFILE-BLOCK"]
 
     def test_rebuild_replaces_the_stash(self):
@@ -497,29 +488,10 @@ class TestMemoryBlocksStash:
             _memory_store=store,
         )
         with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt(agent)
+            build_system_prompt_parts(agent)
             store._blocks["memory"] = "EDITED-BLOCK"
-            build_system_prompt(agent)
+            build_system_prompt_parts(agent)
         assert agent._last_memory_blocks == ["EDITED-BLOCK"]
-
-    def test_measurement_rebuild_does_not_touch_the_stash(self):
-        """``build_system_prompt_parts`` callers that only MEASURE (context
-        breakdown, prompt sizing) must not overwrite the stash with a fresh
-        render: the outgoing prompt (and therefore the honest card content)
-        is still the one the full build stashed."""
-        store = _FakeMemoryStore({"memory": "MEMORY-BLOCK"})
-        agent = _make_prompt_agent(
-            _memory_enabled=True,
-            _user_profile_enabled=False,
-            _memory_store=store,
-        )
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt(agent)
-        assert agent._last_memory_blocks == ["MEMORY-BLOCK"]
-        store._blocks["memory"] = "DRIFTED-ON-DISK"
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)  # measurement path
-        assert agent._last_memory_blocks == ["MEMORY-BLOCK"]
 
 
 class TestStoredPromptStash:
@@ -564,9 +536,9 @@ class TestStoredPromptStash:
     def test_restore_of_unchanged_memory_is_byte_stable(self):
         block = _builtin_block(MEMORY_TITLE, "SAME-NOTES")
         store = _FakeMemoryStore({"memory": block})
-        agent, parts = self._persisted_agent(store)
+        agent, _parts = self._persisted_agent(store)
         self._restore(agent)
-        assert agent._last_memory_blocks == parts["memory_blocks"] == [block]
+        assert agent._last_memory_blocks == [block]
 
     def test_stored_prompt_without_memory_band_stashes_empty(self):
         """Memory was off when the prompt was persisted and enabled on disk

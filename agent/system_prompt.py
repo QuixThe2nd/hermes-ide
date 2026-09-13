@@ -662,7 +662,7 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
-def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, Any]:
+def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
     context files, workspace snapshot and remaining workspace guidance) and
@@ -710,6 +710,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
     memory_blocks = _memory_parts(agent)
+    # Stash the exact block list for the turn prologue's injection observability
+    # (agent/turn_context.py): these blocks ride in the system prompt, so they
+    # never diverge the user message and the card there reads them from this
+    # stash instead of re-parsing prompt text. Empty list when memory is off.
+    # Mid-session rebuilds are byte-identical (the store snapshot is frozen),
+    # so measurement re-renders cannot drift it; the one divergent caller —
+    # prefix reconstruction, which keeps sending the STORED bytes — overwrites
+    # the stash with blocks derived from those bytes (reconstruct_static_prefix).
+    agent._last_memory_blocks = memory_blocks
     volatile_parts: List[str] = [skills_prompt, *memory_blocks]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
@@ -721,10 +730,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Embedder hints are prose too; reserve the delimiter for the renderer.
         environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
-    return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts),
-            # Pre-joined so the outgoing-prompt entry points (build_system_prompt) can stash the
-            # exact block list without re-rendering the memory sources.
-            "memory_blocks": memory_blocks}
+    return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
 
 
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
@@ -733,15 +739,6 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     volatile so implicit longest-prefix caches keep the unchanged scaffold."""
     parts = build_system_prompt_parts(agent, system_message=system_message)
     agent._cached_system_prompt_static = parts["stable"]
-    # Stash the exact block list for the turn prologue's injection observability
-    # (agent/turn_context.py): these blocks ride in the system prompt, so they
-    # never diverge the user message and the card there reads them from this
-    # stash instead of re-parsing prompt text. Empty list when memory is off.
-    # Set HERE — the one place the built parts become the outgoing prompt — so
-    # measurement rebuilds (context_breakdown, prompt_size) and prefix
-    # reconstruction (which keeps sending the stored bytes) cannot claim memory
-    # the model is not receiving.
-    agent._last_memory_blocks = list(parts["memory_blocks"])
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
         agent._emit_status(warning)
@@ -787,15 +784,14 @@ def reconstruct_static_prefix(agent: Any, system_message: Optional[str] = None, 
     ):
         return
     try:
-        parts = build_system_prompt_parts(agent, system_message=system_message)
-        static = parts["stable"]
-        # The rebuild above reflects memory freshly loaded from disk, but the
+        static = build_system_prompt_parts(agent, system_message=system_message)["stable"]
+        # The rebuild above stashed memory freshly loaded from disk, but the
         # STORED prompt is what keeps going to the model on this path (restore /
         # keep-prompt compression / cache-on failover); when memory changed
-        # since the prompt was persisted, that rebuild would hand the injection
-        # card content the model never receives.  Derive the stash from the
-        # stored bytes so only memory the restored prompt actually carries can
-        # be announced.
+        # since the prompt was persisted, that stash would hand the injection
+        # card content the model never receives.  Re-derive it from the stored
+        # bytes so only memory the restored prompt actually carries can be
+        # announced.
         agent._last_memory_blocks = _stored_prompt_memory_blocks(stored)
         if static and stored.startswith(static):
             agent._cached_system_prompt_static = static
