@@ -1,5 +1,10 @@
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
-background tasks, MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
+background tasks, MCP reload.
+
+DORMANT mixin: ``GatewayRunner`` (``gateway/run.py``) composes only the authorization,
+kanban-watcher, slash-commands and hygiene/compression mixins — NOT this class. The live
+implementations of the methods here are the copies in ``gateway/run.py``; edits to this
+module do not run. Kept as the extraction target for a future recompose. ``gateway.run`` internals
 are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.
 """
 

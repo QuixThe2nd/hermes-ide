@@ -1,6 +1,11 @@
 """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner.
 
-Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
+Split out of ``gateway/run.py``.
+
+DORMANT mixin: ``GatewayRunner`` (``gateway/run.py``) composes only the authorization,
+kanban-watcher, slash-commands and hygiene/compression mixins — NOT this class. The live
+implementations of the methods here are the copies in ``gateway/run.py``; edits to this
+module do not run. Kept as the extraction target for a future recompose.
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle),
 so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """

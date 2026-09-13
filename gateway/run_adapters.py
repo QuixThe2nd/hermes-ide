@@ -1,5 +1,10 @@
 """Adapter connect/disconnect, fatal-error recovery, reconnect watcher and multiplex profile
-adapters for GatewayRunner (mixin bound via the MRO).
+adapters for GatewayRunner.
+
+DORMANT mixin: ``GatewayRunner`` (``gateway/run.py``) composes only the authorization,
+kanban-watcher, slash-commands and hygiene/compression mixins — NOT this class. The live
+implementations of the methods here are the copies in ``gateway/run.py``; edits to this
+module do not run. Kept as the extraction target for a future recompose.
 
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
 ``patch("gateway.run.X")`` keeps intercepting them at call time.
