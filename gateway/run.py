@@ -3745,6 +3745,11 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
+from gateway.run_drain_queue import (
+    queue_drain_busy_message,
+    queue_drain_refused_message,
+    replay_drain_queue,
+)
 from gateway.turn_context import TurnContext
 from gateway.run_turn import is_context_overflow_failure_result
 from gateway.platforms.base import (
@@ -13765,8 +13770,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-            if self._queue_during_drain_enabled(effective_mode):
-                self._queue_or_replace_pending_event(session_key, event)
+            if self._queue_during_drain_enabled(effective_mode) and queue_drain_busy_message(
+                self, event, session_key
+            ):
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
@@ -18035,6 +18041,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # a session whose final response was generated but never
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
+        #
+        # Drain-queued messages first: replay claims the snapshot, re-injects
+        # each event into the owning adapter's FIFO and starts the turn for
+        # sessions the cooperative resume set does not already cover. Running
+        # before the resume scheduler lets both share one allowlist read and
+        # sees the replay turns' pre-claimed slots (no double turn).
+        replay_drain_queue(self)
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
@@ -22927,9 +22940,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._draining:
                 queue_during_drain = self._queue_during_drain_enabled(
                     effective_busy_input_mode
-                )
-                if queue_during_drain:
-                    self._queue_or_replace_pending_event(_quick_key, event)
+                ) and queue_drain_busy_message(self, event, _quick_key)
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if queue_during_drain
@@ -23176,6 +23187,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # rewritten command is gated under its FINAL name.
         _cold_drain_notice = self._slash_drain_gate_notice(canonical)
         if _cold_drain_notice is not None:
+            # Plain text / media the gate refused is no longer dropped: the
+            # idle session has no in-memory queue to join, so queue it
+            # durably for the post-restart process to replay. Slash commands
+            # keep the notice — the gate verdict itself is untouched.
+            if canonical is None:
+                _drain_queued_ack = queue_drain_refused_message(
+                    self, event, _quick_key
+                )
+                if _drain_queued_ack is not None:
+                    return _drain_queued_ack
             return _cold_drain_notice
 
         plain_handler = self._gateway_plain_command_handlers().get(canonical)

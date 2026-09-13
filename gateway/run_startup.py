@@ -1255,6 +1255,11 @@ class GatewayStartupMixin:
         )
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
+        # Drain-queued messages replay first (shared allowlist read; replay's pre-claimed slots
+        # keep the scheduler from synthesizing a second turn for the same session).
+        from gateway.run_drain_queue import replay_drain_queue
+
+        replay_drain_queue(self)
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
         # Surface state.db init failures to messaging platforms before the user loses data.
