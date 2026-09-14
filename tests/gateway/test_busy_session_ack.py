@@ -515,7 +515,10 @@ class TestSteerDeliveredAck:
         # Only the immediate busy-steer bubble so far — delivery hasn't happened.
         assert adapter._send_with_retry.await_count == 1
         assert "Steered" in adapter._send_with_retry.call_args.kwargs["content"]
-        assert agent.steer_calls == ["also check the tests"]
+        # Steer payload carries the message-origin preamble (see TestBusySessionAck).
+        assert len(agent.steer_calls) == 1
+        assert agent.steer_calls[0].endswith("also check the tests")
+        assert '"chat_id": "123"' in agent.steer_calls[0]
         assert len(agent.listeners) == 1
 
         # Mid-run injection fires the listener (agent thread); the follow-up
@@ -553,7 +556,8 @@ class TestSteerDeliveredAck:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        assert agent.steer_calls == ["also check the tests"]
+        assert len(agent.steer_calls) == 1
+        assert agent.steer_calls[0].endswith("also check the tests")
         assert agent.listeners == []
         assert runner._session_state(sk).turn.steer_delivered_listener is None
         assert adapter._send_with_retry.await_count == 1  # immediate ack only
@@ -614,7 +618,9 @@ class TestSteerDeliveredAck:
         )
         await runner._handle_active_session_busy_message(second, sk)
 
-        assert agent.steer_calls == ["also check the tests", "and the migrations"]
+        assert len(agent.steer_calls) == 2
+        assert agent.steer_calls[0].endswith("also check the tests")
+        assert agent.steer_calls[1].endswith("and the migrations")
         assert len(agent.listeners) == 1
         assert runner._session_state(sk).turn.steer_delivered_listener is not first
 
@@ -679,6 +685,17 @@ class TestLongRunningNotificationOwnership:
     'running: delegate_agent' bubble outlives the run that spawned it (#12029).
     """
 
+    @staticmethod
+    def _qualifying_runner(agent):
+        """Bare runner whose 'sess' turn slot is owned by ``agent`` — state
+        that otherwise qualifies the heartbeat for emission."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._running_agents["sess"] = agent
+        return runner
+
     def test_notification_stops_after_session_ownership_moves(self):
         from gateway.run import GatewayRunner
 
@@ -692,5 +709,32 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
+
+    def test_notification_suppressed_while_restart_requested(self):
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is False
+
+    def test_notification_emitted_when_restart_not_requested(self):
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = False
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
+
+    def test_notification_emitted_when_restart_flag_missing(self):
+        # Back-compat: bare runners built without the attribute still heartbeat.
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
 
 
