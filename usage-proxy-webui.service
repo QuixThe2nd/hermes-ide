@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/root/.hermes/scratch/usage-proxy-webui
-ExecStart=/usr/bin/python3 server.py --host 192.168.30.20 --port 9136
+ExecStart=/usr/bin/python3 server.py --host 192.168.30.20 --port 9136 --db /root/.hermes/usage-proxy/usage.sqlite
 Restart=always
 RestartSec=2
 
