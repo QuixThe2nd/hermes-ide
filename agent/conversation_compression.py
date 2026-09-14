@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import dataclasses
 import inspect
 import json
 import logging
