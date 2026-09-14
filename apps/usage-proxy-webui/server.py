@@ -146,7 +146,8 @@ def _badge_logo(letter: str, tile: str) -> str:
 # rule, a bare "glm" (no dash) stays neutral, and shorter rules (Kimi's
 # native "k3"/"k2", the bare "o3") sit behind their longer siblings — the
 # table also covers the aggregator-normalized "vendor/model" spellings
-# ("anthropic/…", "openai/…", "z-ai/…", "x-ai/…", "kimi/…") ledgers record.
+# ("anthropic/…", "openai/…", "z-ai/…", "x-ai/…", "kimi/…") ledgers record,
+# and the canonical unhyphenated catalog spellings ("xai/…", "moonshotai/…").
 PROVIDER_PREFIXES = (
     ("openrouter/", "openrouter"),
     ("claude-", "claude"),
@@ -156,9 +157,11 @@ PROVIDER_PREFIXES = (
     ("gpt-", "openai"),
     ("grok-", "grok"),
     ("x-ai/", "grok"),
+    ("xai/", "grok"),
     ("kimi-", "kimi"),
     ("kimi/", "kimi"),
     ("moonshot/", "kimi"),
+    ("moonshotai/", "kimi"),
     ("glm-", "zai"),
     ("z-ai/", "zai"),
     ("zai", "zai"),
@@ -1250,8 +1253,9 @@ JS = r"""
   var PROVIDER_PREFIXES = [
     ['openrouter/', 'openrouter'], ['claude-', 'claude'], ['anthropic/', 'claude'],
     ['codex', 'openai'], ['openai/', 'openai'], ['gpt-', 'openai'],
-    ['grok-', 'grok'], ['x-ai/', 'grok'], ['kimi-', 'kimi'], ['kimi/', 'kimi'],
-    ['moonshot/', 'kimi'], ['glm-', 'zai'], ['z-ai/', 'zai'],
+    ['grok-', 'grok'], ['x-ai/', 'grok'], ['xai/', 'grok'],
+    ['kimi-', 'kimi'], ['kimi/', 'kimi'], ['moonshot/', 'kimi'],
+    ['moonshotai/', 'kimi'], ['glm-', 'zai'], ['z-ai/', 'zai'],
     ['zai', 'zai'], ['o4-', 'openai'], ['o3', 'openai']
   ];
   var PROVIDER_EXACT = { k3: 'kimi', k2: 'kimi' };  /* native bare IDs */
