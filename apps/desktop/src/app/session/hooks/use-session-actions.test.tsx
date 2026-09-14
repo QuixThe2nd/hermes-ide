@@ -4106,6 +4106,8 @@ describe('openNewSessionTile workspace target', () => {
   afterEach(() => {
     cleanup()
     $profiles.set([])
+    $newChatProfile.set(null)
+    $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
     $sessionTiles.set([])
@@ -4182,6 +4184,51 @@ describe('openNewSessionTile workspace target', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.create', expect.any(Object))
     expect(vi.mocked(requestGatewayForAgent)).not.toHaveBeenCalled()
     expect($sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))).toBe(false)
+    expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'omar', storedSessionId }))
+    expect(knownOwnerForSession(storedSessionId)).toBe('omar')
+
+    await expect(
+      requestForOwnedSession(storedSessionId, requestGateway, 'session.control.read', {
+        session_id: RUNTIME_SESSION_ID
+      })
+    ).resolves.toEqual({ control: {} })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'omar',
+      'session.control.read',
+      { session_id: RUNTIME_SESSION_ID },
+      undefined,
+      undefined
+    )
+  })
+
+  it('records the draft profile owner when tab-strip create omits profile', async () => {
+    const storedSessionId = 'stored-unlisted-draft-omar'
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    $newChatProfile.set('omar')
+    $activeGatewayProfile.set('default')
+    setConnection({ mode: 'local' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: storedSessionId
+        } as never
+      }
+
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false })
+    })
+
     expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'omar', storedSessionId }))
     expect(knownOwnerForSession(storedSessionId)).toBe('omar')
 

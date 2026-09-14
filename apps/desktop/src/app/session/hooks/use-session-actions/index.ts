@@ -769,13 +769,15 @@ export function useSessionActions({
         // occupied (openTab path for "New session in Home").
         const capturedRoute = options?.route !== undefined ? options.route : resolveNewChatOwnerRoute(options?.profile)
 
-        // A named local profile deliberately uses the legacy profile-only
-        // transport, so it has no connectionId to capture. For an explicit,
-        // unique non-default profile from the active local roster, the bare
-        // profile is still an authoritative pool owner. Keep every other null
-        // route unresolved: explicit null, default, remote, missing or
-        // duplicate profile intent retains its prior behavior.
-        const requestedProfile = typeof options?.profile === 'string' ? normalizeProfileKey(options.profile) : null
+        // A named local profile uses the legacy profile-only transport (no
+        // connectionId). Tab-strip "+" omits `options.profile`; the draft or
+        // active profile is still the owner. Unique non-default local roster
+        // names stay authoritative; default/remote/duplicate stay unresolved.
+        const requestedProfile = normalizeProfileKey(
+          typeof options?.profile === 'string' && options.profile
+            ? options.profile
+            : ($newChatProfile.get() || $activeGatewayProfile.get())
+        )
         const legacyOwnerProfile =
           options?.route === undefined &&
           !capturedRoute &&
