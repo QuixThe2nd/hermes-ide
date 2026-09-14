@@ -1169,8 +1169,9 @@ class GatewayInboundMixin:
             if _rescued is None:
                 return event, source, is_internal
             # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+            # otherwise into overflow behind the already-staged next orphan. A re-delivered
+            # copy of the rescued (or any queued) message id is dropped, never parked twice.
+            self._rescue_park_incoming_event(_quick_key, event, _orphan_adapter, _rescued)
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)

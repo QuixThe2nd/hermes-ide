@@ -12336,6 +12336,98 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # it up.  Clearing happens on /new and /reset via
     # _handle_reset_command.
 
+    @staticmethod
+    def _fifo_message_id(event: Any) -> str:
+        """Dedupe key for queue re-delivery: the inbound platform message id.
+
+        Synthetic events (goal continuations, heartbeats) carry no id and are
+        never deduped — each is a distinct turn by construction.
+        """
+        message_id = getattr(event, "message_id", None)
+        return str(message_id).strip() if message_id else ""
+
+    def _find_queued_copy_by_message_id(
+        self, session_key: str, message_id: str, adapter: Any
+    ) -> Optional["MessageEvent"]:
+        """Return the already-queued event with this platform message id, if any."""
+        if not message_id:
+            return None
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if isinstance(pending_slot, dict):
+            slot_event = pending_slot.get(session_key)
+            if (
+                slot_event is not None
+                and self._fifo_message_id(slot_event) == message_id
+            ):
+                return slot_event
+        _q_state = self._peek_session_state(session_key)
+        conversation = getattr(_q_state, "conversation", None) if _q_state else None
+        overflow = getattr(conversation, "queued_events", None) if conversation else None
+        if overflow:
+            for queued_copy in overflow:
+                if self._fifo_message_id(queued_copy) == message_id:
+                    return queued_copy
+        return None
+
+    def _drop_redelivered_fifo_copy(
+        self, session_key: str, message_id: str, queued_copy: "MessageEvent"
+    ) -> None:
+        """Collapse a re-delivered platform message id into its ONE queued turn.
+
+        The incoming copy is dropped (it would run as its own full agent
+        turn — the observed amplification loop) and the surviving queued copy
+        is marked ``redelivered`` so the model can tell it from a fresh
+        message. One log line per drop.
+        """
+        try:
+            queued_copy.redelivered = True
+        except Exception:
+            pass
+        logger.info(
+            "Dropped re-delivered copy of message id %s for session %s — the "
+            "message is already queued; its queued copy is marked as a "
+            "re-delivery (one platform message, one turn)",
+            message_id,
+            session_key,
+        )
+
+    def _purge_redelivered_overflow_copies(
+        self,
+        session_key: str,
+        kept: "MessageEvent",
+        overflow: Optional[List["MessageEvent"]],
+    ) -> int:
+        """Drop overflow copies sharing ``kept``'s message id; mark ``kept``.
+
+        Called when an overflow event is taken out to run (promotion or
+        rescue): every same-id sibling left behind would later run as its own
+        full turn for the SAME platform message. Returns the drop count.
+        """
+        message_id = self._fifo_message_id(kept)
+        if not message_id or not overflow:
+            return 0
+        dropped = 0
+        index = 0
+        while index < len(overflow):
+            if self._fifo_message_id(overflow[index]) == message_id:
+                overflow.pop(index)
+                dropped += 1
+                continue
+            index += 1
+        if dropped:
+            try:
+                kept.redelivered = True
+            except Exception:
+                pass
+            logger.info(
+                "Dropped %d re-delivered cop(y/es) of message id %s for session "
+                "%s at FIFO promotion — one platform message keeps one turn",
+                dropped,
+                message_id,
+                session_key,
+            )
+        return dropped
+
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""
         if adapter is None:
@@ -12343,6 +12435,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
             return
+        # One platform message id, one queued turn: a re-delivered copy
+        # parked here would run as its own turn at promotion time.
+        message_id = self._fifo_message_id(queued_event)
+        if message_id:
+            queued_copy = self._find_queued_copy_by_message_id(
+                session_key, message_id, adapter
+            )
+            if queued_copy is not None:
+                self._drop_redelivered_fifo_copy(session_key, message_id, queued_copy)
+                return
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(
                 queued_event
@@ -12372,6 +12474,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not overflow:
             return pending_event
         next_queued = overflow.pop(0)
+        # Collapse same-id siblings now: each would promote into its own
+        # full turn for the SAME platform message (the observed overflow
+        # amplification loop).
+        self._purge_redelivered_overflow_copies(session_key, next_queued, overflow)
         if pending_event is None:
             return next_queued
         if adapter is not None and hasattr(adapter, "_pending_messages"):
@@ -12431,6 +12537,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # this; do not fight it from the idle path.
                 return None
             head = overflow.pop(0)
+            # Collapse same-id siblings before staging: a re-delivered copy
+            # staged (or left) behind would run as its own turn for the SAME
+            # platform message (the observed overflow amplification loop).
+            self._purge_redelivered_overflow_copies(session_key, head, overflow)
             # Keep the slot occupied for the rest of the chain so the drain
             # promotes in order and any mid-chain arrival routes to overflow
             # instead of jumping the queue (same invariant as the drain's
@@ -12454,6 +12564,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
             return None
+
+    def _rescue_park_incoming_event(
+        self,
+        session_key: str,
+        incoming: "MessageEvent",
+        adapter: Any,
+        rescued: Optional["MessageEvent"],
+    ) -> None:
+        """Park the idle-path arrival behind a rescue chain, deduped by id.
+
+        The rescued orphan runs as THIS turn. When the incoming event is a
+        platform re-delivery of that same message id, parking it would queue
+        a SECOND turn for one platform message — drop it and mark the running
+        copy as a re-delivery instead. Anything else parks behind the chain
+        in FIFO order (``_enqueue_fifo`` drops copies already queued).
+        """
+        message_id = self._fifo_message_id(incoming)
+        rescued_id = self._fifo_message_id(rescued) if rescued is not None else ""
+        if message_id and rescued_id and message_id == rescued_id:
+            try:
+                rescued.redelivered = True
+            except Exception:
+                pass
+            logger.info(
+                "Dropped re-delivered copy of message id %s for session %s — "
+                "it is already running as this turn (idle FIFO rescue)",
+                message_id,
+                session_key,
+            )
+            return
+        self._enqueue_fifo(session_key, incoming, adapter)
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -13570,6 +13711,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # its own turn in arrival order. Photo bursts still merge into
         # the head slot via ``merge_pending_message_event`` (album
         # semantics); everything else appends to the overflow tail.
+        #
+        # One platform message id, one queued turn — checked BEFORE the
+        # media merge so a re-delivered photo/caption cannot double-merge
+        # into the head slot either; the queued copy keeps the turn and is
+        # marked as a re-delivery.
+        _dedupe_id = self._fifo_message_id(event)
+        if _dedupe_id:
+            _queued_copy = self._find_queued_copy_by_message_id(
+                session_key, _dedupe_id, adapter
+            )
+            if _queued_copy is not None:
+                self._drop_redelivered_fifo_copy(session_key, _dedupe_id, _queued_copy)
+                return
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         security_metadata_keys = (
@@ -24060,8 +24214,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # incoming event behind the rest of the chain: into the
                     # slot when the chain was a single orphan (so the
                     # post-turn drain picks it up), otherwise into overflow
-                    # behind the already-staged next orphan (FIFO).
-                    self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+                    # behind the already-staged next orphan (FIFO).  A
+                    # re-delivered copy of the rescued (or any queued)
+                    # message id is dropped, never parked as a second turn.
+                    self._rescue_park_incoming_event(
+                        _quick_key, event, _orphan_adapter, _rescued
+                    )
                     event = _rescued
                     # Same session key by construction; carry the orphan's
                     # own source so reply anchors / thread metadata point
@@ -24463,6 +24621,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     content_inlined=inline_flag is not False,
                 )
                 message_text = f"{context_note}\n\n{message_text}"
+
+        # Re-delivery marker: the queue layer already saw this platform
+        # message id (drain-snapshot replay, FIFO promotion/rescue of a
+        # duplicated id). The note is per-turn user content — like the
+        # Discord id note below, baking it into the cached system prompt
+        # would bust the agent-cache signature — and tells the model this is
+        # the SAME message re-delivered, not a new request, so it answers
+        # once instead of per copy.
+        if getattr(event, "redelivered", False):
+            _redelivery_id = getattr(event, "message_id", None)
+            _redelivery_note = "[Re-delivered message"
+            if _redelivery_id:
+                _redelivery_note += f" (id: `{_redelivery_id}`)"
+            _redelivery_note += (
+                " — the gateway received this platform message more than once "
+                "(queue replay / re-delivery). It is the SAME message, not a "
+                "new request: answer it once and ignore any further copies.]"
+            )
+            message_text = f"{_redelivery_note}\n\n{message_text}"
 
         # Discord: surface the triggering message id per-turn on the user
         # message rather than in the cached system prompt. message_id changes
