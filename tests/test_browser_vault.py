@@ -260,6 +260,51 @@ class TestClassifier:
 # Browser tool: origin binding + gating
 # ---------------------------------------------------------------------------
 
+_VAULT_TOOL_NAMES = (
+    "browser_vault_list",
+    "browser_vault_fill",
+    "browser_vault_unlock",
+    "browser_vault_save_login",
+    "browser_vault_enter_code",
+)
+
+
+class TestVaultLocalKillSwitch:
+    def test_config_false_removes_all_vault_tool_schemas(self):
+        import model_tools
+        from model_tools import get_tool_definitions
+
+        with patch("hermes_cli.config.load_config", return_value={"vault": {"local": {"enabled": False}}}), \
+             patch("tools.browser_tool_install.check_browser_requirements", return_value=True), \
+             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
+            defs = get_tool_definitions(enabled_toolsets=["browser"])
+        names = [d["function"]["name"] for d in defs]
+        assert not any(n.startswith("browser_vault_") for n in names)
+        assert "browser_navigate" in names
+
+    def test_key_absent_keeps_all_five(self):
+        from model_tools import get_tool_definitions
+
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("tools.browser_tool_install.check_browser_requirements", return_value=True), \
+             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
+            names = {d["function"]["name"] for d in get_tool_definitions(enabled_toolsets=["browser"])}
+        assert set(_VAULT_TOOL_NAMES) <= names
+
+    def test_handler_still_registered_when_gated(self):
+        import model_tools  # noqa: F401 — triggers discovery
+        from tools.registry import registry
+
+        with patch("hermes_cli.config.load_config", return_value={"vault": {"local": {"enabled": False}}}), \
+             patch("tools.browser_tool_install.check_browser_requirements", return_value=True), \
+             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
+            entry = registry.get_entry("browser_vault_list")
+        assert entry is not None and callable(entry.handler)
+        result = entry.handler({}, task_id=None)
+        assert isinstance(result, str)
+        assert json.loads(result)["success"] is True
+
+
 class TestBrowserVaultTools:
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose

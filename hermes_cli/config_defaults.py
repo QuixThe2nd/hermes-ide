@@ -2320,10 +2320,14 @@ DEFAULT_CONFIG = {
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
     # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
-    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
+    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is on by default
+    # (`vault.local.enabled`); set false to remove the five browser_vault_* tools from the schema.
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
+        "local": {
+            "enabled": True,        # Master switch for the five browser_vault_* tools: false removes them from the model's tool schema entirely.
+        },
         "onepassword": {
             "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
