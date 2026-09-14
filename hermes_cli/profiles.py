@@ -750,10 +750,36 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
             os.chmod(str(dst), 0o600)
 
 
+# Files a clone edits in place after copying. A ``--clone-all`` copy preserves symlinks
+# (``symlinks=True``), so a symlinked source ``.env`` would otherwise be edited THROUGH the link and
+# the channel stripping would mutate the SOURCE profile. These are materialized as real files first.
+_CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md")
+
+
+def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
+    """Replace symlinked root files the clone will edit with private copies of their targets (a
+    dangling link is dropped). Returns the relative names materialized."""
+    done: List[str] = []
+    for name in _CLONE_MATERIALIZE:
+        path = profile_dir / name
+        if not path.is_symlink():
+            continue
+        target = Path(os.path.realpath(path))
+        path.unlink()
+        if target.is_file():
+            shutil.copy2(target, path)
+        done.append(name)
+    return done
+
+
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    materialized = _materialize_symlinked_files(profile_dir)
+    if materialized:
+        logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
+                    canon, materialized, source_dir)
     # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -843,6 +869,9 @@ def create_profile(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
+    cloning = clone_from is not None or clone_all or clone_config
+    if clone_channels and not cloning:
+        raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
     canon = _canon_valid(name)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
@@ -855,46 +884,33 @@ def create_profile(
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+    source_dir = _resolve_clone_source(clone_from) if cloning else None
+    if source_dir is not None and clone_channels:
+        from hermes_cli.profile_channels import clone_channels_refusal
+        refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
+        if refusal:
+            raise ValueError(refusal)
     clear_named_profile_deleted(profile_dir)
-    source_dir = None
-    if clone_from is not None or clone_all or clone_config:
-        source_dir = _resolve_clone_source(clone_from)
-    if clone_all and source_dir:
-        _clone_all_into(source_dir, profile_dir, canon)
-    else:
-        _bootstrap_profile_dir(profile_dir, source_dir)
-    if source_dir is not None and not clone_channels:
-        from hermes_cli.profile_channels import strip_channel_settings
-        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
-        if stripped:
-            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-
-    # Seed an empty .env so the profile owns a credentials file from day one. Without it,
-    # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
-    # had no file until first write and the profile silently inherited shell API keys —
-    # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
-    _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
-
-    # Default SOUL.md to customize immediately (skipped when a clone already provided one).
-    with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this
-        from hermes_cli.default_soul import DEFAULT_SOUL_MD
-        _seed_file_if_missing(profile_dir / "SOUL.md", DEFAULT_SOUL_MD)
-
-    # Opt-out marker read by seed_profile_skills() and `hermes update`'s all-profile sync
-    # (the feature still works via the empty skills/ dir if this fails).
-    if no_skills:
-        _seed_file_if_missing(
-            profile_dir / NO_BUNDLED_SKILLS_MARKER,
-            "This profile opted out of bundled-skill seeding (`hermes profile create --no-skills`).\n"
-            "Delete this file to re-enable sync on the next `hermes update`.\n",
-        )
-
-    # Migrate config-only clones now so desktop/status don't warn that a just-created
-    # profile is v0/outdated; --clone-all snapshots stay byte-for-byte apart from the
-    # explicit runtime/history stripping above.
-    if not clone_all:
-        _migrate_profile_config_if_outdated(profile_dir)
-
+    # Build in a hidden sibling and publish with one rename: a running multiplexer rescans profiles/
+    # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
+    # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
+    # below has not removed yet.
+    staging = _clone_staging_dir(profile_dir)
+    try:
+        if clone_all and source_dir:
+            _clone_all_into(source_dir, staging, canon)
+        else:
+            _bootstrap_profile_dir(staging, source_dir)
+        if source_dir is not None and not clone_channels:
+            from hermes_cli.profile_channels import strip_channel_settings
+            stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
+            if stripped:
+                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
+        _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+        os.rename(staging, profile_dir)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     # --read-only rewrites the toolset config after any clone/migration, so it
     # sees the final config.yaml. Announced here (rather than by the caller)
     # so every entry point — CLI, dashboard, library — reports the constraint
@@ -906,11 +922,6 @@ def create_profile(
             "write_file and patch are disabled (file_readonly enabled)."
         )
 
-    # Description last, so a partial-create failure doesn't strand a description file.
-    if description and description.strip():
-        with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
-            write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
-
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
@@ -919,6 +930,7 @@ def create_profile(
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
+
 
 # The read-only mirror of the ``file`` toolset: same reads (``read_file``,
 # ``search_files``), no ``write_file``/``patch``. See TOOLSETS in toolsets.py.
@@ -996,6 +1008,53 @@ def apply_read_only_file_toolsets(profile_dir: Path) -> List[str]:
         return rewritten
     finally:
         reset_hermes_home_override(token)
+
+
+def _clone_staging_dir(profile_dir: Path) -> Path:
+    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
+    rename is atomic). A leftover from a crashed create is discarded."""
+    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
+    profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    if staging.is_symlink() or staging.is_file():
+        staging.unlink()
+    elif staging.is_dir():
+        shutil.rmtree(staging, ignore_errors=True)
+    return staging
+
+
+def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
+                           description: Optional[str]) -> None:
+    """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""
+    # Seed an empty .env so the profile owns a credentials file from day one. Without it,
+    # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
+    # had no file until first write and the profile silently inherited shell API keys —
+    # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
+    _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+
+    # Default SOUL.md to customize immediately (skipped when a clone already provided one).
+    with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+        _seed_file_if_missing(profile_dir / "SOUL.md", DEFAULT_SOUL_MD)
+
+    # Opt-out marker read by seed_profile_skills() and `hermes update`'s all-profile sync
+    # (the feature still works via the empty skills/ dir if this fails).
+    if no_skills:
+        _seed_file_if_missing(
+            profile_dir / NO_BUNDLED_SKILLS_MARKER,
+            "This profile opted out of bundled-skill seeding (`hermes profile create --no-skills`).\n"
+            "Delete this file to re-enable sync on the next `hermes update`.\n",
+        )
+
+    # Migrate config-only clones now so desktop/status don't warn that a just-created
+    # profile is v0/outdated; --clone-all snapshots stay byte-for-byte apart from the
+    # explicit runtime/history stripping above.
+    if not clone_all:
+        _migrate_profile_config_if_outdated(profile_dir)
+
+    # Description last, so a partial-create failure doesn't strand a description file.
+    if description and description.strip():
+        with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
+            write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
 
 
 def _notify_multiplexer(canon: str) -> None:
