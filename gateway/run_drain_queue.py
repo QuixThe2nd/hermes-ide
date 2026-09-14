@@ -25,12 +25,22 @@ Ownership of the underlying semantics stays where it was:
   (``_run_startup_resume_event``), so replayed turns are waited on by the
   same startup-restore gate as boot auto-resume turns.
 
-Replay is at-most-once: the snapshot is claimed by an atomic rename BEFORE
-any event is injected and deleted after, so a crash mid-replay can never
-double-deliver (a leftover claim file is discarded on the next boot).
-Events whose adapter is not live are retained, not dropped: their records
-return to the live snapshot and retry at the platform's reconnect or the
-next boot.
+Replay never loses an acknowledged message to a crash: the snapshot is
+claimed by an atomic rename BEFORE any event is injected, and a session
+group's records leave the claim ledger the moment their consumption is
+secured (turn dispatched, or a live/resumed turn owns the FIFO) — that
+rewrite IS the per-record dispatch state. A claim left by a crashed replay
+therefore holds exactly the un-delivered records, and the next boot RESUMES
+it instead of discarding it; the only duplicate window is a turn that fully
+completes between its dispatch and its ledger rewrite, and a duplicate
+answer outranks a lost one. Events whose adapter is not live are retained,
+not dropped: their records return to the live snapshot and retry at the
+platform's reconnect or the next boot; when that write-back fails, the
+claim file — the sole copy — is kept and retried after storage recovers.
+
+Under ``gateway.multiplex_profiles`` each profile's handler queues under
+its own home, so startup replays every served profile's queue, not just
+the launch home's.
 """
 
 from __future__ import annotations
@@ -50,9 +60,11 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DRAIN_QUEUE_FILENAME = "drain_message_queue.json"
-# Claim marker: the live snapshot is renamed here before injection, so a
-# crash mid-replay leaves this file (discarded on the next boot) instead of
-# a live snapshot a later boot would replay a second time.
+# Claim marker: the live snapshot is renamed here before injection. While a
+# replay runs the claim file doubles as the DISPATCH LEDGER — records are
+# rewritten out of it as their consumption is secured — so a crash mid-replay
+# leaves exactly the un-delivered set, which the next boot resumes (never
+# discards, never re-reads as a fresh queue).
 DRAIN_QUEUE_CLAIMED_FILENAME = "drain_message_queue.replaying.json"
 
 _SNAPSHOT_VERSION = 1
@@ -109,18 +121,33 @@ _EVENT_FIELDS = (
     "reply_to_author_name",
     "reply_to_is_own_message",
     "auto_skill",
+    # Channel-scoped instructions ride along so the replayed event re-enters
+    # the turn with the same per-channel system prompt and backfilled
+    # context the original inbound message carried — without them a drain
+    # would silently strip the channel's instructions from the queued
+    # message. They are applied at API call time and never persisted to the
+    # transcript, so the queue snapshot is not a second transcript copy.
+    "channel_prompt",
+    "channel_context",
     "internal",
     "allow_gateway_control",
 )
 
 
-def drain_queue_path() -> Path:
-    """Live snapshot path, beside ``cooperative_restart_resume.json``."""
-    return get_hermes_home() / "gateway" / DRAIN_QUEUE_FILENAME
+def drain_queue_path(home: Optional[Path] = None) -> Path:
+    """Live snapshot path, beside ``cooperative_restart_resume.json``.
+
+    *home* pins the profile home the queue belongs to — startup replay under
+    ``gateway.multiplex_profiles`` reads every served profile's file. The
+    default resolves the ambient home, which the drain-time append path
+    relies on: it always runs inside the owning profile's home scope.
+    """
+    base = Path(home) if home is not None else get_hermes_home()
+    return base / "gateway" / DRAIN_QUEUE_FILENAME
 
 
-def claimed_drain_queue_path() -> Path:
-    return drain_queue_path().parent / DRAIN_QUEUE_CLAIMED_FILENAME
+def claimed_drain_queue_path(home: Optional[Path] = None) -> Path:
+    return drain_queue_path(home).parent / DRAIN_QUEUE_CLAIMED_FILENAME
 
 
 # ── (de)serialization — the single pair, built on the existing event model ──
@@ -320,10 +347,15 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     Returns True only when the event is durably on disk; the caller must
     answer with the OLD refusal on False so the ack never promises a queue
     that does not exist. The per-session cap reuses the runner's
-    ``_BUSY_QUEUE_MAX_PENDING`` and counts the in-memory FIFO depth and the
-    durable snapshot TOGETHER against that one budget — the two pools are
-    two copies of the same backlog, so counting each separately would allow
-    up to 2× the cap per session across a drain window.
+    ``_BUSY_QUEUE_MAX_PENDING`` and counts the LOGICAL backlog — the union
+    of the in-memory FIFO and the durable snapshot. Once drain queueing
+    starts, every accepted event exists in BOTH pools (durable append, then
+    the FIFO enqueue), so the union is the larger of the two depths;
+    summing them counted each drain-window event twice and refused the
+    message that hit cap/2 (the 17th at the default cap of 32, with an
+    empty pre-drain backlog). A pre-drain backlog lives only in the FIFO;
+    records retained for a platform that was down at boot live only in the
+    snapshot — ``max`` counts each logical message once.
     """
     path = drain_queue_path()
     events = _load_snapshot_events(path)
@@ -342,10 +374,10 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
                 "Drain queue in-memory depth check failed for %s", session, exc_info=True
             )
             in_memory_depth = 0
-    if durable_depth + in_memory_depth >= cap:
+    if max(durable_depth, in_memory_depth) >= cap:
         logger.warning(
             "Dropping drain-time message for session %s — pending backlog at "
-            "cap (%d across in-memory FIFO + durable snapshot; %d + %d).",
+            "cap (%d logical event(s); in-memory FIFO %d, durable snapshot %d).",
             session,
             cap,
             in_memory_depth,
@@ -426,56 +458,34 @@ def queue_drain_busy_message(runner: Any, event: MessageEvent, session_key: str)
 # ── startup replay ───────────────────────────────────────────────────────────
 
 
-def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent, Dict[str, Any]]]]:
-    """Claim the snapshot atomically; None when there was nothing to replay.
+def _parse_claim_records(
+    path: Path,
+) -> Optional[List[Tuple[str, MessageEvent, Dict[str, Any]]]]:
+    """Parse a claimed snapshot into ``(session_key, event, raw_record)`` triples.
 
-    Returns ``(session_key, event, raw_record)`` triples — the raw record
-    rides along so a pass that cannot inject an event can write the ORIGINAL
-    bytes back without a re-serialize round trip.
-
-    Claiming renames the live file to the claim marker, so an injection
-    crash can never be re-read as a fresh queue. A leftover marker from a
-    previous crashed replay is discarded (never re-injected — at-most-once).
-    An unreadable SNAPSHOT is logged and dropped: startup must proceed. A
-    single unreadable RECORD only costs that record — the good ones in the
-    same file still replay, so one torn row cannot discard a whole drain
-    window's messages.
+    The raw record rides along so a pass that cannot inject an event can
+    write the ORIGINAL bytes back without a re-serialize round trip. A
+    single unreadable RECORD only costs that record (dropped + logged) — the
+    good ones in the same file still replay, so one torn row cannot discard
+    a whole drain window's messages. An unreadable FILE is quarantined as a
+    ``.bad`` sibling (its bytes may be all that is left of a drain window)
+    and returns None: startup must proceed either way.
     """
-    claimed = claimed_drain_queue_path()
-    if claimed.exists():
-        logger.warning(
-            "Discarding drain queue claim left by an interrupted replay "
-            "(events may already have been delivered): %s",
-            claimed.name,
-        )
-        try:
-            claimed.unlink()
-        except OSError:
-            logger.debug("Could not remove stale drain queue claim", exc_info=True)
-    path = drain_queue_path()
-    if not path.exists():
-        return None
-    try:
-        os.replace(path, claimed)
-    except OSError:
-        logger.warning("Drain queue claim failed; skipping replay this boot", exc_info=True)
-        return None
     import json
 
-    raw_events: Any = None
     try:
-        data = json.loads(claimed.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         raw_events = data.get("events") if isinstance(data, dict) else None
         if not isinstance(raw_events, list):
             raise ValueError("snapshot 'events' is not a list")
     except Exception as exc:
         logger.warning(
-            "Drain queue snapshot corrupt after claim; dropping %s queued "
-            "message(s) and continuing startup: %s",
-            "unknown" if raw_events is None else len(raw_events),
+            "Drain queue snapshot corrupt after claim (%s); quarantined and "
+            "continuing startup: %s",
+            path.name,
             exc,
         )
-        clear_claimed_drain_queue()
+        _quarantine_snapshot(path, str(exc))
         return None
     parsed: List[Tuple[str, MessageEvent, Dict[str, Any]]] = []
     dropped = 0
@@ -499,10 +509,63 @@ def claim_drain_queue() -> Optional[List[Tuple[str, MessageEvent, Dict[str, Any]
     return parsed
 
 
-def clear_claimed_drain_queue() -> None:
-    """Delete the claim marker after injection (end of the at-most-once window)."""
+def claim_drain_queue(
+    home: Optional[Path] = None,
+) -> Tuple[List[Tuple[str, MessageEvent, Dict[str, Any]]], bool]:
+    """Claim the snapshot atomically; it becomes the replay's dispatch ledger.
+
+    Returns ``(records, folded_live)``; an empty list means nothing to
+    replay. Claiming renames the live file to the claim marker, so an
+    injection crash can never be re-read as a fresh queue.
+
+    A claim marker left by a CRASHED replay is resumed, never discarded: it
+    holds exactly the records whose dispatch was never durably marked
+    (settled groups are rewritten out of it as they are consumed), so
+    dropping it would delete every acknowledged message the crash had not
+    yet delivered. A live snapshot written by a LATER drain window (after
+    that crash) was never claimed — its records are folded into this pass
+    and the file removed up-front, so a crash mid-pass cannot re-fold
+    already-settled records on the next boot.
+    """
+    claimed = claimed_drain_queue_path(home)
+    resuming = claimed.exists()
+    if resuming:
+        logger.warning(
+            "Resuming drain queue claim left by an interrupted replay "
+            "(records whose delivery was never confirmed): %s",
+            claimed.name,
+        )
+    else:
+        path = drain_queue_path(home)
+        if not path.exists():
+            return [], False
+        try:
+            os.replace(path, claimed)
+        except OSError:
+            logger.warning(
+                "Drain queue claim failed; skipping replay this boot", exc_info=True
+            )
+            return [], False
+    parsed = _parse_claim_records(claimed)
+    if parsed is None or not resuming:
+        return parsed or [], False
+    live = drain_queue_path(home)
+    if not live.exists():
+        return parsed, False
+    folded = _parse_claim_records(live)
+    if not folded:
+        return parsed, False
     try:
-        claimed_drain_queue_path().unlink(missing_ok=True)
+        live.unlink()
+    except OSError:
+        logger.debug("Could not remove folded drain queue snapshot", exc_info=True)
+    return parsed + folded, True
+
+
+def clear_claimed_drain_queue(home: Optional[Path] = None) -> None:
+    """Delete the claim marker after every record is settled (or retained)."""
+    try:
+        claimed_drain_queue_path(home).unlink(missing_ok=True)
     except OSError:
         logger.debug("Could not remove drain queue claim marker", exc_info=True)
 
@@ -528,35 +591,108 @@ def _pop_replay_head(runner: Any, adapter: Any, session_key: str) -> Optional[Me
     return None
 
 
-def _write_back_retained_records(records: List[Dict[str, Any]]) -> None:
+def _rewrite_claim_ledger(
+    pending: Dict[str, List[Dict[str, Any]]], home: Optional[Path] = None
+) -> bool:
+    """Atomically persist the still-owed records as the claim ledger."""
+    records = [record for group in pending.values() for record in group]
+    try:
+        atomic_json_write(
+            claimed_drain_queue_path(home),
+            {"version": _SNAPSHOT_VERSION, "events": records},
+            indent=None,
+        )
+        return True
+    except Exception:
+        logger.error(
+            "Drain queue dispatch-ledger rewrite failed; %d message(s) stay "
+            "claimed and will be re-replayed on the next boot (a duplicate "
+            "turn is possible; a lost one is not)",
+            len(records),
+            exc_info=True,
+        )
+        return False
+
+
+def _mark_group_dispatched(
+    pending: Dict[str, List[Dict[str, Any]]],
+    session_key: str,
+    home: Optional[Path] = None,
+) -> None:
+    """Durably mark one session group's records as dispatched.
+
+    This rewrite is the per-record dispatch state: a record's presence in
+    the claim ledger means "delivery not yet confirmed", so a crash right
+    after a dispatch leaves the group in the ledger and the next boot
+    re-replays it — at-least-once with a window of one rewrite, instead of
+    the old unconditional claim discard that lost everything the crashed
+    replay had acknowledged but not yet delivered.
+    """
+    records = pending.pop(session_key, None)
+    if not records:
+        return
+    if _rewrite_claim_ledger(pending, home):
+        return
+    pending[session_key] = records  # keep the in-memory mirror honest
+
+
+def _unlink_folded_live(home: Optional[Path] = None) -> None:
+    """Remove a folded snapshot left on disk (its records joined the pass)."""
+    try:
+        drain_queue_path(home).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Could not remove folded drain queue snapshot", exc_info=True)
+
+
+def _write_back_retained_records(
+    records: List[Dict[str, Any]],
+    home: Optional[Path] = None,
+    folded_live: bool = False,
+) -> bool:
     """Return never-injected records to the live snapshot (merge, never clobber).
 
-    The write happens BEFORE the claim marker is cleared, so a crash between
-    the two leaves the records in the live snapshot — the next replay pass
-    (platform reconnect or next boot) retries them; nothing is lost and,
-    because only never-injected records are written back, nothing is
-    delivered twice.
+    The claim ledger is rewritten to hold exactly *records* and then renamed
+    onto the live path, so the retained set is durably retryable at the
+    platform's reconnect or the next boot, and never exists in both files at
+    once. ``folded_live`` marks a pass that folded (and removed) a later
+    live snapshot: that content is already accounted for in this pass, so
+    the merge must not read the path again and resurrect dispatched records.
+
+    Returns False when either step fails — the claim file then remains the
+    sole durable copy of the retained records, and the caller must KEEP it:
+    clearing it would delete the last copy. The next boot resumes the claim
+    once storage recovers.
     """
-    path = drain_queue_path()
-    events = _load_snapshot_events(path)
+    claim = claimed_drain_queue_path(home)
+    path = drain_queue_path(home)
+    events: List[Dict[str, Any]] = [] if folded_live else _load_snapshot_events(path)
     events.extend(records)
     try:
         atomic_json_write(
-            path,
+            claim,
             {"version": _SNAPSHOT_VERSION, "events": events},
             indent=None,
         )
     except Exception:
-        # The claim marker still holds the records; the caller clears it as
-        # usual (at-most-once outranks retention). A write failure on the
-        # same directory means the next boot could not have replayed them
-        # either — fail loud, never silently pretend they were kept.
         logger.error(
-            "Drain queue write-back failed; %d retained message(s) cannot be "
-            "retried automatically",
+            "Drain queue write-back failed; keeping the claim file — it still "
+            "holds all %d retained message(s) and is retried once storage "
+            "recovers",
             len(records),
             exc_info=True,
         )
+        return False
+    try:
+        os.replace(claim, path)
+    except OSError:
+        logger.error(
+            "Drain queue claim could not be released onto the live snapshot; "
+            "keeping it — it holds exactly the %d retained message(s)",
+            len(records),
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> bool:
@@ -609,40 +745,62 @@ def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> boo
     return True
 
 
-def replay_drain_queue(runner: Any, platform: Optional[Platform] = None) -> int:
+def replay_drain_queue(
+    runner: Any,
+    platform: Optional[Platform] = None,
+    home: Optional[Path] = None,
+) -> int:
     """Replay the drain snapshot into the live queues; returns turns started.
 
     Called from gateway ``start()`` after adapters are ready and before the
-    resume scheduler runs. Every event re-enters the owning adapter's FIFO
-    through ``_queue_or_replace_pending_event`` (same merge/cap semantics as
-    live queueing). Sessions in the cooperative-restart resume set only
-    enqueue — their resumed turn picks pending events up at its post-turn
-    drain. Every other affected session gets a turn started for its head
-    event through the resume scheduler's dispatch path, so the queued text
-    is answered without waiting for the user to speak again.
+    resume scheduler runs (and, scoped to one platform, from the reconnect
+    watcher). *home* pins the profile home whose queue is replayed — under
+    ``multiplex_profiles`` startup goes through
+    ``replay_drain_queues_for_profiles`` so every served profile's file is
+    claimed; the drain-time append always writes the ambient (profile-scoped)
+    home. Every event re-enters the owning adapter's FIFO through
+    ``_queue_or_replace_pending_event`` (same merge/cap semantics as live
+    queueing). Sessions in the cooperative-restart resume set only enqueue —
+    their resumed turn picks pending events up at its post-turn drain. Every
+    other affected session gets a turn started for its head event through
+    the resume scheduler's dispatch path, so the queued text is answered
+    without waiting for the user to speak again.
 
-    Events whose adapter is not live (platform down at boot) are NOT
-    dropped: their records are written back to the live snapshot and retried
-    at the next natural point — the platform's reconnect (the reconnect
-    watcher calls this again scoped to ``platform``) or the next boot.
-    ``platform`` scopes a retry pass to one platform; other platforms'
-    records stay queued untouched.
+    Durability contract: a group's records leave the claim ledger only once
+    their consumption is secured (turn dispatched, or a live/scheduler-owned
+    turn will drain the FIFO), so a crash mid-replay leaves exactly the
+    un-delivered records claimed and the next boot resumes them. Events
+    whose adapter is not live (platform down at boot) are NOT dropped:
+    their records return to the live snapshot and retry at the next natural
+    point — the platform's reconnect or the next boot. ``platform`` scopes a
+    retry pass to one platform; other platforms' records stay queued
+    untouched.
     """
-    claimed = claim_drain_queue()
+    claimed, folded_live = claim_drain_queue(home)
     if not claimed:
+        if claimed_drain_queue_path(home).exists():
+            # A claim whose records were all unreadable: nothing to deliver,
+            # but the marker must not outlive the pass (the next boot would
+            # treat the corpse as a crashed replay's ledger).
+            clear_claimed_drain_queue(home)
         return 0
 
     grouped: Dict[str, List[Tuple[MessageEvent, Dict[str, Any]]]] = {}
     for session_key, event, record in claimed:
         grouped.setdefault(session_key, []).append((event, record))
 
+    # In-memory mirror of the claim ledger: the records still owed a
+    # delivery. Groups leave it (and the on-disk ledger via
+    # ``_mark_group_dispatched``) as their consumption is secured.
+    pending: Dict[str, List[Dict[str, Any]]] = {
+        session_key: [record for _event, record in items]
+        for session_key, items in grouped.items()
+    }
     injected: Dict[str, Any] = {}
-    retained_records: List[Dict[str, Any]] = []
     for session_key, items in grouped.items():
         source = items[0][0].source
         if platform is not None and getattr(source, "platform", None) != platform:
             # Scoped pass (platform reconnect): other platforms keep waiting.
-            retained_records.extend(record for _event, record in items)
             continue
         adapter = runner._adapter_for_source(source)
         if adapter is None:
@@ -652,25 +810,10 @@ def replay_drain_queue(runner: Any, platform: Optional[Platform] = None) -> int:
                 len(items),
                 session_key,
             )
-            retained_records.extend(record for _event, record in items)
             continue
         for event, _record in items:
             runner._queue_or_replace_pending_event(session_key, event)
         injected[session_key] = adapter
-
-    # Close the at-most-once window: retained records go back to the live
-    # snapshot first, then the claim is cleared — a crash in between leaves
-    # them retryable, never lost, and injected records never return.
-    if retained_records:
-        _write_back_retained_records(retained_records)
-    clear_claimed_drain_queue()
-    if not injected:
-        return 0
-    logger.info(
-        "Replaying %d drain-queued message(s) across %d session(s)",
-        len(claimed) - len(retained_records),
-        len(injected),
-    )
 
     allowlist = getattr(runner, "_resume_allowlist_for_this_boot", None)
     raw_allowlist = allowlist() if callable(allowlist) else None
@@ -682,16 +825,91 @@ def replay_drain_queue(runner: Any, platform: Optional[Platform] = None) -> int:
             runner, session_key, raw_allowlist
         ):
             # The scheduler resumes this session THIS boot; that turn drains
-            # the FIFO after it finishes — no second turn from replay.
+            # the FIFO after it finishes — no second turn from replay, and
+            # consumption is as secured as a dispatch would make it.
+            _mark_group_dispatched(pending, session_key, home)
             continue
         if runner._is_session_running(session_key):
             # Already busy (e.g. boot auto-resume claimed it): the FIFO is
             # consumed by that turn's post-turn drain — no second turn.
+            _mark_group_dispatched(pending, session_key, home)
             continue
         head = _pop_replay_head(runner, adapter, session_key)
         if head is None:
+            # Injected and the FIFO already consumed them: settled.
+            _mark_group_dispatched(pending, session_key, home)
             continue
-        started += _dispatch_replay_turn(runner, adapter, head, session_key)
+        if _dispatch_replay_turn(runner, adapter, head, session_key):
+            started += 1
+            _mark_group_dispatched(pending, session_key, home)
+        # A failed dispatch leaves the group in the ledger: its events sit
+        # in a FIFO with no turn to drain it, so the next boot/reconnect
+        # retries them instead of stranding the messages.
+
+    retained = [record for group in pending.values() for record in group]
+    if retained and not _write_back_retained_records(retained, home, folded_live):
+        # Write-back failed: the claim file still holds every retained
+        # record — the sole surviving copy. KEEP it (clearing it here would
+        # delete the messages); the next boot resumes the claim once
+        # storage recovers.
+        return started
+    clear_claimed_drain_queue(home)
+    if folded_live and not retained:
+        # A folded snapshot with nothing retained was fully consumed by this
+        # pass; the early fold usually removed it already.
+        _unlink_folded_live(home)
+    if not injected:
+        return 0
+    logger.info(
+        "Replaying %d drain-queued message(s) across %d session(s)",
+        len(claimed) - len(retained),
+        len(injected),
+    )
+    return started
+
+
+def replay_drain_queues_for_profiles(
+    runner: Any, platform: Optional[Platform] = None
+) -> int:
+    """Startup/reconnect entry: replay every queue this gateway can own.
+
+    Under ``gateway.multiplex_profiles`` a secondary profile's inbound
+    handler runs inside that profile's home scope, so its drain snapshot is
+    written under the PROFILE home — one ambient replay would claim only the
+    launch home's file and the secondary queues would sit unclaimed until
+    some later gateway serving them alone happens to boot. Enumerate the
+    served profiles through the same chokepoint gateway startup uses for
+    adapter and MCP discovery (``profiles_to_serve``) and replay each home's
+    queue explicitly. Single-profile gateways keep exactly the one ambient
+    pass they always had.
+    """
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        return replay_drain_queue(runner, platform=platform)
+    from hermes_cli.profiles import profiles_to_serve
+
+    try:
+        served = list(
+            profiles_to_serve(
+                multiplex=True,
+                profile_allowlist=getattr(config, "multiplex_profile_allowlist", None),
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Drain replay could not enumerate the multiplex profiles; "
+            "replaying the launch home only",
+            exc_info=True,
+        )
+        return replay_drain_queue(runner, platform=platform)
+    started = 0
+    for _profile_name, profile_home in served:
+        try:
+            started += replay_drain_queue(runner, platform=platform, home=profile_home)
+        except Exception:
+            logger.warning(
+                "Drain replay failed for profile home %s", profile_home, exc_info=True
+            )
     return started
 
 

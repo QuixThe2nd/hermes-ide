@@ -3762,7 +3762,7 @@ from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
 from gateway.run_drain_queue import (
     queue_drain_busy_message,
     queue_drain_refused_message,
-    replay_drain_queue,
+    replay_drain_queues_for_profiles,
 )
 from gateway.turn_context import TurnContext
 from gateway.run_turn import is_context_overflow_failure_result
@@ -18086,8 +18086,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # each event into the owning adapter's FIFO and starts the turn for
         # sessions the cooperative resume set does not already cover. Running
         # before the resume scheduler lets both share one allowlist read and
-        # sees the replay turns' pre-claimed slots (no double turn).
-        replay_drain_queue(self)
+        # sees the replay turns' pre-claimed slots (no double turn). Under
+        # multiplex_profiles every served profile's home-scoped queue is
+        # claimed, not just the launch home's.
+        replay_drain_queues_for_profiles(self)
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
@@ -19627,9 +19629,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         # Drain-queued messages retained for the same reason
-                        # (no live adapter at replay time) retry here too.
+                        # (no live adapter at replay time) retry here too —
+                        # across every served profile home under multiplex.
                         try:
-                            replay_drain_queue(self, platform=platform)
+                            replay_drain_queues_for_profiles(self, platform=platform)
                         except Exception:
                             logger.debug(
                                 "drain-queue retry after %s reconnect failed",

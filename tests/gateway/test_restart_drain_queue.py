@@ -24,6 +24,7 @@ writes and exactly what replay parses.
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from unittest.mock import AsyncMock
 
@@ -37,9 +38,15 @@ from gateway.run_drain_queue import (
     drain_queue_path,
     queue_drain_refused_message,
     replay_drain_queue,
+    replay_drain_queues_for_profiles,
     serialize_drain_event,
 )
 from gateway.session import SessionEntry
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -331,8 +338,11 @@ async def test_dispatch_failure_releases_the_preclaimed_slot(monkeypatch, caplog
     )
     assert not runner._is_session_running(session_key)
     adapter.handle_message.assert_not_called()
-    # The event was injected but never dispatched — the snapshot is spent
-    # (at-most-once), and nothing else claims the session is busy.
+    # The event was injected but never dispatched: its record stays queued in
+    # the LIVE snapshot, so the next boot/reconnect retries it instead of
+    # stranding the message in a FIFO no turn will drain. Nothing claims the
+    # session is busy in the meantime.
+    assert [e["event"]["text"] for e in _snapshot_events()] == ["never dispatched"]
 
 
 @pytest.mark.asyncio
@@ -689,31 +699,304 @@ async def test_one_corrupt_record_does_not_discard_the_good_ones(caplog):
 
 
 @pytest.mark.asyncio
-async def test_leftover_claim_from_crashed_replay_is_discarded_not_replayed():
-    """At-most-once across crashes: a claim file a crashed replay left behind
-    is thrown away — its events may already have been delivered."""
-    import os
-
-    source = make_restart_source(chat_id="crash-chat")
+async def test_crash_after_claim_before_dispatch_loses_nothing():
+    """Crash mid-replay, the exact window the claim exists for: the gateway
+    died after the atomic claim but before any event was dispatched. Those
+    messages were ACKNOWLEDGED ("queued for the next turn") — the next boot
+    resumes the claim and delivers them; deleting it would lose every one."""
+    source = make_restart_source(chat_id="crash-resume-chat")
     fresh, fresh_adapter = make_restart_runner()
     session_key = fresh._session_key_for_source(source)
-    # The crashed process had queued one message…
     _queue_in_draining_process(
-        _event("from the crashed replay", source=source), session_key
+        _event("acknowledged before the crash", source=source, message_id="m-1"),
+        session_key,
     )
-    # …claimed it for replay (atomic rename)…
-    os.replace(drain_queue_path(), claimed_drain_queue_path())
-    # …and died. The restart then wrote one NEW message during its own drain.
     _queue_in_draining_process(
-        _event("queued after the crash", source=source), session_key
+        _event("also acknowledged", source=source, message_id="m-2"), session_key
+    )
+    # The replay claimed the snapshot (atomic rename)… and the process died
+    # before dispatching anything.
+    os.replace(drain_queue_path(), claimed_drain_queue_path())
+
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+
+    # The head event runs the turn; the tail parks for its post-turn drain.
+    replayed = fresh_adapter.handle_message.await_args.args[0]
+    assert replayed.text == "acknowledged before the crash"
+    state = fresh._peek_session_state(session_key)
+    assert [e.text for e in state.conversation.queued_events] == ["also acknowledged"]
+    assert not claimed_drain_queue_path().exists()
+    assert not drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_leftover_claim_plus_later_drain_snapshot_both_replay():
+    """A crashed replay's claim can coexist with a LIVE snapshot written by a
+    later drain window. The claim is resumed AND the never-claimed live
+    records replay in the same pass — neither generation is dropped."""
+    source = make_restart_source(chat_id="fold-chat")
+    fresh, fresh_adapter = make_restart_runner()
+    session_key = fresh._session_key_for_source(source)
+    # Process 1 queued a message, claimed it for replay, and crashed.
+    _queue_in_draining_process(
+        _event("claimed by the crashed replay", source=source, message_id="m-1"),
+        session_key,
+    )
+    os.replace(drain_queue_path(), claimed_drain_queue_path())
+    # Process 2 later ran its own drain window and queued a new message.
+    _queue_in_draining_process(
+        _event("queued after the crash", source=source, message_id="m-2"), session_key
     )
 
     fresh_adapter.handle_message = AsyncMock()
     assert replay_drain_queue(fresh) == 1
     await _settle(fresh)
 
-    # Only the new live-snapshot event runs — the claimed one is not retried.
+    # Claimed records queued first, so they run the turn; the later live
+    # record parks as the FIFO tail.
     replayed = fresh_adapter.handle_message.await_args.args[0]
-    assert replayed.text == "queued after the crash"
+    assert replayed.text == "claimed by the crashed replay"
+    state = fresh._peek_session_state(session_key)
+    assert [e.text for e in state.conversation.queued_events] == ["queued after the crash"]
     assert not claimed_drain_queue_path().exists()
     assert not drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_dispatched_records_leave_the_claim_ledger_retained_ones_stay():
+    """Per-record dispatch state: a session whose turn was dispatched is
+    rewritten OUT of the claim ledger, while a retained session's records
+    survive to the live snapshot — a crash at this point re-replays only the
+    retained session, never the delivered one."""
+    live_src = make_restart_source(chat_id="ledger-live-chat")
+    offline_src = make_restart_source(chat_id="ledger-offline-chat")
+    runner, adapter = make_restart_runner()
+    live_key = runner._session_key_for_source(live_src)
+    offline_key = runner._session_key_for_source(offline_src)
+    _queue_in_draining_process(
+        _event("will be dispatched", source=live_src), live_key, runner
+    )
+    _queue_in_draining_process(
+        _event("will be retained", source=offline_src, message_id="m-off"),
+        offline_key,
+        runner,
+    )
+
+    fresh, fresh_adapter = make_restart_runner()
+    fresh_adapter.handle_message = AsyncMock()
+    real_adapter_for = fresh._adapter_for_source
+
+    def _adapter_except_offline(source):
+        return None if source.chat_id == "ledger-offline-chat" else real_adapter_for(source)
+
+    fresh._adapter_for_source = _adapter_except_offline
+
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+
+    fresh_adapter.handle_message.assert_awaited_once()
+    assert fresh_adapter.handle_message.await_args.args[0].text == "will be dispatched"
+    # The ledger's leftovers are exactly the retained session's records.
+    assert [e["session_key"] for e in _snapshot_events()] == [offline_key]
+    assert not claimed_drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_write_back_failure_keeps_the_claim_as_the_sole_copy(
+    monkeypatch, caplog
+):
+    """When the retained retry-write fails (disk exhaustion, an interrupted
+    atomic write), the claim file is the ONLY remaining copy of those
+    messages — clearing it would delete them. It stays, and the next boot
+    resumes it once storage recovers."""
+    import gateway.run_drain_queue as drain_module
+
+    source = make_restart_source(chat_id="writeback-fail-chat")
+    runner, _adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("waiting for the disk", source=source), session_key
+    )
+
+    offline, _offline_adapter = make_restart_runner()
+    offline.adapters = {}  # adapter down → the records take the write-back path
+
+    real_write = drain_module.atomic_json_write
+    disk_full = {"yes": True}
+
+    def _maybe_no_disk(*args, **kwargs):
+        if disk_full["yes"]:
+            raise OSError(28, "No space left on device")
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(drain_module, "atomic_json_write", _maybe_no_disk)
+    with caplog.at_level("ERROR", logger="gateway.run_drain_queue"):
+        assert replay_drain_queue(offline) == 0
+
+    assert any("write-back failed" in r.message.lower() for r in caplog.records)
+    # The claim survives as the sole copy; no live snapshot was created.
+    assert claimed_drain_queue_path().exists()
+    assert not drain_queue_path().exists()
+
+    # Storage recovers: the next boot resumes the claim and delivers.
+    disk_full["yes"] = False
+    fresh, fresh_adapter = make_restart_runner()
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+    assert (
+        fresh_adapter.handle_message.await_args.args[0].text == "waiting for the disk"
+    )
+    assert not claimed_drain_queue_path().exists()
+    assert not drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_drain_cap_counts_the_mirrored_backlog_once_not_twice():
+    """Once drain queueing starts, every accepted event is mirrored in the
+    in-memory FIFO AND the durable snapshot — the cap counts the UNION, so
+    with an empty pre-drain backlog the Nth message is still accepted and
+    only the N+1th is refused (the sum counted every drain-window event
+    twice and refused the message that hit cap/2)."""
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    runner._BUSY_QUEUE_MAX_PENDING = 2
+    source = make_restart_source(chat_id="union-cap-chat")
+    session_key = runner._session_key_for_source(source)
+
+    assert await runner._handle_active_session_busy_message(
+        _event("one", source=source, message_id="m-1"), session_key
+    )
+    assert await runner._handle_active_session_busy_message(
+        _event("two", source=source, message_id="m-2"), session_key
+    )
+    # The third is the first over the cap (union depth 2 == cap): refused.
+    await runner._handle_active_session_busy_message(
+        _event("three", source=source, message_id="m-3"), session_key
+    )
+
+    assert any(REFUSAL_MARKER in msg for msg in adapter.sent[-1:])
+    # Both mirrors hold exactly the two accepted events.
+    assert len(_snapshot_events()) == 2
+    assert [e["event"]["text"] for e in _snapshot_events()] == ["one", "two"]
+    assert session_key in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_channel_prompt_and_context_survive_the_roundtrip():
+    """Channel-scoped instructions — the per-channel system prompt and the
+    history backfilled under require_mention — must reach the replayed turn;
+    the serialization whitelist used to drop them, so a drain silently
+    stripped the channel's instructions from the queued message."""
+    source = make_restart_source(chat_id="channel-chat")
+    runner, _adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    event = _event("channel instructions please", source=source)
+    event.channel_prompt = "You are the #medicina triage assistant; keep answers clinical."
+    event.channel_context = "earlier messages backfilled under require_mention"
+
+    record = serialize_drain_event(session_key, event)
+    assert record["event"]["channel_prompt"] == event.channel_prompt
+    assert record["event"]["channel_context"] == event.channel_context
+
+    _key, rebuilt = deserialize_drain_event(record)
+    assert rebuilt.channel_prompt == event.channel_prompt
+    assert rebuilt.channel_context == event.channel_context
+
+    # End to end: the replayed turn sees the channel fields.
+    _queue_in_draining_process(event, session_key)
+    fresh, fresh_adapter = make_restart_runner()
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+    replayed = fresh_adapter.handle_message.await_args.args[0]
+    assert replayed.channel_prompt == event.channel_prompt
+    assert replayed.channel_context == event.channel_context
+
+
+@pytest.mark.asyncio
+async def test_multiplex_gateway_replays_every_served_profiles_queue():
+    """Under ``multiplex_profiles`` a secondary profile's handler queues
+    under ITS home (it runs inside the profile scope), so startup must claim
+    every served profile's file — a single ambient replay would leave the
+    secondary queues unclaimed until some other gateway happens to boot."""
+    launch_src = make_restart_source(chat_id="launch-chat")
+    profile_src = make_restart_source(chat_id="profile-chat")
+    runner, adapter = make_restart_runner()
+    launch_key = runner._session_key_for_source(launch_src)
+    profile_key = runner._session_key_for_source(profile_src)
+
+    # The launch (default) home queues one message, ambient scope.
+    _queue_in_draining_process(
+        _event("launch home message", source=launch_src, message_id="m-launch"),
+        launch_key,
+    )
+    # A secondary profile's handler queues under its own home scope — the
+    # same way its inbound turns run.
+    profile_home = get_hermes_home() / "profiles" / "medicina"
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        _queue_in_draining_process(
+            _event("profile home message", source=profile_src, message_id="m-profile"),
+            profile_key,
+            runner,
+        )
+    finally:
+        reset_hermes_home_override(token)
+    assert drain_queue_path(profile_home).exists()
+
+    fresh, fresh_adapter = make_restart_runner()
+    fresh.config.multiplex_profiles = True
+    fresh_adapter.handle_message = AsyncMock()
+
+    assert replay_drain_queues_for_profiles(fresh) == 2
+    await _settle(fresh)
+
+    delivered = sorted(
+        call.args[0].text for call in fresh_adapter.handle_message.await_args_list
+    )
+    assert delivered == ["launch home message", "profile home message"]
+    # Both homes' queues are fully consumed.
+    assert not drain_queue_path().exists()
+    assert not drain_queue_path(profile_home).exists()
+    assert not claimed_drain_queue_path(profile_home).exists()
+
+
+@pytest.mark.asyncio
+async def test_single_profile_gateway_leaves_other_homes_queues_alone():
+    """Control: without multiplex the gateway serves one home, so a queue
+    sitting under another profile's home waits there until a gateway that
+    serves that profile boots — it is not this gateway's to claim."""
+    launch_src = make_restart_source(chat_id="solo-launch-chat")
+    profile_src = make_restart_source(chat_id="solo-profile-chat")
+    runner, adapter = make_restart_runner()
+    launch_key = runner._session_key_for_source(launch_src)
+    profile_key = runner._session_key_for_source(profile_src)
+    _queue_in_draining_process(
+        _event("solo launch message", source=launch_src), launch_key
+    )
+    profile_home = get_hermes_home() / "profiles" / "medicina"
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        _queue_in_draining_process(
+            _event("solo profile message", source=profile_src), profile_key, runner
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    fresh, fresh_adapter = make_restart_runner()
+    fresh_adapter.handle_message = AsyncMock()
+
+    assert replay_drain_queues_for_profiles(fresh) == 1
+    await _settle(fresh)
+
+    assert (
+        fresh_adapter.handle_message.await_args.args[0].text == "solo launch message"
+    )
+    assert not drain_queue_path().exists()
+    # The profile home's queue is untouched, waiting for its own gateway.
+    assert drain_queue_path(profile_home).exists()
