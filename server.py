@@ -808,21 +808,18 @@ def donut_aria(slices: list[dict[str, Any]]) -> str:
 def model_panel_html(by_model: list[dict[str, Any]] | None) -> str:
     """First-paint twin of the browser-rendered donut panel.
 
-    The all / by-harness segmented filter and the harness picker only come
-    alive client-side; the server paints the default "all" view (the picker
-    ships hidden and option-less — the browser fills it from the snapshot).
+    The harness filter dropdown ships with only the default "all" option;
+    the browser appends per-caller choices from the snapshot on first poll.
     """
     slices = donut_slices(by_model)
     aria = donut_aria(slices) if slices else "Donut chart of token share by model over the last 24 hours. No usage."
     return (
         '<section class="card" aria-label="Model usage">'
         '<div class="card-head"><h2>Model usage</h2>'
-        '<div class="chart-mode" role="group" aria-label="Model usage breakdown">'
-        '<button type="button" class="mode-btn active" id="model-mode-all" aria-pressed="true">all</button>'
-        '<button type="button" class="mode-btn" id="model-mode-harness" aria-pressed="false">by harness</button>'
-        "</div>"
-        '<select class="mode-pick" id="model-caller-pick" hidden'
-        ' aria-label="Harness whose models are shown"></select>'
+        '<select class="mode-pick" id="model-caller-pick"'
+        ' aria-label="Filter model usage by harness">'
+        '<option value="all" selected>All harnesses</option>'
+        "</select>"
         '<span class="win">last 24 h &middot; by total tokens &middot; top '
         + str(MODEL_TOP_N)
         + " + other</span></div>"
@@ -1178,11 +1175,9 @@ JS = r"""
 
   /* ---- per-harness share bars ---- */
 
-  /* totals / by-model segmented filter: in "model" mode the table shows one
-     model's per-harness rows (per_model_caller_24h) — the same shape
-     per_caller_24h has, so renderHarness draws either unchanged */
-  var harnessMode = 'totals';
-  var harnessModel = null;      /* selected model when harnessMode === 'model' */
+  /* harness-model-pick: "all" shows per_caller_24h totals; a model key shows
+     that model's per-harness rows (per_model_caller_24h) */
+  var harnessModel = 'all';
   var lastModelCallers = {};    /* per_model_caller_24h: model -> per-caller rows */
 
   function renderHarness(rows, emptyMsg) {
@@ -1228,63 +1223,48 @@ JS = r"""
       ? summary.per_caller_24h
       : (summary ? summary.per_caller : null);
     var emptyMsg = 'No requests in the last 24 h';
-    if (harnessMode === 'model') {
-      rows = harnessModel ? (lastModelCallers[harnessModel] || []) : [];
-      emptyMsg = harnessModel
-        ? 'No ' + harnessModel + ' usage in the last 24 h'
-        : 'No models in the last 24 h';
+    if (harnessModel && harnessModel !== 'all') {
+      rows = lastModelCallers[harnessModel] || [];
+      emptyMsg = 'No ' + harnessModel + ' usage in the last 24 h';
     }
     renderHarness(rows, emptyMsg);
   }
 
-  function setHarnessMode(mode) {
-    if (mode !== 'totals' && mode !== 'model') return;
-    harnessMode = mode;
-    [['harness-mode-totals', 'totals'], ['harness-mode-model', 'model']].forEach(function (p) {
-      var btn = $(p[0]);
-      if (!btn) return;
-      btn.classList.toggle('active', mode === p[1]);
-      btn.setAttribute('aria-pressed', mode === p[1] ? 'true' : 'false');
-    });
-    var pick = $('harness-model-pick');
-    if (pick) pick.hidden = mode !== 'model';
-    refreshHarness(lastSummary);
-  }
-
-  function wireHarnessModes() {
-    var totals = $('harness-mode-totals'), byModel = $('harness-mode-model');
-    if (totals) totals.addEventListener('click', function () { setHarnessMode('totals'); });
-    if (byModel) byModel.addEventListener('click', function () { setHarnessMode('model'); });
+  function wireHarnessPick() {
     var pick = $('harness-model-pick');
     if (pick) pick.addEventListener('change', function () {
-      harnessModel = pick.value || null;
+      harnessModel = pick.value || 'all';
       refreshHarness(lastSummary);
     });
   }
 
   /* Rebuild a picker's options only when its key set changed (a rebuild
-     while the dropdown is open would yank it); keep the previous value when
-     it is still served, else fall back to the first — the busiest — key. */
-  function syncPickOptions(select, keys) {
-    if (!select) return null;
-    var sig = keys.join('\n');
+     while the dropdown is open would yank it). The sentinel "all" option is
+     always first; keep the previous value when still valid, else fall back
+     to "all". */
+  function syncPickOptions(select, keys, allLabel) {
+    if (!select) return 'all';
+    var sig = 'all\n' + keys.join('\n');
     if (select.getAttribute('data-sig') !== sig) {
       select.setAttribute('data-sig', sig);
-      var prev = select.value;
+      var prev = select.value || 'all';
       select.textContent = '';
+      var allOpt = el('option', '', allLabel);
+      allOpt.value = 'all';
+      select.appendChild(allOpt);
       keys.forEach(function (k) {
         var opt = el('option', '', k);
         opt.value = k;
         select.appendChild(opt);
       });
-      select.value = keys.indexOf(prev) !== -1 ? prev : (keys[0] || '');
+      select.value = (prev === 'all' || keys.indexOf(prev) !== -1) ? prev : 'all';
     }
-    return select.value || null;
+    return select.value || 'all';
   }
 
   function syncPickers() {
-    donutCaller = syncPickOptions($('model-caller-pick'), Object.keys(lastCallerModels));
-    harnessModel = syncPickOptions($('harness-model-pick'), Object.keys(lastModelCallers));
+    donutCaller = syncPickOptions($('model-caller-pick'), Object.keys(lastCallerModels), 'All harnesses');
+    harnessModel = syncPickOptions($('harness-model-pick'), Object.keys(lastModelCallers), 'All models');
   }
 
   /* ---- model-usage donut (24 h, top 6 + other) ---- */
@@ -1300,11 +1280,9 @@ JS = r"""
   var donutHover = -1;
   var lastByModel = [];
 
-  /* all / by-harness segmented filter: in "harness" mode the donut shows one
-     caller's per-model rows (per_caller_model_24h) — the same shape by_model
-     has, so renderDonut/donutSlices draw either unchanged */
-  var donutMode = 'all';
-  var donutCaller = null;      /* selected caller when donutMode === 'harness' */
+  /* model-caller-pick: "all" shows aggregate by_model; a caller key shows
+     that caller's per-model rows (per_caller_model_24h) */
+  var donutCaller = 'all';
   var donutFilterNote = '';    /* '' or ' for <caller>' — folded into the aria label */
   var lastCallerModels = {};   /* per_caller_model_24h: caller -> by-model rows */
 
@@ -1470,9 +1448,9 @@ JS = r"""
      the choice survives without ever resetting the user's selection */
   function refreshDonut(summary) {
     var rows = summary ? summary.by_model : null;
-    donutFilterNote = donutMode === 'harness' && donutCaller ? ' for ' + donutCaller : '';
-    if (donutMode === 'harness') {
-      rows = donutCaller ? (lastCallerModels[donutCaller] || []) : [];
+    donutFilterNote = (donutCaller && donutCaller !== 'all') ? ' for ' + donutCaller : '';
+    if (donutCaller && donutCaller !== 'all') {
+      rows = lastCallerModels[donutCaller] || [];
     }
     renderDonut(rows);
     var empty = $('donut-empty');
@@ -1484,27 +1462,10 @@ JS = r"""
       'Donut chart of token share by model over the last 24 hours' + donutFilterNote + '.');
   }
 
-  function setDonutMode(mode) {
-    if (mode !== 'all' && mode !== 'harness') return;
-    donutMode = mode;
-    [['model-mode-all', 'all'], ['model-mode-harness', 'harness']].forEach(function (p) {
-      var btn = $(p[0]);
-      if (!btn) return;
-      btn.classList.toggle('active', mode === p[1]);
-      btn.setAttribute('aria-pressed', mode === p[1] ? 'true' : 'false');
-    });
-    var pick = $('model-caller-pick');
-    if (pick) pick.hidden = mode !== 'harness';
-    refreshDonut(lastSummary);
-  }
-
-  function wireDonutModes() {
-    var all = $('model-mode-all'), byHarness = $('model-mode-harness');
-    if (all) all.addEventListener('click', function () { setDonutMode('all'); });
-    if (byHarness) byHarness.addEventListener('click', function () { setDonutMode('harness'); });
+  function wireDonutPick() {
     var pick = $('model-caller-pick');
     if (pick) pick.addEventListener('change', function () {
-      donutCaller = pick.value || null;
+      donutCaller = pick.value || 'all';
       refreshDonut(lastSummary);
     });
   }
@@ -2051,8 +2012,8 @@ JS = r"""
   renderEvents(boot.events || []);
   wireChart();
   wireDonut();
-  wireDonutModes();
-  wireHarnessModes();
+  wireDonutPick();
+  wireHarnessPick();
   tick();
 
   var resizeTimer = null;
@@ -2195,11 +2156,9 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <div class="side">
 <section class="card" aria-label="Per-harness usage">
   <div class="card-head"><h2>Per-harness usage</h2>
-    <div class="chart-mode" role="group" aria-label="Per-harness usage breakdown">
-      <button type="button" class="mode-btn active" id="harness-mode-totals" aria-pressed="true">totals</button>
-      <button type="button" class="mode-btn" id="harness-mode-model" aria-pressed="false">by model</button>
-    </div>
-    <select class="mode-pick" id="harness-model-pick" hidden aria-label="Model whose harness rows are shown"></select>
+    <select class="mode-pick" id="harness-model-pick" aria-label="Filter per-harness usage by model">
+      <option value="all" selected>All models</option>
+    </select>
     <span class="win">last 24 h &middot; bar = share of top harness</span></div>
   <div class="scroll-x">
   <table>
