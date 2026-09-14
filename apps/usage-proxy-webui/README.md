@@ -1,6 +1,6 @@
 # Usage Proxy Ledger Web UI
 
-A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) broken down by model and by harness (`usage_events.caller`), plus the most recent usage events. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
+A small, read-only web dashboard (the "AI Usage" page) for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) broken down by model and by harness (`usage_events.caller`), plus the most recent usage events. Harness names are display-mapped: the gateway's `hermes` caller renders as **Hermes IDE** and per-profile `hermes:<profile>` callers as **Hermes IDE · &lt;profile&gt;**. Every harness breakdown treats each distinct caller as its own series; in the per-harness table, profile callers render as indented subrows under a Hermes IDE parent row whose totals also fold in any pre-split plain `hermes` traffic. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
 
 **LAN-only, no authentication.** Bind to a private interface and do not port-forward this service to the public internet.
 
@@ -37,7 +37,7 @@ python3 server.py --host 127.0.0.1 --port 9136 --db /tmp/my-usage-copy.sqlite
 
 The "Tokens per hour" stacked column chart has a segmented toggle with four breakdown modes:
 
-- **harness** / **model** — tokens stacked per harness or per model (stable per-name colors)
+- **harness** / **model** — tokens stacked per harness or per model (stable per-name colors; each `hermes:<profile>` caller stacks as its own series)
 - **in/out** — prompt tokens (input) vs completion tokens (output)
 - **cache** — cached vs uncached prompt tokens (uncached = prompt − cached; columns are shorter because they sum prompt tokens only)
 

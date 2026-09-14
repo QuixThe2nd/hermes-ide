@@ -40,6 +40,13 @@ from zoneinfo import ZoneInfo
 
 SYDNEY = ZoneInfo("Australia/Sydney")
 UNATTRIBUTED = "unattributed"
+# The Hermes gateway's caller values: plain `hermes` (pre-profile-split
+# traffic) and `hermes:<profile>` once the gateway names its profiles.  Only
+# the rendered labels change (see caller_display); raw caller strings stay the
+# JSON keys, element values and colour-hash inputs so colours stay stable.
+HERMES_CALLER = "hermes"
+HERMES_PROFILE_PREFIX = "hermes:"
+HERMES_DISPLAY = "Hermes IDE"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9136
 DEFAULT_DB = str(Path.home() / ".hermes" / "usage-proxy" / "usage.sqlite")
@@ -240,6 +247,31 @@ def to_sydney(ts: str | None) -> str:
 def caller_label(caller: Any) -> str:
     """Traffic with no recorded caller cannot be attributed to a harness."""
     return UNATTRIBUTED if not caller else str(caller)
+
+
+def is_hermes_profile(caller: Any) -> bool:
+    """True for the gateway's per-profile callers (`hermes:<profile>`)."""
+    return (
+        isinstance(caller, str)
+        and caller.startswith(HERMES_PROFILE_PREFIX)
+        and len(caller) > len(HERMES_PROFILE_PREFIX)
+    )
+
+
+def caller_display(caller: Any) -> str:
+    """Human-facing name for a raw caller value — display text only.
+
+    Everything else (JSON payloads, element keys/values/classes, the colour
+    hash) keeps the raw string; only the rendered label is prettified.
+    """
+    if not caller:
+        return UNATTRIBUTED
+    name = str(caller)
+    if name == HERMES_CALLER:
+        return HERMES_DISPLAY
+    if is_hermes_profile(name):
+        return f"{HERMES_DISPLAY} · {name[len(HERMES_PROFILE_PREFIX):]}"
+    return name
 
 
 def harness_color_idx(name: str) -> int:
@@ -660,22 +692,70 @@ def render_cards(snapshot: dict[str, Any]) -> str:
     )
 
 
+def _harness_rank(r: dict[str, Any]) -> tuple[int, int, str]:
+    """The per-harness SQL's ORDER BY (tokens desc, requests desc, caller asc),
+    reused to place the Hermes IDE subtotal among the other callers."""
+    return (-(r.get("total_tokens") or 0), -(r.get("requests") or 0), str(r.get("caller")))
+
+
+def harness_display_rows(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    """Per-harness rows for the table: ``hermes:<profile>`` callers become
+    indented subrows under a ``Hermes IDE`` parent whose totals also fold in
+    any plain ``hermes`` traffic (the pre-profile-split caller value).
+
+    Each entry is ``(row, kind)`` with kind "" / "subtotal" / "subrow".
+    Without profile callers the input rows come back untouched, so a ledger
+    that never recorded them renders exactly as before.
+    """
+    profile_rows = [r for r in rows if is_hermes_profile(r.get("caller"))]
+    if not profile_rows:
+        return [(r, "") for r in rows]
+    hermes_rows: list[dict[str, Any]] = []
+    other_rows: list[dict[str, Any]] = []
+    for r in rows:
+        if r.get("caller") == HERMES_CALLER or is_hermes_profile(r.get("caller")):
+            hermes_rows.append(r)
+        else:
+            other_rows.append(r)
+    parent = {
+        "caller": HERMES_CALLER,
+        "unattributed": False,
+        "requests": sum(r.get("requests") or 0 for r in hermes_rows),
+        "total_tokens": sum(r.get("total_tokens") or 0 for r in hermes_rows),
+    }
+    out: list[tuple[dict[str, Any], str]] = []
+    for r in sorted(other_rows + [parent], key=_harness_rank):
+        if r is parent:
+            out.append((r, "subtotal"))
+            out.extend((p, "subrow") for p in sorted(profile_rows, key=_harness_rank))
+        else:
+            out.append((r, ""))
+    return out
+
+
 def harness_table_body(rows: list[dict[str, Any]]) -> str:
-    """One row per harness: chip, requests, tokens and a share-of-max bar."""
+    """One row per harness: chip, requests, tokens and a share-of-max bar.
+
+    Hermes profile callers render as indented subrows under a Hermes IDE
+    parent subtotal row (see harness_display_rows).
+    """
     if not rows:
         return '<tbody id="harness-body"><tr><td colspan="4" class="muted">No requests in the last 24 h</td></tr></tbody>'
-    peak = max((float(r.get("total_tokens") or 0) for r in rows), default=0.0)
+    display = harness_display_rows(rows)
+    peak = max((float(r.get("total_tokens") or 0) for r, _ in display), default=0.0)
     out = []
-    for r in rows:
+    for r, kind in display:
         tokens = float(r.get("total_tokens") or 0)
         tr_class = "h-unattr" if r.get("unattributed") else harness_class_name(r.get("caller"))
+        if kind:
+            tr_class += f" {kind}"
         fill = ""
         if peak > 0 and tokens > 0:
             width = max(1.5, tokens / peak * 100)
             fill = f'<div class="bar-fill" style="width:{width:.1f}%"></div>'
         out.append(
             f'<tr class="{tr_class}">'
-            f'<td><span class="chip">{esc(r.get("caller") or UNATTRIBUTED)}</span></td>'
+            f'<td><span class="chip">{esc(caller_display(r.get("caller")))}</span></td>'
             f'<td class="num">{fmt_int(r.get("requests"))}</td>'
             f'<td class="num">{esc(fmt_stat(tokens))}</td>'
             f'<td class="bar-cell"><div class="bar-track" aria-hidden="true">{fill}</div></td>'
@@ -695,7 +775,7 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
         out.append(
             f"<tr{row_cls}>"
             f'<td class="num" title="{esc(e.get("ts"))}">{esc(e.get("ts_sydney"))}</td>'
-            f'<td><span class="chip {chip_cls}">{esc(e.get("caller") or UNATTRIBUTED)}</span></td>'
+            f'<td><span class="chip {chip_cls}">{esc(caller_display(e.get("caller")))}</span></td>'
             f"<td>{esc(e.get('model'))}</td>"
             f"<td>{esc(e.get('route'))}</td>"
             f'<td class="num">{esc(fmt_opt(e.get("prompt_tokens")))}</td>'
@@ -709,7 +789,9 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
 
 def bucket_series_lines(bucket: dict[str, Any]) -> list[str]:
     """Per-harness token totals with per-model detail, e.g.
-    ``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one line per harness.
+    ``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one line per harness
+    (display name; ``hermes:<profile>`` callers get their own line, labelled
+    ``Hermes IDE · <profile>``).
 
     The text twin of the canvas stacking (and of the browser-side
     ``seriesLines``) for the sr-only chart table.
@@ -727,7 +809,7 @@ def bucket_series_lines(bucket: dict[str, Any]) -> list[str]:
         detail = " · ".join(
             f"{m} {fmt_compact(t)}" for m, t in sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))
         )
-        lines.append(f"{caller} {fmt_compact(sum(models.values()))} ({detail})")
+        lines.append(f"{caller_display(caller)} {fmt_compact(sum(models.values()))} ({detail})")
     return lines
 
 
@@ -979,6 +1061,13 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .chip::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--hc, var(--muted)); }
 .h-unattr .chip { color: var(--unattr); font-style: italic; }
 
+/* Hermes IDE profile subcategories: `hermes:<profile>` rows indent under a
+   parent row whose totals also fold in pre-split plain `hermes` traffic */
+tr.subrow td:first-child { padding-left: 26px; }
+tr.subtotal td { background: var(--surface-2); border-bottom-color: var(--border-strong); }
+tr.subtotal .chip { color: var(--text); }
+tr.subtotal td.num { font-weight: 600; }
+
 .bar-track { height: 6px; background: rgba(255, 255, 255, 0.05); border-radius: 3px; overflow: hidden; }
 .bar-fill { height: 100%; min-width: 3px; background: var(--hc, var(--accent)); border-radius: 0 3px 3px 0; }
 
@@ -1047,6 +1136,9 @@ JS = r"""
   var DASHBOARD_EVENTS = __DASHBOARD_EVENTS__;
   var N_COLORS = __HARNESS_COLOR_COUNT__;
   var UNATTR = 'unattributed';
+  var HERMES = 'hermes';
+  var HERMES_PREFIX = 'hermes:';
+  var HERMES_DISPLAY = 'Hermes IDE';
   var RATE_LIMIT_CODES = [401, 429];
   var CH = { H: 260, padL: 50, padR: 12, padT: 24, padB: 26, barMax: 30 };
   var C = {
@@ -1121,6 +1213,20 @@ JS = r"""
     return HARNESS_HEX[harnessClass(caller)] || HARNESS_HEX['h-unattr'];
   }
 
+  /* display name for a raw caller value — labels only.  Raw caller strings
+     stay the keys, option values and colour-hash inputs everywhere (same
+     contract as the server's caller_display) */
+  function isHermesProfile(c) {
+    return typeof c === 'string' && c.indexOf(HERMES_PREFIX) === 0 && c.length > HERMES_PREFIX.length;
+  }
+
+  function callerDisplay(c) {
+    if (!c) return UNATTR;
+    if (c === HERMES) return HERMES_DISPLAY;
+    if (isHermesProfile(c)) return HERMES_DISPLAY + ' · ' + c.slice(HERMES_PREFIX.length);
+    return c;
+  }
+
   /* hex mirror of the server's MODEL_COLORS + MODEL_OTHER_COLOR — the chart's
      per-model mode hashes into these instead of the harness palette */
   var MODEL_HEXES = ['#bd8714', '#d46c8b', '#5b8def', '#2ea79a', '#9a7be0', '#65a46c', '#66738a'];
@@ -1180,6 +1286,43 @@ JS = r"""
   var harnessModel = 'all';
   var lastModelCallers = {};    /* per_model_caller_24h: model -> per-caller rows */
 
+  /* the per-harness SQL's ORDER BY (tokens desc, requests desc, caller asc) —
+     reused to place the Hermes IDE subtotal among the other callers */
+  function harnessRank(a, b) {
+    return (Number(b.total_tokens) || 0) - (Number(a.total_tokens) || 0)
+      || (Number(b.requests) || 0) - (Number(a.requests) || 0)
+      || (a.caller < b.caller ? -1 : a.caller > b.caller ? 1 : 0);
+  }
+
+  /* hermes:<profile> rows become indented subrows under a Hermes IDE parent
+     whose totals also fold in plain `hermes` traffic (pre-profile-split
+     rows); without profile rows the input order passes through unchanged —
+     same contract as the server's harness_display_rows */
+  function harnessDisplayRows(rows) {
+    var profileRows = rows.filter(function (r) { return isHermesProfile(r.caller); });
+    if (!profileRows.length) return rows.map(function (r) { return [r, '']; });
+    var hermesRows = [], otherRows = [];
+    rows.forEach(function (r) {
+      (r.caller === HERMES || isHermesProfile(r.caller) ? hermesRows : otherRows).push(r);
+    });
+    var parent = {
+      caller: HERMES,
+      unattributed: false,
+      requests: hermesRows.reduce(function (a, r) { return a + (Number(r.requests) || 0); }, 0),
+      total_tokens: hermesRows.reduce(function (a, r) { return a + (Number(r.total_tokens) || 0); }, 0)
+    };
+    var out = [];
+    otherRows.concat([parent]).sort(harnessRank).forEach(function (r) {
+      if (r === parent) {
+        out.push([r, 'subtotal']);
+        profileRows.slice().sort(harnessRank).forEach(function (p) { out.push([p, 'subrow']); });
+      } else {
+        out.push([r, '']);
+      }
+    });
+    return out;
+  }
+
   function renderHarness(rows, emptyMsg) {
     var tbody = $('harness-body');
     if (!tbody) return;
@@ -1192,13 +1335,15 @@ JS = r"""
       tbody.appendChild(emptyRow);
       return;
     }
+    var display = harnessDisplayRows(rows);
     var max = 0;
-    rows.forEach(function (r) { max = Math.max(max, Number(r.total_tokens) || 0); });
-    rows.forEach(function (r) {
+    display.forEach(function (d) { max = Math.max(max, Number(d[0].total_tokens) || 0); });
+    display.forEach(function (d) {
+      var r = d[0], kind = d[1];
       var tokens = Number(r.total_tokens) || 0;
-      var tr = el('tr', r.unattributed ? 'h-unattr' : harnessClass(r.caller));
+      var tr = el('tr', (r.unattributed ? 'h-unattr' : harnessClass(r.caller)) + (kind ? ' ' + kind : ''));
       var tdLabel = el('td');
-      tdLabel.appendChild(el('span', 'chip', r.caller || UNATTR));
+      tdLabel.appendChild(el('span', 'chip', callerDisplay(r.caller)));
       tr.appendChild(tdLabel);
       tr.appendChild(el('td', 'num', fmtInt(r.requests)));
       tr.appendChild(el('td', 'num', fmtStat(tokens)));
@@ -1241,8 +1386,9 @@ JS = r"""
   /* Rebuild a picker's options only when its key set changed (a rebuild
      while the dropdown is open would yank it). The sentinel "all" option is
      always first; keep the previous value when still valid, else fall back
-     to "all". */
-  function syncPickOptions(select, keys, allLabel) {
+     to "all".  labelFn maps a raw key to its display text (option values and
+     the data-sig signature stay raw). */
+  function syncPickOptions(select, keys, allLabel, labelFn) {
     if (!select) return 'all';
     var sig = 'all\n' + keys.join('\n');
     if (select.getAttribute('data-sig') !== sig) {
@@ -1253,7 +1399,7 @@ JS = r"""
       allOpt.value = 'all';
       select.appendChild(allOpt);
       keys.forEach(function (k) {
-        var opt = el('option', '', k);
+        var opt = el('option', '', labelFn ? labelFn(k) : k);
         opt.value = k;
         select.appendChild(opt);
       });
@@ -1263,7 +1409,7 @@ JS = r"""
   }
 
   function syncPickers() {
-    donutCaller = syncPickOptions($('model-caller-pick'), Object.keys(lastCallerModels), 'All harnesses');
+    donutCaller = syncPickOptions($('model-caller-pick'), Object.keys(lastCallerModels), 'All harnesses', callerDisplay);
     harnessModel = syncPickOptions($('harness-model-pick'), Object.keys(lastModelCallers), 'All models');
   }
 
@@ -1448,7 +1594,7 @@ JS = r"""
      the choice survives without ever resetting the user's selection */
   function refreshDonut(summary) {
     var rows = summary ? summary.by_model : null;
-    donutFilterNote = (donutCaller && donutCaller !== 'all') ? ' for ' + donutCaller : '';
+    donutFilterNote = (donutCaller && donutCaller !== 'all') ? ' for ' + callerDisplay(donutCaller) : '';
     if (donutCaller && donutCaller !== 'all') {
       rows = lastCallerModels[donutCaller] || [];
     }
@@ -1565,8 +1711,9 @@ JS = r"""
     return out;
   }
 
-  /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness — textContent
-     twin of the server's bucket_series_lines for the sr-only chart table.
+  /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness (display name;
+     hermes:<profile> callers get their own line) — textContent twin of the
+     server's bucket_series_lines for the sr-only chart table.
      In the in/out and cache modes the row collapses to the same two
      segments the columns stack, e.g. "output 12.3k · input 45.6k" */
   function seriesLines(b) {
@@ -1600,7 +1747,7 @@ JS = r"""
           .sort(function (a, m) { return models[m] - models[a] || (a < m ? -1 : a > m ? 1 : 0); })
           .map(function (m) { return m + ' ' + fmtCompact(models[m]); })
           .join(' · ');
-        return c + ' ' + fmtCompact(modelsTotal(models)) + ' (' + detail + ')';
+        return callerDisplay(c) + ' ' + fmtCompact(modelsTotal(models)) + ' (' + detail + ')';
       });
   }
 
@@ -1772,15 +1919,17 @@ JS = r"""
     tip.appendChild(el('div', 'tl',
       bucketLabel(b) + ' · ' + fmtInt(b.requests) + ' req' + (b.partial ? ' · partial' : '')));
     /* one line per member of the active dimension present in that hour,
-       dot coloured like its segment */
+       dot coloured like its segment; harness-mode names are raw callers, so
+       they display-map (the other modes' names are not callers) */
     var segs = bucketSegments(b);
     var hexes = segmentHexes(segs);
     segs.forEach(function (seg) {
       var line = el('div', 'tl');
       var dot = el('span', 'tl-dot');
       dot.style.background = hexes[seg.name];
+      var name = chartMode === 'harness' ? callerDisplay(seg.name) : seg.name;
       line.appendChild(dot);
-      line.appendChild(document.createTextNode(seg.name + ' · ' + fmtCompact(seg.tokens)));
+      line.appendChild(document.createTextNode(name + ' · ' + fmtCompact(seg.tokens)));
       tip.appendChild(line);
     });
     tip.hidden = false;
@@ -1887,7 +2036,7 @@ JS = r"""
       tr.appendChild(tdTime);
 
       var tdCaller = el('td');
-      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), e.caller || UNATTR));
+      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), callerDisplay(e.caller)));
       tr.appendChild(tdCaller);
 
       tr.appendChild(el('td', '', e.model || '—'));
@@ -2090,7 +2239,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Harness Usage — Live</title>
+<title>AI Usage — Live</title>
 <link rel="icon" href=\""""
         + FAVICON
         + """\">
@@ -2103,7 +2252,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 <header class="topbar">
   <div>
-    <h1>Harness <span class="accent">Usage</span></h1>
+    <h1>AI <span class="accent">Usage</span></h1>
     <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney</p>
   </div>
   <div class="live" id="live" role="status">
