@@ -406,6 +406,24 @@ class PluginContext:
         from hermes_cli.platform_actions import PlatformActions
         return PlatformActions(self.plugin_id)
 
+    def progress(self, text: Any, *, session_id: str = "", session_key: str = "") -> bool:
+        """Append an item to the running turn's NATIVE progress bubble.
+
+        The item lands in the same queue the core uses for its own tool lines, so the bubble keeps
+        owning the edit throttle, overflow splitting and ``cleanup_progress`` policy. ``text`` is
+        either a plain string (one appended line) or the tuple ``("__body__", body)``, which
+        replaces the whole body — the shape a plugin needs when it renders its own layout
+        (header, steps, live footer). Returns False when no turn is running (CLI session, plugin
+        work outside a turn, ``display.tool_progress`` not set to ``plugin``); never raises, never
+        blocks a turn. Pass the ``session_id`` from the hook payload when one process serves
+        several chats.
+        """
+        try:
+            from hermes_cli.progress_bridge import push_progress
+        except Exception:  # bridge unavailable -> progress is optional, never fatal
+            return False
+        return push_progress(text, session_id=session_id or None, session_key=session_key or None)
+
     def _wrong_type(self, obj: Any, base_class: type, label: str, article: str = "a") -> bool:
         """Warn-and-ignore gate shared by every registrar that requires a base class."""
         if isinstance(obj, base_class):
