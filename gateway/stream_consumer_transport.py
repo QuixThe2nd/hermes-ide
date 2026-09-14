@@ -115,7 +115,11 @@ class StreamTransportMixin:
                     # clears the common transient case; a second failure stays best-effort.
                     await asyncio.sleep(1.0)
                     await delete_fn(self.chat_id, stale_id)
-            except Exception as e:
+            except (Exception, asyncio.CancelledError) as e:
+                # Cleanup is strictly best-effort: a delete stuck in a rate-limited
+                # bucket may die CancelledError, which must not abort the caller
+                # mid-finalize after the fresh final already landed (duplicate final
+                # send, same class as the wecom ack-timeout RCA).
                 logger.debug("%s preview cleanup failed (%s): %s", label, stale_id, e)
 
     def _resolve_draft_streaming(self) -> bool:
@@ -283,15 +287,19 @@ class StreamTransportMixin:
         if not getattr(result, "success", False):
             return False
         new_message_id = getattr(result, "message_id", None)
-        # Best-effort preview cleanup; never delete the message just sent.
-        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
-        self._preview_message_ids = set()
+        # Record delivery BEFORE the best-effort preview cleanup: the fresh send already
+        # landed, so a stuck/cancelled delete must never leave the delivery flags unset —
+        # the gateway would treat that as "not delivered" and re-send the full final
+        # (duplicate final send, same class as the wecom ack-timeout RCA).
         self._adopt_message_id(new_message_id)
         self._already_sent = True
         self._last_sent_text = text
         if is_turn_final:
             self._final_response_sent = True
             self._record_turn_final_payload(text)
+        # Best-effort preview cleanup LAST; never delete the message just sent.
+        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
+        self._preview_message_ids = set()
         return True
 
     def _adopt_message_id(self, message_id) -> None:
