@@ -48,7 +48,21 @@ from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Awaitable,
+    Callable,
+    Dict,
+    Optional,
+    Any,
+    List,
+    Tuple,
+    Union,
+    cast,
+)
+
+if TYPE_CHECKING:  # annotation-only; never imported at runtime (cycle)
+    from agent.session_activity import ActivityProvenance  # noqa: F401
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.compression_status import (
@@ -3745,6 +3759,11 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
+from gateway.run_drain_queue import (
+    queue_drain_busy_message,
+    queue_drain_refused_message,
+    replay_drain_queues_for_profiles,
+)
 from gateway.turn_context import TurnContext
 from gateway.run_turn import is_context_overflow_failure_result
 from gateway.platforms.base import (
@@ -12278,6 +12297,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         mode = busy_input_mode or self._busy_input_mode
         return self._restart_requested and mode in {"queue", "steer"}
 
+    def _busy_drain_admission(
+        self, event: MessageEvent, session_key: str, effective_mode: str
+    ) -> str:
+        """One answer for any busy follow-up that lands while ``_draining``.
+
+        Every busy sub-path — the photo-priority branch, the Telegram
+        follow-up grace window, the pending-sentinel setup window and the
+        general follow-up fall-through — must give this SAME answer: the
+        queued-for-next-turn ack when the drain policy allows durable
+        queueing (``queue_drain_busy_message`` writes the snapshot first and
+        the in-memory FIFO second, keeping each sub-path's merge semantics),
+        the honest refusal otherwise. A sub-path that silently merges
+        in-memory and returns None during a drain loses the message to the
+        process bounce while promising nothing — the exact gap the durable
+        queue exists to close.
+        """
+        if self._queue_during_drain_enabled(effective_mode) and queue_drain_busy_message(
+            self, event, session_key
+        ):
+            return (
+                f"⏳ Gateway {self._status_action_gerund()} — queued for the "
+                f"next turn after it comes back."
+            )
+        return (
+            f"⏳ Gateway is {self._status_action_gerund()} and is not "
+            f"accepting another turn right now."
+        )
+
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
     # order, with no merging.  The adapter's _pending_messages dict is a
@@ -13939,11 +13986,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-            if self._queue_during_drain_enabled(effective_mode):
-                self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-            else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+            message = self._busy_drain_admission(event, session_key, effective_mode)
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -14821,7 +14864,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 warned_targets[dedup_key] = home_entry
                 logger.info(
                     "Sent shutdown notification to %s channel %s:%s",
-                    "notification" if notify else "home",
+                    # This loop only ever sends to a configured notification
+                    # channel (``home``); it never falls back to a session
+                    # home chat, so the label is constant.
+                    "notification",
                     platform.value,
                     home.chat_id,
                 )
@@ -18223,6 +18269,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # a session whose final response was generated but never
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
+        #
+        # Drain-queued messages first: replay claims the snapshot, re-injects
+        # each event into the owning adapter's FIFO and starts the turn for
+        # sessions the cooperative resume set does not already cover. Running
+        # before the resume scheduler lets both share one allowlist read and
+        # sees the replay turns' pre-claimed slots (no double turn). Under
+        # multiplex_profiles every served profile's home-scoped queue is
+        # claimed, not just the launch home's.
+        replay_drain_queues_for_profiles(self)
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
@@ -19761,6 +19816,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # connected yet. Now that it's back, retry the
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
+                        # Drain-queued messages retained for the same reason
+                        # (no live adapter at replay time) retry here too —
+                        # across every served profile home under multiplex.
+                        try:
+                            replay_drain_queues_for_profiles(self, platform=platform)
+                        except Exception:
+                            logger.debug(
+                                "drain-queue retry after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                         try:
                             self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:
@@ -23077,6 +23143,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+                if self._draining:
+                    # Drain window: an in-memory-only merge would die with the
+                    # process bounce. Route through the durable drain queue
+                    # when the busy policy allows it (the photo merge happens
+                    # inside it); cap/IO failure gets the honest drain refusal,
+                    # same answer text follow-ups get — never a silent loss.
+                    return self._busy_drain_admission(
+                        event,
+                        _quick_key,
+                        self._effective_busy_input_mode(source),
+                    )
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
@@ -23095,6 +23172,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and _started_at
                 and (time.time() - _started_at) <= _telegram_followup_grace
             ):
+                if self._draining:
+                    # The grace window's in-memory queue dies with the process
+                    # bounce — this sub-path takes the same durable admission
+                    # as every other busy follow-up, never a silent loss.
+                    return self._busy_drain_admission(
+                        event, _quick_key, effective_busy_input_mode
+                    )
                 logger.debug(
                     "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
                     time.time() - _started_at,
@@ -23122,6 +23206,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
+                if self._draining:
+                    # The sentinel window's in-memory merge dies with the
+                    # process bounce — same durable admission as every other
+                    # busy follow-up. (/stop above stays reachable: it is the
+                    # in-flight-work lifecycle the drain itself depends on.)
+                    return self._busy_drain_admission(
+                        event, _quick_key, effective_busy_input_mode
+                    )
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self._adapter_for_source(source)
@@ -23134,15 +23226,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 return None
             if self._draining:
-                queue_during_drain = self._queue_during_drain_enabled(
-                    effective_busy_input_mode
-                )
-                if queue_during_drain:
-                    self._queue_or_replace_pending_event(_quick_key, event)
-                return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                    if queue_during_drain
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                return self._busy_drain_admission(
+                    event, _quick_key, effective_busy_input_mode
                 )
             if effective_busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -23389,6 +23474,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # rewritten command is gated under its FINAL name.
         _cold_drain_notice = self._slash_drain_gate_notice(canonical)
         if _cold_drain_notice is not None:
+            # Plain text / media the gate refused is no longer dropped: the
+            # idle session has no in-memory queue to join, so queue it
+            # durably for the post-restart process to replay. Slash commands
+            # keep the notice — the gate verdict itself is untouched.
+            if canonical is None:
+                _drain_queued_ack = queue_drain_refused_message(
+                    self, event, _quick_key
+                )
+                if _drain_queued_ack is not None:
+                    return _drain_queued_ack
             return _cold_drain_notice
 
         plain_handler = self._gateway_plain_command_handlers().get(canonical)

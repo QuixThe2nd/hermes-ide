@@ -16,6 +16,7 @@ other work). Allowed commands (restart entry, in-flight-work lifecycle,
 read-only visibility) keep dispatching.
 """
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -206,13 +207,86 @@ async def test_cold_background_spawn_after_confirmation_never_runs():
 
 
 @pytest.mark.asyncio
-async def test_cold_plain_text_after_confirmation_gets_the_notice():
-    runner, _adapter = _make_gate_runner()
+async def test_cold_plain_text_after_confirmation_is_queued_durably():
+    """Plain text during drain is no longer refused-and-forgotten: it lands
+    in the durable drain snapshot AND the in-memory FIFO, and the ack says
+    so (the drain-queue tests cover the post-restart replay side)."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
     runner._draining = True
+    # The idle seam queues only under the busy path's drain policy: a
+    # confirmed restart whose busy mode says messages survive it.
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
 
     result = await runner._handle_message(_make_event("one more thing…"))
 
+    assert isinstance(result, str)
+    assert "queued for the next turn after it comes back" in result
+    session_key = runner._session_key_for_source(make_restart_source())
+    assert session_key in mock_adapter._pending_messages
+    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
+    assert events[0]["event"]["text"] == "one more thing…"
+    assert events[0]["session_key"] == session_key
+
+
+@pytest.mark.asyncio
+async def test_cold_plain_text_during_external_quiesce_refuses_like_the_busy_path():
+    """Parity with the busy path's drain policy: an external quiesce
+    (``_enter_external_drain`` sets ``_draining`` without a restart request)
+    gets the honest drain notice — never a queued-for-the-restart promise
+    for a restart that was not requested."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    runner._draining = True
+    runner._restart_requested = False  # external quiesce, not /restart
+    runner._busy_input_mode = "queue"
+
+    result = await runner._handle_message(_make_event("are you going away?"))
+
     assert isinstance(result, str) and _DRAIN_NOTICE_MARKER in result
+    assert not drain_queue_path().exists()
+    assert not mock_adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_cold_plain_text_in_interrupt_mode_during_restart_refuses_honestly():
+    """Same parity for the third policy state: with the default interrupt
+    mode even a confirmed restart does not promise a queue — the idle gate
+    refuses exactly like the busy path does."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "interrupt"  # the default posture
+
+    result = await runner._handle_message(_make_event("interrupt mode drops"))
+
+    assert isinstance(result, str) and _DRAIN_NOTICE_MARKER in result
+    assert not drain_queue_path().exists()
+    assert not mock_adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_cold_disallowed_command_during_drain_is_refused_and_not_persisted():
+    """Commands keep the gate's refusal (lifecycle-sensitive during drain) —
+    and are never written to the durable queue."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    runner._draining = True
+    heavy = AsyncMock(return_value="compressed")
+    runner._handle_compress_command = heavy
+
+    result = await runner._handle_message(_make_event("/compress secret context"))
+
+    assert isinstance(result, str) and _DRAIN_NOTICE_MARKER in result
+    heavy.assert_not_awaited()
+    assert not drain_queue_path().exists()
+    assert not mock_adapter._pending_messages
 
 
 @pytest.mark.asyncio
@@ -281,6 +355,29 @@ async def test_busy_plain_text_after_confirmation_gets_the_notice():
 
 
 @pytest.mark.asyncio
+async def test_busy_plain_text_in_queue_mode_during_drain_is_queued_durably():
+    """With the busy path's queue-during-drain policy active, the same
+    fast-path answers with the queued ack and persists the event — the
+    in-memory-only promise is gone."""
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    _mark_busy(runner)
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+
+    result = await runner._handle_message(_make_event("queue me please"))
+
+    assert isinstance(result, str)
+    assert "queued for the next turn after it comes back" in result
+    session_key = runner._session_key_for_source(make_restart_source())
+    assert session_key in mock_adapter._pending_messages
+    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
+    assert events[0]["event"]["text"] == "queue me please"
+
+
+@pytest.mark.asyncio
 async def test_busy_dispatch_still_works_when_not_draining():
     """Control: the resolver is untouched while admission is open."""
     runner, _adapter = _make_gate_runner()
@@ -291,6 +388,94 @@ async def test_busy_dispatch_still_works_when_not_draining():
 
     assert await runner._handle_message(_make_event("/bg compile the docs")) == "dispatched"
     resolver.assert_awaited_once()
+
+
+# ── busy sub-paths that used to bypass the durable drain seam ───────────────
+
+
+def _sub_path_state(*, started_ts: float, agent) -> None:
+    """Session state that steers the busy region into one specific sub-path:
+    a fresh ``started_ts`` selects the Telegram follow-up grace window, the
+    pending sentinel selects the agent-setup window."""
+    from gateway.session_state import SessionState
+
+    state = SessionState()
+    state.turn.started_ts = started_ts
+    state.turn.agent = agent
+    return state
+
+
+@pytest.mark.asyncio
+async def test_telegram_grace_followup_during_drain_is_queued_durably():
+    """A text follow-up inside the post-start grace window used to merge
+    in-memory and return None BEFORE the durable seam — parked in a queue
+    that dies with the process bounce while promising nothing."""
+    import time
+
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    key = _mark_busy(runner)
+    runner._peek_session_state = lambda _key: _sub_path_state(
+        started_ts=time.time(), agent=object()  # real agent, not the sentinel
+    )
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+
+    result = await runner._handle_message(_make_event("grace follow-up"))
+
+    assert isinstance(result, str)
+    assert "queued for the next turn after it comes back" in result
+    assert key in mock_adapter._pending_messages
+    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
+    assert events[0]["event"]["text"] == "grace follow-up"
+
+    # Control: with admission open the same sub-path keeps its in-memory-only
+    # shape — None, nothing durably recorded (the branch really was taken).
+    runner._draining = False
+    runner._restart_requested = False
+    drain_queue_path().unlink(missing_ok=True)
+    mock_adapter._pending_messages.clear()
+    assert await runner._handle_message(_make_event("grace control")) is None
+    assert key in mock_adapter._pending_messages
+    assert not drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_sentinel_followup_during_drain_is_queued_durably():
+    """Same gap in the agent-setup window: a follow-up while the pending
+    sentinel holds the slot used to merge in-memory and return None before
+    the durable seam ever ran."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, mock_adapter = _make_gate_runner()
+    key = _mark_busy(runner)
+    runner._peek_session_state = lambda _key: _sub_path_state(
+        started_ts=0.0, agent=_AGENT_PENDING_SENTINEL  # outside the grace window
+    )
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+
+    result = await runner._handle_message(_make_event("while the agent spins up"))
+
+    assert isinstance(result, str)
+    assert "queued for the next turn after it comes back" in result
+    assert key in mock_adapter._pending_messages
+    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
+    assert events[0]["event"]["text"] == "while the agent spins up"
+
+    # Control: admission open — the sentinel window keeps merging in-memory
+    # (None, no file), exactly as before the drain queue existed.
+    runner._draining = False
+    runner._restart_requested = False
+    drain_queue_path().unlink(missing_ok=True)
+    mock_adapter._pending_messages.clear()
+    assert await runner._handle_message(_make_event("sentinel control")) is None
+    assert key in mock_adapter._pending_messages
+    assert not drain_queue_path().exists()
 
 
 # ── preserved entries: restart request + lifecycle + read-only ──────────────
