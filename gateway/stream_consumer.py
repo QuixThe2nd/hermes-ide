@@ -1094,19 +1094,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not getattr(result, "success", False):
             return False
         new_message_id = getattr(result, "message_id", None)
-        # Best-effort preview cleanup; never delete the message just sent.
-        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
-        self._preview_message_ids = set()
+        # Record delivery BEFORE the best-effort preview cleanup: the fresh send already
+        # landed, so a stuck/cancelled delete must never leave the delivery flags unset —
+        # the gateway would treat that as "not delivered" and re-send the full final
+        # (duplicate final send, same class as the wecom ack-timeout RCA).
         self._adopt_message_id(new_message_id)
         self._already_sent = True
         self._last_sent_text = send_text
         if is_turn_final:
-            self._final_response_sent = True
             # Fresh send carried exactly the turn's payload — record it so the gateway
             # can reconcile the flag against the completed response (#71643/#95382
             # content-vs-flag contract).  A split turn records the full ledger, see
             # _record_turn_final_payload.
-            self._record_turn_final_payload(text)
+            self._mark_final_delivered(record=text)
+        # Best-effort preview cleanup LAST; never delete the message just sent.
+        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
+        self._preview_message_ids = set()
         return True
 
 

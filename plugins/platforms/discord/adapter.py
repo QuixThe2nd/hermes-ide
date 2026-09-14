@@ -3845,6 +3845,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             await msg.delete()
             return True
         except Exception as e:
+            if self._is_already_deleted_error(e):
+                logger.debug(
+                    "[%s] Discord message %s already deleted: %s",
+                    self.name,
+                    message_id,
+                    e,
+                )
+                return True
             logger.debug(
                 "[%s] Failed to delete Discord message %s: %s",
                 self.name,
@@ -3852,6 +3860,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 e,
             )
             return False
+
+    @staticmethod
+    def _is_already_deleted_error(err: Exception) -> bool:
+        """True when the delete target was already gone (discord.errors.NotFound /
+        error code 10008 Unknown Message): best-effort cleanup counts it as cleaned."""
+        if DISCORD_AVAILABLE and discord is not None:
+            not_found = getattr(getattr(discord, "errors", None), "NotFound", None)
+            if isinstance(not_found, type) and isinstance(err, not_found):
+                return True
+        return "error code: 10008" in str(err)
 
     @staticmethod
     def _is_reply_reference_rejected(err: Exception) -> bool:
