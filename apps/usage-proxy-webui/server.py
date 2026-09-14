@@ -143,19 +143,32 @@ def _badge_logo(letter: str, tile: str) -> str:
 
 
 # Longest prefix first, so "openrouter/…" never falls through to a shorter
-# rule and a bare "glm" (no dash) stays neutral, matching the map exactly.
+# rule, a bare "glm" (no dash) stays neutral, and shorter rules (Kimi's
+# native "k3"/"k2", the bare "o3") sit behind their longer siblings — the
+# table also covers the aggregator-normalized "vendor/model" spellings
+# ("anthropic/…", "openai/…", "z-ai/…", "x-ai/…", "kimi/…") ledgers record.
 PROVIDER_PREFIXES = (
     ("openrouter/", "openrouter"),
     ("claude-", "claude"),
+    ("anthropic/", "claude"),
     ("codex", "openai"),
+    ("openai/", "openai"),
     ("gpt-", "openai"),
     ("grok-", "grok"),
+    ("x-ai/", "grok"),
     ("kimi-", "kimi"),
+    ("kimi/", "kimi"),
+    ("moonshot/", "kimi"),
     ("glm-", "zai"),
+    ("z-ai/", "zai"),
+    ("zai", "zai"),
     ("o4-", "openai"),
     ("o3", "openai"),
-    ("zai", "zai"),
 )
+
+# Kimi Coding's native bare identifiers (no dash, no vendor prefix): exact
+# match only, so unrelated future "k3…"/"k2…" spellings stay neutral.
+PROVIDER_EXACT = {"k3": "kimi", "k2": "kimi"}
 
 PROVIDER_BRANDS = {
     "openai": {"name": "ChatGPT/OpenAI", "color": "#10A37F", "logo": _path_logo(_LOGO_OPENAI)},
@@ -340,13 +353,19 @@ def provider_key(model: Any) -> str | None:
     if not model:
         return None
     name = str(model).lower()
+    exact = PROVIDER_EXACT.get(name)
+    if exact:
+        return exact
     for prefix, key in PROVIDER_PREFIXES:
         if name.startswith(prefix):
             return key
     return None
 
 
-BRAND_SHADE_STEPS = (0.62, 0.40, 0.52, 0.34, 0.58, 0.28)
+BRAND_SHADE_STEPS = (
+    0.62, 0.40, 0.52, 0.34, 0.58, 0.28,  # the reviewed six-repeat ring ramp
+    0.24, 0.19, 0.15, 0.11, 0.08, 0.05,  # overflow: keep dimming, never repeat
+)
 
 
 def brand_shade(color: str, step: int) -> str:
@@ -354,13 +373,13 @@ def brand_shade(color: str, step: int) -> str:
     models of one provider in the same ring or column, so same-brand
     neighbours stay told apart while still reading as one brand.  Stays a
     plain hex so the canvas partial-dim pass (hexToRgba) keeps working.
-    The mix factors cycle through six distinct values so every repeat of
-    one brand in a six-model ring keeps its own colour (a linear ramp
-    clamped here flattened repeats past the fourth onto one shade).
+    The factors never repeat (the hourly chart can stack more same-provider
+    models than the six-slot donut), dimming past the sixth repeat toward a
+    near-surface tail; past the twelfth the step clamps on the last factor.
     Mirrored exactly in the browser JS (brandShade)."""
     if step <= 0:
         return color
-    t = BRAND_SHADE_STEPS[(step - 1) % len(BRAND_SHADE_STEPS)]
+    t = BRAND_SHADE_STEPS[min(step - 1, len(BRAND_SHADE_STEPS) - 1)]
     channels = []
     for i in (1, 3, 5):
         c = int(color[i:i + 2], 16)
@@ -1223,10 +1242,13 @@ JS = r"""
      paint got from Python.  Logos are Simple Icons (CC0) path data; Z.ai and
      Kimi are clean initial badges (brand-coloured rounded square + letter) */
   var PROVIDER_PREFIXES = [
-    ['openrouter/', 'openrouter'], ['claude-', 'claude'], ['codex', 'openai'],
-    ['gpt-', 'openai'], ['grok-', 'grok'], ['kimi-', 'kimi'],
-    ['glm-', 'zai'], ['o4-', 'openai'], ['o3', 'openai'], ['zai', 'zai']
+    ['openrouter/', 'openrouter'], ['claude-', 'claude'], ['anthropic/', 'claude'],
+    ['codex', 'openai'], ['openai/', 'openai'], ['gpt-', 'openai'],
+    ['grok-', 'grok'], ['x-ai/', 'grok'], ['kimi-', 'kimi'], ['kimi/', 'kimi'],
+    ['moonshot/', 'kimi'], ['glm-', 'zai'], ['z-ai/', 'zai'],
+    ['zai', 'zai'], ['o4-', 'openai'], ['o3', 'openai']
   ];
+  var PROVIDER_EXACT = { k3: 'kimi', k2: 'kimi' };  /* native bare IDs */
   var PROVIDER_NAMES = {
     openai: 'ChatGPT/OpenAI', zai: 'Z.ai', kimi: 'Kimi (Moonshot AI)',
     claude: 'Claude (Anthropic)', grok: 'Grok (xAI)', openrouter: 'OpenRouter'
@@ -1249,6 +1271,7 @@ JS = r"""
   function providerKey(model) {
     if (!model) return null;
     var name = String(model).toLowerCase();
+    if (PROVIDER_EXACT[name]) return PROVIDER_EXACT[name];
     for (var i = 0; i < PROVIDER_PREFIXES.length; i++) {
       if (name.indexOf(PROVIDER_PREFIXES[i][0]) === 0) return PROVIDER_PREFIXES[i][1];
     }
@@ -1269,8 +1292,11 @@ JS = r"""
   }
   function brandShade(hex, step) {
     if (step <= 0) return hex;
-    var STEPS = [0.62, 0.40, 0.52, 0.34, 0.58, 0.28];
-    return mixHex(hex, CARD_SURFACE, STEPS[(step - 1) % STEPS.length]);
+    /* server twin BRAND_SHADE_STEPS: never repeats; clamps on the last,
+       dimmest factor past the twelfth repeat of one brand */
+    var STEPS = [0.62, 0.40, 0.52, 0.34, 0.58, 0.28,
+                 0.24, 0.19, 0.15, 0.11, 0.08, 0.05];
+    return mixHex(hex, CARD_SURFACE, STEPS[Math.min(step - 1, STEPS.length - 1)]);
   }
 
   /* coloured logo span for a provider key — the markup is the static,
@@ -1642,11 +1668,12 @@ JS = r"""
 
   /* segment colours for one bar: the harness palette in harness mode; in
      model mode each model's provider brand (PROVIDER_HEXES), where a brand
-     repeated in this bar is shaded toward the surface (brandShade) and a
-     model with no provider still hashes into MODEL_HEXES, a slot already
-     claimed by an earlier (alphabetical) model advanced +1 so stacked
-     neighbours stay distinguishable; the in/out and cache modes have fixed
-     two-slot palettes */
+     repeated in this bar is shaded toward the surface (brandShade — never
+     repeating, so uncapped hourly stacks stay told apart) and a model with
+     no provider still hashes into MODEL_HEXES, a slot already claimed by an
+     earlier (alphabetical) model or a brand's first slice advanced +1 so
+     stacked neighbours stay distinguishable; the in/out and cache modes
+     have fixed two-slot palettes */
   function segmentHexes(segs) {
     var out = {};
     if (chartMode === 'inout' || chartMode === 'cache') {
@@ -1660,19 +1687,31 @@ JS = r"""
     }
     var taken = [];
     var brandSeen = {};
+    var brandTaken = [];  /* brandShade(step 0) is the pure brand hex — keep
+                             the neutral palette off those slots too */
     segs.forEach(function (s) {
       var key = providerKey(s.name);
       if (key) {
         var step = brandSeen[key] || 0;
         brandSeen[key] = step + 1;
         out[s.name] = brandShade(PROVIDER_HEXES[key], step);
+        if (step === 0) {
+          for (var b = 0; b < MODEL_HEXES.length; b++) {
+            if (MODEL_HEXES[b].toLowerCase() === PROVIDER_HEXES[key].toLowerCase()) {
+              brandTaken[b] = true;
+            }
+          }
+        }
         return;
       }
       var idx = djb2(s.name) % MODEL_HEXES.length;
-      for (var bump = 0; taken[idx] && bump < MODEL_HEXES.length; bump++) {
+      for (var bump = 0;
+           bump < MODEL_HEXES.length && (taken[idx] || brandTaken[idx]);
+           bump++) {
         idx = (idx + 1) % MODEL_HEXES.length;
       }
       taken[idx] = true;
+      brandTaken[idx] = true;
       out[s.name] = MODEL_HEXES[idx];
     });
     return out;
