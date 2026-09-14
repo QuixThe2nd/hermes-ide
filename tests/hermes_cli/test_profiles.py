@@ -20,6 +20,7 @@ import yaml
 
 from hermes_cli import profiles
 from hermes_cli.profiles import (
+    has_bundled_skills_opt_out,
     normalize_profile_name,
     validate_profile_name,
     get_profile_dir,

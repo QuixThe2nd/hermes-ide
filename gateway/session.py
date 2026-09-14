@@ -1635,9 +1635,16 @@ class SessionStore:
             return pinned
         profile = self._named_profile_for_key(session_key)
         if profile is None:
-            # No named owner — the ambient store is authoritative, exactly as
-            # it was before this helper existed.
-            return self._db
+            # Default-profile (``agent:main``) rows belong to the launch home, not to whichever
+            # profile's scope happens to be active: a scoped drain tick or cron mirror touching a
+            # default chat used to write its rows into the secondary's store (#102157's picture).
+            routing_home = getattr(self, "_routing_home", None)
+            if routing_home is None or not getattr(self.config, "multiplex_profiles", False):
+                return self._db
+            try:
+                return self._open_session_db_for_active_scope(db_path=routing_home / "state.db")
+            except Exception:
+                return None
         home = self._profile_home_for_key(session_key)
         if home is None:
             # A named owner we cannot resolve: the profile is not provisioned
