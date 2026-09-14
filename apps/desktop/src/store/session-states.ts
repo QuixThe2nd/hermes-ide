@@ -1146,7 +1146,18 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
   // Without this rung such ids fell straight to the ambient socket.
   const mirrored = $sessionStates.get()[sessionId]?.storedSessionId?.trim()
 
-  return mirrored || null
+  if (mirrored) {
+    return mirrored
+  }
+
+  // Main's own binding. A tile promoted into main (⌘W on the workspace tab,
+  // a tab dragged out of main) loses its tile AND its evicted mirror entry in
+  // the same tick, while the resume sets the runtime active before the view
+  // republishes the mirror. The composer's control read lands in that gap
+  // and, with nothing to translate, never reaches the stored-id hint.
+  const selected = $selectedStoredSessionId.get()
+
+  return sessionId === $activeSessionId.get() && selected ? selected : null
 }
 
 const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
