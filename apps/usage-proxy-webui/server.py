@@ -366,6 +366,7 @@ BRAND_SHADE_STEPS = (
     0.62, 0.40, 0.52, 0.34, 0.58, 0.28,  # the reviewed six-repeat ring ramp
     0.24, 0.19, 0.15, 0.11, 0.08, 0.05,  # overflow: keep dimming, never repeat
 )
+BRAND_SHADE_TAIL_RATIO = 0.75  # geometric dim past the table: strictly decreasing
 
 
 def brand_shade(color: str, step: int) -> str:
@@ -373,17 +374,22 @@ def brand_shade(color: str, step: int) -> str:
     models of one provider in the same ring or column, so same-brand
     neighbours stay told apart while still reading as one brand.  Stays a
     plain hex so the canvas partial-dim pass (hexToRgba) keeps working.
-    The factors never repeat (the hourly chart can stack more same-provider
-    models than the six-slot donut), dimming past the sixth repeat toward a
-    near-surface tail; past the twelfth the step clamps on the last factor.
-    Mirrored exactly in the browser JS (brandShade)."""
+    The factors never repeat and never clamp (the hourly chart can stack
+    more same-provider models than the six-slot donut): past the table the
+    factor keeps shrinking geometrically (×0.75 per repeat), staying
+    strictly darker until 8-bit hex saturation.  Mirrored exactly in the
+    browser JS (brandShade)."""
     if step <= 0:
         return color
-    t = BRAND_SHADE_STEPS[min(step - 1, len(BRAND_SHADE_STEPS) - 1)]
+    i = step - 1
+    if i < len(BRAND_SHADE_STEPS):
+        t = BRAND_SHADE_STEPS[i]
+    else:
+        t = BRAND_SHADE_STEPS[-1] * BRAND_SHADE_TAIL_RATIO ** (i - len(BRAND_SHADE_STEPS) + 1)
     channels = []
-    for i in (1, 3, 5):
-        c = int(color[i:i + 2], 16)
-        s = int(CARD_SURFACE[i:i + 2], 16)
+    for j in (1, 3, 5):
+        c = int(color[j:j + 2], 16)
+        s = int(CARD_SURFACE[j:j + 2], 16)
         channels.append(round(c * t + s * (1 - t)))
     return "#{:02x}{:02x}{:02x}".format(*channels)
 
@@ -1292,11 +1298,15 @@ JS = r"""
   }
   function brandShade(hex, step) {
     if (step <= 0) return hex;
-    /* server twin BRAND_SHADE_STEPS: never repeats; clamps on the last,
-       dimmest factor past the twelfth repeat of one brand */
+    /* server twin BRAND_SHADE_STEPS: never repeats and never clamps — past
+       the table the factor keeps shrinking ×0.75 per repeat, strictly
+       darker until 8-bit hex saturation */
     var STEPS = [0.62, 0.40, 0.52, 0.34, 0.58, 0.28,
                  0.24, 0.19, 0.15, 0.11, 0.08, 0.05];
-    return mixHex(hex, CARD_SURFACE, STEPS[Math.min(step - 1, STEPS.length - 1)]);
+    var i = step - 1;
+    var t = i < STEPS.length ? STEPS[i]
+      : STEPS[STEPS.length - 1] * Math.pow(0.75, i - STEPS.length + 1);
+    return mixHex(hex, CARD_SURFACE, t);
   }
 
   /* coloured logo span for a provider key — the markup is the static,
