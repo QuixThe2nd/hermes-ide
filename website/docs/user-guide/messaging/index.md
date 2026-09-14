@@ -426,7 +426,7 @@ Control how much tool activity is displayed in `~/.hermes/config.yaml`:
 
 ```yaml
 display:
-  tool_progress: all    # off | new | all | verbose | log
+  tool_progress: all    # off | new | all | verbose | log | plugin
   tool_progress_command: false  # set to true to enable /verbose in messaging
   # How progress is grouped on platforms that support message editing:
   #   accumulate (default) — edit one bubble in place as tools run

@@ -556,7 +556,7 @@ Controls whether the bot sends progress messages in the chat while processing (e
 
 ```yaml
 display:
-  tool_progress: "all"    # off | new | all | verbose
+  tool_progress: "all"    # off | new | all | verbose | plugin
 ```
 
 - `off` — no progress messages
