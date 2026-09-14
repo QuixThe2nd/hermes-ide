@@ -1,0 +1,8 @@
+name: papercuts
+default_enabled: true
+version: 1.1.0
+description: "A private complaint box for Hermes agents to record, deduplicate, review, and resolve recurring workflow friction — plus an opt-in daily autofix cron installer (hermes papercuts autofix install)."
+author: Hermes Agent
+kind: standalone
+provides_tools:
+  - papercuts

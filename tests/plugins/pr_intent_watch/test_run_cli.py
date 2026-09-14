@@ -1,0 +1,123 @@
+"""CLI entrypoint contracts: flags, summary lines, exit codes, module smoke."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from plugins.pr_intent_watch import run as run_module
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _tick_stub(monkeypatch, summary=None, error=None):
+    from plugins.pr_intent_watch import core
+
+    recorded: list[dict] = []
+
+    def _fake_tick(**kwargs):
+        recorded.append(kwargs)
+        if error is not None:
+            raise error
+        return dict(summary or {})
+
+    monkeypatch.setattr(core, "run_tick", _fake_tick)
+    return recorded
+
+
+# ── flags ───────────────────────────────────────────────────────────────────
+
+
+def test_config_flag_is_forwarded_as_path(monkeypatch, tmp_path):
+    config = tmp_path / "elsewhere.yaml"
+    recorded = _tick_stub(monkeypatch, {"reviewed": 0, "commented": 0, "skipped": 0})
+    assert run_module.main(["--config", str(config), "--dry-run"]) == 0
+    assert recorded == [
+        {"config_path": config, "dry_run": True}
+    ]
+
+
+def test_defaults_to_hermes_home_config_and_no_dry_run(monkeypatch, tmp_path):
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    recorded = _tick_stub(monkeypatch, {"reviewed": 0, "commented": 0, "skipped": 0})
+    assert run_module.main([]) == 0
+    assert recorded == [
+        {"config_path": get_hermes_home() / "config.yaml", "dry_run": False}
+    ]
+
+
+def test_help_exits_zero(capsys):
+    try:
+        run_module.main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("--help must exit")
+    assert "usage" in capsys.readouterr().out.lower()
+
+
+# ── summary lines ───────────────────────────────────────────────────────────
+
+
+def test_prints_disabled_line(monkeypatch, capsys):
+    _tick_stub(monkeypatch, {"disabled": True})
+    assert run_module.main([]) == 0
+    out = capsys.readouterr().out
+    assert "disabled" in out and "nothing to do" in out
+
+
+def test_prints_no_token_line(monkeypatch, capsys):
+    _tick_stub(monkeypatch, {"no_token": True})
+    assert run_module.main([]) == 0
+    assert "no GitHub token" in capsys.readouterr().out
+
+
+def test_prints_baseline_line_with_zero_comments(monkeypatch, capsys):
+    _tick_stub(monkeypatch, {"baseline": True, "new": 4})
+    assert run_module.main([]) == 0
+    out = capsys.readouterr().out
+    assert "baseline" in out
+    assert "new=4" in out and "commented=0" in out
+
+
+def test_prints_review_summary_line(monkeypatch, capsys):
+    _tick_stub(
+        monkeypatch,
+        {"reviewed": 2, "commented": 1, "skipped": 1, "new": 2},
+    )
+    assert run_module.main([]) == 0
+    out = capsys.readouterr().out
+    assert "reviewed=2" in out
+    assert "commented=1" in out
+    assert "skipped=1" in out
+
+
+def test_unexpected_error_exits_one(monkeypatch, capsys):
+    _tick_stub(monkeypatch, error=RuntimeError("boom"))
+    assert run_module.main([]) == 1
+    assert "unexpected error" in capsys.readouterr().out.lower()
+
+
+# ── the way the timer actually invokes it ────────────────────────────────────
+
+
+def test_module_help_smoke_from_repo_root():
+    """`python -m plugins.pr_intent_watch.run --help` must work from the repo
+    root — the systemd unit runs exactly this, with no pytest imports
+    around to mask a broken bootstrap."""
+    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
+    proc = subprocess.run(
+        [sys.executable, "-m", "plugins.pr_intent_watch.run", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO_ROOT),
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "usage" in proc.stdout.lower()
+    assert "--dry-run" in proc.stdout

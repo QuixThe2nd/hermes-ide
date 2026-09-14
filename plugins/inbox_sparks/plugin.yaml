@@ -1,0 +1,8 @@
+name: inbox_sparks
+default_enabled: true
+version: 1.0.0
+description: "End-of-turn nudge: once per cooldown window the agent is asked to decide whether anything is worth starting a new conversation with the user about (start_conversation tool) before the turn finishes."
+author: Hermes Agent
+kind: backend
+provides_hooks:
+  - pre_turn_end

@@ -1,0 +1,8 @@
+name: hermes_starts
+default_enabled: true
+version: 1.0.0
+description: "Hermes starts conversations with its human — observations, advice, feedback, jokes, ideas, complaints, compliments — posted to a self-provisioned Discord channel."
+author: Hermes Agent
+kind: standalone
+provides_tools:
+  - hermes_starts
