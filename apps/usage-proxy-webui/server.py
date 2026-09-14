@@ -346,15 +346,21 @@ def provider_key(model: Any) -> str | None:
     return None
 
 
+BRAND_SHADE_STEPS = (0.62, 0.40, 0.52, 0.34, 0.58, 0.28)
+
+
 def brand_shade(color: str, step: int) -> str:
     """Brand colour dimmed toward the card surface — the second and later
     models of one provider in the same ring or column, so same-brand
     neighbours stay told apart while still reading as one brand.  Stays a
     plain hex so the canvas partial-dim pass (hexToRgba) keeps working.
+    The mix factors cycle through six distinct values so every repeat of
+    one brand in a six-model ring keeps its own colour (a linear ramp
+    clamped here flattened repeats past the fourth onto one shade).
     Mirrored exactly in the browser JS (brandShade)."""
     if step <= 0:
         return color
-    t = max(0.45, 1.0 - 0.27 * step)
+    t = BRAND_SHADE_STEPS[(step - 1) % len(BRAND_SHADE_STEPS)]
     channels = []
     for i in (1, 3, 5):
         c = int(color[i:i + 2], 16)
@@ -1263,7 +1269,8 @@ JS = r"""
   }
   function brandShade(hex, step) {
     if (step <= 0) return hex;
-    return mixHex(hex, CARD_SURFACE, Math.max(0.45, 1 - 0.27 * step));
+    var STEPS = [0.62, 0.40, 0.52, 0.34, 0.58, 0.28];
+    return mixHex(hex, CARD_SURFACE, STEPS[(step - 1) % STEPS.length]);
   }
 
   /* coloured logo span for a provider key — the markup is the static,
