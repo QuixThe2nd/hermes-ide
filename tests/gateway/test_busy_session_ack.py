@@ -679,10 +679,107 @@ class TestBusySessionOnboardingHint:
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 
+class TestBusySteerResolverRouting:
+    """Both live busy handlers — the adapter busy callback and the
+    _handle_message priority fast-path — must resolve steer/redirect through
+    the shared _resolve_busy_steer_or_redirect, not hand-maintained inline
+    copies, so real adapter traffic runs the topical path.
+    """
+
+    @staticmethod
+    def _steered_outcome():
+        from gateway.run import GatewayRunner
+
+        return GatewayRunner._BusySteerOutcome(
+            effective_mode="steer",
+            demoted_for_subagents=False,
+            demoted_for_compression=False,
+            steered=True,
+            redirected=False,
+        )
+
+    def _steer_setup(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123",
+            chat_type="dm", user_id="user1",
+        )
+        event = MessageEvent(
+            text="nudge the running turn",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        return runner, adapter, event, sk, agent
+
+    @pytest.mark.asyncio
+    async def test_handle_message_busy_flow_routes_through_resolver(self, monkeypatch):
+        """(production routing) A busy follow-up entering _handle_message hits
+        the shared resolver with the live session key, resolved busy mode and
+        running agent — and honors its steered outcome (nothing queued)."""
+        runner, adapter, event, sk, agent = self._steer_setup(monkeypatch)
+        from gateway.run import GatewayRunner
+
+        spy = AsyncMock(return_value=self._steered_outcome())
+        with patch.object(GatewayRunner, "_resolve_busy_steer_or_redirect", spy):
+            assert await runner._handle_message(event) is None
+
+        spy.assert_awaited_once()
+        resolved_event, resolved_key, resolved_mode, resolved_agent = (
+            spy.call_args.args
+        )
+        assert resolved_event is event
+        assert resolved_key == sk
+        assert resolved_mode == "steer"
+        assert resolved_agent is agent
+        # Steered outcome honored: the follow-up must NOT also queue behind
+        # the run it was injected into.
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_busy_session_handler_routes_through_resolver(self, monkeypatch):
+        """(production routing) The adapter busy callback resolves through the
+        same shared resolver and honors its steered outcome end-to-end."""
+        runner, adapter, event, sk, agent = self._steer_setup(monkeypatch)
+        from gateway.run import GatewayRunner
+
+        spy = AsyncMock(return_value=self._steered_outcome())
+        with patch.object(GatewayRunner, "_resolve_busy_steer_or_redirect", spy):
+            assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        spy.assert_awaited_once()
+        resolved_event, resolved_key, resolved_mode, resolved_agent = (
+            spy.call_args.args
+        )
+        assert resolved_event is event
+        assert resolved_key == sk
+        assert resolved_mode == "steer"
+        assert resolved_agent is agent
+        # Steered outcome honored: steer-ack wording, nothing queued.
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Steered" in content
+        assert "Queued" not in content
+        assert sk not in adapter._pending_messages
+
+
 class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the
     session slot or the executor finished — otherwise a stale
     'running: delegate_agent' bubble outlives the run that spawned it (#12029).
+    Restart-drain suppression is scoped to sessions whose chat was actually
+    notified of the pending drain.
     """
 
     @staticmethod
@@ -710,10 +807,60 @@ class TestLongRunningNotificationOwnership:
             "sess", original_agent, executor_task=None
         ) is False
 
-    def test_notification_suppressed_while_restart_requested(self):
+    def test_notification_emitted_for_session_not_notified_of_drain(self):
+        """A restart pending with nobody told (SIGUSR1, updater, control
+        socket) must not silence a working session's heartbeat: that chat
+        never learned a drain was pending, so the heartbeat is the only
+        liveness signal it has while the drain waits without timeout."""
         agent = MagicMock()
         runner = self._qualifying_runner(agent)
         runner._restart_requested = True
+        # No restart command source and no park-steered sessions: no notice.
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
+
+    def test_notification_emitted_for_working_session_in_other_chat(self):
+        """Cross-chat restart: the requester's chat was told, but a different
+        busy session keeps heartbeating through the whole drain."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+        runner._restart_command_source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="999",
+            chat_type="dm", user_id="requester",
+        )
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=None
+        ) is True
+
+    def test_notification_suppressed_for_requesters_session(self):
+        """The requester's chat — the one the restart wind-down embed targets —
+        stays quiet for the drain (the original suppression contract)."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123",
+            chat_type="dm", user_id="requester",
+        )
+        requester_key = runner._session_key_for_source(source)
+        runner._running_agents[requester_key] = agent
+        runner._restart_requested = True
+        runner._restart_command_source = source
+
+        assert runner._should_emit_long_running_notification(
+            requester_key, agent, executor_task=None
+        ) is False
+
+    def test_notification_suppressed_for_park_steered_session(self):
+        """A session whose agent accepted the cooperative park steer was told
+        in-band to wind down; its heartbeat stays quiet for the drain."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent)
+        runner._restart_requested = True
+        runner._cooperative_restart_steered_sessions = ["sess"]
 
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=None
@@ -736,5 +883,56 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=None
         ) is True
+
+
+class TestLongRunningHeartbeatIterationDetail:
+    """The long-running heartbeat renders its status detail through the
+    shared iteration formatter — unbounded runs must not print the
+    sys.maxsize sentinel (#102806), matching the busy acknowledgement.
+    """
+
+    def test_unbounded_iterations_render_without_the_sentinel(self):
+        from gateway.run import GatewayRunner
+
+        detail = GatewayRunner._format_long_running_status_detail(
+            {"api_call_count": 3, "max_iterations": sys.maxsize,
+             "current_tool": "terminal"},
+            include_iterations=True,
+        )
+
+        assert detail == " — iteration 3, terminal"
+        assert str(sys.maxsize) not in detail
+
+    def test_bounded_iterations_keep_the_denominator(self):
+        from gateway.run import GatewayRunner
+
+        detail = GatewayRunner._format_long_running_status_detail(
+            {"api_call_count": 21, "max_iterations": 60,
+             "last_activity_desc": "packing context"},
+            include_iterations=True,
+        )
+
+        assert detail == " — iteration 21/60, packing context"
+
+    def test_iteration_counter_hidden_when_detail_not_opted_in(self):
+        from gateway.run import GatewayRunner
+
+        detail = GatewayRunner._format_long_running_status_detail(
+            {"api_call_count": 21, "max_iterations": 60, "current_tool": "bash"},
+            include_iterations=False,
+        )
+
+        assert detail == " — bash"
+        assert "iteration" not in detail
+
+    def test_missing_summary_renders_no_detail(self):
+        from gateway.run import GatewayRunner
+
+        assert GatewayRunner._format_long_running_status_detail(
+            {}, include_iterations=True
+        ) == ""
+        assert GatewayRunner._format_long_running_status_detail(
+            None, include_iterations=True
+        ) == ""
 
 
