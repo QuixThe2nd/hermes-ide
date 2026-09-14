@@ -744,6 +744,17 @@ class ToolRegistry:
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
         """
+        # Reject malformed schemas at registration, not at request time: a non-dict
+        # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
+        # whole turn far from the offending plugin. Failing here names the culprit instead.
+        if not isinstance(schema, dict):
+            raise ValueError(
+                f"Tool {name!r}: schema must be a dict, got {type(schema).__name__}")
+        params = schema.get("parameters")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(
+                f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
+                f"got {type(params).__name__}")
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner

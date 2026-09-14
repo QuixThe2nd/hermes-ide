@@ -17,7 +17,6 @@ import re
 import atexit
 import errno
 import time
-import uuid
 import textwrap
 from collections import deque
 from dataclasses import dataclass
@@ -52,6 +51,10 @@ from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
+try:
+    from prompt_toolkit.enums import EditingMode
+except ImportError:  # partial prompt_toolkit stubs in tests
+    EditingMode = None
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -167,6 +170,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
 from hermes_constants import get_hermes_home
+from hermes_state_ids import new_session_id
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches, base_url_hostname, fast_safe_load
 
@@ -2300,7 +2304,7 @@ def _build_compact_banner() -> str:
     dim_color = _color("banner_dim", "#B8860B")
 
     if (getattr(_skin, "name", "default") if _skin else "default") == "default":
-        tiny_line = "⚕ NOUS HERMES"
+        tiny_line = "☤ NOUS HERMES"
     else:
         tiny_line = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
     line1 = f"{tiny_line} - AI Agent Framework"
@@ -2843,7 +2847,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._init_session_store()
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
-        self.session_id = resume or f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.session_id = resume or new_session_id(self.session_start)
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         self._history_file = _hermes_home / ".hermes_history"
@@ -2855,8 +2859,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._session_db = None
         self._session_db_unavailable = False
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
+            # path a moment later from the REPL thread, and a second writer repeats the full
+            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
+            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
+            from hermes_state_registry import acquire
+            self._session_db = acquire()
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -2959,6 +2967,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
+        # Off by default: prompt_toolkit's standard emacs bindings.
+        self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
         # Hide rules + status bar until the next input after a resize, so SIGWINCH cannot
         # stamp a fresh status bar over one the terminal just reflowed into scrollback.
         self._status_bar_suppressed_after_resize = self._resize_recovery_pending = False
@@ -3024,12 +3035,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
-        try:
-            from tools.computer_use_tool import set_approval_callback as _set_cu_cb
-
-            _set_cu_cb(self._computer_use_approval_callback)
-        except ImportError:
-            pass
         self._tool_callbacks_installed = True
 
     def _ensure_tirith_security(self) -> None:
@@ -3771,6 +3776,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             extra_kw["output"] = _cpr_disabled_output
         if _STEADY_CURSOR is not None:
             extra_kw["cursor"] = _STEADY_CURSOR
+        if EditingMode is not None:
+            # Vi editing mode when display.vim_mode is on.
+            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
+            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
         return Application(
             layout=layout,
             key_bindings=kb,
