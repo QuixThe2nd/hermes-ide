@@ -4407,6 +4407,9 @@ def _try_resolve_fallback_provider() -> dict | None:
                 # runtime category — an Ollama fallback resolves through the
                 # OpenAI-compatible path and would otherwise be logged as
                 # "openrouter", contradicting the operator's config (#32790).
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
+                # Named custom entries resolve to the bare "custom" billing class; persist the configured
+                runtime["provider"] = effective_runtime_provider(entry, runtime)
                 logger.info(
                     "Fallback provider resolved: %s model=%s",
                     entry.get("provider") or runtime.get("provider"),
