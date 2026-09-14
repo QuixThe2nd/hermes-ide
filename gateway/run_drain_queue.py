@@ -572,7 +572,7 @@ def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> boo
     and then nobody would ever consume the queued message.
     """
     from gateway.restart_wind_down import should_auto_resume_session
-    from gateway.session import auto_continue_freshness_window
+    from gateway.session_lifecycle import auto_continue_freshness_window
 
     store = getattr(runner, "session_store", None)
     if store is None:
