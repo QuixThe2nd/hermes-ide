@@ -51,6 +51,7 @@ modules can import it cheaply.
 
 from __future__ import annotations
 
+import re
 import ssl
 import threading
 from typing import Any, Mapping, Optional
@@ -60,8 +61,16 @@ _LOCK = threading.Lock()
 _INACTIVE_REASON = "no route table registered"
 # Label Hermes puts on the traffic it routes itself (see
 # plugins.llm_usage_proxy.server.CALLER_LABEL_HEADER, whose name is imported
-# at request time — this module stays stdlib-only at import).
+# at request time — this module stays stdlib-only at import). The default
+# profile's routed traffic carries exactly this; a named profile carries
+# ``hermes:<name>`` (see :func:`_caller_label_for_profile`).
 HERMES_CALLER_LABEL = "hermes"
+# The proxy's caller-label wire limits (CALLER_LABEL_MAX_CHARS and the
+# character set of CALLER_LABEL_RE in plugins.llm_usage_proxy.server),
+# repeated here so label derivation stays stdlib-only like the rest of this
+# module's import-time surface.
+_CALLER_LABEL_MAX_CHARS = 64
+_PROFILE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._:-]")
 
 # The proxy is loopback-only by construction (the plugin binds 127.0.0.1), so
 # a non-loopback origin is never a table this process verified.
@@ -504,7 +513,43 @@ def _verified_tls_policy(verify: Any) -> bool:
     return verify is True or isinstance(verify, ssl.SSLContext)
 
 
-def _proxied_request(request: Any, target: str) -> Any:
+def _caller_label_for_profile(profile: str) -> str:
+    """Ledger label for the traffic Hermes routes under *profile*.
+
+    *profile* is the constructor-bound profile key of a transport wrapper —
+    an absolute ``HERMES_HOME`` path, never a per-request resolution (the
+    request path runs on transport threads where current-profile context is
+    unavailable). The existing profile-path helpers decide what it names:
+
+    * a home that is not under a ``profiles/`` directory (the default
+      profile, or a custom root) labels itself exactly ``hermes`` — wire
+      behaviour identical to a constant label;
+    * a named profile home (``<root>/profiles/<name>``) labels itself
+      ``hermes:<name>``.
+
+    Profile names are validated upstream, but this is display text on a wire
+    header, so the name is still sanitized defensively: only
+    ``[A-Za-z0-9._:-]`` survives, the whole label is capped at the proxy's
+    limit, and a name with nothing left after sanitizing falls back to plain
+    ``hermes`` — a routed request can never carry an invalid label.
+    """
+    try:
+        from hermes_constants import profile_name_for_home
+
+        name = profile_name_for_home(profile)
+    except Exception:
+        name = None
+    if not name or name == "default":
+        return HERMES_CALLER_LABEL
+    cleaned = _PROFILE_NAME_UNSAFE.sub("", name)
+    if not cleaned:
+        return HERMES_CALLER_LABEL
+    return (f"{HERMES_CALLER_LABEL}:{cleaned}")[:_CALLER_LABEL_MAX_CHARS]
+
+
+def _proxied_request(
+    request: Any, target: str, caller_label: str = HERMES_CALLER_LABEL
+) -> Any:
     """Build the request actually sent to the proxy from the logical one.
 
     Same method, headers, body stream and extensions — only the destination
@@ -512,7 +557,8 @@ def _proxied_request(request: Any, target: str) -> Any:
     request stays honest about where the client thinks it is going; the proxy
     rewrites Host to the upstream netloc when forwarding.
 
-    Routed traffic also names itself: ``X-Usage-Caller: hermes`` unless the
+    Routed traffic also names itself: ``X-Usage-Caller: <caller_label>`` —
+    the profile-derived label of the transport that routes it — unless the
     request already carries a label. The label is attribution for the proxy's
     ledger only — it is not a credential and is stripped before the proxy
     forwards anything upstream.
@@ -526,7 +572,7 @@ def _proxied_request(request: Any, target: str) -> Any:
     if logical.netloc:
         headers["Host"] = logical.netloc
     if not headers.get(CALLER_LABEL_HEADER):
-        headers[CALLER_LABEL_HEADER] = HERMES_CALLER_LABEL
+        headers[CALLER_LABEL_HEADER] = caller_label
     return httpx.Request(
         request.method,
         target,
@@ -542,13 +588,16 @@ def _make_sync_wrapper() -> type:
     class _RoutedSyncTransport(httpx.BaseTransport):
         """Sync transport view that reroutes matching requests to the proxy."""
 
-        __slots__ = ("_inner", "_profile")
+        __slots__ = ("_inner", "_profile", "_caller_label")
 
         def __init__(self, inner: Any, profile: str) -> None:
             self._inner = inner
             # Bound at construction: this transport reroutes only under the
             # profile that built its client, whatever is active at request time.
             self._profile = str(profile)
+            # Computed from that same bound path once, here, where the
+            # profile context that built the client still applies.
+            self._caller_label = _caller_label_for_profile(self._profile)
 
         # Introspection seams (socket-abort sweeps, tests) look at ``_pool``.
         @property
@@ -564,7 +613,9 @@ def _make_sync_wrapper() -> type:
             target = reroute_url(request.url, profile=self._profile)
             if target is None:
                 return self._inner.handle_request(request)
-            response = self._inner.handle_request(_proxied_request(request, target))
+            response = self._inner.handle_request(
+                _proxied_request(request, target, self._caller_label)
+            )
             # Keep the SDK-visible request pointing at the logical provider
             # URL (error messages, retry decisions, logging).
             response.request = request
@@ -582,11 +633,12 @@ def _make_async_wrapper() -> type:
     class _RoutedAsyncTransport(httpx.AsyncBaseTransport):
         """Async transport view that reroutes matching requests to the proxy."""
 
-        __slots__ = ("_inner", "_profile")
+        __slots__ = ("_inner", "_profile", "_caller_label")
 
         def __init__(self, inner: Any, profile: str) -> None:
             self._inner = inner
             self._profile = str(profile)
+            self._caller_label = _caller_label_for_profile(self._profile)
 
         @property
         def _pool(self) -> Any:
@@ -602,7 +654,7 @@ def _make_async_wrapper() -> type:
             if target is None:
                 return await self._inner.handle_async_request(request)
             response = await self._inner.handle_async_request(
-                _proxied_request(request, target)
+                _proxied_request(request, target, self._caller_label)
             )
             response.request = request
             return response
