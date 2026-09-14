@@ -1157,23 +1157,23 @@ def is_shared_multi_user_session(
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:
-    """Return the ``agent:<ns>`` namespace prefix for a session key.
-
-    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
-    ``main`` is a static namespace literal (NOT a branch name — branching keys
-    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
-    slot to carry the profile:
-
-    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
-      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
-      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
-    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
-      layout, just a different namespace, so two profiles serving the same
-      platform/chat never collide.
-    """
+    """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
+    (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
+    profiles serving the same chat never collide. A profile literally named ``main`` would
+    otherwise produce the default's namespace and share every session (routing index, agent
+    cache, store) with it, so it is marked ``main~``: ``~`` is outside the profile-id alphabet,
+    so the marked form can never be another profile's id."""
     if not profile or profile == "default":
         return "agent:main"
-    return f"agent:{profile}"
+    return "agent:main~" if profile == "main" else f"agent:{profile}"
+
+
+def profile_from_session_key_namespace(namespace: str) -> str:
+    """Inverse of :func:`_session_key_namespace` for the ``<ns>`` slot of a key: ``"default"`` for
+    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
+    if namespace == "main":
+        return "default"
+    return "main" if namespace == "main~" else namespace
 
 
 def build_session_key(
@@ -2293,7 +2293,7 @@ class SessionStore:
         if len(parts) < 2 or parts[0] != "agent":
             return None
         namespace = parts[1] or "main"
-        return "default" if namespace == "main" else namespace
+        return profile_from_session_key_namespace(namespace)
 
     @staticmethod
     def _active_profile_name() -> str:
