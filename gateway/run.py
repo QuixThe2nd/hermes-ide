@@ -9032,6 +9032,44 @@ class TurnRunner:
                         _replay_outcome.failure,
                     )
                     _forced_recovery_blocked = "forced_resume_replay_failed"
+                if _forced_recovery_blocked is None:
+                    # Superseded restart gate (transparent-resume twin of
+                    # Delta 1): a restart tool result of
+                    # ``status:"superseded"`` in the tail was written BEFORE
+                    # the bounce, with no bounce timestamp of its own — left
+                    # alone, the model reads its own pre-bounce result as
+                    # the last word on a restart it never saw land.  The
+                    # suffix rides the EXISTING tool row (agent_history rows
+                    # are copies built by _build_gateway_agent_history, so
+                    # this never rewrites the durable transcript) and
+                    # creates no synthetic user/system row.  Only trailing
+                    # tool rows are scanned; a tail without a superseded
+                    # result is untouched, so ordinary forced victims keep
+                    # today's silent continuation byte-for-byte.
+                    try:
+                        from gateway.restart import annotate_superseded_restart_tail
+
+                        _superseded_annotated = annotate_superseded_restart_tail(
+                            agent_history,
+                            restarted_at=getattr(
+                                _resume_entry, "last_resume_marked_at", None
+                            ),
+                        )
+                    except Exception:
+                        _superseded_annotated = 0
+                        logger.debug(
+                            "Transparent resume: superseded-restart tail "
+                            "annotation skipped (%s)",
+                            exc_info=True,
+                        )
+                    if _superseded_annotated:
+                        logger.info(
+                            "Transparent resume for %s: annotated %d "
+                            "superseded restart tool result(s) with the "
+                            "bounce note",
+                            ctx.session_key,
+                            _superseded_annotated,
+                        )
                 if not _replay_plan.batch_present and _continue_interrupted_turn:
                     # Text-only interruption: the turn died while the model
                     # was mid-text, leaving an incomplete trailing assistant
