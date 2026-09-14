@@ -43,6 +43,9 @@ def _check_vault_available() -> bool:
     browser_vault_save_login so the agent can offer to remember a login the first time it meets a
     form; hiding the tools until an item exists meant nobody ever discovered the feature."""
     try:
+        from hermes_cli.config import cfg_get, load_config
+        if not bool(cfg_get(load_config(), "vault", "local", "enabled", default=True)):
+            return False
         from tools.browser_tool_install import check_browser_requirements
         from tools.browser_use_cli import is_browser_use_cli_mode
         # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
