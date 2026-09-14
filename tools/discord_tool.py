@@ -247,6 +247,9 @@ def _message_summary(msg: Dict[str, Any]) -> Dict[str, Any]:
         "attachments": [
             {"filename": a.get("filename"), "url": a.get("url"), "size": a.get("size")}
             for a in msg.get("attachments", [])],
+        "embeds": [
+            {"title": e.get("title"), "description": e.get("description"), "url": e.get("url")}
+            for e in msg.get("embeds", [])],
         "reactions": [
             {"emoji": r.get("emoji", {}).get("name"), "count": r.get("count", 0)}
             for r in msg.get("reactions", [])] if msg.get("reactions") else [],

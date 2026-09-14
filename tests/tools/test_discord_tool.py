@@ -18,6 +18,7 @@ from tools.discord_tool import (
     _discord_request,
     _get_bot_token,
     _load_allowed_actions_config,
+    _message_summary,
     _reset_capability_cache,
     check_discord_tool_requirements,
     discord_admin_handler,
@@ -273,6 +274,26 @@ class TestFetchMessages:
         assert result["count"] == 1
         assert result["messages"][0]["content"] == "Hello world"
         assert result["messages"][0]["author"]["username"] == "user1"
+
+
+class TestMessageSummary:
+    def test_embed_only_message_includes_embeds(self):
+        msg = {
+            "id": "2001",
+            "content": "",
+            "author": {"id": "99", "username": "bot", "global_name": "Bot", "bot": True},
+            "embeds": [
+                {
+                    "title": "Cursor Cloud Agent",
+                    "description": "Agent is running",
+                    "url": "https://cursor.com/agents/bc-x",
+                },
+            ],
+        }
+        summary = _message_summary(msg)
+        assert len(summary["embeds"]) == 1
+        assert summary["embeds"][0]["title"] == "Cursor Cloud Agent"
+        assert summary["embeds"][0]["url"] == "https://cursor.com/agents/bc-x"
 
 
 # ---------------------------------------------------------------------------
