@@ -23975,7 +23975,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        # Sender attribution is for turns a human actually authored: gate it
+        # on real content (text or media).  A content-less internal event —
+        # the startup auto-resume turn synthesized by
+        # _schedule_resume_pending_sessions with text="" — must stay empty;
+        # the "[name] " prefix alone would make the resume-pending note
+        # builder see a truthy message and claim a NEW user message exists
+        # when nobody wrote one (has-message wording on a synthesized turn).
+        if (
+            _is_shared_multi_user
+            and source.user_name
+            and (message_text.strip() or event.media_urls)
+        ):
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before
