@@ -118,23 +118,19 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation() -> None:
-    """Reject Kanban state mutations from ``delegate_agent`` child contexts.
+def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
+    """Reject Kanban mutations from ``delegate_agent`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
     out or import this module); the invariant lives here so every ``write_txn``
     user and board-metadata mutator fails closed before touching durable state.
+    *path* is the board DB / metadata root being mutated; ``None`` means the
+    lineage's own board (``kanban_home()``).
     """
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
+    from agent.delegation_context import kanban_path_is_fenced
 
-        delegated = is_delegated_child_process_context()
-    except Exception:
-        delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
-    if delegated:
-        raise PermissionError(
-            "delegate_agent child contexts cannot mutate Kanban tasks or boards"
-        )
+    if kanban_path_is_fenced(kanban_home() if path is None else path):
+        raise PermissionError("delegate_agent child contexts cannot mutate Kanban tasks or boards")
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
