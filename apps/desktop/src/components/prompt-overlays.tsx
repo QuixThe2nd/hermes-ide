@@ -33,9 +33,7 @@ import {
   sessionVaultSaveLoginRequest,
   sessionVaultUnlockRequest
 } from '@/store/prompts'
-import { ambientRequestFor } from '@/store/session-gone-latch'
 import { respondToServerRequest } from '@/store/server-requests'
-import { requestForOwnedSession } from '@/store/session-states'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval

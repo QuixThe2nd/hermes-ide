@@ -20,8 +20,8 @@ import { AlertCircle, ChevronDown } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
-import { answerApproval } from '@/store/prompts'
 import { notifyError } from '@/store/notifications'
+import { answerApproval } from '@/store/prompts'
 import {
   type ApprovalRequest,
   clearApprovalRequest,
@@ -30,7 +30,6 @@ import {
   sessionApprovalInlineVisible,
   sessionApprovalRequest
 } from '@/store/prompts'
-import { requestForOwnedSession } from '@/store/session-states'
 
 import type { ToolPart } from './fallback-model'
 

@@ -4,12 +4,12 @@ import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-
 import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
-import { $approvalRequests, answerApproval } from './prompts'
 import { withinNativeNotifyBaseline } from './notify-baseline'
+import { $approvalRequests, answerApproval } from './prompts'
 import { clearApprovalRequest } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
-import { requestForOwnedSession, storedSessionIdForRuntimeId } from './session-states'
+import { storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 

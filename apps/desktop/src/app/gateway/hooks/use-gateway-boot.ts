@@ -922,6 +922,7 @@ export function useGatewayBoot({
       recordSessionEventScope(scopedEvent)
       callbacksRef.current.handleGatewayEvent(scopedEvent)
     })
+
     // Secondary sockets reach the same handler through the registry's onServerRequest.
     const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
 

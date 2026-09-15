@@ -938,6 +938,7 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => {
     const handler = (ev: AnyGatewayEvent) => onEventRef.current(ev)
+
     const requestHandler = (request: ServerRequest) => {
       if (!onServerRequestRef.current(request)) {
         request.fail(JSON_RPC_METHOD_NOT_FOUND, `the terminal UI cannot answer ${request.method}`)

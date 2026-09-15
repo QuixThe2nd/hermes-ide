@@ -2,9 +2,9 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 import { ambientRequestFor } from './session-gone-latch'
-import { respondToServerRequest } from './server-requests'
 import { requestForOwnedSession } from './session-states'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each is a
@@ -262,9 +262,9 @@ export async function answerApproval(
   }
 
   await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.respond', {
-    all,
+    ...(all ? { all: true } : {}),
     choice,
-    request_id: request.requestId,
+    ...(request.requestId ? { request_id: request.requestId } : {}),
     session_id: request.sessionId ?? undefined
   })
 }

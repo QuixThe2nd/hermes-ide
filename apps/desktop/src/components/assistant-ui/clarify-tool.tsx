@@ -39,8 +39,8 @@ import {
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { requestForOwnedSession } from '@/store/session-states'
 import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
+import { requestForOwnedSession } from '@/store/session-states'
 
 import { handleClarifySubmitShortcut } from './clarify-submit-shortcut'
 import { selectMessageRunning } from './tool/fallback-model'

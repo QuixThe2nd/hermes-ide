@@ -68,14 +68,19 @@ class ServerRequest:
 _lock = threading.Lock()
 _open: dict[str, ServerRequest] = {}
 
+# Frame sinks, bound by ``bind_sinks`` from server.py at import time (like the method_ctx split
+# modules): importing server back from here would pick a different module object under the test
+# fixtures that patch ``sys.modules`` around the server import.
+_write: Callable[[dict], Any] = lambda frame: None  # noqa: E731
+_emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None  # noqa: E731
 
-def _write(frame: dict) -> None:
-    from tui_gateway.server import write_json
-    write_json(frame)
+
+def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any]) -> None:
+    global _write, _emit
+    _write, _emit = write_json, emit
 
 
 def _emit_cancel(req: ServerRequest, reason: str) -> None:
-    from tui_gateway.server import _emit
     _emit("request.cancel", req.sid, {"id": req.id, "method": req.method, "reason": reason})
 
 
@@ -144,6 +149,14 @@ def resolve_response(frame: dict) -> bool:
     else:
         result = frame.get("result")
         req.result = result if isinstance(result, dict) else {}
+        if req.qids and "answers" in req.result:
+            # Batch clarify: answers locked early via clarify.lock belong to the final set even when
+            # the closing response only carries the tail the user answered last.
+            answers = req.result.get("answers")
+            merged = dict(req.locked)
+            if isinstance(answers, dict):
+                merged.update(answers)
+            req.result = {**req.result, "answers": merged}
         req.answered = True
     if req.on_result is not None:
         req.on_result(req.result)

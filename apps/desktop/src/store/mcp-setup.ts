@@ -1,6 +1,5 @@
 import { atom, computed } from 'nanostores'
 
-import { $gateway } from './gateway'
 import { respondToServerRequest } from './server-requests'
 
 /**
