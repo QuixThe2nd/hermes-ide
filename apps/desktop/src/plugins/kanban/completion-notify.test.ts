@@ -428,7 +428,7 @@ describe('terminal kinds beyond completed', () => {
     })
   })
 
-  it('block_loop_detected notifies that orchestration attention is needed', async () => {
+  it('block_loop_detected notifies that a decision is needed', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
@@ -437,7 +437,7 @@ describe('terminal kinds beyond completed', () => {
     expect(fired).toBe(true)
     expect(lastNotify()).toMatchObject({
       kind: 'warning',
-      title: 'Task routed to triage — orchestration attention needed',
+      title: 'Task routed to triage — needs a decision',
       message: 'same cause 3x'
     })
   })
