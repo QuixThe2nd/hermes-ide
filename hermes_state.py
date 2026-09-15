@@ -1145,6 +1145,14 @@ _wal_reset_bug_warned_lock = threading.Lock()
 # Dedup ERROR for the "configured delete overridden by on-disk WAL" warning.
 _delete_overridden_warned_paths: set[str] = set()
 _delete_overridden_warned_lock = threading.Lock()
+_test_instance_registry: "weakref.WeakSet[Any]" = weakref.WeakSet()
+def _register_test_instance(db: Any) -> None:
+    """Track *db* for suite-level teardown closing (test-isolation runs only)."""
+    if os.environ.get(_TEST_ISOLATION_MARKER_ENV):
+        try:
+            _test_instance_registry.add(db)
+        except Exception:  # pragma: no cover — registry must never break init
+            pass
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -5734,6 +5742,10 @@ class SessionDB(
             if not initialization_complete:
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+            else:
+                # Test-isolation runs only (gated inside the helper): register
+                # for the suite-level leak sweep in tests/conftest.py.
+                _register_test_instance(self)
 
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
