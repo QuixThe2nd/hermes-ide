@@ -267,6 +267,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
+        self._unavailable_reported = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -336,9 +337,14 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         if _is_windows_concurrent_log_lock_timeout(exc):
             return
         if _is_unavailable_log_stream(exc):
-            # The QueueListener must not turn a transient filesystem failure
-            # into a traceback for every queued record. Drop the stale stream;
-            # the next emit will reopen it if the destination has recovered.
+            # The QueueListener must not turn a failing log destination into a traceback for
+            # every queued record. Name the path once, drop the stale stream; the next emit
+            # reopens it if the destination has recovered.
+            if not self._unavailable_reported:
+                self._unavailable_reported = True
+                _quietly(lambda: print(
+                    f"hermes_logging: {self.baseFilename} unavailable ({exc}); "
+                    "file logging paused until it recovers", file=_safe_stderr()))
             if self.stream is not None:
                 _quietly(self.stream.close)
             self.stream = None  # type: ignore[assignment]
@@ -348,6 +354,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def _open(self):
         stream = super()._open()
         self._chmod_if_managed()
+        self._unavailable_reported = False  # recovered: report again if it breaks anew
         return stream
 
     def doRollover(self):

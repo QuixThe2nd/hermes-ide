@@ -613,7 +613,7 @@ def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsy
         def writable(self):
             return True
 
-        def write(self, _s):
+        def write(self, *_a):
             raise OSError(5, "Input/output error")
 
         seek = tell = flush = write
