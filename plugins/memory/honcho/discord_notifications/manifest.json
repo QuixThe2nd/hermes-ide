@@ -1,0 +1,25 @@
+{
+  "target_version": "3.0.10",
+  "patch_file": "honcho-3.0.10-conclusion-discord.patch",
+  "patch_sha256": "4d9e4654c5cf1c1188109196accb12e56cb99968d90816508152d7387e7881a7",
+  "touched_files": [
+    "src/crud/document.py",
+    "src/webhooks/events.py",
+    "src/webhooks/webhook_delivery.py",
+    "tests/webhooks/test_conclusion_created.py"
+  ],
+  "pristine_sha256": {
+    "src/crud/document.py": "6f7118fe61c5b7f4f9327a8ce19a9ba1effd2e4013e529537cf55825c4ed862c",
+    "src/webhooks/events.py": "d0a8adfdbe75892bff5ec0642a7a4260f5029f8179191ea5df8f18810b705fda",
+    "src/webhooks/webhook_delivery.py": "bdb76a8e09456550e2233c433eb88be293d4d13bfe3aeb64b8cbfa3bf4cd757d"
+  },
+  "ignored_local_files": [
+    "src/llm/structured_output.py"
+  ],
+  "discord_webhook_env_vars": [
+    "HONCHO_DISCORD_WEBHOOK_EXPLICIT",
+    "HONCHO_DISCORD_WEBHOOK_DEDUCTIVE",
+    "HONCHO_DISCORD_WEBHOOK_INDUCTIVE",
+    "HONCHO_DISCORD_WEBHOOK_CONTRADICTION"
+  ]
+}
