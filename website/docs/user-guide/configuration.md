@@ -2425,6 +2425,13 @@ whatsapp:
 
 - `pair` is the default for chat-style DM platforms. Hermes denies access, but replies with a one-time pairing code in DMs.
 - `ignore` silently drops unauthorized DMs.
+- `decline` sends one short, polite decline instead of a pairing code, then stays silent toward that sender for 24 hours. Override the default text:
+
+  ```yaml
+  unauthorized_dm_behavior: decline
+  unauthorized_dm_decline_message: "Sorry, this assistant is private."
+  ```
+
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing enabled broadly while making one platform quieter.
 

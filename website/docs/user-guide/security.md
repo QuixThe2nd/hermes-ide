@@ -441,6 +441,7 @@ whatsapp:
 
 - `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
+- `decline` sends one short, polite decline ("I can only chat with my owner") instead of a pairing code, then ignores further messages from that sender for 24 hours. Customize the text with `unauthorized_dm_decline_message`.
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 

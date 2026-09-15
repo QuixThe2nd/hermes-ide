@@ -109,6 +109,26 @@ class GatewayInboundMixin:
             # Record rate limit so subsequent messages are silently ignored
             pairing_store._record_rate_limit(platform_name, source.user_id)
 
+    async def _hm_send_unauthorized_decline(self, source: SessionSource) -> None:
+        """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
+        (port of qwibitai/nanoclaw#3260, #88028). The stamp is written BEFORE the send so a delivery
+        hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
+        from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+        platform_name = source.platform.value if source.platform else "unknown"
+        pairing_store = self._pairing_store_for(source)
+        if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
+            return
+        pairing_store.record_decline(platform_name, source.user_id)
+        adapter = self._adapter_for_source(source)
+        if not adapter:
+            return
+        config = getattr(self, "config", None)
+        text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
+        try:
+            await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
+        except Exception:
+            logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
+
     async def _hm_admit_event(
         self, event: "MessageEvent"
     ) -> Optional[Tuple["MessageEvent", SessionSource, bool]]:
@@ -195,13 +215,14 @@ class GatewayInboundMixin:
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # DMs get a pairing code, groups are ignored. A bot cannot pair, and answering one mid-cooldown is outbound traffic.
-            if (
-                source.chat_type == "dm"
-                and not getattr(source, "is_bot", False)
-                and self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) == "pair"
-            ):
-                await self._hm_offer_pairing_code(source)
+            # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
+            # answering one mid-cooldown is outbound traffic.
+            if source.chat_type == "dm" and not getattr(source, "is_bot", False):
+                behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile)
+                if behavior == "pair":
+                    await self._hm_offer_pairing_code(source)
+                elif behavior == "decline":
+                    await self._hm_send_unauthorized_decline(source)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
