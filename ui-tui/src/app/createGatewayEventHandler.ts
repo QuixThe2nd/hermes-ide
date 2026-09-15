@@ -30,6 +30,7 @@ import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
+import { forgetServerRequest } from './serverRequestStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
@@ -449,8 +450,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
 
-  // When a clarify prompt is dismissed without an answer (the backend _block
-  // timed out and returned an empty string), the live ClarifyPrompt overlay is
+  // When a clarify prompt is dismissed without an answer (the backend request
+  // timed out and returned no answer), the live ClarifyPrompt overlay is
   // left set until the next turn's idle() silently nulls it — so the question
   // and options vanish from the screen while the agent's follow-up still refers
   // to them.  The reliable signal is the clarify tool's own tool.complete (and,
@@ -1257,124 +1258,30 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'clarify.request': {
-        if (!ev.payload) {
+      case 'request.cancel': {
+        // The backend withdrew a server→client request (timeout / interrupt /
+        // session close): tear down whichever card carries that id. A clarify
+        // that timed out is persisted as an abandoned prompt by tool.complete.
+        const id = ev.payload?.id
+
+        if (!id) {
           return
         }
 
-        const batch = (ev.payload.questions ?? [])
-          .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
-          .map(q => ({
-            choices: q.choices && q.choices.length > 0 ? q.choices : null,
-            multiSelect: q.multi_select === true,
-            qid: q.qid,
-            question: q.question.trim()
-          }))
+        forgetServerRequest(id)
+        patchOverlayState(prev => {
+          const next = { ...prev }
+          let changed = false
 
-        patchOverlayState({
-          clarify: batch.length
-            ? {
-                answers: ev.payload.answers ?? {},
-                choices: null,
-                question: '',
-                questions: batch,
-                requestId: ev.payload.request_id
-              }
-            : {
-                choices: ev.payload.choices ?? null,
-                question: ev.payload.question ?? '',
-                requestId: ev.payload.request_id
-              }
-        })
-        setStatus('waiting for input…')
-        ringPromptBell()
-
-        return
-      }
-
-      case 'approval.request': {
-        if (!ev.payload) {
-          return
-        }
-
-        const description = String(ev.payload.description ?? 'dangerous command')
-        // Only an explicit false (tirith warning) drops the permanent-allow option.
-        const allowPermanent = ev.payload.allow_permanent !== false
-
-        patchOverlayState({
-          approval: {
-            allowPermanent,
-            choices: ev.payload.choices,
-            command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
+          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultUnlock'] as const) {
+            if (prev[key]?.requestId === id) {
+              next[key] = null
+              changed = true
+            }
           }
+
+          return changed ? next : prev
         })
-        setStatus('approval needed')
-        ringPromptBell()
-
-        return
-      }
-
-      case 'sudo.request':
-        if (!ev.payload) {
-          return
-        }
-
-        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
-        setStatus('sudo password needed')
-        ringPromptBell()
-
-        return
-
-      case 'secret.request':
-        if (!ev.payload) {
-          return
-        }
-
-        patchOverlayState({
-          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
-        })
-        setStatus('secret input needed')
-        ringPromptBell()
-
-        return
-      case 'sudo.expire': {
-        const expired = ev.payload?.request_id
-
-        patchOverlayState(prev => (prev.sudo?.requestId === expired ? { ...prev, sudo: null } : prev))
-
-        return
-      }
-
-      case 'secret.expire': {
-        const expired = ev.payload?.request_id
-
-        patchOverlayState(prev => (prev.secret?.requestId === expired ? { ...prev, secret: null } : prev))
-
-        return
-      }
-
-      case 'vault.unlock.request':
-        if (!ev.payload) {
-          return
-        }
-
-        patchOverlayState({
-          vaultUnlock: {
-            backend: ev.payload.backend,
-            displayName: ev.payload.display_name,
-            requestId: ev.payload.request_id
-          }
-        })
-        setStatus(`unlock ${ev.payload.display_name}`)
-        ringPromptBell()
-
-        return
-      case 'vault.unlock.expire': {
-        const expired = ev.payload?.request_id
-
-        patchOverlayState(prev => (prev.vaultUnlock?.requestId === expired ? { ...prev, vaultUnlock: null } : prev))
 
         return
       }

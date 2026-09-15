@@ -3,7 +3,8 @@
  * TypeScript surfaces (Ink TUI, Desktop, web dashboard) share.
  *
  * Every notification arrives as `{jsonrpc: '2.0', method: 'event', params: GatewayEvent}`
- * (`tui_gateway/server.py::_event_frame`). `GatewayEventMap` is the single map from
+ * (`tui_gateway/server.py::_event_frame`); server→client REQUESTS (`{id, method, params}`,
+ * `tui_gateway/server_requests.py`) are typed by `ServerRequestMap` below. `GatewayEventMap` is the single map from
  * event `type` to payload shape; `BACKEND_EVENT_NAMES` mirrors the emitter side and is
  * pinned to `gateway-events.json` by `gateway-events.test.ts` (vitest) and
  * `tests/tui_gateway/test_gateway_event_contract.py` (Python), so a name added on one
@@ -304,11 +305,20 @@ export interface MoaPhasePayload {
   refs_total?: number
 }
 
-// Blocking bridges (`tui_gateway/server.py::_block`): every `*.request` carries a
-// `request_id`; the matching `*.expire` names the same id when the wait timed out.
+// ── Server→client requests (`tui_gateway/server_requests.py`) ───────────
+//
+// The backend asks the renderer a question with a real JSON-RPC request
+// (`{id: 'srq-…', method, params}`) and blocks on the response frame. Every
+// entry below is one method: its `params` shape and the `result` the client
+// answers with. `request.cancel` (an event) withdraws an open request on
+// timeout / interrupt / session close; `open_requests` on `session.resume` /
+// `session.events.since` re-delivers unanswered ones after a reconnect.
 
-export interface RequestExpirePayload {
-  request_id: string
+/** `request.cancel` payload — the backend withdrew an open server request. */
+export interface RequestCancelPayload {
+  id: string
+  method: string
+  reason: string
 }
 
 export interface ClarifyQuestion {
@@ -318,53 +328,112 @@ export interface ClarifyQuestion {
   question: string
 }
 
-export interface ClarifyRequestPayload {
+/** `clarify` params. Single question: `question`/`choices`(/`multi_select`); batch: `questions`.
+ *  `answers` rides along only on a reconnect replay (locks the server already accepted). */
+export interface ClarifyRequestParams {
   answers?: Record<string, string>
   choices?: null | string[]
   multi_select?: boolean
   question?: string
   questions?: ClarifyQuestion[]
-  request_id: string
 }
 
-/** `tui_gateway/server.py::_approval_request_payload` (command redacted server-side). */
-export interface ApprovalRequestPayload {
+/** `clarify` result. Single: `{answer}` ('' = skip). Batch: the request resolves through
+ *  `clarify.lock` RPCs (the last lock completes it); a response with no `answers` is cancel-all. */
+export interface ClarifyResult {
+  answer?: string
+  answers?: Record<string, string>
+}
+
+/** `approval` params (`tui_gateway/server.py::_approval_request_payload`, command redacted server-side). */
+export interface ApprovalRequestParams {
   allow_permanent?: boolean
   choices?: string[]
   command: string
   description: string
-  request_id?: string
+  request_id: string
   smart_denied?: boolean
 }
 
-export interface SudoRequestPayload {
-  request_id: string
+export interface ApprovalResult {
+  all?: boolean
+  choice: 'always' | 'deny' | 'once' | 'session'
 }
 
-export interface SecretRequestPayload {
+/** Every prompt whose answer is one string: `sudo`, `secret`, the vault prompts, the desktop GUI
+ *  bridges (`terminal.read`, `preview.read`, `preview.act`, `window.read`, `tour`) and `mcp.setup`.
+ *  '' means skipped / declined. */
+export interface ValueResult {
+  value: string
+}
+
+export interface SecretRequestParams {
   env_var: string
+  metadata?: Record<string, unknown>
   prompt: string
-  request_id: string
 }
 
-export interface VaultUnlockRequestPayload {
+export interface VaultUnlockRequestParams {
   backend: string
   display_name: string
-  request_id: string
 }
 
-export interface VaultCodeRequestPayload {
+export interface VaultSaveLoginRequestParams {
+  origin: string
+  site: string
+}
+
+export interface VaultCodeRequestParams {
   hint?: string
-  request_id: string
   site?: string
 }
 
-export interface McpSetupRequestPayload {
+export interface McpSetupRequestParams {
   action?: string
   reason?: string
-  request_id: string
   server?: string
 }
+
+export interface ReadRangeRequestParams {
+  count?: number
+  start?: number
+}
+
+/** Server→client request method → `{params, result}`. Every method the backend can ask. */
+export interface ServerRequestMap {
+  approval: { params: ApprovalRequestParams; result: ApprovalResult }
+  clarify: { params: ClarifyRequestParams; result: ClarifyResult }
+  'mcp.setup': { params: McpSetupRequestParams; result: ValueResult }
+  'preview.act': { params: Record<string, unknown>; result: ValueResult }
+  'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
+  secret: { params: SecretRequestParams; result: ValueResult }
+  sudo: { params: Record<string, never>; result: ValueResult }
+  'terminal.read': { params: ReadRangeRequestParams; result: ValueResult }
+  tour: { params: Record<string, unknown>; result: ValueResult }
+  'vault.code': { params: VaultCodeRequestParams; result: ValueResult }
+  'vault.save_login': { params: VaultSaveLoginRequestParams; result: ValueResult }
+  'vault.unlock_prompt': { params: VaultUnlockRequestParams; result: ValueResult }
+  'window.read': { params: Record<string, never>; result: ValueResult }
+}
+
+export type ServerRequestMethod = keyof ServerRequestMap
+
+/** Pinned to `gateway-events.json`'s `server_requests` list by the two contract tests. Keep sorted. */
+export const SERVER_REQUEST_METHODS = [
+  'approval',
+  'clarify',
+  'mcp.setup',
+  'preview.act',
+  'preview.read',
+  'secret',
+  'sudo',
+  'terminal.read',
+  'tour',
+  'vault.code',
+  'vault.save_login',
+  'vault.unlock_prompt',
+  'window.read'
+] as const satisfies readonly ServerRequestMethod[]
 
 /** Side agents (`tui_gateway/methods_prompt.py::_spawn_side_agent`). */
 export interface SideAgentCompletePayload {
@@ -397,7 +466,6 @@ export interface TerminalClosePayload {
  */
 export const BACKEND_EVENT_NAMES = [
   'agent.terminal.output',
-  'approval.request',
   'background.complete',
   'billing.step_up.verification',
   'bot_relay.outbox.pending',
@@ -405,14 +473,10 @@ export const BACKEND_EVENT_NAMES = [
   'browser.controller.command',
   'browser.progress',
   'btw.complete',
-  'clarify.expire',
-  'clarify.request',
   'cron.changed',
   'error',
   'gateway.ready',
   'layout.apply',
-  'mcp.setup.expire',
-  'mcp.setup.request',
   'message.complete',
   'message.delta',
   'message.interim',
@@ -431,20 +495,15 @@ export const BACKEND_EVENT_NAMES = [
   'pet.generate.progress',
   'pet.hatch.progress',
   'platforms.changed',
-  'preview.act.expire',
-  'preview.act.request',
   'preview.close',
   'preview.open',
-  'preview.read.expire',
-  'preview.read.request',
   'preview.restart.complete',
   'preview.restart.progress',
   'reaction',
   'reasoning.available',
   'reasoning.delta',
+  'request.cancel',
   'review.summary',
-  'secret.expire',
-  'secret.request',
   'session.control.update',
   'session.info',
   'session.reclaimed',
@@ -461,11 +520,7 @@ export const BACKEND_EVENT_NAMES = [
   'subagent.start',
   'subagent.thinking',
   'subagent.tool',
-  'sudo.expire',
-  'sudo.request',
   'terminal.close',
-  'terminal.read.expire',
-  'terminal.read.request',
   'thinking.delta',
   'tip.show',
   'todo.updated',
@@ -473,20 +528,10 @@ export const BACKEND_EVENT_NAMES = [
   'tool.generating',
   'tool.output_risk',
   'tool.start',
-  'tour.expire',
-  'tour.request',
-  'vault.code.expire',
-  'vault.code.request',
-  'vault.save_login.expire',
-  'vault.save_login.request',
-  'vault.unlock.expire',
-  'vault.unlock.request',
   'voice.interrupted',
   'voice.status',
   'voice.transcript',
-  'wake.detected',
-  'window.read.expire',
-  'window.read.request'
+  'wake.detected'
 ] as const satisfies readonly (keyof BackendGatewayEventMap)[]
 
 export type BackendGatewayEventName = (typeof BACKEND_EVENT_NAMES)[number]
@@ -494,7 +539,6 @@ export type BackendGatewayEventName = (typeof BACKEND_EVENT_NAMES)[number]
 /** Payload per backend-emitted notification `type`. Keys are exactly `BACKEND_EVENT_NAMES`. */
 export interface BackendGatewayEventMap {
   'agent.terminal.output': TerminalOutputPayload
-  'approval.request': ApprovalRequestPayload
   'background.complete': SideAgentCompletePayload
   'billing.step_up.verification': BillingStepUpVerificationPayload
   'bot_relay.outbox.pending': Record<string, unknown>
@@ -502,14 +546,10 @@ export interface BackendGatewayEventMap {
   'browser.controller.command': Record<string, unknown>
   'browser.progress': BrowserProgressPayload
   'btw.complete': SideAgentCompletePayload
-  'clarify.expire': RequestExpirePayload
-  'clarify.request': ClarifyRequestPayload
   'cron.changed': Record<string, unknown>
   error: ErrorPayload
   'gateway.ready': GatewayReadyPayload
   'layout.apply': Record<string, unknown>
-  'mcp.setup.expire': RequestExpirePayload
-  'mcp.setup.request': McpSetupRequestPayload
   'message.complete': MessageCompletePayload
   'message.delta': StreamDeltaPayload
   'message.interim': MessageInterimPayload
@@ -528,20 +568,15 @@ export interface BackendGatewayEventMap {
   'pet.generate.progress': Record<string, unknown>
   'pet.hatch.progress': Record<string, unknown>
   'platforms.changed': Record<string, unknown>
-  'preview.act.expire': RequestExpirePayload
-  'preview.act.request': Record<string, unknown>
   'preview.close': Record<string, unknown>
   'preview.open': Record<string, unknown>
-  'preview.read.expire': RequestExpirePayload
-  'preview.read.request': Record<string, unknown>
   'preview.restart.complete': SideAgentCompletePayload
   'preview.restart.progress': PreviewRestartProgressPayload
   reaction: ReactionPayload
   'reasoning.available': StreamDeltaPayload
   'reasoning.delta': StreamDeltaPayload
+  'request.cancel': RequestCancelPayload
   'review.summary': TextPayload
-  'secret.expire': RequestExpirePayload
-  'secret.request': SecretRequestPayload
   'session.control.update': SessionControlUpdatePayload
   /** Surface-specific shape (`tui_gateway/server.py::_session_info`); each client narrows. */
   'session.info': Record<string, unknown>
@@ -559,11 +594,7 @@ export interface BackendGatewayEventMap {
   'subagent.start': SubagentEventPayload
   'subagent.thinking': SubagentEventPayload
   'subagent.tool': SubagentEventPayload
-  'sudo.expire': RequestExpirePayload
-  'sudo.request': SudoRequestPayload
   'terminal.close': TerminalClosePayload
-  'terminal.read.expire': RequestExpirePayload
-  'terminal.read.request': Record<string, unknown>
   'thinking.delta': StreamDeltaPayload
   'tip.show': Record<string, unknown>
   'todo.updated': TodoStatePayload
@@ -571,20 +602,10 @@ export interface BackendGatewayEventMap {
   'tool.generating': ToolGeneratingPayload
   'tool.output_risk': ToolOutputRiskPayload
   'tool.start': ToolStartPayload
-  'tour.expire': RequestExpirePayload
-  'tour.request': Record<string, unknown>
-  'vault.code.expire': RequestExpirePayload
-  'vault.code.request': VaultCodeRequestPayload
-  'vault.save_login.expire': RequestExpirePayload
-  'vault.save_login.request': Record<string, unknown>
-  'vault.unlock.expire': RequestExpirePayload
-  'vault.unlock.request': VaultUnlockRequestPayload
   'voice.interrupted': Record<string, unknown>
   'voice.status': VoiceStatusPayload
   'voice.transcript': VoiceTranscriptPayload
   'wake.detected': WakeDetectedPayload
-  'window.read.expire': RequestExpirePayload
-  'window.read.request': Record<string, unknown>
 }
 
 /**
@@ -757,6 +778,11 @@ export interface SessionResumeResponse<Info = Record<string, unknown>, Message =
   messages: Message[]
   /** `omit_messages` resume: the client still learns the stored size. */
   messages_omitted?: boolean
+  /** Server→client requests still unanswered for this session (a clarify, sudo prompt, …
+   *  raised while the client was detached); the client re-delivers them to its request
+   *  handlers. `pending_approval` (the approval queue's oldest entry) is the approval twin. */
+  open_requests?: OpenServerRequest[]
+  pending_approval?: ApprovalRequestParams
   resumed?: string
   running?: boolean
   session_id: string
@@ -764,4 +790,11 @@ export interface SessionResumeResponse<Info = Record<string, unknown>, Message =
   started_at?: number
   status?: string
   todo_state?: TodoStatePayload
+}
+
+/** One unanswered server→client request as returned by `open_requests`. */
+export interface OpenServerRequest {
+  id: string
+  method: string
+  params: Record<string, unknown> & { session_id?: string }
 }

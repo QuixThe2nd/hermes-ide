@@ -316,20 +316,10 @@ export interface BackgroundStartResponse {
   task_id?: string
 }
 
-export interface ClarifyRespondResponse {
-  ok?: boolean
-}
-
-export interface ApprovalRespondResponse {
-  ok?: boolean
-}
-
-export interface SudoRespondResponse {
-  ok?: boolean
-}
-
-export interface SecretRespondResponse {
-  ok?: boolean
+/** `clarify.lock` — one batch-clarify answer locked; `expired` when the request already ended. */
+export interface ClarifyLockResponse {
+  remaining?: string[]
+  status: 'expired' | 'ok'
 }
 
 // ── Shell / clipboard / input ────────────────────────────────────────

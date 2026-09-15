@@ -50,7 +50,7 @@ import {
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
-import { setApprovalRequest } from '@/store/prompts'
+import { receiveApprovalRequest } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -345,7 +345,10 @@ function restorePendingApproval(response: SessionResumeResponse, sessionId: stri
     return false
   }
 
-  setApprovalRequest({
+  // The live `approval` server request (re-delivered from `open_requests`
+  // before this ran) already parked itself with the same queue id; don't
+  // clobber it with a copy that can only answer through the RPC fallback.
+  void receiveApprovalRequest(null, {
     allowPermanent: pending.allow_permanent !== false,
     choices: pending.choices,
     command: pending.command ?? '',

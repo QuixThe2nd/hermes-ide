@@ -1,16 +1,17 @@
-"""Two-sided contract: every notification name ``tui_gateway`` emits is listed in
-``apps/shared/src/gateway-events.json`` and nothing in the JSON is orphaned.
+"""Two-sided contract: every notification name ``tui_gateway`` emits, and every
+server→client request method it sends, is listed in ``apps/shared/src/gateway-events.json``
+(``events`` / ``server_requests``) and nothing in the JSON is orphaned.
 
 The TypeScript half (``apps/shared/src/gateway-events.test.ts``) pins the typed
-``GatewayEventMap`` to the same JSON, so a name added on either side alone goes red
-somewhere. This file reads only Python sources and the JSON (never ``.ts`` text —
-see ``tui_gateway/AGENTS.md``).
+``GatewayEventMap`` and ``ServerRequestMap`` to the same JSON, so a name added on either
+side alone goes red somewhere. This file reads only Python sources and the JSON (never
+``.ts`` text — see ``tui_gateway/AGENTS.md``).
 
-Names are collected from the emitter side: literal first arguments to the emit
-helpers, plus the tables that derive names at runtime (``_EXPIRING_REQUESTS`` →
-``*.expire``, the change-watcher table, child delta mirroring, the subagent relay
-events from ``tools/delegate_tool*.py``, the ``desktop_ui`` tool emitters, and the
-literal ``gateway.ready`` / ``setup.ready`` / browser-controller frames).
+Names are collected from the emitter side: literal first arguments to the emit helpers
+and the server-request helpers (``server_requests.send`` / ``send_async`` / ``_ask``),
+plus the tables that derive names at runtime (the change-watcher table, child delta
+mirroring, the subagent relay events from ``tools/delegate_tool*.py``, the ``desktop_ui``
+tool emitters, and the literal ``gateway.ready`` / ``setup.ready`` / browser-controller frames).
 """
 
 from __future__ import annotations
@@ -26,9 +27,12 @@ CONTRACT = REPO / "apps" / "shared" / "src" / "gateway-events.json"
 GATEWAY_DIR = REPO / "tui_gateway"
 
 # Every helper whose first positional argument is the wire ``type``.
-_EMIT_HELPERS = (
-    "_emit", "_block", "_read_block", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
+_EMIT_HELPERS = ("_emit", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
 _LITERAL_EMIT = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_EMIT_HELPERS))
+# Server→client requests: ``server_requests.send("x", …)`` / ``send_async`` / the string-answer ``_ask`` and
+# ``_read_block`` bridges.
+_REQUEST_HELPERS = ("server_requests\\.send", "server_requests\\.send_async", "_ask", "_read_block")
+_LITERAL_REQUEST = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_REQUEST_HELPERS))
 # ``{"type": "gateway.ready", ...}`` literal frames (entry.py / ws.py) and other
 # ``"type": "<name>"`` params written straight into an ``event`` frame.
 _LITERAL_FRAME = re.compile(r"\"method\":\s*\"event\".{0,120}?\"type\":\s*\"([a-z_][a-z0-9_.]*)\"", re.S)
@@ -50,10 +54,6 @@ def emitted_event_names() -> set[str]:
         names.update(_LITERAL_EMIT.findall(text))
         names.update(_LITERAL_FRAME.findall(text))
         names.update(_SIDE_AGENT.findall(text))
-    # ``.request`` bridges that time out fire ``f"{event.removesuffix('.request')}.expire"``.
-    from tui_gateway.server import _EXPIRING_REQUESTS
-
-    names.update(f"{event.removesuffix('.request')}.expire" for event in _EXPIRING_REQUESTS)
     from tui_gateway.change_watcher import _CHANGE_WATCHES
 
     names.update(_CHANGE_WATCHES)
@@ -74,13 +74,33 @@ def emitted_event_names() -> set[str]:
     return names
 
 
+def server_request_methods() -> set[str]:
+    names: set[str] = set()
+    for src in GATEWAY_DIR.glob("*.py"):
+        names.update(_LITERAL_REQUEST.findall(_read(src)))
+    return names
+
+
 @pytest.fixture(scope="module")
 def contract() -> list[str]:
-    return json.loads(_read(CONTRACT))
+    return json.loads(_read(CONTRACT))["events"]
 
 
-def test_contract_is_sorted_and_unique(contract):
-    assert contract == sorted(set(contract)), "gateway-events.json must be a sorted, duplicate-free list"
+@pytest.fixture(scope="module")
+def request_contract() -> list[str]:
+    return json.loads(_read(CONTRACT))["server_requests"]
+
+
+def test_contract_is_sorted_and_unique(contract, request_contract):
+    assert contract == sorted(set(contract)), "gateway-events.json events must be a sorted, duplicate-free list"
+    assert request_contract == sorted(set(request_contract)), "gateway-events.json server_requests must be sorted"
+
+
+def test_server_request_methods_match_the_contract(request_contract):
+    sent = server_request_methods()
+    assert sent == set(request_contract), (
+        f"server requests sent {sorted(sent)} vs gateway-events.json server_requests {request_contract}; "
+        "fix the JSON AND SERVER_REQUEST_METHODS / ServerRequestMap in apps/shared/src/gateway-events.ts")
 
 
 def test_every_emitted_event_is_in_the_contract(contract):

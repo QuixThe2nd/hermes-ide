@@ -28,6 +28,7 @@ import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { clearMcpSetupRequest, type McpSetupOutcome, sessionMcpSetupRequest } from '@/store/mcp-setup'
+import { respondToServerRequest } from '@/store/server-requests'
 import { notifyError } from '@/store/notifications'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
@@ -229,15 +230,8 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         invalidateMcpSuggestionIndex()
       }
 
-      try {
-        await gateway.request<{ status?: string }>('mcp.setup.respond', {
-          request_id: request.requestId,
-          result: JSON.stringify(outcome)
-        })
-        // tool.complete lands next → McpSetupSettled.
-      } catch (error) {
-        notifyError(error, copy.sendFailed)
-      }
+      respondToServerRequest(request.requestId, { value: JSON.stringify(outcome) })
+      // tool.complete lands next → McpSetupSettled.
     },
     [copy.gatewayDisconnected, copy.reloadFailed, copy.sendFailed, gateway, request]
   )

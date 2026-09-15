@@ -4,6 +4,7 @@ import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-
 import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
+import { $approvalRequests, answerApproval } from './prompts'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import { clearApprovalRequest } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
@@ -366,18 +367,11 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    // Route through the session's OWNER (tile route → known profile); the
-    // ambient socket follows foreground focus and, for a background approval
-    // raised by a cross-profile session, points at a backend that never held
-    // the approval (#91684 client half). Ambient only when no owner is known.
-    await requestForOwnedSession(
-      sessionId,
-      // Bound (not wrapped) so the ambient fallback keeps the exact 2-arg
-      // call shape gateway.request callers assert on.
-      gateway.request.bind(gateway) as typeof gateway.request,
-      'approval.respond',
-      { choice, session_id: sessionId ?? undefined }
-    )
+    // The parked prompt knows how to answer itself: the live server request when
+    // still open, else the owner-routed queue-level RPC (#91684 client half).
+    const parked = $approvalRequests.get()[sessionId ?? '']
+
+    await answerApproval(gateway, parked ?? { sessionId: sessionId ?? null }, choice)
     clearApprovalRequest(sessionId)
   } catch (error) {
     if (sessionId && isSessionGoneForBackgroundPolling(error)) {

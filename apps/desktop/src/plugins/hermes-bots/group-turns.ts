@@ -586,15 +586,16 @@ export function renameGroupClarify(oldName: string, newName: string) {
   }
 }
 
-/** Answer a member's pending prompt from the room. Routes to the member's
- *  OWN source (requestForBot), so cross-connection members work.
- *  - clarify: `clarify.respond`; batch questions send one respond per
- *    question, sequentially — the LAST lock resolves the blocked tool
- *    server-side (same contract as the 1:1 batch card). allow_expired
- *    server-side makes racing the timeout harmless.
+/** Answer a member's pending prompt from the room. The prompt was mirrored
+ *  from the member's resume snapshot (`open_requests` / `pending_approval`), so
+ *  this window never held the live server request: answer through RPCs routed
+ *  to the member's OWN source (requestForBot), so cross-connection members work.
+ *  - clarify: `clarify.lock` per question, sequentially — the LAST lock
+ *    resolves the blocked server request (same contract as the 1:1 batch
+ *    card). A single question answers the open request by id through
+ *    `request.answer` (the cross-socket proxy for a response frame).
  *  - approval: `approval.respond` with the choice (once/session/always/deny),
- *    keyed by session + request_id — the same wire the 1:1 approval card
- *    and native notifications use. */
+ *    keyed by session + request_id — the queue-level wire every surface shares. */
 export async function answerGroupClarify(
   entry: GroupPrompt,
   member: GroupMember,
@@ -618,16 +619,16 @@ export async function answerGroupClarify(
         // Question ids are opaque on the wire (`GroupPrompt.questions` types
         // them `unknown`); the batch card keys its answer bag by exactly them.
         const qid = (question?.qid ?? question?.id) as string
-        await requestForBot(member, 'clarify.respond', {
+        await requestForBot(member, 'clarify.lock', {
           request_id: entry.requestId,
           question_id: qid,
           answer: (answers as Record<string, string>)?.[qid] ?? ''
         })
       }
     } else {
-      await requestForBot(member, 'clarify.respond', {
-        request_id: entry.requestId,
-        answer: typeof answers === 'string' ? answers : ''
+      await requestForBot(member, 'request.answer', {
+        id: entry.requestId,
+        result: { answer: typeof answers === 'string' ? answers : '' }
       })
     }
 

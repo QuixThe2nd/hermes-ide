@@ -2196,8 +2196,10 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import event_replay as er
     frames = er.events_since(sid, last_seen)
     # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.
+    # ``open_requests``: server→client requests still unanswered — the ring cannot carry "a question still
+    # waiting", so the reconnecting client re-delivers these to its request handlers.
     return _ok(rid, {"events": frames, "latest_seq": er.latest_seq(sid), "truncated": er.is_truncated(sid, last_seen),
-                     "count": len(frames), "epoch": er.replay_epoch()})
+                     "count": len(frames), "epoch": er.replay_epoch(), "open_requests": _open_requests(sid)})
 
 
 @method("session.events.stats")

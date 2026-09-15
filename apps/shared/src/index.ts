@@ -62,12 +62,14 @@ export {
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export {
-  type ApprovalRequestPayload,
+  type ApprovalRequestParams,
+  type ApprovalResult,
   BACKEND_EVENT_NAMES,
   type BackendGatewayEventMap,
   type BackendGatewayEventName,
   type ClarifyQuestion,
-  type ClarifyRequestPayload,
+  type ClarifyRequestParams,
+  type ClarifyResult,
   type ClientLocalGatewayEventMap,
   type ErrorPayload,
   type ErrorSurface,
@@ -76,7 +78,7 @@ export {
   type GatewayEventName,
   type GatewayReadyPayload,
   type GatewayTranscriptMessage,
-  type McpSetupRequestPayload,
+  type McpSetupRequestParams,
   type MessageCompletePayload,
   type MessageInterimPayload,
   type ModelCapabilities,
@@ -84,8 +86,13 @@ export {
   type ModelOptionsResponse,
   type ModelPricing,
   type NotificationShowPayload,
-  type RequestExpirePayload,
-  type SecretRequestPayload,
+  type OpenServerRequest,
+  type ReadRangeRequestParams,
+  type RequestCancelPayload,
+  type SecretRequestParams,
+  SERVER_REQUEST_METHODS,
+  type ServerRequestMap,
+  type ServerRequestMethod,
   type SessionInflightTurn,
   type SessionListItem,
   type SessionListResponse,
@@ -100,7 +107,10 @@ export {
   type ToolCompletePayload,
   type ToolStartPayload,
   type Usage,
-  type VaultUnlockRequestPayload,
+  type ValueResult,
+  type VaultCodeRequestParams,
+  type VaultSaveLoginRequestParams,
+  type VaultUnlockRequestParams,
   type WakeDetectedPayload
 } from './gateway-events'
 export {
@@ -124,6 +134,9 @@ export {
   JsonRpcRequestChannel,
   type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
+  type ServerRequest,
+  type ServerRequestHandler,
+  type ServerRequestParams,
   wireFrameText
 } from './json-rpc-channel'
 export {

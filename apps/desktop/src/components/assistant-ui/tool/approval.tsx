@@ -20,6 +20,7 @@ import { AlertCircle, ChevronDown } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { answerApproval } from '@/store/prompts'
 import { notifyError } from '@/store/notifications'
 import {
   type ApprovalRequest,
@@ -145,22 +146,10 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       setSubmitting(choice)
 
       try {
-        // Route through the session's OWNER (tile route → known profile);
-        // ambient only when no owner is known. The ambient socket follows
-        // foreground focus, and for a cross-profile session it points at a
-        // backend that never held this approval (#91684 client half).
-        await requestForOwnedSession<{ resolved?: boolean }>(
-          request.sessionId,
-          // Bound (not wrapped) so the ambient fallback keeps the exact
-          // 2-arg call shape gateway.request callers assert on.
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'approval.respond',
-          {
-            choice,
-            request_id: request.requestId,
-            session_id: request.sessionId ?? undefined
-          }
-        )
+        // Live prompt: the response frame rides the socket the request came on
+        // (the owner backend by construction). Restored prompt: queue-level
+        // `approval.respond`, owner-routed (#91684 client half).
+        await answerApproval(gateway, request, choice)
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId, request.requestId)
         void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
@@ -169,7 +158,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.requestId, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.
