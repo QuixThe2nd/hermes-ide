@@ -1179,6 +1179,49 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
+    """command.dispatch must load a skill that exists only in the session profile."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    sid = "test-session-profile-b-dispatch"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile_b),
+    }
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "command.dispatch",
+            "params": {"name": "b-only", "arg": "with an argument", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"]["type"] == "skill"
+    assert resp["result"]["name"] == "b-only"
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

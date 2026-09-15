@@ -109,7 +109,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -4790,8 +4790,8 @@ _canonical_sqlite_path = _state_holders.canonical_sqlite_path
 def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
     base = os.path.abspath(os.fspath(db_path))
     return {
-        _canonical_sqlite_path(base + "-wal"),
-        _canonical_sqlite_path(base + "-shm"),
+        _state_holders.canonical_sqlite_path(base + "-wal"),
+        _state_holders.canonical_sqlite_path(base + "-shm"),
     }
 
 
@@ -4830,7 +4830,7 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
                     continue
                 if " (deleted)" not in target:
                     continue
-                if _canonical_sqlite_path(target) in watched:
+                if _state_holders.canonical_sqlite_path(target) in watched:
                     holders.append((pid, target))
     except Exception as exc:
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
@@ -6896,7 +6896,7 @@ class SessionDB(
                     # generation (OpenZFS dentry-unhash reports it for a still-linked
                     # file); confirm the fd names a generation the watched path no
                     # longer does before declaring the WAL generation lost.
-                    canonical = _canonical_sqlite_path(target)
+                    canonical = _state_holders.canonical_sqlite_path(target)
                     if (" (deleted)" in target and canonical in watched
                             and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True
