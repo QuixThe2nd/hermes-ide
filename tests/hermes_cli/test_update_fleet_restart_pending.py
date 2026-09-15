@@ -1037,6 +1037,8 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     monkeypatch.setattr(
         update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
     )
+    # And the Windows scope: an installed Windows gateway service would be restarted for real.
+    monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: False)
     assert update_cmd._run_pending_fleet_restart() is True
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
