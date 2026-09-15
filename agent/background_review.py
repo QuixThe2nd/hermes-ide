@@ -844,7 +844,27 @@ def _detach_fork_compression(review_agent: Any) -> None:
         review_agent._review_defer_compaction_before_first_response = True
 
 
-def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int) -> Dict[str, Any]:
+def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """``reasoning_config`` for a ROUTED fork from ``auxiliary.background_review.reasoning_effort``
+    (#94825). The routed branch never inherits the parent's effort (its vocabulary may be invalid for
+    the routed provider), but an explicit per-task pin is the user's choice for THAT model and must
+    win over provider defaults, as every other aux task already does via ``_get_task_extra_body``.
+    None = unset (provider default); an unknown level warns and falls through to the default."""
+    effort = _background_review_task_config(task_cfg).get("reasoning_effort")
+    if effort is None or effort == "":
+        return None
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    parsed = parse_reasoning_effort(effort)
+    if parsed is None:
+        logger.warning(
+            "auxiliary.background_review.reasoning_effort %r is not a valid level (none, %s) — using "
+            "the routed provider's default", effort, ", ".join(VALID_REASONING_EFFORTS),
+        )
+    return parsed
+
+
+def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int,
+                      task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """AIAgent constructor kwargs for the review fork. skip_memory=True: an external memory plugin
     scoped to the parent's session_id would leak the harness prompt into the user's real memory
     namespace; built-in MEMORY.md/USER.md state is re-bound by the caller. Toolsets match the
@@ -865,6 +885,8 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
+    elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
+        kwargs["reasoning_config"] = routed_cfg
     return kwargs
 
 
@@ -906,7 +928,7 @@ def build_cache_parity_fork(
     # separate, tracked issue (#94825) and are left alone.
     if not _routed and write_origin == "background_review":
         _warn_ignored_reasoning_effort(agent, task_cfg)
-    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations))
+    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
