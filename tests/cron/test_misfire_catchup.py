@@ -10,7 +10,6 @@ gateway housekeeping, claims and fires those jobs after a grace window.
 import threading
 import time
 from datetime import timedelta
-from unittest.mock import patch
 
 import pytest
 
@@ -163,66 +162,27 @@ class TestFireOverdueJobs:
         assert provider.wait_fired(timeout=10)
         assert provider.fired == [job["id"]]
 
-    def test_estop_engaged_skips_backstop(self, tmp_cron_dir, tmp_path, monkeypatch):
-        """Engaged ESTOP → backstop returns 0 and spawns no fire threads.
-
-        Matches the contract at ``agent/estop.py:1-9``: cron skips work,
-        in-flight work is untouched. The misfire sweep is the backstop; it
-        must yield to operator pause, then resume naturally on disengage.
-        """
+    def test_estop_skips_sweep_and_next_sweep_after_resume_catches_up(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        """`hermes pause` must silence the backstop too — otherwise it force-fires every job
+        that ESTOP held back. Nothing to unwind: the first sweep after `hermes resume`
+        catches up through the ordinary claim_fire path."""
         from agent import estop
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         estop._logged_components.clear()
-
         job = create_job(prompt="p", schedule="every 1h")
         _park_in_past(job["id"], minutes=30)
+        parked_at = get_job(job["id"])["next_run_at"]
         provider = RecordingProvider()
 
-        estop.engage(reason="ops window")
-        try:
-            with patch.object(
-                provider, "claim_fire", wraps=provider.claim_fire
-            ) as claim, patch(
-                "cron.scheduler_provider.threading.Thread"
-            ) as thread:
-                assert fire_overdue_jobs(provider) == 0
-                # No claim attempted, no worker thread constructed — proves
-                # the ESTOP gate is the actual short-circuit (not a deferred
-                # admission that races the test).
-                claim.assert_not_called()
-                thread.assert_not_called()
-            assert provider.fired == []
-        finally:
-            estop.disengage()
-
-    def test_estop_release_restores_backstop(self, tmp_cron_dir, tmp_path, monkeypatch):
-        """ESTOP release → next sweep catches up via the existing claim_fire path.
-
-        No state to unwind — the sweep's job is already "fire things whose
-        scheduled fire never arrived," so a paused sweep just extends that
-        window until resume.
-        """
-        from agent import estop
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        estop._logged_components.clear()
-
-        job = create_job(prompt="p", schedule="every 1h")
-        _park_in_past(job["id"], minutes=30)
-        provider = RecordingProvider()
-
-        estop.engage(reason="ops window")
-        assert fire_overdue_jobs(provider) == 0  # paused — no fire
+        estop.engage(reason="runaway fan-out")
+        assert fire_overdue_jobs(provider) == 0
+        assert provider.fired == []
+        assert get_job(job["id"])["next_run_at"] == parked_at  # nothing claimed or re-armed
 
         estop.disengage()
-        with patch.object(
-            provider, "claim_fire", wraps=provider.claim_fire
-        ) as claim:
-            assert fire_overdue_jobs(provider) == 1
-            # Recovery re-enters via the existing claim_fire path —
-            # explicit positive assertion proves the path is exercised,
-            # not just that *something* fired.
-            claim.assert_called_once()
+        assert fire_overdue_jobs(provider) == 1
         assert provider.wait_fired()
         assert provider.fired == [job["id"]]
