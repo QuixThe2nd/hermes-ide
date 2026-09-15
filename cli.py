@@ -2857,7 +2857,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         self._history_file = _hermes_home / ".hermes_history"
-        self._last_invalidate: float = 0.0  # throttles UI repaints
+        self._last_invalidate: float | None = None  # throttles UI repaints (None = never; monotonic epoch is arbitrary)
         self._init_ui_state()
 
     def _init_session_store(self):
