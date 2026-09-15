@@ -637,10 +637,18 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
 
 def _mcp_registry_scope() -> Optional[str]:
-    """Registry scope for MCP registrations: a profile overlay under a multiplexer, else None."""
+    """Registry scope for MCP registrations: a profile overlay when this process serves profiles,
+    else None. Under ``gateway.multiplex_profiles`` every turn runs scoped; a process that serves a
+    routed profile through the HERMES_HOME override (dashboard/desktop backend, per-profile cron
+    ticker) is a multiplexer too, even with the flag off — keying its connections by the bare name
+    would hand one profile's credentialed connection to every other served profile (#111151).
+    Single-profile processes (no override, or an override naming their own home) keep bare names."""
     from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
     if not is_multiplex_active():
-        return None
+        override = get_hermes_home_override()
+        if override is None or hermes_home_key(override) == hermes_home_key(get_process_hermes_home()):
+            return None
     from tools.registry import registry
     return registry.current_scope_key()
 

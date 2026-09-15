@@ -241,3 +241,34 @@ def test_parallel_safe_opt_in_is_per_profile(two_profiles):
 
     two_profiles("a")
     assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is False
+
+
+def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profiles, monkeypatch):
+    """A dashboard/desktop backend serves profiles through the HERMES_HOME override with
+    ``gateway.multiplex_profiles`` off; a same-named server with other credentials must still be a
+    separate connection there, or profile B calls the server as profile A (#111151). The launch
+    profile itself (no override) keeps the bare, unscoped key."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.mcp_tool_scope import _resolve_server_key, _server_key
+    from tools.registry import registry
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    cfg_b = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer B"}}
+
+    scope_a = two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+    assert (scope_a, "x") in core._servers
+
+    two_profiles("b")
+    assert _resolve_server_key("x") != (scope_a, "x")
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert "x" in disc._select_new_servers({"x": cfg_b})
+
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        assert core._mcp_registry_scope() is None
+        assert _server_key("x") == "x"
