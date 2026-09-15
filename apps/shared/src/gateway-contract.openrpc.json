@@ -8196,6 +8196,176 @@
         "title": "ConfigShowResult",
         "type": "object"
       },
+      "ConnectionAction": {
+        "enum": [
+          "authorize",
+          "enable",
+          "install"
+        ],
+        "title": "ConnectionAction",
+        "type": "string"
+      },
+      "ConnectionRequestParams": {
+        "additionalProperties": false,
+        "description": "``tools/connections_tool_operation.py::ConnectionOperation.request_payload`` \u2014 one operation,\nN targets, a server-owned deadline (epoch seconds) the restored card keeps.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "op_id": {
+            "title": "Op Id",
+            "type": "string"
+          },
+          "deadline_at": {
+            "title": "Deadline At",
+            "type": "number"
+          },
+          "timeout_seconds": {
+            "title": "Timeout Seconds",
+            "type": "number"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionRequestTarget"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "op_id",
+          "deadline_at",
+          "timeout_seconds",
+          "targets"
+        ],
+        "title": "ConnectionRequestParams",
+        "type": "object"
+      },
+      "ConnectionRequestTarget": {
+        "additionalProperties": false,
+        "description": "One row of the card: ``tools/connections_tool_operation.py::ConnectionOperation.request_payload``.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionTargetKind"
+          },
+          "action": {
+            "$ref": "#/components/schemas/ConnectionAction"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "action"
+        ],
+        "title": "ConnectionRequestTarget",
+        "type": "object"
+      },
+      "ConnectionResult": {
+        "additionalProperties": false,
+        "description": "Per-target outcomes. The backend derives the settle reason from target state; the renderer's\n``settled_by`` is its own claim and is not trusted.",
+        "properties": {
+          "settled_by": {
+            "$ref": "#/components/schemas/ConnectionSettledBy"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionTargetOutcome"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "settled_by",
+          "targets"
+        ],
+        "title": "ConnectionResult",
+        "type": "object"
+      },
+      "ConnectionSettledBy": {
+        "enum": [
+          "all_resolved",
+          "continue"
+        ],
+        "title": "ConnectionSettledBy",
+        "type": "string"
+      },
+      "ConnectionTargetKind": {
+        "enum": [
+          "connector",
+          "mcp"
+        ],
+        "title": "ConnectionTargetKind",
+        "type": "string"
+      },
+      "ConnectionTargetOutcome": {
+        "additionalProperties": false,
+        "description": "The card's answer for one target (``tools/connections_tool_mcp.py::_apply_answer``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ConnectionTargetOutcomeState"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          }
+        },
+        "required": [
+          "name",
+          "state"
+        ],
+        "title": "ConnectionTargetOutcome",
+        "type": "object"
+      },
+      "ConnectionTargetOutcomeState": {
+        "enum": [
+          "installed",
+          "enabled",
+          "authorized",
+          "declined",
+          "error"
+        ],
+        "title": "ConnectionTargetOutcomeState",
+        "type": "string"
+      },
       "ConnectorConnectEntry": {
         "additionalProperties": true,
         "description": "``tools/connections_tool.py`` per-connector authorization outcome.",
@@ -14063,56 +14233,6 @@
           "oauth_needed"
         ],
         "title": "McpServersTestResult",
-        "type": "object"
-      },
-      "McpSetupRequestParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "server": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Server"
-          },
-          "action": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Action"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "session_id"
-        ],
-        "title": "McpSetupRequestParams",
         "type": "object"
       },
       "MessageCompletePayload": {
@@ -30925,7 +31045,7 @@
       },
       "ValueResult": {
         "additionalProperties": false,
-        "description": "The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges,\nmcp.setup): ``''`` means skipped / declined.",
+        "description": "The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):\n``''`` means skipped / declined.",
         "properties": {
           "value": {
             "title": "Value",
@@ -32856,20 +32976,20 @@
       }
     },
     {
-      "name": "mcp.setup",
-      "summary": "Consent card for installing / enabling / authorising an MCP server.",
+      "name": "connection",
+      "summary": "The manage_connections approval card: install / enable / authorise local MCP servers.",
       "params": [
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/McpSetupRequestParams"
+            "$ref": "#/components/schemas/ConnectionRequestParams"
           }
         }
       ],
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/ValueResult"
+          "$ref": "#/components/schemas/ConnectionResult"
         }
       }
     },

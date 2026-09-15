@@ -21,7 +21,7 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
-import { connectorCalls } from '@/lib/connector-tools'
+import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
@@ -121,16 +121,17 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     )
   }
 
+  // MCP targets always render the card; managed connectors only under the onboarding gate.
+  if (mcpTargets(props.toolName, props.args).length > 0) {
+    return <McpSetupTool {...props} />
+  }
+
   if (isOnboardingEnabled() && props.toolName === 'manage_connections') {
     return <ConnectorTool {...props} />
   }
 
   if (isOnboardingEnabled() && connectorCalls(props.toolName, props.args).length > 0) {
     return <ConnectorExecution {...props} />
-  }
-
-  if (props.toolName === 'setup_mcp') {
-    return <McpSetupTool {...props} />
   }
 
   return <ToolFallback {...props} />

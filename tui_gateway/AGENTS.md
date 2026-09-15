@@ -20,7 +20,7 @@ Never move agent behaviour into the renderer.
 
 Newline-delimited JSON-RPC over stdio, peer-to-peer: client→server method calls, server→client
 **requests** (the agent asking the user something: `approval`, `clarify`, `sudo`, `secret`, `vault.*`,
-`mcp.setup`, the desktop read/act bridges) and server→client `event` notifications. `tui_gateway/server.py`
+`connection`, the desktop read/act bridges) and server→client `event` notifications. `tui_gateway/server.py`
 is the facade with the method/event catalog; methods live in `methods_*.py` siblings (`methods_config`,
 `methods_complete`, `methods_browser`, `methods_bot_relay`, ...), event publishing in
 `event_publisher.py` / `event_replay.py`, server→client requests in `server_requests.py` (`send()` blocks

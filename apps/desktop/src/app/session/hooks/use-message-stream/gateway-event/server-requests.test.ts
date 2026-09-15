@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $connectionRequests } from '@/store/connection-request'
+import { resetServerRequestsForTests } from '@/store/server-requests'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
 
-const deps = {} as ServerRequestContext['deps']
+const deps = {
+  activeSessionIdRef: { current: null },
+  sessionInterrupted: () => false,
+  updateSessionState: (_sessionId, update) => update(createClientSessionState('stored-session')),
+  upsertToolCall: () => undefined
+} as ServerRequestContext['deps']
 
 function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
   const respond = vi.fn()
@@ -14,6 +22,30 @@ function deliver(method: string, params: Record<string, unknown>, activeSessionI
 
   return { fail, handled, respond }
 }
+
+describe('connection request routing', () => {
+  afterEach(() => {
+    $connectionRequests.set({})
+    resetServerRequestsForTests()
+  })
+
+  it('parks a connection request and replaces a replayed request with the same id', () => {
+    const params = {
+      deadline_at: 1_800_000_000,
+      op_id: 'op-1',
+      reason: 'Install Linear',
+      session_id: 'session-a',
+      targets: [{ action: 'install', kind: 'mcp', name: 'linear' }],
+      timeout_seconds: 60
+    }
+
+    expect(deliver('connection', params, 'session-a').handled).toBe(true)
+    expect($connectionRequests.get()['session-a']).toMatchObject({ opId: 'op-1', requestId: 'srq-1' })
+
+    expect(deliver('connection', { ...params, op_id: 'op-2' }, 'session-a').handled).toBe(true)
+    expect($connectionRequests.get()['session-a']?.opId).toBe('op-2')
+  })
+})
 
 describe('preview action request routing', () => {
   it('leaves a scoped action request unanswered in a window showing another session', () => {

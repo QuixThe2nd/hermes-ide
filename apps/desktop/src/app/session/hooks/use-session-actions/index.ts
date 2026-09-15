@@ -1806,7 +1806,6 @@ export function useSessionActions({
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
         const pendingClarify = pendingClarifyState.request
-
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
 
@@ -1861,7 +1860,8 @@ export function useSessionActions({
             // Backend reported this turn running at resume time — live proof.
             turnLive: state.turnLive || resumedRunning,
             needsInput:
-              pendingApproval || Boolean(pendingClarify) || (clarifyAuthoritativelyAbsent ? false : state.needsInput),
+              pendingApproval ||
+              Boolean(pendingClarify) || (clarifyAuthoritativelyAbsent ? false : state.needsInput),
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
             ...(inFlightRecovery.applied
               ? {

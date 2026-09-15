@@ -1313,6 +1313,17 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
+def _connection_request(sid: str, payload: dict) -> str:
+    """The ``manage_connections`` approval card: one ``connection`` server request per operation.
+    The renderer answers with ``{settled_by, targets}``; the tool receives it as JSON text (``''``
+    when the renderer never answered: deadline, cancel, or a client without a card). The wait is the
+    operation's own deadline, carried in the payload."""
+    from tui_gateway import server_requests
+    timeout = float(payload.get("timeout_seconds") or 120)
+    result = server_requests.send("connection", sid, params=payload, timeout=timeout)
+    return json.dumps(result, ensure_ascii=False) if result else ""
+
+
 def _clarify_timeout_seconds() -> float | None:
     """Clarify wait for the TUI/desktop bridge from the canonical config (gateway/CLI parity); 300s
     historical default if config can't be read; ``<= 0`` = unlimited → None (never auto-skip)."""
@@ -1984,8 +1995,8 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / setup_mcp cards from the tool-call part."""
-    return name in ("clarify", "setup_mcp")
+    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
+    return name in ("clarify", "manage_connections", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):

@@ -113,10 +113,10 @@ def _agent_cbs(sid: str) -> dict:
         "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
-        # setup_mcp (desktop GUI): consent card + install/enable/OAuth; long timeout on purpose
-        # (typing an API key, browser OAuth).
-        "setup_mcp_callback": lambda server, action, reason: _ask(
-            "mcp.setup", sid, {"server": server, "action": action, "reason": reason}, timeout=600),
+        # manage_connections approval card (desktop GUI): one ``connection`` server request per
+        # operation; the renderer answers with the per-target outcomes. Waits the operation's own
+        # deadline, which the payload carries.
+        "connection_callback": lambda payload: _connection_request(sid, dict(payload)),
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 

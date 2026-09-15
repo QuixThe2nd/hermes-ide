@@ -56,6 +56,21 @@ Per-surface behavior:
 
 If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user.
 
+## `connections` toolset
+
+One tool for both kinds of external app. A target is a managed connector (`"gmail"` or
+`{"name": "gmail"}`, authorized through the Nous gateway) or a local MCP server
+(`{"name": "linear", "mcp": true}`, an entry in `mcp_servers`).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `manage_connections` | Managed actions: `status`, `connect` (returns a link for the user), `reconnect`, `wait` (blocks until the connectors report connected). MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). MCP actions show an approval card on the desktop and block until the user acts or the deadline passes; every target settles as `connected`, `skipped` or `not_connected`. On surfaces with no card (CLI, TUI, messaging) MCP targets return `unavailable` with the `hermes mcp install <name>` / `hermes mcp login <name>` commands to give the user. Cannot disconnect or revoke an account. | — |
+
+The deadline for one call is `connections.wait_timeout_seconds` in `config.yaml`
+(default 120, floor 5). The backend fixes it when the call starts; reopening the chat
+or restarting the desktop never extends it. Managed actions additionally need the
+portal sign-in the managed tools use; MCP approvals do not.
+
 ## `code_execution` toolset
 
 | Tool | Description | Requires environment |

@@ -1,13 +1,16 @@
+import type { ServerRequestMap } from '@hermes/shared'
+
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
+import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { normalizeConnectionRequest, setConnectionRequest } from '@/store/connection-request'
 import type { ScopedServerRequest } from '@/store/gateway'
-import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   receiveApprovalRequest,
@@ -40,6 +43,11 @@ const loadPreviewEngine = () => {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+
+/** The params of a request whose method the handler table already matched: the backend validated
+ *  them against `ServerRequestMap[M]['params']` before sending, so the method name is the contract. */
+const paramsOf = <M extends keyof ServerRequestMap>(request: ScopedServerRequest, _method: M) =>
+  request.params as unknown as ServerRequestMap[M]['params']
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
 const answerValue = (request: ScopedServerRequest, result: unknown) =>
@@ -257,33 +265,25 @@ const vaultUnlockPrompt: Handler = ctx => {
   notifyInput(ctx, translateNow('prompts.vaultUnlockTitle', displayName))
 }
 
-const mcpSetup: Handler = ctx => {
-  // setup_mcp tool (desktop GUI): the agent proposed an MCP server. Park the
-  // request per-session (like clarify) and upsert a stable pending tool row so
-  // the inline consent card has somewhere to render even when the tool.start
-  // event was missed (stream reconnect / hydration race).
+const connection: Handler = ctx => {
   const { deps, request, sessionId } = ctx
-  const p = request.params
-  const server = str(p.server)
-  const rawAction = str(p.action) || 'install'
-  const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
-  const reason = str(p.reason)
+  const entry = normalizeConnectionRequest(paramsOf(request, 'connection'), request.id, sessionId || null)
 
-  if (!server) {
-    request.respond({ value: '' })
+  if (!entry) {
+    request.respond({ settled_by: 'all_resolved', targets: [] })
 
     return
   }
 
   rememberServerRequest(request)
-  setMcpSetupRequest({ action, reason, requestId: request.id, server, sessionId: sessionId || null })
+  setConnectionRequest(entry)
 
   if (sessionId) {
-    deps.upsertToolCall(sessionId, { args: { action, reason, server }, name: 'setup_mcp', tool_id: request.id }, 'running')
+    deps.upsertToolCall(sessionId, connectionRequestToolPayload(entry), 'running')
   }
 
   markNeedsInput(ctx)
-  notifyInput(ctx, reason || server)
+  notifyInput(ctx, entry.reason || entry.targets.map(target => target.name).join(', '))
 }
 
 // ── Desktop-surface bridges (answered immediately, no card) ─────────────────
@@ -401,7 +401,7 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
-  'mcp.setup': mcpSetup,
+  connection,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,

@@ -200,6 +200,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # one-field orphan category.
     "missions": "agent",
     "nous": "agent",
+    "connections": "agent",
 }
 
 

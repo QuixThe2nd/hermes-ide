@@ -168,10 +168,12 @@ described in the rest of this page, with no errors shown to the model.
 
 A connector call that needs an account you haven't linked returns a
 `CONNECTION_REQUIRED` error carrying a connect link. The `manage_connections`
-tool (available on the same condition as the connector bridge) lists
-connectors and their connection state, starts an authorization, and can wait
-for the user to finish it; disconnecting an account is done by the user in
-the Portal.
+tool lists connectors and their connection state, starts an authorization,
+and can wait for the user to finish it; disconnecting an account is done by
+the user in the Portal. The same tool also installs, enables and authorizes
+local MCP servers from the catalog (targets with `mcp: true`), so it is
+present whether or not you are signed in; only the managed-connector actions
+need the sign-in.
 
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch

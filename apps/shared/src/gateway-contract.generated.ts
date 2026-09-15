@@ -3650,7 +3650,7 @@ export interface ApprovalResult {
 export interface EmptyRequestParams {
   session_id: string
 }
-/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges, mcp.setup): ``''`` means skipped / declined. */
+/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
 export interface ValueResult {
   value: string
 }
@@ -3675,12 +3675,37 @@ export interface VaultCodeRequestParams {
   site?: string | null
   hint?: string | null
 }
-export interface McpSetupRequestParams {
+/** ``tools/connections_tool_operation.py::ConnectionOperation.request_payload`` — one operation, N targets, a server-owned deadline (epoch seconds) the restored card keeps. */
+export interface ConnectionRequestParams {
   session_id: string
-  server?: string | null
-  action?: string | null
-  reason?: string | null
+  op_id: string
+  deadline_at: number
+  timeout_seconds: number
+  reason?: string
+  targets: ConnectionRequestTarget[]
 }
+/** One row of the card: ``tools/connections_tool_operation.py::ConnectionOperation.request_payload``. */
+export interface ConnectionRequestTarget {
+  name: string
+  kind: ConnectionTargetKind
+  action: ConnectionAction
+}
+export type ConnectionTargetKind = 'connector' | 'mcp'
+export type ConnectionAction = 'authorize' | 'enable' | 'install'
+/** Per-target outcomes. The backend derives the settle reason from target state; the renderer's ``settled_by`` is its own claim and is not trusted. */
+export interface ConnectionResult {
+  settled_by: ConnectionSettledBy
+  targets: ConnectionTargetOutcome[]
+}
+export type ConnectionSettledBy = 'all_resolved' | 'continue'
+/** The card's answer for one target (``tools/connections_tool_mcp.py::_apply_answer``). */
+export interface ConnectionTargetOutcome {
+  name: string
+  state: ConnectionTargetOutcomeState
+  detail?: string | null
+  tools?: string[] | null
+}
+export type ConnectionTargetOutcomeState = 'installed' | 'enabled' | 'authorized' | 'declined' | 'error'
 export interface ReadRangeRequestParams {
   session_id: string
   start?: number | null
@@ -4736,8 +4761,8 @@ export interface ServerRequestMap {
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user one question or a batch. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
-  /** Consent card for installing / enabling / authorising an MCP server. */
-  'mcp.setup': { params: McpSetupRequestParams; result: ValueResult }
+  /** The manage_connections approval card: install / enable / authorise local MCP servers. */
+  connection: { params: ConnectionRequestParams; result: ConnectionResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
@@ -4763,7 +4788,7 @@ export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
-  'mcp.setup',
+  'connection',
   'preview.act',
   'preview.read',
   'secret',

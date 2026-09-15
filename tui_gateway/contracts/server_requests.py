@@ -20,8 +20,8 @@ class ServerRequestParams(Params):
 
 
 class ValueResult(Result):
-    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges,
-    mcp.setup): ``''`` means skipped / declined."""
+    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):
+    ``''`` means skipped / declined."""
 
     value: str
 
@@ -143,14 +143,71 @@ server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
                doc="A one-time / 2FA code the user reads from their device.")
 
 
-class McpSetupRequestParams(ServerRequestParams):
-    server: str | None = None
-    action: str | None = None
-    reason: str | None = None
+# ── connection operation (manage_connections card) ────────────────────────────────────────────
 
 
-server_request("mcp.setup", params=McpSetupRequestParams, result=ValueResult,
-               doc="Consent card for installing / enabling / authorising an MCP server.")
+class ConnectionTargetKind(WireEnum):
+    connector = "connector"
+    mcp = "mcp"
+
+
+class ConnectionAction(WireEnum):
+    authorize = "authorize"
+    enable = "enable"
+    install = "install"
+
+
+class ConnectionRequestTarget(Params):
+    """One row of the card: ``tools/connections_tool_operation.py::ConnectionOperation.request_payload``."""
+
+    name: str
+    kind: ConnectionTargetKind
+    action: ConnectionAction
+
+
+class ConnectionRequestParams(ServerRequestParams):
+    """``tools/connections_tool_operation.py::ConnectionOperation.request_payload`` — one operation,
+    N targets, a server-owned deadline (epoch seconds) the restored card keeps."""
+
+    op_id: str
+    deadline_at: float
+    timeout_seconds: float
+    reason: str = ""
+    targets: list[ConnectionRequestTarget]
+
+
+class ConnectionTargetOutcomeState(WireEnum):
+    installed = "installed"
+    enabled = "enabled"
+    authorized = "authorized"
+    declined = "declined"
+    error = "error"
+
+
+class ConnectionTargetOutcome(Result):
+    """The card's answer for one target (``tools/connections_tool_mcp.py::_apply_answer``)."""
+
+    name: str
+    state: ConnectionTargetOutcomeState
+    detail: str | None = None
+    tools: list[str] | None = None
+
+
+class ConnectionSettledBy(WireEnum):
+    all_resolved = "all_resolved"
+    continue_ = "continue"
+
+
+class ConnectionResult(Result):
+    """Per-target outcomes. The backend derives the settle reason from target state; the renderer's
+    ``settled_by`` is its own claim and is not trusted."""
+
+    settled_by: ConnectionSettledBy
+    targets: list[ConnectionTargetOutcome]
+
+
+server_request("connection", params=ConnectionRequestParams, result=ConnectionResult,
+               doc="The manage_connections approval card: install / enable / authorise local MCP servers.")
 
 
 # ── desktop GUI bridges ───────────────────────────────────────────────────────────────────────

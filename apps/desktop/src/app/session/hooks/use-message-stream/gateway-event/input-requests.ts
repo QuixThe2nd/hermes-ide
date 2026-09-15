@@ -1,7 +1,7 @@
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { settlePendingClarifyToolCall } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { $mcpSetupRequests, clearMcpSetupRequest } from '@/store/mcp-setup'
+import { $connectionRequests, clearConnectionRequest } from '@/store/connection-request'
 import {
   $approvalRequests,
   $secretRequests,
@@ -81,8 +81,12 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     clearVaultSaveLoginRequest(sessionId, id)
   } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
     clearVaultUnlockRequest(sessionId, id)
-  } else if ($mcpSetupRequests.get()[key]?.requestId === id) {
-    clearMcpSetupRequest(id, sessionId)
+  } else if ($connectionRequests.get()[key]?.requestId === id) {
+    clearConnectionRequest(id, sessionId)
+
+    if (sessionId) {
+      deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+    }
   }
 
   return true
