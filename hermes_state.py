@@ -105,8 +105,8 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _describe_lock_holder,
     _read_lock_holder_record,
     is_advisory_lock_contention,
-    read_only_db_uri,
 )
+from hermes_state_holders import read_only_db_uri
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_dbfile import (
