@@ -859,8 +859,23 @@ def test_llm_usage_proxy_caller_label_typo_suggests_caller_label():
     assert "caller_label" in suggestion
 
 
+@pytest.mark.parametrize("spelling", ["123", "true", "none", "1.5"])
+def test_config_set_caller_label_preserves_string_spellings(spelling):
+    """``config set llm_usage_proxy.caller_label X`` stores X verbatim as a str.
+
+    The DEFAULT_CONFIG default is a str, so _coerce_config_set_value's
+    string-preservation branch wins over int/bool/None/float coercion —
+    a label that happens to spell a scalar is still a label.
+    """
+    from hermes_cli.config import _coerce_config_set_value
+
+    value = _coerce_config_set_value("llm_usage_proxy.caller_label", spelling)
+    assert isinstance(value, str)
+    assert value == spelling
+
+
 def test_configured_caller_label_inert_when_default_unset(tmp_path, monkeypatch):
-    """DEFAULT_CONFIG caller_label=None must not produce a configured label."""
+    """The empty-string DEFAULT_CONFIG caller_label default must not produce a label."""
     from hermes_cli.llm_usage_routes import _configured_caller_label
 
     home = tmp_path / "profiles" / "coder"

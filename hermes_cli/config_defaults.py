@@ -1719,9 +1719,10 @@ DEFAULT_CONFIG = {
         "upstreams": {},
         # Key-manager mode: proxy owns provider keys, callers hold local tokens.
         "manage_keys": False,
-        # Per-profile ledger attribution override; None = unset, falls back to the
-        # home-path-derived label (see hermes_cli/llm_usage_routes.py).
-        "caller_label": None,
+        # Per-profile ledger attribution override; empty string = unset, falls
+        # back to the home-path-derived label (see hermes_cli/llm_usage_routes.py).
+        # Str-typed default so `config set` stores labels verbatim (_coerce_config_set_value).
+        "caller_label": "",
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
