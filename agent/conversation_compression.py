@@ -52,6 +52,7 @@ thread, not the conversation thread. Extension authors must assume:
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import copy
 import dataclasses
 import inspect
@@ -6914,7 +6915,6 @@ def _compress_context_via_codex_app_server(
         logger.debug("codex compaction bookkeeping failed", exc_info=True)
 
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
-
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s",
         getattr(agent, "session_id", None) or "none",
