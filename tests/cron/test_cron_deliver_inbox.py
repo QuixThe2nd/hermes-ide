@@ -495,3 +495,77 @@ class TestCreationTimeEnforcement:
         finally:
             clear_session_vars(tokens)
         assert result["deliver"] == "inbox"
+
+
+# ---------------------------------------------------------------------------
+# (g) Review-gap pins: cron-context creates, OR-merge dedup, mixed unresolved
+# ---------------------------------------------------------------------------
+
+
+class TestInboxResolutionCombinations:
+    def test_origin_and_inbox_tokens_dedup_to_one_target(self, hermes_home, inbox_state):
+        """A job created FROM the inbox channel itself: ``origin,inbox`` both
+        resolve to (discord, INBOX) — one merged target keeping origin
+        provenance AND the create intent, in either token order."""
+        job = _job(deliver="origin,inbox")
+        job["origin"] = {"platform": "discord", "chat_id": INBOX_CHANNEL, "scope_id": GUILD}
+        targets = _resolve_delivery_targets(job)
+        assert len(targets) == 1
+        assert targets[0]["_resolved_from"] == "origin"
+        assert targets[0]["_thread_auto"] is True
+
+    def test_inbox_and_origin_tokens_dedup_to_one_target(self, hermes_home, inbox_state):
+        job = _job(deliver="inbox,origin")
+        job["origin"] = {"platform": "discord", "chat_id": INBOX_CHANNEL, "scope_id": GUILD}
+        targets = _resolve_delivery_targets(job)
+        assert len(targets) == 1
+        assert targets[0]["_thread_auto"] is True
+
+    def test_mixed_list_with_unresolved_inbox_reports_the_token(self, hermes_home, inbox_state):
+        """``inbox:<wrong guild>,discord:<inbox>``: the resolvable token still
+        receives the output, and the unresolved token is NAMED in the
+        unresolved list — a mixed list must never report clean success."""
+        from cron.scheduler_delivery import _resolve_delivery_targets_detailed
+
+        job = _job(deliver=f"inbox:{OTHER_GUILD},discord:{INBOX_CHANNEL}")
+        targets, unresolved = _resolve_delivery_targets_detailed(job)
+        assert [(t["platform"], t["chat_id"]) for t in targets] == [("discord", INBOX_CHANNEL)]
+        assert unresolved == [f"inbox:{OTHER_GUILD}"]
+
+
+class TestCronContextCreateXEnforcement:
+    """A job created FROM a cron run: the creator's concrete target wins and
+    a literal 'origin' never reaches the store — with the inbox rewrite hook
+    in the path."""
+
+    def _cron_session(self):
+        from gateway.session_context import _VAR_MAP
+
+        tokens = set_session_vars(platform="", chat_id="", cron_session="1")
+        extra = [
+            (_VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"],
+             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("discord")),
+            (_VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"],
+             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(OUTBOX_CHAT)),
+        ]
+        return tokens, extra
+
+    def test_cron_context_create_stores_concrete_target_not_origin(self, temp_cron_home, inbox_state):
+        tokens, extra = self._cron_session()
+        try:
+            result = _create()
+        finally:
+            for var, token in reversed(extra):
+                var.reset(token)
+            clear_session_vars(tokens)
+        assert result["success"] is True
+        assert result["deliver"] == f"discord:{OUTBOX_CHAT}"
+
+    def test_cron_context_without_creator_target_stays_local(self, temp_cron_home, inbox_state):
+        tokens = set_session_vars(platform="", chat_id="", cron_session="1")
+        try:
+            result = _create()
+        finally:
+            clear_session_vars(tokens)
+        assert result["success"] is True
+        assert result["deliver"] == "local"
