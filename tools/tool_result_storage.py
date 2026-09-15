@@ -182,7 +182,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     truncation on payload backends). A measured mismatch removes the archive and fails closed;
     an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success.
     Heredoc-mode backends append exactly one trailing newline by construction
-    (``wrap_modal_stdin_heredoc``), so one extra byte is accepted there."""
+    (``BaseEnvironment._embed_stdin_heredoc``), so one extra byte is accepted there."""
     storage_dir = os.path.dirname(remote_path)
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:

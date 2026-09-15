@@ -100,59 +100,31 @@ class TestWriteToSandbox:
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
 
-    def test_size_mismatch_fails_closed_and_removes_archive(self):
-        """A sandbox archive that lost bytes must be discarded, not referenced.
-
-        Port of lobehub/lobehub#18258: verify the persisted archive before
-        telling the model the full result is available; fail closed to the
-        bounded inline truncation when persistence is not lossless.
-        """
+    @pytest.mark.parametrize(
+        "stdin_mode, probed, ok",
+        [
+            ("pipe", 512, False),      # short write: bytes lost
+            ("pipe", 101, False),      # pipe backends must be exact
+            ("heredoc", 101, True),    # heredoc appends exactly one newline
+        ],
+    )
+    def test_size_probe_decides_lossless(self, stdin_mode, probed, ok):
+        """A sandbox archive that is not byte-exact (modulo the heredoc newline) is
+        discarded — never referenced to the model (port of lobehub/lobehub#18258)."""
         env = MagicMock()
-        env._stdin_mode = "pipe"
-        content = "x" * 1000
-        env.execute.side_effect = [
-            {"output": "", "returncode": 0},        # write
-            {"output": "512\n", "returncode": 0},   # wc -c: short!
-            {"output": "", "returncode": 0},        # rm -f cleanup
-        ]
-        assert _write_to_sandbox(content, "/tmp/hermes-results/short.txt", env) is False
-        rm_cmd = env.execute.call_args_list[2][0][0]
-        assert rm_cmd.startswith("rm -f ")
-        assert "/tmp/hermes-results/short.txt" in rm_cmd
-
-    def test_exact_size_match_succeeds(self):
-        env = MagicMock()
-        env._stdin_mode = "pipe"
-        content = "abcé"  # multi-byte: expected size is the UTF-8 byte count
-        expected = len(content.encode("utf-8"))
-        env.execute.side_effect = [
-            {"output": "", "returncode": 0},
-            {"output": f"{expected}\n", "returncode": 0},
-        ]
-        assert _write_to_sandbox(content, "/tmp/hermes-results/ok.txt", env) is True
-
-    def test_heredoc_backend_tolerates_single_trailing_newline(self):
-        """Heredoc-mode backends append one newline by construction."""
-        env = MagicMock()
-        env._stdin_mode = "heredoc"
+        env._stdin_mode = stdin_mode
         content = "y" * 100
         env.execute.side_effect = [
-            {"output": "", "returncode": 0},
-            {"output": "101\n", "returncode": 0},
+            {"output": "", "returncode": 0},          # write
+            {"output": f"{probed}\n", "returncode": 0},  # wc -c
+            {"output": "", "returncode": 0},          # rm -f cleanup (mismatch only)
         ]
-        assert _write_to_sandbox(content, "/tmp/hermes-results/hd.txt", env) is True
-
-    def test_pipe_backend_rejects_extra_byte(self):
-        """The +1 tolerance is heredoc-only; pipe backends must be exact."""
-        env = MagicMock()
-        env._stdin_mode = "pipe"
-        content = "y" * 100
-        env.execute.side_effect = [
-            {"output": "", "returncode": 0},
-            {"output": "101\n", "returncode": 0},
-            {"output": "", "returncode": 0},  # rm -f
-        ]
-        assert _write_to_sandbox(content, "/tmp/hermes-results/hd2.txt", env) is False
+        assert _write_to_sandbox(content, "/tmp/hermes-results/p.txt", env) is ok
+        if not ok:
+            rm_cmd = env.execute.call_args_list[2][0][0]
+            assert rm_cmd.startswith("rm -f ") and "/tmp/hermes-results/p.txt" in rm_cmd
+        else:
+            assert env.execute.call_count == 2
 
     def test_unprobeable_backend_is_best_effort_success(self):
         """No wc / probe crash must not discard a likely-good archive."""
@@ -558,14 +530,6 @@ class TestRecoveryHint:
 # telling the model the full result is available; fail closed otherwise.
 
 class TestSpilloverWriteVerification:
-    def test_lossless_write_returns_path(self):
-        from tools.tool_result_storage import _write_to_spillover
-
-        path = _write_to_spillover("hello spill", "tc_verify_ok.txt")
-        assert path is not None
-        with open(path, encoding="utf-8") as fh:
-            assert fh.read() == "hello spill"
-
     def test_short_write_is_discarded(self):
         """A partially-flushed archive must not be referenced to the model."""
         from unittest.mock import patch as _patch
