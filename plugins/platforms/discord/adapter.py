@@ -4010,6 +4010,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
             filename = os.path.basename(audio_path)
 
+            # Upload-size preflight (#50846): reject oversized audio before
+            # any upload path (native voice POST or file fallback) and let
+            # the caller get the actionable SendResult from the shared gate.
+            gate = await self._reject_oversized_upload(channel, audio_path, filename)
+            if gate is not None:
+                return gate
+
             # ids-only reference — same no-fetch rationale as the text path.
             reference = await self._reply_reference_for_send(reply_to, channel, metadata)
 
