@@ -25,6 +25,8 @@ interface CatalogPlugin {
   capabilities?: PluginCapabilities;
   docsUrl?: string;
   installCommand: string;
+  /** GitHub stargazers at the last daily probe; null when the repo is not on GitHub or unprobed. */
+  stars?: number | null;
   /** Lowercase pre-joined haystack for the search filter (built at load). */
   _search?: string;
 }
@@ -35,6 +37,7 @@ interface CatalogMeta {
   byTier?: Record<string, number>;
   byCategory?: Record<string, number>;
   removedCount?: number;
+  starsFetchedAt?: string | null;
 }
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
@@ -98,6 +101,10 @@ function formatRelativeTime(iso?: string): string | null {
   if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
   const months = Math.floor(days / 30);
   return `${months} month${months === 1 ? "" : "s"} ago`;
+}
+
+function formatStars(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -203,6 +210,18 @@ function PluginCard({
             >
               {tier.icon} {tier.label}
             </span>
+            {typeof plugin.stars === "number" && (
+              <a
+                className={styles.starPill}
+                href={`${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/stargazers`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                title={`${plugin.stars.toLocaleString()} GitHub stars`}
+              >
+                {"\u2605"} {formatStars(plugin.stars)}
+              </a>
+            )}
           </div>
         </div>
 
@@ -547,6 +566,14 @@ export default function PluginCatalogPage() {
                 <span title={meta.generatedAt}>
                   {formatRelativeTime(meta.generatedAt) || "recently"}
                 </span>
+                {meta.starsFetchedAt && (
+                  <>
+                    {" · "}ranked by GitHub stars as of{" "}
+                    <span title={meta.starsFetchedAt}>
+                      {formatRelativeTime(meta.starsFetchedAt) || "recently"}
+                    </span>
+                  </>
+                )}
               </p>
             )}
 

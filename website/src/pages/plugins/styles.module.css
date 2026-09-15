@@ -367,6 +367,27 @@
   text-decoration: underline;
 }
 
+.starPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid rgba(255, 215, 0, 0.25);
+  border-radius: 10px;
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.starPill:hover {
+  background: rgba(255, 215, 0, 0.14);
+  text-decoration: none;
+  color: #ffd700;
+}
+
 .categoryChip {
   border: 1px solid rgba(125, 211, 252, 0.25);
   background: rgba(125, 211, 252, 0.07);

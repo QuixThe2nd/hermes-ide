@@ -38,6 +38,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"
+# Written by fetch-plugin-stars.py (at most one GitHub probe per day); absent → no ranking data.
+DEFAULT_STARS_FILE = DEFAULT_OUTPUT_DIR / "plugin-stars.json"
+_GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
 
 CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
@@ -66,13 +69,29 @@ def _normalize_capabilities(raw) -> dict:
     }
 
 
-def load_catalog_entries(catalog_dir: Path) -> list[dict]:
+def load_stars(stars_file: Path) -> dict[str, int]:
+    """``{"owner/repo": stars}`` from fetch-plugin-stars.py's cache; empty when missing/unreadable."""
+    try:
+        data = json.loads(stars_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw = data.get("stars") if isinstance(data, dict) else None
+    return {str(k): int(v) for k, v in raw.items() if isinstance(v, (int, float))} if isinstance(raw, dict) else {}
+
+
+def _repo_stars(repo: str, stars: dict[str, int]) -> int | None:
+    m = _GITHUB_REPO_RE.match(repo)
+    return stars.get(f"{m.group(1)}/{m.group(2)}") if m else None
+
+
+def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None) -> list[dict]:
     """Parse all ``*.yaml`` files (except removed.yaml) into page entries.
 
     Entries missing any of name/repo/sha are skipped with a stderr log —
     a malformed community entry must never break the docs deploy.
     """
     entries: list[dict] = []
+    stars = stars or {}
     if not catalog_dir.is_dir():
         return entries
 
@@ -127,10 +146,20 @@ def load_catalog_entries(catalog_dir: Path) -> list[dict]:
             "capabilities": _normalize_capabilities(raw.get("capabilities")),
             "docsUrl": str(raw.get("docs_url") or "").strip(),
             "installCommand": f"hermes plugins install {name}",
+            "stars": _repo_stars(repo, stars),
         })
 
-    entries.sort(key=lambda e: (0 if e["tier"] == "official" else 1, e["name"]))
+    # Official first, then by stars (unknown = 0), then name so the order is stable.
+    entries.sort(key=lambda e: (0 if e["tier"] == "official" else 1, -(e["stars"] or 0), e["name"]))
     return entries
+
+
+def _stars_fetched_at(stars_file: Path) -> str | None:
+    try:
+        data = json.loads(stars_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return str(data.get("fetched_at")) if isinstance(data, dict) and data.get("fetched_at") else None
 
 
 def load_removed(catalog_dir: Path) -> list[dict]:
@@ -168,14 +197,17 @@ def load_raw_entries(catalog_dir: Path) -> list[dict]:
     return entries
 
 
-def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUTPUT_DIR) -> int:
+def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUTPUT_DIR,
+         stars_file: Path | None = None) -> int:
     if not catalog_dir.is_dir():
         _log(
             f"plugin-catalog directory not found at {catalog_dir}; "
             "emitting empty catalog (this is expected until the catalog lands)"
         )
 
-    entries = load_catalog_entries(catalog_dir)
+    stars_path = stars_file if stars_file is not None else output_dir / "plugin-stars.json"
+    stars = load_stars(stars_path)
+    entries = load_catalog_entries(catalog_dir, stars)
     removed_count = count_removed(catalog_dir)
 
     by_tier = Counter(e["tier"] for e in entries)
@@ -185,6 +217,7 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUT
         "total": len(entries),
         "byTier": {tier: by_tier.get(tier, 0) for tier in CATALOG_TIERS},
         "byCategory": {c: by_category.get(c, 0) for c in CATALOG_CATEGORIES if by_category.get(c)},
+        "starsFetchedAt": _stars_fetched_at(stars_path),
         "removedCount": removed_count,
     }
 
@@ -209,5 +242,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog-dir", type=Path, default=DEFAULT_CATALOG_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--stars-file", type=Path, default=None,
+                        help="plugin-stars.json from fetch-plugin-stars.py (default: <output-dir>/plugin-stars.json)")
     args = parser.parse_args()
-    sys.exit(main(catalog_dir=args.catalog_dir, output_dir=args.output_dir))
+    sys.exit(main(catalog_dir=args.catalog_dir, output_dir=args.output_dir, stars_file=args.stars_file))
