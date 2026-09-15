@@ -201,4 +201,36 @@ describe('VaultSettings', () => {
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
   })
+
+  it('refreshes password-manager detection when the page is reopened', async () => {
+    let installed = false
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+
+    const first = renderVault()
+    await screen.findByText('Not detected')
+    first.unmount()
+
+    installed = true
+    renderVault()
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
+  })
 })

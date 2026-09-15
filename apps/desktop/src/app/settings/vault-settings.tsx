@@ -188,6 +188,9 @@ export function VaultSettings() {
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
+    // Manager detection can change while this settings page is closed. Always ask the
+    // local backend again on mount instead of reusing the shared cache's 60s fresh value.
+    refetchOnMount: 'always',
     queryFn: async () => {
       const result = await requestGateway<{ sources: VaultSource[] }>('vault.sources', {})
 
