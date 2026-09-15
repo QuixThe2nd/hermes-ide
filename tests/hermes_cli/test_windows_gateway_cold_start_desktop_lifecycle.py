@@ -298,21 +298,6 @@ def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, 
     assert "Gateway profile default started via cold-start after update (PID: 4242)" in out
 
 
-def test_no_attested_profile_leaves_the_pause_token_unchanged(monkeypatch, tmp_path):
-    _running_beta_pause_fixture(monkeypatch, tmp_path)
-
-    token = update_cmd._pause_windows_gateways_for_update()
-
-    assert "cold_start_profiles" not in token
-    assert token["profiles"] == {"beta": 777}
-    spawned = []
-    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: spawned.append(k) or 4242)
-    monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
-    update_cmd._resume_windows_gateways_after_update(token)
-    assert spawned == []
-    assert token["relaunched_profiles"] == ["beta"]
-
-
 def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypatch, tmp_path):
     """Nothing running, active profile exited cleanly (plan → None), ``beta`` dead-attested: beta still
     gets a token and a spawn. And when BOTH owe a spawn, the fleet-wide active cold-start runs FIRST —

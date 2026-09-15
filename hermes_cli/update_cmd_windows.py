@@ -976,8 +976,12 @@ def _cold_start_attested_profiles(token: dict) -> None:
             gateway_windows._write_start_attestation(ready_pids, f"cold-start after update (profile {name})", home=home)
             print(f"\n✓ Gateway profile {name} started via cold-start after update (PID: {ready_pids[0]})")
             token["cold_start_profiles"].pop(name, None)
-    if not token["cold_start_profiles"]:
-        token.pop("cold_start_profiles", None)
+    if token["cold_start_profiles"]:
+        # Surface the miss like the active-profile cold-start does: the merged outcome marks the update
+        # incomplete instead of reporting success with a profile still down.
+        raise RuntimeError("Windows gateway cold-start was not verified for profile(s): "
+                           + ", ".join(sorted(token["cold_start_profiles"])))
+    token.pop("cold_start_profiles", None)
 
 
 def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
@@ -1219,16 +1223,18 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         _cold_start_attested_profiles(token)
         token["resume_needed"] = False
         return
-    _cold_start_attested_profiles(token)
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
     if relaunched or unmapped_relaunched:
         _verify_relaunched_gateways_alive(token, profiles, unmapped)
-    token["resume_needed"] = False
     if relaunched:
         print(f"\n  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
     if unmapped_relaunched:
         lead = "" if relaunched else "\n"
         print(f"{lead}  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)")
+    # After the paused profiles are back: a dead-attested sibling that fails to cold-start must not
+    # keep the profiles that WERE running from being relaunched.
+    _cold_start_attested_profiles(token)
+    token["resume_needed"] = False
 
 
 def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume, gateway_mode: bool):
