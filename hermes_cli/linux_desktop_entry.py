@@ -209,22 +209,13 @@ def _resolve_hermes_bin_for_desktop_entry(
     finally:
         sys.argv[0] = original_argv0
 
-    if not primary:
-        # No launcher resolvable from argv[0]/PATH (e.g. a cold relaunch):
-        # do NOT return None here — that skipped the durable-wrapper probe
-        # below and persisted the module form with a checkout-absolute
-        # interpreter, which differs from what the DE-launched form renders.
-        # Any content change rewrites hermes.desktop, and gnome-shell 50.x
-        # crashes when the entry changes while its ShellApp is STARTING
-        # (shell_app_dispose assertion). Probe the known locations first;
-        # only with no durable wrapper anywhere fall back to the module form.
-        # (Falling through rather than returning is equivalent to
-        # `return rerouted or primary`: the rerun above hides argv[0], so a
-        # non-None rerouted could only come from PATH — which the first call
-        # would already have returned. `primary is None` implies
-        # `rerouted is None`; only the probe below can still find anything.)
-        pass
-    elif rerouted is not None:
+    # A resolver miss (argv[0] is ``-c`` under ``python -m`` on a cold relaunch AND PATH has no
+    # ``hermes``) must NOT return None here: that skipped the durable-wrapper probe below and persisted
+    # the module form, so the entry's bytes flipped on every alternating launch context — and
+    # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
+    # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
+    # probe can still find anything.
+    if primary and rerouted is not None:
         return rerouted or primary
 
     # argv[0] was checkout-internal AND PATH had no `hermes` — common in stripped systemd user
