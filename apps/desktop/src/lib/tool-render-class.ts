@@ -39,7 +39,7 @@ const CARD_TOOL_NAMES = new Set([
   'delegate_agent',
   // Legacy spelling from transcripts recorded before the rename.
   'delegate_task',
-  'image_generate',
+  'image_generate'
 ])
 
 // Name the run splitter uses for a manage_connections part it has classified as a card.
