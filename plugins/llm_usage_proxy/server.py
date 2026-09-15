@@ -22,6 +22,12 @@ Security posture:
     label is attribution in the ledger and nothing more: it is validated,
     stripped before anything is forwarded upstream, and is never a credential
     — it cannot authenticate, and it never causes a refusal.
+  * Hermes's own routed transports additionally name the chat a request
+    serves (``X-Usage-Chat-Type`` / ``-Id`` / ``-Name``): the task-local
+    session identity (platform/source, chat id, display name; ``cronjob``
+    wins over the delivery channel). Same rules as the label — validated,
+    ledger-only, stripped before upstream — and rows written before the
+    fields existed keep NULL, shown as an explicit Unknown.
   * Never follows redirects (a 3xx Location passes through to the client),
     so a response can never pivot the proxy onto a different host.
   * Forwards only to upstreams named on the command line; ``/p/<unknown>``
@@ -67,7 +73,7 @@ from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping, Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 logger = logging.getLogger("llm-usage-proxy")
 
@@ -118,6 +124,26 @@ CALLER_LABEL_HEADER = "X-Usage-Caller"
 CALLER_LABEL_MAX_CHARS = 64
 CALLER_LABEL_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
+# Headers Hermes's routed transports use to name the CHAT a request serves —
+# the per-request twin of the caller label (which names the harness).  Values
+# are read from the requesting task's session context
+# (gateway.session_context): the type names the surface (discord, cli, … with
+# "cronjob" taking precedence over any delivery channel), the id is the
+# platform's durable chat id, the name is display text.  Like the caller
+# label these are attribution only: validated, recorded on the row, and
+# stripped before anything is forwarded upstream.  Id and name travel
+# percent-encoded (UTF-8) so no header value can carry control characters.
+CHAT_TYPE_HEADER = "X-Usage-Chat-Type"
+CHAT_ID_HEADER = "X-Usage-Chat-Id"
+CHAT_NAME_HEADER = "X-Usage-Chat-Name"
+# Same wire limits hermes_cli.llm_usage_routes applies before sending —
+# repeated here so the proxy enforces them itself instead of trusting the
+# client.  Over-long or undecodable values are ignored, never truncated.
+CHAT_TYPE_MAX_CHARS = 32
+CHAT_ID_MAX_CHARS = 128
+CHAT_NAME_MAX_CHARS = 128
+CHAT_TYPE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,12 +162,23 @@ CREATE TABLE IF NOT EXISTS usage_events (
     request_id TEXT,
     outcome TEXT,
     usage_complete TEXT,
-    caller TEXT
+    caller TEXT,
+    chat_type TEXT,
+    chat_id TEXT,
+    chat_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events (ts);
 CREATE INDEX IF NOT EXISTS idx_usage_events_upstream_ts
     ON usage_events (upstream, ts);
 """
+
+# The chat index is created separately, AFTER _migrate(): on a DB written by
+# an older proxy the chat columns only come into existence there, and an
+# index over a missing column is a startup failure instead of a migration.
+SCHEMA_CHAT_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_usage_events_chat_ts"
+    " ON usage_events (chat_id, ts)"
+)
 
 # Hop-by-hop headers (RFC 2616 §13.5.1 + common additions) — never forwarded
 # in either direction. Host/Content-Length are handled explicitly instead.
@@ -686,7 +723,14 @@ def _ensure_mode_0600(path: str) -> None:
 class UsageStore:
     """Tiny locked SQLite sink — one row per proxied request attempt."""
 
-    _MIGRATION_COLUMNS = ("outcome TEXT", "usage_complete TEXT", "caller TEXT")
+    _MIGRATION_COLUMNS = (
+        "outcome TEXT",
+        "usage_complete TEXT",
+        "caller TEXT",
+        "chat_type TEXT",
+        "chat_id TEXT",
+        "chat_name TEXT",
+    )
 
     def __init__(self, path: str):
         self.path = path
@@ -698,6 +742,7 @@ class UsageStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(SCHEMA)
             self._migrate()
+            self._conn.execute(SCHEMA_CHAT_INDEX)
         _ensure_mode_0600(self.path)
 
     def _migrate(self) -> None:
@@ -705,7 +750,11 @@ class UsageStore:
 
         ``caller`` is NULL for every row written before key-manager mode —
         those requests were never attributed, and inventing a caller for them
-        would be worse than an honest unknown.
+        would be worse than an honest unknown.  The same honesty rule covers
+        ``chat_type``/``chat_id``/``chat_name``: rows written before chat
+        attribution stay NULL, which the dashboard shows as an explicit
+        Unknown chat rather than inferring one.  Every migration is an
+        additive ALTER TABLE — existing rows and ids are preserved as-is.
         """
         existing = {
             row["name"]
@@ -731,6 +780,9 @@ class UsageStore:
         outcome: str,
         usage_complete: str,
         caller: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_name: Optional[str] = None,
     ) -> None:
         fields = usage_row_fields(usage or {})
         with self._lock, self._conn:
@@ -738,8 +790,9 @@ class UsageStore:
                 "INSERT INTO usage_events (ts, upstream, model, prompt_tokens,"
                 " completion_tokens, cached_tokens, reasoning_tokens,"
                 " cache_creation_tokens, total_tokens, status_code, latency_ms,"
-                " path, request_id, outcome, usage_complete, caller)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " path, request_id, outcome, usage_complete, caller,"
+                " chat_type, chat_id, chat_name)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                     upstream,
@@ -757,6 +810,9 @@ class UsageStore:
                     outcome,
                     usage_complete,
                     caller,
+                    chat_type,
+                    chat_id,
+                    chat_name,
                 ),
             )
         _ensure_mode_0600(self.path)
@@ -890,6 +946,53 @@ def sanitize_caller_label(value: Any) -> Optional[str]:
     if not candidate or not CALLER_LABEL_RE.match(candidate):
         return None
     return candidate
+
+
+def sanitize_chat_type(value: Any) -> Optional[str]:
+    """The chat-type header value, or None when it is unusable.
+
+    A closed character set (platform/source identifiers such as ``discord``,
+    ``cli``, ``cronjob``) rather than free text: anything outside it, or an
+    empty or non-string value, is ignored — the row keeps no chat type
+    instead of a rewritten one the client did not send.  The transport sends
+    the type un-encoded because it has already passed this same charset.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > CHAT_TYPE_MAX_CHARS:
+        return None
+    if not CHAT_TYPE_RE.match(candidate):
+        return None
+    return candidate
+
+
+def decode_chat_field(value: Any, max_chars: int) -> Optional[str]:
+    """Decode a percent-encoded chat header value, or None when unusable.
+
+    Ids and names are platform text (a Matrix room id carries ``!`` and
+    ``:``; a chat name can be any Unicode), so they travel UTF-8
+    percent-encoded and are decoded here with ``errors="strict"`` — a value
+    that does not decode cleanly, decodes to control characters, exceeds
+    *max_chars*, or decodes to nothing is ignored, never repaired: the
+    ledger would rather record an honest Unknown than half a name.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > max_chars * 9 + 16:
+        return None
+    try:
+        decoded = unquote(candidate, errors="strict")
+    except UnicodeDecodeError:
+        return None
+    decoded = decoded.strip()
+    if not decoded or len(decoded) > max_chars:
+        return None
+    for ch in decoded:
+        if ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F:
+            return None
+    return decoded
 
 
 # The Claude Code CLI names itself "claude-cli/<version> …" on its
@@ -1396,7 +1499,11 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
 
         Both caller headers are dropped too: the token is a credential for
         *this* proxy and the label names the calling harness — neither is
-        something a provider should ever see.
+        something a provider should ever see.  The chat-identity headers are
+        dropped for the same reason: they describe *who is chatting with the
+        harness*, ledger-only attribution a provider has no business seeing.
+        Every drop is by lowercased name, so a malformed or undecodable value
+        is stripped exactly like a valid one.
         """
         connection_tokens = {
             token.strip().lower()
@@ -1411,6 +1518,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 "content-length",
                 CALLER_TOKEN_HEADER.lower(),
                 CALLER_LABEL_HEADER.lower(),
+                CHAT_TYPE_HEADER.lower(),
+                CHAT_ID_HEADER.lower(),
+                CHAT_NAME_HEADER.lower(),
             }
         )
         forwarded = []
@@ -1441,6 +1551,25 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         key-manager mode, and it never decides whether a request is allowed.
         """
         return sanitize_caller_label(self.headers.get(CALLER_LABEL_HEADER))
+
+    def _presented_chat_identity(
+        self,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """``(chat_type, chat_id, chat_name)`` this request arrived with.
+
+        Unusable values are dropped field-by-field (an honest Unknown per
+        field), independently of the caller resolution: a chat identity is
+        recorded whether or not key-manager mode is on, and never gates the
+        request — it only names the row.
+        """
+        chat_type = sanitize_chat_type(self.headers.get(CHAT_TYPE_HEADER))
+        chat_id = decode_chat_field(
+            self.headers.get(CHAT_ID_HEADER), CHAT_ID_MAX_CHARS
+        )
+        chat_name = decode_chat_field(
+            self.headers.get(CHAT_NAME_HEADER), CHAT_NAME_MAX_CHARS
+        )
+        return chat_type, chat_id, chat_name
 
     def _authenticate_caller(
         self, key_store: KeyStore
@@ -1482,6 +1611,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         status: int,
         started: float,
         caller: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_name: Optional[str] = None,
     ) -> None:
         """Ledger row for a request that never left the proxy.
 
@@ -1500,6 +1632,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 outcome=OUTCOME_REJECTED,
                 usage_complete=USAGE_MISSING,
                 caller=caller,
+                chat_type=chat_type,
+                chat_id=chat_id,
+                chat_name=chat_name,
             )
         except sqlite3.Error as exc:
             logger.error("failed to record usage row: %s", redact_text(str(exc)))
@@ -1549,6 +1684,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         label = self._presented_caller_label()
         ua_caller = caller_label_from_user_agent(self.headers.get("User-Agent"))
         caller: Optional[str] = None
+        chat_type, chat_id, chat_name = self._presented_chat_identity()
         managed_key: Optional[str] = None
         managed_position = -1
         route_key_count = 0
@@ -1564,6 +1700,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     status=401,
                     started=started,
                     caller=caller or label,
+                    chat_type=chat_type,
+                    chat_id=chat_id,
+                    chat_name=chat_name,
                 )
                 return
         if caller is None:
@@ -1595,6 +1734,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 status=401,
                 started=started,
                 caller=UNATTRIBUTED_CALLER,
+                chat_type=chat_type,
+                chat_id=chat_id,
+                chat_name=chat_name,
             )
             return
 
@@ -1776,6 +1918,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     outcome=outcome,
                     usage_complete=completeness,
                     caller=caller,
+                    chat_type=chat_type,
+                    chat_id=chat_id,
+                    chat_name=chat_name,
                 )
             except sqlite3.Error as exc:
                 logger.error("failed to record usage row: %s", redact_text(str(exc)))
