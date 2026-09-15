@@ -450,6 +450,27 @@ def brand_shade(color: str, step: int) -> str:
     return "#{:02x}{:02x}{:02x}".format(*channels)
 
 
+def brand_step_map(models: list[str]) -> dict[str, int]:
+    """Shade step for each model: its index among its provider's models,
+    sorted by name — a function of the model's own identity alone, so the
+    shade is stable wherever the model appears.  The donut builds this over
+    its own slice list, the browser's hourly chart over its whole visible
+    window (brandShadeSteps/chartShadeMap in the page JS, mirrored exactly):
+    one rule on both sides, so the two views agree whenever they show the
+    same model set.  (Counting repeats in ring order instead would not —
+    ring order is tokens-desc, not name order.)"""
+    by_provider: dict[str, list[str]] = {}
+    for model in models:
+        key = provider_key(model)
+        if key:
+            by_provider.setdefault(key, []).append(model)
+    steps: dict[str, int] = {}
+    for names in by_provider.values():
+        for i, name in enumerate(sorted(names)):
+            steps[name] = i
+    return steps
+
+
 def _pick(sql_all: str, sql_since: str, since_ts: str | None) -> tuple[str, tuple[Any, ...]]:
     """Choose the static statement for this window and bind its parameter."""
     if since_ts is None:
@@ -938,24 +959,21 @@ def slice_color(index: int) -> str:
     return MODEL_COLORS[index] if index < len(MODEL_COLORS) else MODEL_OTHER_COLOR
 
 
-def slice_fill(slices: list[dict[str, Any]], index: int) -> str:
+def slice_fill(slices: list[dict[str, Any]], index: int, steps: dict[str, int]) -> str:
     """Slice colour: the model's provider brand when known, the rank palette
     when not, and the neutral grey for the folded "other" bucket.  A brand
-    repeated in the ring shades toward the surface (brand_shade) so two
-    same-provider slices stay told apart — mirrored in the browser JS
-    (sliceFill) for the canvas and the re-rendered legend."""
+    repeated in the ring shades toward the surface (brand_shade) at the
+    model's own name-sorted step — ``steps`` is brand_step_map over this
+    ring's models, the same rule the browser chart's window-wide map uses,
+    so both views agree when the model sets match.  Mirrored in the browser
+    JS (sliceFill) for the canvas and the re-rendered legend."""
     model = slices[index]["model"]
     if model == "other":
         return MODEL_OTHER_COLOR
     key = provider_key(model)
     if not key:
         return slice_color(index)
-    repeat = sum(
-        1
-        for s in slices[:index]
-        if s["model"] != "other" and provider_key(s["model"]) == key
-    )
-    return brand_shade(PROVIDER_BRANDS[key]["color"], repeat)
+    return brand_shade(PROVIDER_BRANDS[key]["color"], steps.get(model, 0))
 
 
 def fmt_pct(part: int, total: int) -> str:
@@ -969,9 +987,10 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
     """Legend body: swatch, brand logo, model, tokens, share — colour never
     carries it alone."""
     total = sum(s["tokens"] for s in slices)
+    steps = brand_step_map([s["model"] for s in slices if s["model"] != "other"])
     items = "".join(
         "<li>"
-        f'<span class="swatch" style="background:{slice_fill(slices, i)}"></span>'
+        f'<span class="swatch" style="background:{slice_fill(slices, i, steps)}"></span>'
         f'<span class="name">{model_name_html(s["model"])}</span>'
         f'<span class="num">{esc(fmt_stat(s["tokens"]))}</span>'
         f'<span class="pct">{esc(fmt_pct(s["tokens"], total))}</span>'
@@ -1247,6 +1266,17 @@ JS = r"""
 
   function setText(id, text) { var node = $(id); if (node) node.textContent = text; }
 
+  /* Prototype-safe own-property test: every plain-object lookup keyed by a
+     DB-derived string (a model name) goes through this, so a model literally
+     named "constructor" or "toString" can never resolve through
+     Object.prototype.  The brand/harness tables (PROVIDER_EXACT, PROVIDER_HEXES,
+     PROVIDER_LOGOS, PROVIDER_GLYPHS, HARNESS_HEX, …) are safe without it
+     because their keys reach them only via providerKey()/harnessKey(), whose
+     results are the author-controlled key strings. */
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
   function fmtCompact(value) {
     var n = Number(value) || 0;
     var steps = [[1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
@@ -1363,11 +1393,14 @@ JS = r"""
     openrouter: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>'
   };
 
-  /* same longest-prefix, case-insensitive match as the server's provider_key */
+  /* same longest-prefix, case-insensitive match as the server's provider_key;
+     the exact table is consulted own-property-only, so prototype names
+     ("constructor", "toString", …) fall through to the prefixes — and then
+     to no brand at all — instead of resolving through Object.prototype */
   function providerKey(model) {
     if (!model) return null;
     var name = String(model).toLowerCase();
-    if (PROVIDER_EXACT[name]) return PROVIDER_EXACT[name];
+    if (hasOwn(PROVIDER_EXACT, name)) return PROVIDER_EXACT[name];
     for (var i = 0; i < PROVIDER_PREFIXES.length; i++) {
       if (name.indexOf(PROVIDER_PREFIXES[i][0]) === 0) return PROVIDER_PREFIXES[i][1];
     }
@@ -1397,6 +1430,35 @@ JS = r"""
     var t = i < STEPS.length ? STEPS[i]
       : STEPS[STEPS.length - 1] * Math.pow(0.75, i - STEPS.length + 1);
     return mixHex(hex, CARD_SURFACE, t);
+  }
+
+  /* deterministic name order — plain code-point comparison, the twin of the
+     server's sorted(), so both sides build identical step maps */
+  function nameOrder(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+
+  /* A model's brand-shade step: its index among its provider's models,
+     sorted by name — a function of the model's own identity alone, so the
+     shade is stable wherever the model appears.  The hourly chart builds
+     this over every model visible in the window (chartShadeMap, cached in
+     modelShadeSteps), the donut over its own slice list (donutShadeSteps):
+     one rule, so whenever the two views show the same model set they
+     resolve the same steps — and therefore the same shades.  (Counting
+     repeats in ring order instead would not agree: ring order is
+     tokens-desc, not name order.)  Server twin: brand_step_map. */
+  function brandShadeSteps(models) {
+    var byProvider = {};
+    var steps = {};
+    models.forEach(function (m) {
+      var key = providerKey(m);
+      if (!key) return;
+      if (!hasOwn(byProvider, key)) byProvider[key] = [];
+      byProvider[key].push(m);
+    });
+    Object.keys(byProvider).forEach(function (key) {
+      var names = byProvider[key].sort(nameOrder);
+      for (var i = 0; i < names.length; i++) steps[names[i]] = i;
+    });
+    return steps;
   }
 
   /* coloured logo span for a provider key — the markup is the static,
@@ -1543,19 +1605,27 @@ JS = r"""
 
   function sliceColor(i) { return i < DN.colors.length ? DN.colors[i] : DN.other; }
 
+  /* the donut's step map: brandShadeSteps over this ring's own models.  The
+     slice list is the stable set here, and the name-sorted rule is the same
+     one the chart's window-wide map uses, so the two views agree whenever
+     they show the same models */
+  function donutShadeSteps(slices) {
+    return brandShadeSteps(slices
+      .filter(function (s) { return s.model !== 'other'; })
+      .map(function (s) { return s.model; }));
+  }
+
   /* provider brand colour, rank palette when the provider is unknown, neutral
      grey for the folded "other" bucket — and same-brand repeats shade toward
-     the surface.  Server twin: slice_fill */
-  function sliceFill(slices, i) {
+     the surface at each model's own name-sorted step (steps: donutShadeSteps
+     over this ring, built once per render).  Server twin: slice_fill */
+  function sliceFill(slices, i, steps) {
     var model = slices[i].model;
     if (model === 'other') return DN.other;
     var key = providerKey(model);
     if (!key) return sliceColor(i);
-    var repeat = 0;
-    for (var k = 0; k < i; k++) {
-      if (slices[k].model !== 'other' && providerKey(slices[k].model) === key) repeat++;
-    }
-    return brandShade(PROVIDER_HEXES[key], repeat);
+    var step = hasOwn(steps, model) ? steps[model] : 0;
+    return brandShade(PROVIDER_HEXES[key], step);
   }
 
   function pctLabel(part, total) {
@@ -1588,6 +1658,7 @@ JS = r"""
     var rOut = DN.size / 2 - 4, rIn = rOut - DN.ring;
     var mono = 'ui-monospace, Menlo, Consolas, monospace';
     var a0 = -Math.PI / 2;
+    var shadeSteps = donutShadeSteps(slices);
 
     slices.forEach(function (s, i) {
       var ang = total > 0 ? (s.tokens / total) * Math.PI * 2 : 0;
@@ -1596,7 +1667,7 @@ JS = r"""
       ctx.arc(cx, cy, rOut + (i === donutHover ? 3 : 0), a0, a0 + ang);
       ctx.arc(cx, cy, rIn, a0 + ang, a0, true);
       ctx.closePath();
-      ctx.fillStyle = sliceFill(slices, i);
+      ctx.fillStyle = sliceFill(slices, i, shadeSteps);
       ctx.fill();
       /* 2 px surface ring = the gap between neighbouring slices */
       ctx.strokeStyle = DN.surface;
@@ -1625,7 +1696,7 @@ JS = r"""
       slices.forEach(function (s, i) {
         var li = el('li');
         var sw = el('span', 'swatch');
-        sw.style.background = sliceFill(slices, i);
+        sw.style.background = sliceFill(slices, i, shadeSteps);
         li.appendChild(sw);
         var logo = brandLogoEl(providerKey(s.model));
         if (logo) li.appendChild(logo);
@@ -1714,6 +1785,7 @@ JS = r"""
   var chartGeom = null;
   var hoverIdx = -1;
   var chartMode = 'harness';   /* breakdown dimension: 'harness' | 'model' | 'inout' | 'cache' */
+  var modelShadeSteps = {};    /* window-wide brand-shade steps for model mode — chartShadeMap */
 
   function barTopPath(ctx, x, y, w, h) {
     var r = Math.min(3, w / 2, h);
@@ -1767,13 +1839,16 @@ JS = r"""
   }
 
   /* segment colours for one bar: the harness palette in harness mode; in
-     model mode each model's provider brand (PROVIDER_HEXES), where a brand
-     repeated in this bar is shaded toward the surface (brandShade — never
-     repeating, so uncapped hourly stacks stay told apart) and a model with
-     no provider still hashes into MODEL_HEXES, a slot already claimed by an
-     earlier (alphabetical) model or a brand's first slice advanced +1 so
-     stacked neighbours stay distinguishable; the in/out and cache modes
-     have fixed two-slot palettes */
+     model mode each model's provider brand (PROVIDER_HEXES), shaded toward
+     the surface (brandShade — never repeating, so uncapped hourly stacks
+     stay told apart) at the model's OWN step from the window-wide step map
+     (modelShadeSteps, built by chartShadeMap before the render), so a
+     model's shade is the same in every hour column no matter which
+     same-provider siblings share the bucket; a model with no provider still
+     hashes into MODEL_HEXES, a slot already claimed by an earlier
+     (alphabetical) model or a brand's first slice advanced +1 so stacked
+     neighbours stay distinguishable; the in/out and cache modes have fixed
+     two-slot palettes */
   function segmentHexes(segs) {
     var out = {};
     if (chartMode === 'inout' || chartMode === 'cache') {
@@ -1786,14 +1861,12 @@ JS = r"""
       return out;
     }
     var taken = [];
-    var brandSeen = {};
     var brandTaken = [];  /* brandShade(step 0) is the pure brand hex — keep
                              the neutral palette off those slots too */
     segs.forEach(function (s) {
       var key = providerKey(s.name);
       if (key) {
-        var step = brandSeen[key] || 0;
-        brandSeen[key] = step + 1;
+        var step = hasOwn(modelShadeSteps, s.name) ? modelShadeSteps[s.name] : 0;
         out[s.name] = brandShade(PROVIDER_HEXES[key], step);
         if (step === 0) {
           for (var b = 0; b < MODEL_HEXES.length; b++) {
@@ -1815,6 +1888,23 @@ JS = r"""
       out[s.name] = MODEL_HEXES[idx];
     });
     return out;
+  }
+
+  /* Window-wide step map for model mode: brandShadeSteps over every model
+     name visible anywhere in the current chart window, cached in
+     modelShadeSteps for the render (and the tooltip's segmentHexes call).
+     A model's shade must depend only on its own identity, so an hour where
+     gpt-4 is absent must not promote gpt-5 from its shaded step to the pure
+     brand hex.  The donut builds the same map over its own slice list
+     (donutShadeSteps), so the two views agree when the sets match */
+  function chartShadeMap(buckets) {
+    var seen = {};
+    (buckets || []).forEach(function (b) {
+      (b && b.series ? b.series : []).forEach(function (s) {
+        if ((Number(s.tokens) || 0) > 0) seen[s.model || 'unknown'] = true;
+      });
+    });
+    return brandShadeSteps(Object.keys(seen));
   }
 
   /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness — textContent
@@ -1890,6 +1980,10 @@ JS = r"""
     var tokens = buckets.map(function (b) { return Number(b.tokens) || 0; });
     var peak = 0;
     tokens.forEach(function (t) { if (t > peak) peak = t; });
+
+    /* model mode: refresh the window-wide step map before any column reads
+       it, so every hour resolves the same per-model shades */
+    if (chartMode === 'model') modelShadeSteps = chartShadeMap(buckets);
 
     /* y gridlines + tick labels */
     ctx.font = '11px ' + 'ui-monospace, Menlo, Consolas, monospace';
