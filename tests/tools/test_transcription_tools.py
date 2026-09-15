@@ -1203,12 +1203,13 @@ class TestRunCommandSttIdleTimeout:
         from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
-        # First tick is emitted immediately and the rest every 50ms — the
-        # total runtime (~400ms) exceeds the 250ms idle window, so passing
-        # depends on the progress extension. The immediate first tick also
-        # keeps the test honest on Windows, where process spawn alone can
-        # exceed a tiny idle window and previously raised TimeoutExpired
-        # before the first chunk was ever read (with all child output intact).
+        # The de-flake is budget, not ordering: the first tick was always
+        # printed before the first sleep. What changed is the idle window
+        # (0.1s -> 0.25s, 5x the 50ms tick period) so process spawn latency
+        # under loaded CI or on Windows can no longer eat the whole window
+        # before the first stderr chunk is read, plus a longer heartbeat
+        # sequence whose ~400ms runtime still exceeds the idle window, so a
+        # pass still proves the progress extension.
         script.write_text(
             "\n".join([
                 "import sys, time",
