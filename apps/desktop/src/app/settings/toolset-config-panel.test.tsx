@@ -68,6 +68,12 @@ vi.mock('@/hermes', () => ({
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
   saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfigRecord(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  // use-config-record keys its query cache by scope via profileScopeKey; a
+  // scoped panel reaches it, so the full-replacement mock must provide it.
+  profileScopeKey: (scope?: { profile?: string; connectionId?: string } | string) =>
+    typeof scope === 'object' && scope
+      ? `${scope.connectionId ?? ''}::${scope.profile ?? 'default'}`
+      : (scope ?? 'default'),
   // @/store/profile (pulled in transitively via use-config-record's
   // normalizeProfileKey import) calls this at module-init; the full-replacement
   // mock must provide it or the module graph throws on load.
@@ -204,6 +210,40 @@ describe('ToolsetConfigPanel', () => {
     // Unscoped panel (no Capabilities override) → profile rides as undefined,
     // preserving the active-profile default. A scoped panel forwards its scope.
     expect(saveHermesConfigRecord.mock.calls.at(-1)?.[1]).toBeUndefined()
+  })
+
+  it('autosaves the inline voice fields into the profile the panel is scoped to', async () => {
+    // The bug: a scoped Capabilities panel (scope selector → profile B) rendered
+    // these fields unscoped, so editing B's voice PUT the ACTIVE profile's config.
+    getToolsetConfig.mockResolvedValue(
+      config({
+        active_provider: 'OpenAI TTS',
+        providers: [
+          {
+            name: 'OpenAI TTS',
+            badge: 'paid',
+            tag: 'High quality voices',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            tts_provider: 'openai'
+          }
+        ]
+      })
+    )
+
+    const scope = { profile: 'scout', connectionId: 'gw-2' }
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} profile={scope} toolset="tts" />)
+
+    fireEvent.change(await screen.findByDisplayValue('alloy'), { target: { value: 'marin' } })
+    await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+    const [saved, forwarded] = saveHermesConfigRecord.mock.calls.at(-1) as [
+      Record<string, Record<string, Record<string, string>>>,
+      unknown
+    ]
+    expect(saved.tts.openai.voice).toBe('marin')
+    expect(forwarded).toEqual(scope)
   })
 
   it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {
