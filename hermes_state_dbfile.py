@@ -194,7 +194,11 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     holders: List[Tuple[int, str]] = []
     watched = _watched_sqlite_sidecar_paths(db_path)
     try:
+        from hermes_state_lockguard import owned_fds
+        own_pid, guard_fds = os.getpid(), owned_fds()
         for pid, target, fd_path in _iter_proc_fd_targets():
+            if pid == own_pid and int(fd_path.rsplit("/", 1)[1]) in guard_fds:
+                continue  # our lock guard's descriptor, not a connection on a dead generation
             canonical = _canonical_sqlite_path(target)
             if (" (deleted)" in target and canonical in watched
                     and _fd_is_truly_unlinked(fd_path, watched[canonical])):
