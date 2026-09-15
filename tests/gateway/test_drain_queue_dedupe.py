@@ -27,6 +27,7 @@ from gateway.run_drain_queue import (
     claimed_drain_queue_path,
     drain_queue_path,
     queue_drain_refused_message,
+    record_drain_event,
     replay_drain_queue,
     serialize_drain_event,
 )
@@ -341,3 +342,71 @@ def test_marker_reaches_model_text_for_marked_queued_event():
     )
     assert fresh_text is not None
     assert REDELIVERY_MARKER not in fresh_text.lower()
+
+
+# ── (e) internal synthetic events exempt from message-id dedupe ──────────────
+
+
+def _internal_text_event(text: str, msg_id: str) -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=MagicMock(chat_id="123", platform=Platform.TELEGRAM, profile=None),
+        message_id=msg_id,
+        internal=True,
+    )
+
+
+def test_enqueue_fifo_keeps_distinct_internal_events_sharing_reply_anchor_id():
+    """Two background completions in one turn share the spawning turn's
+    reply-anchor message id; both must queue as distinct turns."""
+    runner = _bare_runner()
+    adapter = _StubAdapter()
+    session_key = "telegram:user:internal-fifo"
+    runner._enqueue_fifo(session_key, _text_event("holding the slot", "m-holder"), adapter)
+
+    runner._enqueue_fifo(
+        session_key, _internal_text_event("job A completed", "m-anchor"), adapter
+    )
+    runner._enqueue_fifo(
+        session_key, _internal_text_event("job B completed", "m-anchor"), adapter
+    )
+
+    queued = runner._session_state(session_key).conversation.queued_events
+    assert len(queued) == 2
+    assert {e.text for e in queued} == {"job A completed", "job B completed"}
+
+
+def test_enqueue_fifo_still_dedupes_platform_events_with_same_message_id():
+    runner = _bare_runner()
+    adapter = _StubAdapter()
+    session_key = "telegram:user:platform-dedupe"
+    first = _text_event("original copy", "m-dup")
+    first.internal = False
+    runner._enqueue_fifo(session_key, first, adapter)
+
+    redelivery = _text_event("redelivered copy", "m-dup")
+    redelivery.internal = False
+    runner._enqueue_fifo(session_key, redelivery, adapter)
+
+    assert runner._queue_depth(session_key, adapter=adapter) == 1
+    survivor = adapter._pending_messages[session_key]
+    assert survivor is first
+    assert survivor.redelivered is True
+
+
+def test_record_drain_event_keeps_distinct_internal_events_sharing_reply_anchor_id():
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="internal-drain-chat")
+    session_key = runner._session_key_for_source(source)
+    event_a = _event("job A completed", source=source, message_id="m-anchor")
+    event_a.internal = True
+    event_b = _event("job B completed", source=source, message_id="m-anchor")
+    event_b.internal = True
+
+    assert record_drain_event(runner, session_key, event_a) is True
+    assert record_drain_event(runner, session_key, event_b) is True
+
+    records = _snapshot_events()
+    assert len(records) == 2
+    assert all(r["event"]["message_id"] == "m-anchor" for r in records)
