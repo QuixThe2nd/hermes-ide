@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -753,13 +754,18 @@ _CHROMIUM_FAMILY_CDP_MARKERS = (
 )
 
 
-def _read_json_http(url: str, timeout: float):
-    """Return parsed JSON from ``url``, or None on any failure."""
+def _read_json_http(url: str, timeout: float, opener=None):
+    """Return parsed JSON from ``url``, or None on any failure.
+
+    ``opener`` (optional) routes the fetch through a prebuilt
+    ``urllib.request.OpenerDirector`` — used by loopback readiness probes to
+    bypass proxies (#110565)."""
     import json
     import urllib.request
 
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        open_call = opener.open if opener is not None else urllib.request.urlopen
+        with open_call(url, timeout=timeout) as resp:
             if not (200 <= getattr(resp, "status", 200) < 300):
                 return None
             raw = resp.read()
@@ -814,7 +820,12 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     if scheme not in {"http", "https"} or not parsed.netloc:
         return False
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
-    version_payload = _read_json_http(f"{root}/json/version", timeout)
+    # Loopback readiness must not route through getproxies() (env or macOS system
+    # proxy, #110565). The fork decides identity from /json/version only (never
+    # falls through to /json), so the bypass rides the version fetch itself.
+    handlers = [urllib.request.ProxyHandler({})] if is_loopback_host(parsed.hostname) else []
+    opener = urllib.request.build_opener(*handlers)
+    version_payload = _read_json_http(f"{root}/json/version", timeout, opener=opener)
     if version_payload is not None:
         # Identity is decided by /json/version. Do not fall through to
         # /json when the version endpoint answered with a non-browser CDP.
