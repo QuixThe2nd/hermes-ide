@@ -921,15 +921,9 @@ def _contains_unsafe_gateway_action(
             read_remote_script=read_remote_script,
         )
 
-    # The referenced-script and `-c` payload walks must see the same masked view the direct
-    # scan sees (#110422): `_direct_lifecycle_scan` masks provably-inert heredoc bodies via
-    # `strip_inert_heredoc_bodies`, but the walks below ran on the unmasked command. A path (or an
-    # `sh -c` payload) inside such a body is never shell-executed, so walking it is a pure false
-    # positive — e.g. a >1 MiB path mentioned in a `python3 - <<'PY'` body fails closed and
-    # hard-blocks an innocent command. The stripper only masks under its conservative contract
-    # (quoted delimiters, exact terminator, single simple command, allowlisted consumer, no command
-    # substitution); anything ambiguous stays visible and fail-closed, and masking is a no-op when
-    # the command has no `<<`.
+    # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
+    # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an
+    # oversized data file mentioned there otherwise fails closed as a "script".
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
     walk_command = strip_inert_heredoc_bodies(command)

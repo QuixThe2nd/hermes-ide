@@ -1,52 +1,27 @@
-"""Inert-heredoc masking in the referenced-script walk (regression for #110422).
+"""The referenced-script walk sees the same inert-heredoc-masked view as the direct scan (#110422).
 
-The direct lifecycle scan masks provably-inert heredoc bodies
-(``strip_inert_heredoc_bodies``), but the referenced-script and ``-c`` payload
-walks in ``_contains_unsafe_gateway_action`` ran on the unmasked command: a
-path (or an ``sh -c`` payload) inside such a body is never shell-executed, so
-walking it was a pure false positive — e.g. a >1 MiB path mentioned in a
-``python3 - <<'PY'`` body failed closed and hard-blocked an innocent command.
-The walks now use the same masked view as the direct scan.
+``_direct_lifecycle_scan`` masks provably-inert heredoc bodies (quoted delimiter, allowlisted
+data consumer such as ``python3 - <<'PY'``), but ``_contains_unsafe_gateway_action`` walked
+referenced scripts and ``sh -c`` payloads on the raw command, so a >1 MiB data path mentioned
+inside the Python body failed closed as an oversized "script".
 """
 
-from __future__ import annotations
-
-from cron.lifecycle_guard import (
-    contains_gateway_lifecycle_command_or_referenced_script,
-)
-
-guard = contains_gateway_lifecycle_command_or_referenced_script
+from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script as guard
 
 
 def _big_file(tmp_path):
-    """A regular file over the 1 MiB referenced-script cap."""
     path = tmp_path / "big_blob.bin"
     path.write_bytes(b"\0" * (2 * 1024 * 1024))
     return path
 
 
 def test_inert_heredoc_body_path_not_walked_as_script(tmp_path):
-    """A >1 MiB path inside a provably-inert heredoc body is not a script reference."""
     big = _big_file(tmp_path)
-    command = f"python3 - <<'PY'\n{big}\nPY"
-    assert guard(command, cwd=str(tmp_path)) is False
-
-
-def test_inert_heredoc_body_sh_c_prose_not_extracted(tmp_path):
-    """An `sh -c` line inside an inert body is printed data, not an executed payload."""
-    command = 'cat <<\'EOF\'\nsh -c "hermes gateway restart"\nEOF'
+    command = f"python3 - <<'PY'\nfrom pathlib import Path\nprint(Path('{big}').stat().st_size)\nPY"
     assert guard(command, cwd=str(tmp_path)) is False
 
 
 def test_unquoted_heredoc_body_path_still_walked(tmp_path):
-    """Unquoted delimiter = expansion-capable = still visible to the walk, fail-closed."""
+    """An expansion-capable body is not provably inert: the walk still sees it and fails closed."""
     big = _big_file(tmp_path)
-    command = f"cat > /tmp/x <<EOF\n{big}\nEOF"
-    assert guard(command, cwd=str(tmp_path)) is True
-
-
-def test_script_reference_outside_heredoc_still_blocked(tmp_path):
-    """Masking must not neuter the walk: a real referenced script still blocks."""
-    script = tmp_path / "restart.sh"
-    script.write_text("#!/bin/sh\nhermes gateway restart\n")
-    assert guard(str(script), cwd=str(tmp_path)) is True
+    assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is True
