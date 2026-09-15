@@ -1487,6 +1487,10 @@ DEFAULT_CONFIG = {
         "project_discovery": True,
         # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
+        # Skill names pinned as fully loaded in every new session (CLI, TUI, gateway, cron, API).
+        # Resolved once when the agent's prompt is first built; missing/disabled names warn and
+        # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
+        "auto_load": [],
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
