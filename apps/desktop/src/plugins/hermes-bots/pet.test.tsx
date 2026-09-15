@@ -1,16 +1,15 @@
 /**
- * Pet tiles: frame 0 of a petdex spritesheet, cropped server-side by the
- * gateway's `pet.thumb` RPC and cached per slug.
+ * Pet tiles: frame 0 of a petdex spritesheet, extracted once and cached.
  *
- * Why the tile goes through the gateway rather than fetching the CDN sheet
- * itself: a locally hatched pet has no manifest entry, so `pet.gallery` reports
- * an EMPTY spritesheetUrl — a client-side fetch could never render or select
- * it ("Could not load that pet"). `pet.thumb` reads the installed sheet off
- * disk, so the slug alone is enough.
+ * A "spritesheet" is the FULL animation sheet (1536×1872 webp, ~2MB, an 8×9
+ * grid) — using it directly as an <img> downloads megabytes per tile and shows
+ * the sheet squashed. So each sheet is fetched once, cropped to frame 0,
+ * downscaled, and the resulting data URL is cached per URL.
  *
- * The regression the cache created: a FAILED load was left parked in the
- * cache as a resolved-null promise, so one blip poisoned that pet for the rest
- * of the session. A failure must be evicted; a success must not be re-requested.
+ * The regression the cache created: a FAILED fetch was left parked in the
+ * cache as a resolved-null promise, so one network blip poisoned that pet for
+ * the rest of the session — the tile never recovered, not even on reopen. A
+ * failure must be evicted; a success must not be refetched.
  */
 
 import { fireEvent, render, waitFor } from '@testing-library/react'
@@ -48,18 +47,13 @@ vi.mock('./i18n', () => ({
 vi.mock('./shared', () => ({ ID: 'hermes-bots' }))
 
 const SHEET = 'https://pets.example/a.webp'
-const ICON = 'data:image/png;base64,ok'
 
-/** Every `pet.thumb` call, so the cache behaviour is observable. */
-const thumbs: Array<{ slug: string; url: string }> = []
+/** Record every fetch so the cache behaviour is observable. */
+const fetches: Array<{ init?: RequestInit; url: string }> = []
 
-function stubThumb(handler: () => Promise<{ dataUri?: string; ok: boolean }>) {
-  hostMock.request.mockImplementation(async (method: string, params: { slug: string; url: string }) => {
-    if (method !== 'pet.thumb') {
-      throw new Error(`unexpected RPC ${method}`)
-    }
-
-    thumbs.push(params)
+function stubFetch(handler: () => Promise<unknown>) {
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    fetches.push({ init, url })
 
     return handler()
   })
@@ -73,17 +67,23 @@ async function loadPetTab() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  thumbs.length = 0
+  fetches.length = 0
   useQueryMock.mockReturnValue({ data: { pets: [{ displayName: 'Axolotl', slug: 'axolotl', spritesheetUrl: SHEET }] } })
-  stubThumb(async () => ({ ok: true, dataUri: ICON }))
+  vi.stubGlobal('createImageBitmap', async () => ({ close: () => undefined }))
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    drawImage: () => undefined
+  } as unknown as CanvasRenderingContext2D)
+  vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,ok')
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
 describe('the pet gallery', () => {
   it('reserves paint space around boundary tiles inside the bounded scroller', async () => {
+    stubFetch(async () => ({ blob: async () => new Blob() }))
     const PetTab = await loadPetTab()
     const view = render(<PetTab image={null} onImage={vi.fn()} />)
     await waitFor(() => expect(view.container.querySelector('img')).toBeTruthy())
@@ -112,12 +112,13 @@ describe('the pet gallery', () => {
         }))
       }
     })
+    stubFetch(async () => ({ blob: async () => new Blob() }))
     const PetTab = await loadPetTab()
     const onImage = vi.fn()
     const view = render(<PetTab image={null} onImage={onImage} />)
     const first = view.getByText('Pet 0').closest('button')!
     fireEvent.click(first)
-    await waitFor(() => expect(onImage).toHaveBeenCalledWith(ICON))
+    await waitFor(() => expect(onImage).toHaveBeenCalledWith('data:image/png;base64,ok'))
     const scroller = first.parentElement!.parentElement!
     Object.defineProperties(scroller, {
       clientHeight: { value: 220 },
@@ -137,56 +138,75 @@ describe('the pet gallery', () => {
   })
 })
 
-describe('the pet thumb cache', () => {
-  it('selects a locally hatched pet that has no spritesheet URL', async () => {
-    // Generator-hatched pets are absent from the petdex manifest, so the
-    // gallery reports spritesheetUrl: "". The gateway crops the installed
-    // sheet off disk — the slug is the identity, not the URL.
-    useQueryMock.mockReturnValue({
-      data: { pets: [{ displayName: 'Mine', installed: true, slug: 'mine', spritesheetUrl: '' }] }
-    })
-
-    const PetTab = await loadPetTab()
-    const onImage = vi.fn()
-    const view = render(<PetTab image={null} onImage={onImage} />)
-
-    fireEvent.click(view.getByText('Mine').closest('button')!)
-    await waitFor(() => expect(onImage).toHaveBeenCalledWith(ICON))
-    expect(thumbs.length).toBeGreaterThan(0)
-    expect(thumbs.every(call => call.slug === 'mine')).toBe(true)
-    expect(hostMock.notify).not.toHaveBeenCalled()
-  })
-
-  it('never leaves a failed load parked in the cache', async () => {
-    stubThumb(async () => {
-      throw new Error('gateway')
+describe('the sprite-frame cache', () => {
+  it('never leaves a failed fetch parked in the cache', async () => {
+    stubFetch(async () => {
+      throw new Error('network')
     })
 
     const PetTab = await loadPetTab()
     const first = render(<PetTab image={null} onImage={vi.fn()} />)
 
-    await waitFor(() => expect(thumbs).toHaveLength(1))
+    await waitFor(() => expect(fetches).toHaveLength(1))
+    // The fetch is abortable: a hung sheet must not hold a slot forever.
+    expect(fetches[0].init?.signal).toBeTruthy()
+
     first.unmount()
 
     const second = render(<PetTab image={null} onImage={vi.fn()} />)
 
     // Reopening retries rather than serving the poisoned null.
-    await waitFor(() => expect(thumbs).toHaveLength(2))
+    await waitFor(() => expect(fetches).toHaveLength(2))
     expect(second.container.querySelector('img')).toBeNull()
   })
 
-  it('requests a successful thumb once and reuses it across mounts', async () => {
+  it('fetches a successful sheet once and reuses the extracted frame', async () => {
+    stubFetch(async () => ({ blob: async () => new Blob() }))
+
     const PetTab = await loadPetTab()
     const first = render(<PetTab image={null} onImage={vi.fn()} />)
 
-    await waitFor(() => expect(first.container.querySelector('img')?.getAttribute('src')).toBe(ICON))
-    expect(thumbs).toHaveLength(1)
+    await waitFor(() =>
+      expect(first.container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,ok')
+    )
+    expect(fetches).toHaveLength(1)
 
     first.unmount()
 
     const second = render(<PetTab image={null} onImage={vi.fn()} />)
 
-    await waitFor(() => expect(second.container.querySelector('img')?.getAttribute('src')).toBe(ICON))
-    expect(thumbs).toHaveLength(1)
+    await waitFor(() =>
+      expect(second.container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,ok')
+    )
+    expect(fetches).toHaveLength(1)
+  })
+
+  it('shares one fetch between tiles that point at the same sheet', async () => {
+    useQueryMock.mockReturnValue({
+      data: {
+        pets: [
+          { displayName: 'Axolotl', slug: 'axolotl', spritesheetUrl: SHEET },
+          { displayName: 'Axolotl (shiny)', slug: 'axolotl-shiny', spritesheetUrl: SHEET }
+        ]
+      }
+    })
+    stubFetch(async () => ({ blob: async () => new Blob() }))
+
+    const PetTab = await loadPetTab()
+    const { container } = render(<PetTab image={null} onImage={vi.fn()} />)
+
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(2))
+    expect(fetches).toHaveLength(1)
+  })
+
+  it('does not fetch for a pet with no spritesheet', async () => {
+    useQueryMock.mockReturnValue({ data: { pets: [{ displayName: 'Ghost', slug: 'ghost', spritesheetUrl: null }] } })
+    stubFetch(async () => ({ blob: async () => new Blob() }))
+
+    const PetTab = await loadPetTab()
+    const { findByText } = render(<PetTab image={null} onImage={vi.fn()} />)
+
+    await findByText('Ghost')
+    expect(fetches).toHaveLength(0)
   })
 })

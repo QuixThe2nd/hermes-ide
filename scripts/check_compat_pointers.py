@@ -92,14 +92,11 @@ def main() -> int:
                     if fac in facades and name in compat[fac]:
                         hits.append(f"{rel}:{node.lineno}: \"{dotted}\" (string patch target)")
     if hits:
-        # The compat layer is PAST its 2026-09-14 removal date; upstream keeps landing code
-        # that imports through the shims it will itself delete. Advisory until the layer is
-        # actually reverted — blocking here fails every PR on inherited sites, not PR content.
-        print("⚠️ in-tree code still imports plugin-compat pointers (layer EXPIRED, removal overdue):")
+        print("❌ in-tree code depends on plugin-compat pointers (scheduled for removal):")
         for h in sorted(set(hits)):
             print("  " + h)
-        print(f"\n{len(set(hits))} site(s). Advisory only — the full revert of the compat layer removes these.")
-        return 0
+        print(f"\n{len(set(hits))} site(s). Import from the defining module instead (see COMPAT_MANIFEST.md).")
+        return 1
     print(f"✅ no in-tree dependency on the {len(entries)} plugin-compat pointers")
     return 0
 

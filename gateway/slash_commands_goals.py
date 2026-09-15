@@ -280,15 +280,14 @@ class GatewayGoalCommandsMixin:
         mgr = LoopManager(session_id=sid)
 
         # New loops capture the event's routing so the idle loop-wakeup watcher can inject ticks
-        # here after a restart; best-effort, empty fields dropped. ``profile`` pins the wakeup to this
-        # session's own bot under multiplex (the watcher must never fire it through the default bot).
+        # here after a restart; best-effort, empty fields dropped.
         route: dict = {}
         try:
             src = event.source
             if src is not None:
                 platform = getattr(src, "platform", "")
                 route = {"platform": platform.value if hasattr(platform, "value") else str(platform or "")}
-                for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name", "profile"):
+                for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name"):
                     route[key] = str(getattr(src, key, "") or "")
                 route = {k: v for k, v in route.items() if v}
         except Exception:

@@ -70,7 +70,8 @@ def server(hermes_home, monkeypatch):
     # _enter_buffered_busy. Clearing the per-session dicts gives the
     # next test a clean slate.
     mod._sessions.clear()
-    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    mod._pending.clear()
+    mod._answers.clear()
 
 
 @pytest.fixture()

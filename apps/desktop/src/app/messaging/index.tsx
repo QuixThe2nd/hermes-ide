@@ -166,18 +166,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
-  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
-  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
-  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
-    if (hotServed) {
-      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
-
-      return
-    }
-
-    setRestartNeeded(true)
-  }, [])
-
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -332,7 +320,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
+      await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
       setPlatforms(
         current =>
           current?.map(row =>
@@ -345,11 +333,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
-      settleAfterUpdate(result.hot_served)
+      setRestartNeeded(true)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: result.hot_served ? m.appliedLive : m.restartToApply
+        message: m.restartToApply
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -368,14 +356,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
+      await updateMessagingPlatform(platform.id, { env }, scopeProfile)
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+      setRestartNeeded(true)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: result.hot_served ? m.connectingLive : m.restartToReconnect
+        message: m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -388,7 +376,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
+      await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -397,7 +385,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+      setRestartNeeded(true)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
@@ -1024,19 +1012,6 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
   const { t } = useI18n()
-
-  // A served secondary's api_server/webhook live on the shared gateway listener under
-  // /p/<profile>/: the state pill says connected, this line says where to point the client.
-  if (platform.ingress_url) {
-    return (
-      <p className="mt-2 text-xs leading-5 text-muted-foreground break-all">
-        {t.messaging.sharedListenerUrl}{' '}
-        <code className="font-mono text-foreground" data-slot="ingress-url">
-          {platform.ingress_url}
-        </code>
-      </p>
-    )
-  }
 
   if (!platform.enabled || platform.state === 'connected') {
     return null

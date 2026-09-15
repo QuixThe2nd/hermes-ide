@@ -459,7 +459,7 @@ class CLIInfoMixin:
         Dispatched from the input loop BEFORE slash routing and before anything is queued for the
         agent, so a bang command never becomes a turn: nothing touches ``conversation_history``,
         zero tokens, role alternation / prompt caching untouched by construction
-        (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
+        (tests/cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
         from cli import _rich_text_from_ansi
@@ -654,16 +654,10 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
-        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
-        try:
-            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
-        except Exception:
-            file_lines = []
-
         print()
         print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
         print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
+        for line in render_context_breakdown_lines(payload, details=details, grid=True):
             print(f"  {line}")
         print()
 
@@ -778,12 +772,9 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_state import SessionDB, _default_db_path
+            from hermes_state import SessionDB
             from agent.insights import InsightsEngine
-            if not _default_db_path().exists():
-                print("  No session data yet.")
-                return
-            db = SessionDB(read_only=True)
+            db = SessionDB()
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))

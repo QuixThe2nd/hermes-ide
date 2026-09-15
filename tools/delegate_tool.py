@@ -24,18 +24,6 @@ import logging
 import re
 
 logger = logging.getLogger(__name__)
-
-# Per-task image forwarding (upstream f3f5c4f): normalization/validation live in
-# delegate_tool_tasks; first-turn routing (native multimodal vs vision_analyze
-# hints) in delegate_tool_child_run. The fork's delegate_tool.py is a monolith,
-# so unlike upstream's re-export block these are used inline, not re-exported
-# for patching tests.
-from tools.delegate_tool_tasks import (  # noqa: E402
-    _MAX_TASK_IMAGES,
-    _coerce_task_images,
-    _normalize_task_images,
-)
-from tools.delegate_tool_child_run import _build_child_goal_message  # noqa: E402
 import os
 import threading
 import time
@@ -3093,14 +3081,6 @@ def _run_single_child(
         # Capture the worker thread so the timeout diagnostic can dump its
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
-        # Per-task images (upstream f3f5c4f): the first user message becomes a
-        # multimodal content list on vision-capable children, or the goal gains
-        # [Image attached ...] hint lines otherwise. Never breaks a spawn.
-        _delegate_images = list(getattr(child, "_delegate_images", None) or [])
-        if _delegate_images:
-            user_message = _build_child_goal_message(goal, _delegate_images, child)
-        else:
-            user_message = goal
 
         def _relay_child_text(delta: str) -> None:
             # Forward the child's streamed reply text up the progress relay so
@@ -3119,7 +3099,7 @@ def _run_single_child(
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=user_message,
+                    user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
                 )
@@ -4041,7 +4021,6 @@ def delegate_agent(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
-    images: Optional[List[str]] = None,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -4239,12 +4218,6 @@ def delegate_agent(
         if batch_error:
             return tool_error(batch_error)
 
-    # Per-task image forwarding (upstream f3f5c4f): validated once up front so
-    # malformed entries fail the whole call before any child is spawned.
-    task_images, images_err = _coerce_task_images(task_list, images)
-    if images_err:
-        return tool_error(images_err)
-
     # T1-24: coerce/validate optional per-task output_schema up front so a
     # malformed schema fails the whole call loudly instead of spawning
     # children that can never satisfy their contract. Runs AFTER the
@@ -4368,14 +4341,6 @@ def delegate_agent(
                 child._delegate_output_schema = _task_schema
             except Exception:
                 logger.debug("Could not attach output schema to child %d", i)
-        # Validated per-task images; absent on image-less tasks, which keep
-        # the text-only goal turn.
-        _t_images = task_images[i] if task_images and i < len(task_images) else None
-        if _t_images:
-            try:
-                child._delegate_images = _t_images
-            except Exception:
-                logger.debug("Could not attach images to child %d", i)
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures
@@ -5406,20 +5371,6 @@ DELEGATE_TASK_SCHEMA = {
                                 "fields you will read."
                             ),
                         },
-                        "images": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Optional images this child must SEE (max 8): "
-                                "local file paths or http(s) URLs — e.g. a "
-                                "screenshot the user sent, a design mock, a "
-                                "chart. Vision-capable children receive the "
-                                "pixels on their first turn; non-vision "
-                                "children get path hints for vision_analyze. "
-                                "Text files do NOT belong here — put paths in "
-                                "'context' instead."
-                            ),
-                        },
                     },
                     "required": ["goal"],
                 },
@@ -5551,7 +5502,6 @@ def _delegate_agent_handler(args: dict, **kw):
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
-        images=args.get("images"),
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),

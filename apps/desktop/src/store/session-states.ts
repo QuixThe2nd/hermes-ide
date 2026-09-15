@@ -272,10 +272,6 @@ export function foregroundSessionScopes(): Set<string> {
   for (const tile of $sessionTiles.get()) {
     addRuntimeScope(tile.runtimeId)
     addRouteScope(tile.ownerRoute)
-
-    if (!tile.ownerRoute && tile.ownerProfile) {
-      scopes.add(normalizeProfileKey(tile.ownerProfile))
-    }
   }
 
   // Create → foreground holds. A hold whose scope the rungs above already
@@ -773,8 +769,6 @@ export interface SessionTile {
   workspaceMode?: WorkspaceMode
   /** Exact opaque owner key for Bot Mode tabs. */
   workspaceOwnerKey?: string
-  /** Legacy profile-pool owner when no registry connection identifies the route. */
-  ownerProfile?: string
   /** Credential-free exact route used to resume this tab after relaunch. */
   ownerRoute?: SessionOwnerRoute
   /** Stable title for hidden relationship chats absent from the Sessions list. */
@@ -782,7 +776,6 @@ export interface SessionTile {
 }
 
 export interface SessionTileWorkspaceScope {
-  ownerProfile?: string
   ownerRoute?: SessionOwnerRoute
   workspaceMode: WorkspaceMode
   workspaceOwnerKey?: string
@@ -808,7 +801,6 @@ type StoredTile = Pick<
   | 'anchor'
   | 'before'
   | 'dir'
-  | 'ownerProfile'
   | 'ownerRoute'
   | 'storedSessionId'
   | 'workspaceMode'
@@ -820,7 +812,6 @@ const toStored = (t: SessionTile): StoredTile => ({
   anchor: t.anchor,
   before: t.before,
   dir: t.dir,
-  ...(t.ownerProfile ? { ownerProfile: t.ownerProfile } : {}),
   ...(t.ownerRoute ? { ownerRoute: t.ownerRoute } : {}),
   storedSessionId: t.storedSessionId,
   ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
@@ -839,7 +830,6 @@ function parseTileList(value: unknown): StoredTile[] {
             anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
-            ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
             ownerRoute:
               raw.ownerRoute &&
               typeof raw.ownerRoute.connectionId === 'string' &&
@@ -978,12 +968,6 @@ export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRout
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
 }
 
-function sessionTileOwner(storedSessionId: string): SessionOwnerScope {
-  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
-
-  return tile?.ownerRoute ?? tile?.ownerProfile
-}
-
 /**
  * Gateway keep-set scopes for currently open tiles. Bot chats (and any other
  * owner-routed tile) hold a secondary socket even while chrome stays on the
@@ -1000,10 +984,6 @@ export function openTileGatewayScopes(): Set<string> {
     const route = tile.ownerRoute
 
     if (!route) {
-      if (tile.ownerProfile) {
-        scopes.add(normalizeProfileKey(tile.ownerProfile))
-      }
-
       continue
     }
 
@@ -1053,7 +1033,7 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   const storedSessionId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
 
   return (
-    sessionTileOwner(storedSessionId) ??
+    sessionTileOwnerRoute(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
     knownSessionOwner(ownerLookupSessionRows(), storedSessionId) ??
     sessionOwnerByRuntimeId.get(sessionId)
@@ -1146,18 +1126,7 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
   // Without this rung such ids fell straight to the ambient socket.
   const mirrored = $sessionStates.get()[sessionId]?.storedSessionId?.trim()
 
-  if (mirrored) {
-    return mirrored
-  }
-
-  // Main's own binding. A tile promoted into main (⌘W on the workspace tab,
-  // a tab dragged out of main) loses its tile AND its evicted mirror entry in
-  // the same tick, while the resume sets the runtime active before the view
-  // republishes the mirror. The composer's control read lands in that gap
-  // and, with nothing to translate, never reaches the stored-id hint.
-  const selected = $selectedStoredSessionId.get()
-
-  return sessionId === $activeSessionId.get() && selected ? selected : null
+  return mirrored || null
 }
 
 const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
@@ -1227,14 +1196,12 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   // plain re-open can't unpin the owning socket. Bot scopes stay authoritative
   // both ways: they always name their route explicitly.
   const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : (scope.ownerRoute ?? tile?.ownerRoute)
-  const ownerProfile = scope.workspaceMode === 'bots' ? undefined : (scope.ownerProfile ?? tile?.ownerProfile)
   const workspaceTabTitle = scope.workspaceMode === 'bots' ? scope.workspaceTabTitle : undefined
 
   if (
     !tile ||
     ((tile.workspaceMode ?? 'sessions') === scope.workspaceMode &&
       tile.workspaceOwnerKey === workspaceOwnerKey &&
-      tile.ownerProfile === ownerProfile &&
       tile.ownerRoute?.connectionId === ownerRoute?.connectionId &&
       tile.ownerRoute?.profile === ownerRoute?.profile &&
       tile.ownerRoute?.targetProfile === ownerRoute?.targetProfile &&
@@ -1244,7 +1211,6 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   }
 
   patchSessionTile(storedSessionId, {
-    ownerProfile,
     ownerRoute,
     workspaceMode: scope.workspaceMode,
     workspaceOwnerKey,
@@ -1518,7 +1484,6 @@ export function openSessionTile(
         // draft runtime is otherwise orphan-reaped the moment the pruner
         // closes the unpinned socket (the resume/reclaim flicker loop,
         // #93892 shape).
-        ownerProfile: workspaceScope.ownerProfile,
         ownerRoute: workspaceScope.ownerRoute,
         storedSessionId,
         workspaceMode: workspaceScope.workspaceMode,
@@ -1764,20 +1729,7 @@ export function closeSessionTile(storedSessionId: string) {
   const tile = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)
 
   if (tile) {
-    const tree = $layoutTree.get()
-    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
-    const group = tree ? findGroupOfPane(tree, paneId) : null
-    const siblings = group?.panes.filter(id => id !== paneId) ?? []
-    closedStack().push({
-      ...toStored(tile),
-      ...(group && siblings.length
-        ? {
-            anchor: siblings[0],
-            before: group.panes[group.panes.indexOf(paneId) + 1] ?? null,
-            dir: 'center'
-          }
-        : {})
-    })
+    closedStack().push(toStored(tile))
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
@@ -1953,9 +1905,7 @@ export function reopenLastClosedTile(): void {
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, {
         workspaceMode: tile.workspaceMode ?? 'sessions',
-        workspaceOwnerKey: tile.workspaceOwnerKey,
-        workspaceTabTitle: tile.workspaceTabTitle,
-        ownerRoute: tile.ownerRoute
+        workspaceOwnerKey: tile.workspaceOwnerKey
       })
       focusOpenSession(storedSessionId)
 

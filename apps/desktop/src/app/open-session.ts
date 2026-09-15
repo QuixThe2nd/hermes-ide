@@ -162,8 +162,6 @@ export function openSession(
       openSessionTile(storedSessionId, 'center')
     }
 
-    focusOpenSession(storedSessionId, workspaceScope)
-
     return
   }
 

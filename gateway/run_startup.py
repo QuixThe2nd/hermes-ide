@@ -16,7 +16,6 @@ import signal
 import time
 from contextlib import suppress
 from datetime import datetime
-from pathlib import Path
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
@@ -502,7 +501,7 @@ class GatewayStartupMixin:
         allowlist existed (or whose owner was since removed) must not silently receive a full agent
         response just because it carries a resume marker."""
         try:
-            if self._is_user_authorized_for_source(source):
+            if self._is_user_authorized(source):
                 return True
             logger.warning(
                 "Skipping auto-resume for %s: session owner is no "
@@ -877,8 +876,7 @@ class GatewayStartupMixin:
         with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
-        # Relay entrypoints share the effective profile opt-out, including when a
-        # deployment injects a URL. No URL or explicitly disabled -> no side effects.
+        # Generic relay adapter only if GATEWAY_RELAY_URL / gateway.relay_url is set; no URL -> no-op.
         try:
             from gateway.relay import (
                 register_relay_adapter, relay_url, self_provision_relay, send_relay_policy
@@ -911,37 +909,15 @@ class GatewayStartupMixin:
         except Exception:
             logger.log(level, fail_fmt, *fail_args, exc_info=True)
 
-    def _recover_secondary_process_checkpoints(self, process_registry) -> int:
-        """Replay every SERVED secondary profile's ``processes.json`` under its own scope.
-        The launch profile's file was already read by ``recover_from_checkpoint`` above."""
-        if not getattr(self.config, "multiplex_profiles", False):
-            return 0
-        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        from hermes_constants import get_hermes_home
-        launch_home = get_hermes_home().resolve()
-        recovered = 0
-        for profile_name, profile_home in _multiplex_profile_homes(self.config):
-            if Path(profile_home).resolve() == launch_home:
-                continue
-            try:
-                with _profile_runtime_scope(Path(profile_home), {}):
-                    recovered += process_registry.recover_from_checkpoint()
-            except Exception:
-                logger.warning("Process checkpoint recovery for profile %r failed", profile_name, exc_info=True)
-        return recovered
-
     async def _start_recover_previous_run(self) -> None:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
         self._start_register_plugins_relay_hooks()
         self.hooks.discover_and_load()
-        # Recover background processes from checkpoint (crash recovery). ``_checkpoint_path`` is
-        # scope-relative, so a served secondary's turn wrote ITS home's processes.json; recover each
-        # served profile's file under its scope or those processes are never re-adopted.
+        # Recover background processes from checkpoint (crash recovery)
         with _log_suppressed(logging.WARNING, "Process checkpoint recovery: %s"):
             from tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
-            recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
         # Recover sessions active at last exit (exact turn markers + 120s recency fallback for
@@ -1159,7 +1135,8 @@ class GatewayStartupMixin:
             # Startup authority is one phase: from here on every adapter retry is non-evicting.
             self._platform_lock_takeover_on_start = False
         # A platform skipped on the primary should have been picked up by a secondary owning the token;
-        # if none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
+        # if none did it is enabled yet silently unserved — say so loudly.
+        # If none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
         # the operator sees a config problem instead of a quiet dead channel (#64674 follow-up).
         for _skipped in _multiplex_skipped_platforms:
             if not any(_skipped in _profile_map for _profile_map in self._profile_adapters.values()):
@@ -1168,9 +1145,6 @@ class GatewayStartupMixin:
                     "the platform is not being served. Add its token to the profile that should "
                     "own it, or disable the platform.", _skipped.value,
                 )
-        # The mirror image: a SECONDARY enabled shared ingress (WhatsApp/Relay) that only the default can run.
-        for _line in self._unserved_shared_ingress_warnings():
-            logger.warning(_line)
         return False, connected_count
 
     def _start_handle_no_connections(
@@ -1307,9 +1281,7 @@ class GatewayStartupMixin:
         "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
     )
-    _POST_RECONNECT_WATCHERS = (
-        "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
-    )
+    _POST_RECONNECT_WATCHERS = ("_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher")
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""

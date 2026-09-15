@@ -63,7 +63,9 @@ _INACTIVE_REASON = "no route table registered"
 # plugins.llm_usage_proxy.server.CALLER_LABEL_HEADER, whose name is imported
 # at request time — this module stays stdlib-only at import). The default
 # profile's routed traffic carries exactly this; a named profile carries
-# ``hermes:<name>`` (see :func:`_caller_label_for_profile`).
+# ``hermes:<name>``; and a profile whose config sets
+# ``llm_usage_proxy.caller_label`` carries that chosen label instead (see
+# :func:`_caller_label_for_profile`).
 HERMES_CALLER_LABEL = "hermes"
 # The proxy's caller-label wire limits (CALLER_LABEL_MAX_CHARS and the
 # character set of CALLER_LABEL_RE in plugins.llm_usage_proxy.server),
@@ -513,13 +515,69 @@ def _verified_tls_policy(verify: Any) -> bool:
     return verify is True or isinstance(verify, ssl.SSLContext)
 
 
+def _configured_caller_label(profile: str) -> Optional[str]:
+    """This profile's ``llm_usage_proxy.caller_label`` config value, if usable.
+
+    Config is the one source the home path cannot provide: a label chosen
+    for this profile on purpose, so even the default profile can show up as
+    its own subcategory instead of merging into the flat ``hermes``
+    aggregate. The value must clear the proxy's label rules in full —
+    ``CALLER_LABEL_RE`` and ``CALLER_LABEL_MAX_CHARS``, imported lazily at
+    this use exactly like ``CALLER_LABEL_HEADER`` in
+    :func:`_proxied_request` so this module stays stdlib-only at import.
+    Anything the proxy would refuse (empty, wrong characters, over-long) is
+    ignored here too and the home-path derivation answers instead — a bad
+    value can never break client construction.
+
+    Config is read from the *current* home, so the override is attributable
+    to *profile* only when the two name the same home: always the case at
+    wrapper construction, where the bound profile was resolved from the very
+    context doing the building (per-child ``HERMES_HOME`` under the
+    multiplex included). A caller passing some other profile explicitly gets
+    plain derivation rather than borrowing a different home's chosen label.
+    Never raises.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        if str(profile) != str(get_hermes_home().expanduser().resolve()):
+            return None
+
+        from hermes_cli.config import load_config_readonly
+
+        section = (load_config_readonly() or {}).get("llm_usage_proxy")
+        if not isinstance(section, Mapping):
+            return None
+        value = section.get("caller_label")
+        if not isinstance(value, str):
+            return None
+        candidate = value.strip()
+
+        from plugins.llm_usage_proxy.server import (
+            CALLER_LABEL_MAX_CHARS,
+            CALLER_LABEL_RE,
+        )
+
+        # Over-long is refused whole, not truncated: the label is a name
+        # this profile chose, not a prefix of one.
+        if not candidate or len(candidate) > CALLER_LABEL_MAX_CHARS:
+            return None
+        if not CALLER_LABEL_RE.match(candidate):
+            return None
+        return candidate
+    except Exception:
+        return None
+
+
 def _caller_label_for_profile(profile: str) -> str:
     """Ledger label for the traffic Hermes routes under *profile*.
 
     *profile* is the constructor-bound profile key of a transport wrapper —
     an absolute ``HERMES_HOME`` path, never a per-request resolution (the
     request path runs on transport threads where current-profile context is
-    unavailable). The existing profile-path helpers decide what it names:
+    unavailable). A valid ``llm_usage_proxy.caller_label`` in that profile's
+    config wins outright (see :func:`_configured_caller_label`); otherwise
+    the existing profile-path helpers decide what it names:
 
     * a home that is not under a ``profiles/`` directory (the default
       profile, or a custom root) labels itself exactly ``hermes`` — wire
@@ -533,6 +591,9 @@ def _caller_label_for_profile(profile: str) -> str:
     limit, and a name with nothing left after sanitizing falls back to plain
     ``hermes`` — a routed request can never carry an invalid label.
     """
+    override = _configured_caller_label(profile)
+    if override:
+        return override
     try:
         from hermes_constants import profile_name_for_home
 

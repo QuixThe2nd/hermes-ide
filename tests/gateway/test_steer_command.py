@@ -34,16 +34,11 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_event(
-    text: str, channel_context: str | None = None, message_id: str = "m1"
-) -> MessageEvent:
-    # message_id defaults to "m1" for single-event tests; callers queueing
-    # several DISTINCT platform messages must pass distinct ids — a real
-    # platform never issues one id twice, and the queue layer dedupes on it.
+def _make_event(text: str, channel_context: str | None = None) -> MessageEvent:
     return MessageEvent(
         text=text,
         source=_make_source(),
-        message_id=message_id,
+        message_id="m1",
         channel_context=channel_context,
     )
 

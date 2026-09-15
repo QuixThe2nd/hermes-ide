@@ -83,11 +83,6 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
-    # The queue layer saw this platform message id before (drain-snapshot replay,
-    # FIFO promotion/rescue of a duplicated id). The flag rides the surviving copy
-    # so the model can tell a re-delivery from a fresh user message and answer it
-    # once instead of per copy. Serialized in the drain snapshot (_EVENT_FIELDS).
-    redelivered: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

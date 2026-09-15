@@ -338,46 +338,6 @@ def pending_waits_for_profile(profile: str) -> List[Dict[str, str]]:
     return waits
 
 
-# Distinguished resolution for a restart-kind wait superseded by ANOTHER
-# confirmed restart's queue. The drain that will bounce the gateway resolves
-# every other pending restart gate with this token so the waiting restart
-# tool can tell "the reply never arrived — the process bounced" apart from
-# "the requester answered something else" (plain cancellation). The NUL byte
-# keeps the token out of band: no platform message can carry it, so it can
-# never collide with a real reply, and only the restart tool ever matches it.
-SUPERSEDED_RESPONSE = "\x00superseded"
-
-
-def resolve_restart_waits_superseded() -> int:
-    """Resolve every still-pending restart-kind wait as superseded; return the count.
-
-    Called ONLY from the restart drain queue (``gateway.restart.queue_user_restart``),
-    at the moment a confirmed restart is queued: every OTHER restart gate still
-    waiting for its confirm word in this process is now moot — the bounce is
-    coming regardless of what their requesters reply — so their waits resolve
-    with the distinguished :data:`SUPERSEDED_RESPONSE` token instead of the
-    empty ``""`` that the turn-end ``clear_session`` teardown would otherwise
-    hand them (which the tool would misreport as "cancelled"). Ordinary
-    clarify-kind waits are NEVER touched here: only entries registered with
-    ``wait_kind="restart"`` get the token, and ``clear_session`` keeps its
-    plain-"" cancellation for everything (``/new``, cached-agent eviction,
-    shutdown) byte-identical to before. First-writer-wins as everywhere: an
-    entry already resolved by a real reply — or an earlier sweep — is skipped,
-    so a genuine confirm that raced the queue keeps its own answer. The waiter
-    reaps the entry from the registry when it wakes, exactly like a user
-    reply; nothing is popped here.
-    """
-    with _lock:
-        superseded = 0
-        for entry in list(_entries.values()):
-            if entry.event.is_set() or entry.wait_kind != "restart":
-                continue
-            entry.response = SUPERSEDED_RESPONSE
-            entry.event.set()
-            superseded += 1
-        return superseded
-
-
 def clear_session(session_key: str) -> int:
     """Drop every pending clarify for a session (``/new``, shutdown, cached-agent eviction) so
     blocked agent threads don't outlive it; returns how many were cancelled. Cancelled waiters

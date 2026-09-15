@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
-import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -13,7 +13,6 @@ import {
   setSecretRequest,
   setSudoRequest
 } from '@/store/prompts'
-import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -55,10 +54,7 @@ function renderSubmitHook({
   const editorRef = { current: editor }
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
-  const onSteerHidden = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
-  const loadIntoComposer = vi.fn()
-  const stashAt = vi.fn()
   const queueCurrentDraft = vi.fn(() => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
@@ -110,17 +106,16 @@ function renderSubmitHook({
         exitQueuedEdit: vi.fn(() => false),
         focusInput: vi.fn(),
         inputDisabled,
-        loadIntoComposer,
+        loadIntoComposer: vi.fn(),
         onCancel,
         onSteer,
-        onSteerHidden,
         onSubmit,
         queueCurrentDraft,
         queueEdit: null,
         queuedPrompts: [],
         sessionId: 'runtime-session',
         setComposerText: vi.fn(),
-        stashAt
+        stashAt: vi.fn()
       }),
     { wrapper: Wrapper }
   )
@@ -130,10 +125,7 @@ function renderSubmitHook({
     hook,
     onCancel,
     onSteer,
-    onSteerHidden,
     onSubmit,
-    loadIntoComposer,
-    stashAt,
     queueCurrentDraft,
     composerSurfaceId: resolvedSurfaceId,
     setPaneVisible(nextVisible: boolean) {
@@ -149,70 +141,7 @@ function renderSubmitHook({
 describe('useComposerSubmit external request routing', () => {
   afterEach(() => {
     cleanup()
-    clearQueuedPrompts('stored-session')
     vi.restoreAllMocks()
-  })
-
-  it.each([true, false])('steers a busy external visible submit and queues only on rejection (%s)', async accepted => {
-    const { onSteer, onSubmit, clearDraft } = renderSubmitHook({ busy: true, text: 'unsent draft' })
-    onSteer.mockResolvedValue(accepted)
-
-    await act(async () => {
-      expect(requestComposerSubmit('Start without connections.', { target: 'main' })).toBe(true)
-    })
-
-    expect(onSteer).toHaveBeenCalledExactlyOnceWith('Start without connections.')
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(clearDraft).not.toHaveBeenCalled()
-    expect(getQueuedPrompts('stored-session').map(({ text, attachments }) => ({ text, attachments }))).toEqual(
-      accepted ? [] : [{ text: 'Start without connections.', attachments: [] }]
-    )
-
-    await act(async () => {
-      requestComposerSubmit('/status', { target: 'main' })
-    })
-    expect(getQueuedPrompts('stored-session').at(-1)?.text).toBe('/status')
-    expect(onSteer).toHaveBeenCalledTimes(1)
-    expect(onSubmit).not.toHaveBeenCalled()
-  })
-
-  it.each([true, false])(
-    'delivers a busy hidden request as a steer with no user turn and queues it hidden on refusal (%s)',
-    async accepted => {
-      const { onSteer, onSteerHidden, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
-      onSteerHidden.mockResolvedValue(accepted)
-
-      await act(async () => {
-        requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
-      })
-
-      expect(onSteerHidden).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
-      expect(onSteer).not.toHaveBeenCalled()
-      expect(onSubmit).not.toHaveBeenCalled()
-      expect(getQueuedPrompts('stored-session').map(({ text, displayKind }) => ({ text, displayKind }))).toEqual(
-        accepted ? [] : [{ text: '[setup] links opened', displayKind: 'hidden' }]
-      )
-      expect(loadIntoComposer).not.toHaveBeenCalled()
-      expect(stashAt).not.toHaveBeenCalled()
-    }
-  )
-
-  it('drops an idle hidden request the gateway rejects instead of restoring it into the draft', async () => {
-    const { onSteer, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: false })
-    onSubmit.mockResolvedValue(false)
-
-    await act(async () => {
-      requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
-    })
-
-    expect(onSubmit).toHaveBeenCalledExactlyOnceWith('[setup] links opened', {
-      composerScope: 'stored-session',
-      displayKind: 'hidden'
-    })
-    expect(onSteer).not.toHaveBeenCalled()
-    expect(getQueuedPrompts('stored-session')).toEqual([])
-    expect(loadIntoComposer).not.toHaveBeenCalled()
-    expect(stashAt).not.toHaveBeenCalled()
   })
 
   it('does not fan out a main ship across keep-alives or other projects', async () => {
@@ -457,30 +386,26 @@ describe('useComposerSubmit busy-turn routing', () => {
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {
-  // The clarify is a live server→client request: skipping it answers that
-  // request frame (`{ answer: '' }`), not a `clarify.respond` RPC.
-  const respond = vi.fn()
+  const gatewayRequest = vi.fn(async () => ({ ok: true }))
 
   const parkClarify = (sessionId: string) => {
-    const requestId = `req-${sessionId}`
-
-    rememberServerRequest({ fail: vi.fn(), id: requestId, method: 'clarify', params: {}, respond })
     $clarifyRequests.set({
       [sessionId]: {
-        requestId,
+        requestId: `req-${sessionId}`,
         question: 'which one?',
         choices: ['a', 'b'],
         multiSelect: false,
         sessionId
       }
     })
+    $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }
 
   afterEach(() => {
     cleanup()
-    respond.mockClear()
-    resetServerRequestsForTests()
+    gatewayRequest.mockClear()
     $clarifyRequests.set({})
+    $gateway.set(null)
     vi.restoreAllMocks()
   })
 
@@ -492,12 +417,16 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answer: '' }))
+    await waitFor(() =>
+      expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', {
+        request_id: 'req-runtime-session',
+        answer: ''
+      })
+    )
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
     )
     expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
-    expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
   it('skips the question before steering a busy turn', async () => {
@@ -509,7 +438,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-runtime-session', answer: '' })
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
@@ -520,8 +449,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    expect(respond).not.toHaveBeenCalled()
-    expect(hasOpenServerRequest('req-runtime-session')).toBe(true)
+    expect(gatewayRequest).not.toHaveBeenCalled()
     expect($clarifyRequests.get()['runtime-session']).toBeDefined()
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
@@ -535,8 +463,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
-    expect(respond).not.toHaveBeenCalled()
-    expect(hasOpenServerRequest('req-other-session')).toBe(true)
+    expect(gatewayRequest).not.toHaveBeenCalled()
     expect($clarifyRequests.get()['other-session']).toBeDefined()
   })
 })

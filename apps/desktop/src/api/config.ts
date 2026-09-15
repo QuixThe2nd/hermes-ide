@@ -68,13 +68,10 @@ export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   })
 }
 
-export function getHermesConfigRecord(
-  profile?: ProfileScope,
-  { includeDefaults = true }: { includeDefaults?: boolean } = {}
-): Promise<HermesConfigRecord> {
+export function getHermesConfigRecord(profile?: ProfileScope): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...capabilityScoped(profile),
-    path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'
+    path: '/api/config'
   })
 }
 
@@ -93,14 +90,10 @@ export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSc
   })
 }
 
-export function saveHermesConfig(
-  config: HermesConfigRecord,
-  profile?: null | string,
-  { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
-): Promise<{ ok: boolean }> {
+export function saveHermesConfig(config: HermesConfigRecord, profile?: null | string): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(profile),
-    path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
+    path: '/api/config',
     method: 'PUT',
     body: { config }
   })

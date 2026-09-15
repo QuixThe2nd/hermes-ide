@@ -919,9 +919,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
             if where == "triage":
-                # Only a typed owner-input block carries a question for a human.
-                verdict = "needs a human decision" if kind == "needs_input" else "orchestration attention needed"
-                return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
+                return f"{tid} → triage (unblock loop detected — needs a human decision){suffix}"
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
@@ -1076,14 +1074,6 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
-    delivery_metadata = {
-        key: value
-        for key, value in (
-            ("parent_chat_id", getattr(args, "parent_chat_id", None)),
-            ("guild_id", getattr(args, "guild_id", None)),
-        )
-        if value
-    }
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
@@ -1093,7 +1083,6 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
-            delivery_metadata=delivery_metadata or None,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
           + f" to {args.task_id}")

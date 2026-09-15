@@ -8,7 +8,6 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
-import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -22,9 +21,9 @@ import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
-  AnyGatewayEvent,
-  ClarifyLockResponse,
+  ClarifyRespondResponse,
   ConfigSetResponse,
+  GatewayEvent,
   SessionActiveListResponse,
   SessionCloseResponse,
   TerminalResizeResponse
@@ -50,7 +49,6 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
-import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
@@ -58,7 +56,6 @@ import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfa
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
-import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -234,8 +231,7 @@ export function useMainApp(gw: GatewayClient) {
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
-  const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
-  const onServerRequestRef = useRef<(request: ServerRequest) => boolean>(() => false)
+  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const submitLiteralRef = useRef<(value: string) => void>(() => {})
@@ -714,14 +710,11 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      if (!respondToServerRequest(clarify.requestId, { answer })) {
-        // The request already expired (request.cancel raced the keystroke): nothing to answer.
-        patchOverlayState({ clarify: null })
+      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+        if (!r) {
+          return
+        }
 
-        return
-      }
-
-      {
         if (answer) {
           turnController.persistedToolLabels.add(label)
           appendMessage({
@@ -745,14 +738,14 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         patchOverlayState({ clarify: null })
-      }
+      })
     },
-    [appendMessage, overlay.clarify]
+    [appendMessage, overlay.clarify, rpc]
   )
 
-  // Lock one answer of a batch clarify (`clarify.lock` RPC). The overlay stays
-  // up until the server reports no remaining questions — the final lock
-  // resolves the server request and the turn continues.
+  // Lock one answer of a batch clarify (clarify.respond + question_id). The
+  // overlay stays up until the server reports no remaining questions — the
+  // final lock resolves the tool and the turn continues.
   const answerClarifyQuestion = useCallback(
     (qid: string, answer: string) => {
       const clarify = overlay.clarify
@@ -761,7 +754,7 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      rpc<ClarifyLockResponse>('clarify.lock', {
+      rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
@@ -771,12 +764,6 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         const answers = { ...(clarify.answers ?? {}), [qid]: answer }
-
-        if (r.status === 'expired') {
-          patchOverlayState({ clarify: null })
-
-          return
-        }
 
         if ((r.remaining ?? []).length > 0) {
           patchOverlayState({ clarify: { ...clarify, answers } })
@@ -921,29 +908,8 @@ export function useMainApp(gw: GatewayClient) {
 
   onEventRef.current = onEvent
 
-  const onServerRequest = useMemo(
-    () =>
-      createServerRequestHandler({
-        ringPromptBell: () => {
-          if (bellOnPrompt && stdout?.isTTY) {
-            stdout.write('\x07')
-          }
-        },
-        setStatus: status => patchUiState({ status })
-      }),
-    [bellOnPrompt, stdout]
-  )
-
-  onServerRequestRef.current = onServerRequest
-
   useEffect(() => {
-    const handler = (ev: AnyGatewayEvent) => onEventRef.current(ev)
-
-    const requestHandler = (request: ServerRequest) => {
-      if (!onServerRequestRef.current(request)) {
-        request.fail(JSON_RPC_METHOD_NOT_FOUND, `the terminal UI cannot answer ${request.method}`)
-      }
-    }
+    const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
       turnController.reset()
@@ -980,14 +946,12 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     gw.on('event', handler)
-    gw.on('request', requestHandler)
     gw.on('exit', exitHandler)
     gw.drain()
 
     // entry.tsx's setupGracefulExit handles process cleanup on real exit.
     return () => {
       gw.off('event', handler)
-      gw.off('request', requestHandler)
       gw.off('exit', exitHandler)
     }
   }, [gw, sys])
@@ -1051,26 +1015,19 @@ export function useMainApp(gw: GatewayClient) {
 
   slashRef.current = slash
 
-  // Answer a server→client request by id; the card closes either way (an
-  // expired request has nothing left to answer).
-  const respondWith = useCallback((requestId: string, result: Record<string, unknown>, done: () => void) => {
-    respondToServerRequest(requestId, result)
-    done()
-  }, [])
+  const respondWith = useCallback(
+    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()),
+    [rpc]
+  )
 
   const answerApproval = useCallback(
-    (choice: string) => {
-      if (!overlay.approval) {
-        return
-      }
-
-      respondWith(overlay.approval.requestId, { choice }, () => {
+    (choice: string) =>
+      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
-      })
-    },
-    [overlay.approval, respondWith]
+      }),
+    [respondWith, ui.sid]
   )
 
   const answerSudo = useCallback(
@@ -1085,7 +1042,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ sudo: null })
       }
 
-      respondWith(requestId, { value: pw }, () => {
+      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -1105,7 +1062,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ secret: null })
       }
 
-      respondWith(requestId, { value }, () => {
+      return respondWith('secret.respond', { request_id: requestId, value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })
@@ -1125,7 +1082,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ vaultUnlock: null })
       }
 
-      respondWith(requestId, { value: password }, () => {
+      return respondWith('vault.unlock.respond', { password, request_id: requestId }, () => {
         patchOverlayState({ vaultUnlock: null })
         patchUiState({ status: 'running…' })
       })

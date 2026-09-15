@@ -15,7 +15,6 @@ import {
 } from '@/components/ui/dialog'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { LogView } from '@/components/ui/log-view'
 import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
@@ -34,7 +33,8 @@ import {
   sessionVaultSaveLoginRequest,
   sessionVaultUnlockRequest
 } from '@/store/prompts'
-import { respondToServerRequest } from '@/store/server-requests'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval
@@ -78,7 +78,10 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value })
+        await gateway.request<{ status?: string }>('sudo.respond', {
+          password: value,
+          request_id: request.requestId
+        })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -120,28 +123,11 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
 
   return (
     <Dialog onOpenChange={onOpenChange} open>
-      <DialogContent blurBackdrop={false} showCloseButton={false}>
+      <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
           <DialogDescription>{copy.sudoDesc}</DialogDescription>
         </DialogHeader>
-
-        {request.command?.trim() ? (
-          <Field label={t.assistant.approval.command}>
-            <LogView
-              aria-label={t.assistant.approval.command}
-              className="max-h-48 text-xs text-foreground"
-              role="region"
-              tabIndex={0}
-            >
-              {request.command}
-            </LogView>
-          </Field>
-        ) : (
-          <p className="text-xs text-(--ui-text-secondary)" role="status">
-            {copy.sudoCommandUnavailable}
-          </p>
-        )}
 
         <form className="grid gap-3" onSubmit={onSubmit}>
           <Input
@@ -195,7 +181,10 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value: secret })
+        await gateway.request<{ status?: string }>('secret.respond', {
+          request_id: request.requestId,
+          value: secret
+        })
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -296,9 +285,14 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        // The response frame goes back over the socket the request arrived on — the
-        // backend that raised the prompt, never whatever gateway is foreground.
-        respondToServerRequest(request.requestId, { value: password })
+        // A master password must reach the backend that raised the prompt, not whatever
+        // gateway is foreground right now (background profile tiles have their own socket).
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.unlock.respond',
+          { request_id: request.requestId, password }
+        )
         triggerHaptic('submit')
         clearVaultUnlockRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -393,7 +387,12 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value: login })
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.save_login.respond',
+          { login, request_id: request.requestId }
+        )
         triggerHaptic('submit')
         clearVaultSaveLoginRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -505,7 +504,12 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value })
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.code.respond',
+          { code: value, request_id: request.requestId }
+        )
         triggerHaptic('submit')
         clearVaultCodeRequest(request.sessionId, request.requestId)
       } catch (error) {

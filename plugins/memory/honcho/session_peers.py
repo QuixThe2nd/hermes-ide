@@ -27,11 +27,6 @@ def assistant_peer_id_for(config: Any) -> str:
     return sanitize_peer_id(getattr(config, "ai_peer", None) or "hermes-assistant")
 
 
-class HonchoPeerUnresolvedError(RuntimeError):
-    """No user peer can be named: the transport supplied no runtime identity and honcho.json
-    declares no peerName. Raised instead of minting a session-derived peer nobody declared."""
-
-
 class SessionPeersMixin:
     """Resolve user/assistant/observer peer IDs. Reads ``self._config`` and runtime identities only."""
 
@@ -80,10 +75,8 @@ class SessionPeersMixin:
 
     def _resolve_user_peer_id(self, key: str) -> str:
         """Honcho user peer ID for this manager/session. Order: pinned peerName -> alias of a
-        runtime identity -> (prefixed) runtime identity -> configured peerName. Raises
-        HonchoPeerUnresolvedError when none applies: every peer must be one the operator declared
-        or one the transport supplied, never a name derived from the session key."""
-        peer_name = str(self._cfg("peer_name") or "").strip()
+        runtime identity -> (prefixed) runtime identity -> configured peerName -> session-key fallback."""
+        peer_name = self._cfg("peer_name")
         if peer_name and self._cfg("pin_peer_name", False) is True:
             return self._sanitize_id(peer_name)
 
@@ -102,9 +95,8 @@ class SessionPeersMixin:
 
         if peer_name:
             return self._sanitize_id(peer_name)
-        raise HonchoPeerUnresolvedError(
-            f"Honcho has no user peer for session '{key}': the transport supplied no user identity and "
-            "honcho.json declares no peerName.")
+        channel, sep, chat_id = key.partition(":")
+        return self._sanitize_id(f"user-{channel}-{chat_id}" if sep else f"user-default-{key}")
 
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
         """Resolve a peer alias ('user'/'ai') or explicit peer ID to a concrete, non-empty peer ID."""
@@ -116,7 +108,7 @@ class SessionPeersMixin:
         target_peer_id = self._resolve_peer_id(session, peer)
         if target_peer_id == session.assistant_peer_id:
             return session.assistant_peer_id, session.assistant_peer_id
-        if self._ai_observes_others(session):
+        if self._ai_observe_others:
             return session.assistant_peer_id, target_peer_id
         return target_peer_id, None
 

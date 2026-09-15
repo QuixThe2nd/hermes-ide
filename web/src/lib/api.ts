@@ -1,8 +1,4 @@
-import {
-  buildHermesWebSocketUrl,
-  type ModelOptionProvider,
-  type ModelOptionsResult,
-} from "@hermes/shared";
+import { buildHermesWebSocketUrl } from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -28,7 +24,6 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
-import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -120,26 +115,15 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}${url}`, {
-      ...init,
-      headers,
-      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-      // for any fetch routed through here. Loopback mode is unaffected — the
-      // server doesn't read cookies and the legacy session-token header is
-      // already attached above.
-      credentials: init?.credentials ?? "include",
-    });
-  } catch (cause) {
-    // fetch() only rejects when the request never got a response: the
-    // backend is down, the port is closed, or the network dropped. Tell the
-    // user that in words instead of `TypeError: Failed to fetch`.
-    const err = apiErrorFromNetworkFailure(cause, url);
-    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
-    console.warn("[api]", err.details);
-    throw err;
-  }
+  const res = await fetch(`${BASE}${url}`, {
+    ...init,
+    headers,
+    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+    // for any fetch routed through here. Loopback mode is unaffected — the
+    // server doesn't read cookies and the legacy session-token header is
+    // already attached above.
+    credentials: init?.credentials ?? "include",
+  });
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -197,9 +181,7 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    const err = apiErrorFromResponse(res.status, text, url);
-    console.warn("[api]", err.details);
-    throw err;
+    throw new Error(`${res.status}: ${text}`);
   }
   return res.json();
 }
@@ -227,7 +209,7 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), "/api/auth/ws-ticket");
+    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
   }
   return res.json();
 }
@@ -561,7 +543,7 @@ export const api = {
     // desktop chat pickers (#56974), so opt in explicitly here.
     qs.set("include_unconfigured", "1");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
+    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
     fetchJSON<AuxiliaryModelsResponse>(
@@ -893,10 +875,8 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
-  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
-  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
+    fetchJSON<{ ok: boolean; platform: string }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -976,10 +956,6 @@ export const api = {
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
-  getGatewayMigratePlan: () =>
-    fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
-  migrateGatewayToMultiplex: () =>
-    fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -1379,16 +1355,6 @@ export interface AuthMeResponse {
   expires_at: number;
 }
 
-/** Preflight for `hermes gateway migrate --multiplex` (mirrors the CLI plan JSON). */
-export interface GatewayMigratePlan {
-  already_multiplexed: boolean;
-  blockers: string[];
-  command: string;
-  eligible: boolean;
-  notices: string[];
-  profiles: { profile: string; pid: number | null; service: { kind: string; system: boolean } | null }[];
-}
-
 export interface ActionResponse {
   archive?: string;
   name: string;
@@ -1610,8 +1576,6 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
-  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
-  ingress_url?: string | null;
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;
@@ -1930,10 +1894,6 @@ export interface StatusResponse {
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
-  /** Every profile the gateway process serves when the managed profile is carried by the
-   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
-   * gateway or an older backend. */
-  gateway_shared_with?: string[] | null;
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;
@@ -2456,7 +2416,23 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export type { ModelOptionProvider, ModelOptionsResult };
+export interface ModelOptionProvider {
+  name: string;
+  slug: string;
+  models?: string[];
+  total_models?: number;
+  is_current?: boolean;
+  is_user_defined?: boolean;
+  source?: string;
+  warning?: string;
+  authenticated?: boolean;
+}
+
+export interface ModelOptionsResponse {
+  model?: string;
+  provider?: string;
+  providers?: ModelOptionProvider[];
+}
 
 export interface AuxiliaryTaskAssignment {
   task: string;

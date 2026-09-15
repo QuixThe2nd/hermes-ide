@@ -102,8 +102,7 @@ async def test_model_global_persists_when_config_has_flat_string_model(tmp_path,
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    # The resolved aggregator endpoint is persisted (same shape as CLI/TUI --global, #25106).
-    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert "base_url" not in written["model"]
 
 
 @pytest.mark.asyncio

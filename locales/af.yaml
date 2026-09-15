@@ -179,7 +179,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
@@ -400,7 +400,7 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     not_git_repo:            "✗ Nie 'n git-bewaarplek nie — kan nie opdateer nie."
     hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
-    starting:                "☤ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
 
   usage:
     rate_limits:              "⏱️ **Tariefperke:** {state}"

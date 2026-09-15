@@ -1,9 +1,6 @@
-import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
-  assertCurrentAttempt: () => void
-  signal?: AbortSignal
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
@@ -78,48 +75,39 @@ export class FirstRunSetupResetError extends Error {
 // and local backend resolution happen before the setup gate, and a remote Apply
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
-  assertCurrentAttempt,
   connectRemote,
   ensureLocalRuntime,
   prepareLocalBackend,
   resolveRemote,
   waitForDecision,
-  waitForLocalStart,
-  signal
+  waitForLocalStart
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
-  const step = async <T>(run: () => T | Promise<T>) => {
-    const result = await runBackendStartStep(signal, run)
-    assertCurrentAttempt()
-
-    return result
-  }
-
-  const savedRemote = await step(resolveRemote)
+  const savedRemote = await resolveRemote()
 
   if (savedRemote) {
-    return { kind: 'remote', connection: await step(() => connectRemote(savedRemote)) }
+    return { kind: 'remote', connection: await connectRemote(savedRemote) }
   }
 
-  await step(waitForLocalStart)
+  await waitForLocalStart()
 
-  const backend = await step(prepareLocalBackend)
-  const decision = await step(() => waitForDecision(backend))
+  const backend = await prepareLocalBackend()
+  const decision = await waitForDecision(backend)
 
   if (decision === 'remote-applied') {
-    const appliedRemote = await step(resolveRemote)
+    const appliedRemote = await resolveRemote()
 
     if (!appliedRemote) {
       throw new Error('First-run remote setup completed without a saved remote backend.')
     }
 
-    return { kind: 'remote', connection: await step(() => connectRemote(appliedRemote)) }
+    return { kind: 'remote', connection: await connectRemote(appliedRemote) }
   }
 
   if (decision === 'reset') {
     throw new FirstRunSetupResetError()
   }
 
-  return { kind: 'local', backend: await step(() => ensureLocalRuntime(backend)) }
+  return { kind: 'local', backend: await ensureLocalRuntime(backend) }
 }

@@ -10,7 +10,6 @@ import { stubResizeObserver } from '@/test/jsdom'
 const { calls } = vi.hoisted(() => ({
   calls: [] as { method: string; params: Record<string, unknown>; profile: string }[]
 }))
-
 let respond: (profile: string, method: string) => Promise<unknown> = async () => ({})
 
 vi.mock('@/store/gateway', async importActual => ({

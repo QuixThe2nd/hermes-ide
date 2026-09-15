@@ -143,9 +143,6 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
-    # Per-session allocator for ACP assistant messageIds (lazily created by
-    # the server so streamed chunks group into distinct assistant replies).
-    message_ids: Any = None
 
 
 class SessionManager:
@@ -269,15 +266,13 @@ class SessionManager:
         return state
 
     def _get_db(self):
-        """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
-        error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
-        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
-        registry handle is the one in-process tools (delegation, session_search, goals) also
-        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
+        """Lazily initialise the SessionDB; ``None`` if unavailable (e.g. import error in a
+        minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
+        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured."""
         if self._db_instance is None:
             try:
-                from hermes_state_registry import acquire
-                self._db_instance = acquire(get_hermes_home() / "state.db")
+                from hermes_state import SessionDB
+                self._db_instance = SessionDB(db_path=get_hermes_home() / "state.db")
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         return self._db_instance
@@ -302,7 +297,7 @@ class SessionManager:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config=session_meta)
+                                  model_config={"cwd": state.cwd})
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)

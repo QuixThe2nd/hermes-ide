@@ -19,7 +19,6 @@ from hermes_constants import (
     get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
-from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
@@ -836,10 +835,8 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
-# Per-process probe cache keyed by (home key, env_type, cwd_hint) so a mid-process backend switch
-# rebuilds; the home key because the probe runs against the profile's own terminal.* backend
-# (docker image / ssh host) and one multiplexed process serves several profiles.
-_BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
+# Per-process probe cache keyed by (env_type, cwd_hint) so a mid-process backend switch rebuilds.
+_BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
 def _plugin_backend_attr(backend: str, attr: str, default=None):
@@ -958,8 +955,7 @@ def _format_backend_probe(output: str) -> str:
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
-    from hermes_constants import hermes_home_key
-    cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
+    cache_key = (env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
         formatted = ""
@@ -1064,8 +1060,9 @@ CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
-# Dynamic cap (no explicit context_file_max_chars): a small slice of the window since context files
-# share the cached prefix; small models stay at the floor.
+# Dynamic cap (no explicit context_file_max_chars): ~4 chars/token, a small slice of the window since
+# context files share the cached prefix; small models stay at the floor.
+_CONTEXT_FILE_CHARS_PER_TOKEN = 4
 _CONTEXT_FILE_WINDOW_FRACTION = 0.06
 _CONTEXT_FILE_DYNAMIC_CEILING = 500_000
 
@@ -1074,7 +1071,7 @@ def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
     """Char cap from the model's window, clamped to [20K floor, 500K ceiling]; flat default when unknown."""
     if not isinstance(context_length, int) or context_length <= 0:
         return CONTEXT_FILE_MAX_CHARS
-    budget = int(context_length * CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
+    budget = int(context_length * _CONTEXT_FILE_CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
     return max(CONTEXT_FILE_MAX_CHARS, min(budget, _CONTEXT_FILE_DYNAMIC_CEILING))
 
 
@@ -1538,13 +1535,14 @@ def _context_section(content: str, label: str, warn_name: str, path: Path, conte
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
-def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
-    path = _find_hermes_md(cwd_path)
-    if path is None:
-        return []
-    label = str(path.relative_to(cwd_path)) if path.is_relative_to(cwd_path) else path.name
-    return [(label, path, _read_context_file(path))]
+    hermes_md_path = _find_hermes_md(cwd_path)
+    content = _read_context_file(hermes_md_path) if hermes_md_path else ""
+    if not content:
+        return ""
+    label = str(hermes_md_path.relative_to(cwd_path)) if hermes_md_path.is_relative_to(cwd_path) else hermes_md_path.name
+    return _context_section(_strip_yaml_frontmatter(content), label, ".hermes.md", hermes_md_path, context_length)
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
@@ -1557,120 +1555,59 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
     return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
 
 
-def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
-    ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
-    cwd_resolved = cwd_path.resolve()
-    found: list[tuple[str, Path, str]] = []
-    for directory in _agents_md_directory_chain(cwd_resolved):
-        for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
-            candidate = directory / name
-            if not _exists_or_denied(candidate):
-                continue
-            content = _read_context_file(candidate)
-            label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
-            found.append((label, candidate, content))
-            if content:
-                break  # first name match wins per directory
-    return found
-
-
-def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
-    found: list[tuple[str, Path, str]] = []
-    for name in ("CLAUDE.md", "claude.md"):
-        candidate = cwd_path / name
-        if not _exists_or_denied(candidate):
-            continue
-        content = _read_context_file(candidate)
-        found.append((name, candidate, content))
-        if content:
-            break
-    return found
-
-
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
-    candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.is_dir():
-        candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
-
-
-# Project-context types in priority order: the first type with any non-empty file wins, later types are
-# shadowed. Both the prompt build (loaders below) and the /context manifest
-# (``agent/context_file_sources.py``) enumerate files through these finders, so the two cannot drift.
-_CONTEXT_FILE_CANDIDATES = {
-    "hermes_md": _hermes_md_candidates,
-    "agents_md": _agents_md_candidates,
-    "claude_md": _claude_md_candidates,
-    "cursorrules": _cursorrules_candidates,
-}
-
-
-def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
-    """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
-    ``content == ""`` means empty or unreadable — such a file is never loaded."""
-    return [(kind, label, path, content)
-            for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
-
-
-def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
-    """A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
-    default would load this repo's contributor AGENTS.md). An explicitly configured cwd is honored verbatim —
-    the Hermes tree is a legitimate workspace when the user deliberately points a session at it — and
-    CLI-style surfaces pass allow_install_tree_fallback=True because their launch dir IS the user's shell cwd
-    (developing Hermes in-tree). See #64590."""
-    from agent.runtime_cwd import _is_install_tree
-    return cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path)
-
-
-def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.hermes.md / HERMES.md — nearest match walking up to the git root."""
-    for label, path, content in _hermes_md_candidates(cwd_path):
-        if content:
-            return _context_section(_strip_yaml_frontmatter(content), label, ".hermes.md", path, context_length)
-    return ""
-
-
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """AGENTS.md — merged directory chain from git root down to cwd.
 
-    Each directory on the chain (see ``_agents_md_candidates``) contributes its ``AGENTS.override.md`` /
-    ``AGENTS.md`` / ``agents.md`` (first name wins per directory) as its own provenance-labelled section.
+    Per directory the first of ``AGENTS.override.md`` / ``AGENTS.md`` / ``agents.md`` wins (a gitignored
+    personal override shadows the committed file); identical content seen again down the chain is skipped.
+
+    Each directory on the chain (see ``_agents_md_directory_chain``) contributes its ``AGENTS.override.md``
+    / ``AGENTS.md`` / ``agents.md`` (first name wins per directory) as its own provenance-labelled section.
     ``AGENTS.override.md`` wins over ``AGENTS.md`` so a developer can keep a personal, typically-gitignored
     override next to the committed project instructions without editing the tracked file (same convention as
     earendil-works/pi#7681). Identical content encountered again further down the chain (copied or symlinked
     files) is deduplicated. With a single match — the common case, and always the case outside a git repo —
     output is identical to the historical single-file behavior.
     """
+    cwd_resolved = cwd_path.resolve()
     sections: list[str] = []
     seen_content: set = set()
-    for label, candidate, content in _agents_md_candidates(cwd_path):
-        if content and content not in seen_content:  # else: empty, or an identical copy along the chain
-            seen_content.add(content)
-            sections.append(_context_section(content, label, label, candidate, context_length))
+    for directory in _agents_md_directory_chain(cwd_resolved):
+        for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
+            candidate = directory / name
+            content = _read_context_file(candidate)
+            if not content:
+                continue
+            if content not in seen_content:  # else: identical copy along the chain
+                seen_content.add(content)
+                label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
+                sections.append(_context_section(content, label, label, candidate, context_length))
+            break  # first name match wins per directory
     if len(sections) <= 1:
         return sections[0] if sections else ""
     # Per-file budgets applied above; also cap the merged chain so a deep monorepo can't multiply the budget.
     return _truncate_content("\n\n".join(sections), "AGENTS.md (directory chain)", context_length=context_length,
-                             read_path=str(cwd_path.resolve() / "AGENTS.md"))
+                             read_path=str(cwd_resolved / "AGENTS.md"))
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """CLAUDE.md / claude.md — cwd only."""
-    for name, path, content in _claude_md_candidates(cwd_path):
+    for name in ("CLAUDE.md", "claude.md"):
+        content = _read_context_file(cwd_path / name)
         if content:
-            return _context_section(content, name, "CLAUDE.md", path, context_length)
+            return _context_section(content, name, "CLAUDE.md", cwd_path / name, context_length)
     return ""
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
+    candidates: list[tuple[Path, str]] = [(cwd_path / ".cursorrules", ".cursorrules")]
+    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+    if cursor_rules_dir.is_dir():
+        candidates += [(f, f".cursor/rules/{f.name}") for f in sorted(cursor_rules_dir.glob("*.mdc"))]
     cursorrules_content = "".join(
         f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
+        for path, label in candidates if (content := _read_context_file(path))
     )
     if not cursorrules_content:
         return ""
@@ -1689,7 +1626,14 @@ def build_context_files_prompt(
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
-    if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+    # A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
+    # default would load this repo's contributor AGENTS.md). An explicit cwd is honored verbatim.
+    # An explicitly configured cwd is honored verbatim — the Hermes tree is a legitimate workspace when the
+    # user deliberately points a session at it — and CLI-style surfaces pass
+    # allow_install_tree_fallback=True because their launch dir IS the user's shell cwd (developing Hermes
+    # in-tree). See #64590.
+    from agent.runtime_cwd import _is_install_tree
+    if cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,

@@ -73,17 +73,6 @@ def _export_dir(output) -> Path:
     return Path(output).expanduser() if output and output != "-" else get_hermes_home() / "session-exports"
 
 
-def _output_file_in_dir(output, default_name: str):
-    """Single-file exports accept a directory too (``--help`` calls the positional a path, and md/qmd take
-    one): an existing directory, or one spelled with a trailing separator, means ``<dir>/<default_name>``."""
-    if not output or output == "-":
-        return output
-    if output.endswith(("/", os.sep)) or os.path.isdir(output):
-        os.makedirs(output, exist_ok=True)
-        return os.path.join(output, default_name)
-    return output
-
-
 def _write_output(output, text, summary) -> None:
     """Write to stdout when *output* is empty or ``-``; else to the file + print *summary*."""
     if not output or output == "-":
@@ -108,7 +97,7 @@ def _cmd_repair(args):
         return
     print(f"✗ {db_path} does not open cleanly: {reason}")
     if getattr(args, "check_only", False):
-        return 1
+        return
     print("Repairing (a backup copy is made first)…")
     report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):
@@ -284,7 +273,7 @@ def _cmd_list(db, args):
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
     _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
     _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
-    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
+    _ago = lambda s: _relative_time(s.get("last_active"))  # noqa: E731
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
                        lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
@@ -386,10 +375,6 @@ def _export_flat(kind, args, collect):
         return
     sessions = collect()
     if sessions is not None:
-        from hermes_cli.session_export import default_save_filename
-        name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
-                else f"hermes_sessions.{args.format}")
-        args.output = _output_file_in_dir(args.output, name)
         _write_output(args.output, *render(args, sessions))
 
 
@@ -436,7 +421,6 @@ def _export_trace(db, args, filters):
             if not jsonl:
                 print(f"No transcript to export for session '{ids[0]}'.")
                 return
-            args.output = _output_file_in_dir(args.output, f"{ids[0]}.trace.jsonl")
             _write_output(args.output, jsonl, f"Exported 1 session trace to {args.output}")
         else:
             out_dir = _export_dir(args.output)
@@ -743,7 +727,7 @@ def _cmd_pinned(db, args):
     print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}\n" + "─" * 100)
     for s in pinned_rows:
         title = (s.get("title") or s.get("preview", "") or "—")[:30]
-        print(f"{title:<32} {_relative_time(s.get('last_active'), session_id=s['id']):<13} {(s.get('source') or '-'):<9} {s['id']}")
+        print(f"{title:<32} {_relative_time(s.get('last_active')):<13} {(s.get('source') or '-'):<9} {s['id']}")
 
 
 def _cmd_retitle_skills(db, args):
@@ -953,7 +937,6 @@ def _cmd_stats(db, args):
 # -- dispatch -----------------------------------------------------------------
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
-_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -964,29 +947,15 @@ _DB_HANDLERS = {
 }
 
 
-def _print_empty_store(action: str, args) -> None:
-    """A profile that never created state.db: report empty instead of opening a writer that creates it."""
-    if action == "stats":
-        print("Total sessions: 0\nTotal messages: 0")
-    elif action == "pinned":
-        print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
-    else:
-        print("No sessions found.")
-
-
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
         return pre(args)
-    observational = action in _OBSERVATIONAL_DB_ACTIONS
-    from hermes_state import SessionDB, _default_db_path
     try:
-        db = SessionDB(read_only=observational)
+        from hermes_state import SessionDB
+        db = SessionDB()
     except Exception as e:
-        # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
-        if observational and not _default_db_path().exists():
-            return _print_empty_store(action, args)
         print(f"Error: Could not open session database: {e}")
         return 1
     try:
@@ -994,14 +963,6 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        try:
-            return handler(db, args)
-        except sqlite3.OperationalError as e:
-            from hermes_state_repair import _schema_not_built
-
-            if not observational or not _schema_not_built(e):
-                raise
-            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
-            return 1
+        return handler(db, args)
     finally:
         db.close()

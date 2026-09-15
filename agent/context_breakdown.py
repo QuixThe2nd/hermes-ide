@@ -33,8 +33,7 @@ _DETAILS_TABLE_LIMIT = 15  # display cap only; the underlying data keeps everyth
 
 
 def _chars_to_tokens(text: str) -> int:
-    from agent.model_metadata import estimate_tokens_rough
-    return estimate_tokens_rough(text)
+    return (len(text) + 3) // 4
 
 
 def _json_tokens(value: Any) -> int:
@@ -42,8 +41,7 @@ def _json_tokens(value: Any) -> int:
 
 
 def _bytes_to_tokens(size: Optional[int]) -> Optional[int]:
-    from agent.model_metadata import CHARS_PER_TOKEN
-    return None if size is None else (int(size) + 3) // CHARS_PER_TOKEN
+    return None if size is None else (int(size) + 3) // 4
 
 
 def _skills_block(stable: str) -> str:

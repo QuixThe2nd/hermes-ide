@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, _session_key_namespace
+from gateway.session import SessionSource
 from typing import Any, Dict, Optional, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -43,102 +43,11 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
-    @staticmethod
-    def _fifo_message_id(event: Any) -> str:
-        """Dedupe key for queue re-delivery: the inbound platform message id.
-
-        Synthetic events (goal continuations, heartbeats) carry no id and are never deduped.
-        Internal synthetic events are also exempt: watch-notification/completion events
-        inherit the spawning turn's reply-anchor id, so distinct internal events can
-        legitimately share one message id.
-        """
-        if getattr(event, "internal", False):
-            return ""
-        message_id = getattr(event, "message_id", None)
-        return str(message_id).strip() if message_id else ""
-
-    def _find_queued_copy_by_message_id(
-        self, session_key: str, message_id: str, adapter: Any
-    ) -> Optional["MessageEvent"]:
-        """Return the already-queued event with this platform message id, if any."""
-        if not message_id:
-            return None
-        pending_slot = getattr(adapter, "_pending_messages", None)
-        if isinstance(pending_slot, dict):
-            slot_event = pending_slot.get(session_key)
-            if slot_event is not None and self._fifo_message_id(slot_event) == message_id:
-                return slot_event
-        overflow = self._overflow_queue(session_key)
-        if overflow:
-            for queued_copy in overflow:
-                if self._fifo_message_id(queued_copy) == message_id:
-                    return queued_copy
-        return None
-
-    def _drop_redelivered_fifo_copy(
-        self, session_key: str, message_id: str, queued_copy: "MessageEvent"
-    ) -> None:
-        """Collapse a re-delivered platform message id into its ONE queued turn.
-
-        The incoming copy is dropped (it would run as its own full agent turn — the observed
-        amplification loop) and the surviving queued copy is marked ``redelivered`` so the model
-        can tell it from a fresh message. One log line per drop.
-        """
-        try:
-            queued_copy.redelivered = True
-        except Exception:
-            pass
-        logger.info(
-            "Dropped re-delivered copy of message id %s for session %s — the "
-            "message is already queued; its queued copy is marked as a "
-            "re-delivery (one platform message, one turn)",
-            message_id, session_key,
-        )
-
-    def _purge_redelivered_overflow_copies(
-        self, session_key: str, kept: "MessageEvent", overflow: Any
-    ) -> int:
-        """Drop overflow copies sharing ``kept``'s message id; mark ``kept``. Returns the drop count.
-
-        Called when an overflow event is taken out to run (promotion or rescue): every same-id
-        sibling left behind would later run as its own full turn for the SAME platform message.
-        """
-        message_id = self._fifo_message_id(kept)
-        if not message_id or not overflow:
-            return 0
-        dropped = 0
-        index = 0
-        while index < len(overflow):
-            if self._fifo_message_id(overflow[index]) == message_id:
-                overflow.pop(index)
-                dropped += 1
-                continue
-            index += 1
-        if dropped:
-            try:
-                kept.redelivered = True
-            except Exception:
-                pass
-            logger.info(
-                "Dropped %d re-delivered cop(y/es) of message id %s for session "
-                "%s at FIFO promotion — one platform message keeps one turn",
-                dropped, message_id, session_key,
-            )
-        return dropped
-
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
-        # One platform message id, one queued turn: a re-delivered copy parked here would run as
-        # its own turn at promotion time.
-        message_id = self._fifo_message_id(queued_event)
-        if message_id:
-            queued_copy = self._find_queued_copy_by_message_id(session_key, message_id, adapter)
-            if queued_copy is not None:
-                self._drop_redelivered_fifo_copy(session_key, message_id, queued_copy)
-                return
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
@@ -156,17 +65,11 @@ class GatewayBusySessionMixin:
         overflow = self._overflow_queue(session_key)
         if not overflow:
             return pending_event
-        next_queued = overflow.pop(0)
-        # Collapse same-id siblings now: each would promote into its own full turn for the SAME
-        # platform message (the observed overflow amplification loop).
-        self._purge_redelivered_overflow_copies(session_key, next_queued, overflow)
         if pending_event is None:
-            return next_queued
+            return overflow.pop(0)
         if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = next_queued
+            adapter._pending_messages[session_key] = overflow.pop(0)
         # else: no adapter — leave the head in place so we don't silently drop it.
-        else:
-            overflow.insert(0, next_queued)
         return pending_event
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
@@ -195,9 +98,6 @@ class GatewayBusySessionMixin:
             if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
                 return None  # slot occupied (busy) or no slot storage — promotion owns this
             head = overflow.pop(0)
-            # Collapse same-id siblings before staging: a re-delivered copy staged (or left)
-            # behind would run as its own turn for the SAME platform message.
-            self._purge_redelivered_overflow_copies(session_key, head, overflow)
             # Keep the slot occupied so the drain promotes in order and a mid-chain arrival routes
             # to overflow instead of jumping the queue (same invariant as _promote_queued_event).
             if overflow:
@@ -216,34 +116,6 @@ class GatewayBusySessionMixin:
         except Exception:
             logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
             return None
-
-    def _rescue_park_incoming_event(
-        self,
-        session_key: str,
-        incoming: "MessageEvent",
-        adapter: Any,
-        rescued: Optional["MessageEvent"],
-    ) -> None:
-        """Park the idle-path arrival behind a rescue chain, deduped by id.
-
-        The rescued orphan runs as THIS turn. A platform re-delivery of that same message id must
-        not be parked (it would queue a SECOND turn for one message) — drop it and mark the
-        running copy. Anything else parks in FIFO order (``_enqueue_fifo`` drops already-queued ids).
-        """
-        message_id = self._fifo_message_id(incoming)
-        rescued_id = self._fifo_message_id(rescued) if rescued is not None else ""
-        if message_id and rescued_id and message_id == rescued_id:
-            try:
-                rescued.redelivered = True
-            except Exception:
-                pass
-            logger.info(
-                "Dropped re-delivered copy of message id %s for session %s — "
-                "it is already running as this turn (idle FIFO rescue)",
-                message_id, session_key,
-            )
-            return
-        self._enqueue_fifo(session_key, incoming, adapter)
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -413,15 +285,6 @@ class GatewayBusySessionMixin:
             return
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
-        #
-        # One platform message id, one queued turn — checked BEFORE the media merge so a
-        # re-delivered photo/caption cannot double-merge into the head slot either.
-        _dedupe_id = self._fifo_message_id(event)
-        if _dedupe_id:
-            _queued_copy = self._find_queued_copy_by_message_id(session_key, _dedupe_id, adapter)
-            if _queued_copy is not None:
-                self._drop_redelivered_fifo_copy(session_key, _dedupe_id, _queued_copy)
-                return
         pending_slot = getattr(adapter, "_pending_messages", None)
         # #28503 — Previously this called ``merge_pending_message_event`` with the default
         # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
@@ -802,9 +665,8 @@ class GatewayBusySessionMixin:
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775. A primary transport can route a turn into a secondary
-        # profile, so authorize in the stamped transport scope.
-        if not self._is_user_authorized_for_source(event.source):
+        # See #17775.
+        if not self._is_user_authorized(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
@@ -1143,15 +1005,8 @@ class GatewayBusySessionMixin:
         platform = source.platform.value
         chat_type = getattr(source, "chat_type", None) or ""
         # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched. The namespace follows the source's profile so a named-profile run
-        # under multiplexing still matches its own keys.
-        prefix = ":".join([
-            _session_key_namespace(getattr(source, "profile", None)),
-            platform,
-            chat_type,
-            str(chat_id),
-            str(thread_id),
-        ])
+        # is not matched.
+        prefix = ":".join(["agent:main", platform, chat_type, str(chat_id), str(thread_id)])
         return [
             key
             for key, agent in self._running_agent_items()

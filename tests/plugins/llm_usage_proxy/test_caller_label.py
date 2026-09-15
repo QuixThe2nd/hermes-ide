@@ -409,6 +409,192 @@ def test_named_profile_proxied_request_keeps_a_client_supplied_label():
     assert proxied.headers[CALLER_LABEL_HEADER] == LABEL
 
 
+# A profile can also *choose* its label: llm_usage_proxy.caller_label in the
+# profile's own config replaces the derived one — for the default profile too,
+# so it can show up as its own subcategory instead of the flat aggregate.
+_UNSET = object()
+
+
+def _write_home_config(home, *, caller_label=_UNSET) -> None:
+    lines = ["llm_usage_proxy:"]
+    if caller_label is not _UNSET:
+        # json.dumps quotes scalars safely for YAML (spaces, unicode, long runs).
+        lines.append("  caller_label: " + json.dumps(caller_label))
+    else:
+        lines.append("  enabled: true")
+    (home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "home_name, derived",
+    [("plain-home", "hermes"), ("profiles/coder", "hermes:coder")],
+)
+def test_configured_caller_label_replaces_the_derived_one(
+    tmp_path, monkeypatch, home_name, derived
+):
+    home = tmp_path / home_name
+    home.mkdir(parents=True)
+    _write_home_config(home, caller_label="hermes:studio")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    token = set_hermes_home_override(str(home))
+    try:
+        label = _caller_label_for_profile(str(home.resolve()))
+    finally:
+        reset_hermes_home_override(token)
+
+    assert label == "hermes:studio"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "   ",
+        "has spaces",
+        "needs/slashes",
+        "ünïcode",
+        # Over-long is refused whole, not truncated to a prefix.
+        "a" * (CALLER_LABEL_MAX_CHARS + 1),
+        # Non-string YAML values are not labels.
+        123,
+        True,
+    ],
+)
+def test_unusable_configured_caller_label_falls_back_to_derivation(
+    tmp_path, monkeypatch, value
+):
+    home = tmp_path / "profiles" / "coder"
+    home.mkdir(parents=True)
+    _write_home_config(home, caller_label=value)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    token = set_hermes_home_override(str(home))
+    try:
+        label = _caller_label_for_profile(str(home.resolve()))
+    finally:
+        reset_hermes_home_override(token)
+
+    assert label == "hermes:coder"
+    assert CALLER_LABEL_RE.match(label)
+
+
+def test_configured_caller_label_absent_or_foreign_derives_as_before(
+    tmp_path, monkeypatch
+):
+    """No key, or a section another home's config belongs to, changes nothing."""
+    home = tmp_path / "profiles" / "coder"
+    home.mkdir(parents=True)
+    # A section without the key — and, below, a config read for a *different*
+    # home than the bound profile — must both derive exactly as before.
+    _write_home_config(home)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    token = set_hermes_home_override(str(home))
+    try:
+        assert _caller_label_for_profile(str(home.resolve())) == "hermes:coder"
+    finally:
+        reset_hermes_home_override(token)
+
+    other = tmp_path / "other-home"
+    other.mkdir()
+    _write_home_config(other, caller_label="hermes:someone-else")
+    assert _caller_label_for_profile(str(home.resolve())) == "hermes:coder"
+
+
+def test_default_home_configured_label_end_to_end(
+    start_upstream, start_proxy, profile_home
+):
+    """End to end: a default-home profile that chose a label is attributed it."""
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(_zai(upstream))
+    logical_base = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    _write_home_config(profile_home, caller_label="hermes:studio")
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        _activate(
+            profile_home,
+            proxy_port=proxy.server_address[1],
+            logical_base=logical_base,
+        )
+        with build_keepalive_http_client(logical_base) as client:
+            response = client.post(
+                f"{logical_base}/chat/completions",
+                json={"model": "glm-5", "messages": []},
+                headers={"Authorization": "Bearer sk-route-test"},
+            )
+            assert response.status_code == 200
+    finally:
+        reset_hermes_home_override(token)
+
+    seen = _upstream_headers(upstream)
+    assert CALLER_LABEL_HEADER.lower() not in seen
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "hermes:studio"
+
+
+def test_named_profile_configured_label_beats_the_profile_name(
+    start_upstream, start_proxy, tmp_path
+):
+    """End to end: the chosen label wins over the derived ``hermes:<name>``."""
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(_zai(upstream))
+    logical_base = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    home = tmp_path / "profiles" / "coder"
+    home.mkdir(parents=True)
+    _write_home_config(home, caller_label="hermes:studio")
+    token = set_hermes_home_override(str(home))
+    try:
+        _activate(
+            home,
+            proxy_port=proxy.server_address[1],
+            logical_base=logical_base,
+        )
+        with build_keepalive_http_client(logical_base) as client:
+            response = client.post(
+                f"{logical_base}/chat/completions",
+                json={"model": "glm-5", "messages": []},
+                headers={"Authorization": "Bearer sk-route-test"},
+            )
+            assert response.status_code == 200
+    finally:
+        reset_hermes_home_override(token)
+
+    seen = _upstream_headers(upstream)
+    assert CALLER_LABEL_HEADER.lower() not in seen
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "hermes:studio"
+
+
+def test_configured_label_still_yields_to_a_client_supplied_one(
+    start_upstream, start_proxy, profile_home
+):
+    """The configured label is a default like the derived one: a request that
+    already names itself keeps its own name."""
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(_zai(upstream))
+    logical_base = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    _write_home_config(profile_home, caller_label="hermes:studio")
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        _activate(
+            profile_home,
+            proxy_port=proxy.server_address[1],
+            logical_base=logical_base,
+        )
+        with build_keepalive_http_client(logical_base) as client:
+            response = client.post(
+                f"{logical_base}/chat/completions",
+                json={"model": "glm-5", "messages": []},
+                headers={
+                    "Authorization": "Bearer sk-route-test",
+                    CALLER_LABEL_HEADER: LABEL,
+                },
+            )
+            assert response.status_code == 200
+    finally:
+        reset_hermes_home_override(token)
+
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == LABEL
+
 # ── 5. The harness User-Agent, and the managed-mode attribution gate ─────────
 
 CLAUDE_CLI_UA = "claude-cli/2.1.226 (external, cli)"
@@ -640,3 +826,69 @@ def test_invalid_label_with_no_other_name_hits_the_gate(
     assert upstream.requests == []
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == "unattributed"
+
+
+# ── 6. Config schema registration ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "llm_usage_proxy",
+        "llm_usage_proxy.caller_label",
+        "llm_usage_proxy.port",
+        "llm_usage_proxy.enabled",
+        "llm_usage_proxy.manage_keys",
+    ],
+)
+def test_llm_usage_proxy_keys_validate_as_known(key):
+    from hermes_cli.config import _validate_config_key
+
+    is_known, suggestion = _validate_config_key(key)
+    assert is_known is True
+    assert suggestion is None
+
+
+def test_llm_usage_proxy_caller_label_typo_suggests_caller_label():
+    from hermes_cli.config import _validate_config_key
+
+    is_known, suggestion = _validate_config_key("llm_usage_proxy.caller_lable")
+    assert not is_known
+    assert suggestion is not None
+    assert "caller_label" in suggestion
+
+
+@pytest.mark.parametrize("spelling", ["123", "true", "none", "1.5"])
+def test_config_set_caller_label_preserves_string_spellings(spelling):
+    """``config set llm_usage_proxy.caller_label X`` stores X verbatim as a str.
+
+    The DEFAULT_CONFIG default is a str, so _coerce_config_set_value's
+    string-preservation branch wins over int/bool/None/float coercion —
+    a label that happens to spell a scalar is still a label.
+    """
+    from hermes_cli.config import _coerce_config_set_value
+
+    value = _coerce_config_set_value("llm_usage_proxy.caller_label", spelling)
+    assert isinstance(value, str)
+    assert value == spelling
+
+
+def test_configured_caller_label_inert_when_default_unset(tmp_path, monkeypatch):
+    """The empty-string DEFAULT_CONFIG caller_label default must not produce a label."""
+    from hermes_cli.llm_usage_routes import _configured_caller_label
+
+    home = tmp_path / "profiles" / "coder"
+    home.mkdir(parents=True)
+    _write_home_config(home)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    token = set_hermes_home_override(str(home))
+    try:
+        assert _configured_caller_label(str(home.resolve())) is None
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_default_config_llm_usage_proxy_port():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["llm_usage_proxy"]["port"] == 8790

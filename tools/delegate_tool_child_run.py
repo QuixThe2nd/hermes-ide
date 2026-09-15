@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import contextvars
 import json
-import os
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -61,24 +60,9 @@ def _with_children_lock(parent_agent: Any, op: str, child: Any) -> None:
         getattr(parent_agent._active_children, op)(child)
 
 def _attach_child(parent_agent: Any, child: Any) -> None:
-    """Register the child for parent interrupt propagation.
-
-    ``interrupt()`` fans out to a SNAPSHOT of ``_active_children``; a child attached after the stop
-    landed (a fan-out still building its siblings, a turn that has not reached its iteration check yet)
-    would otherwise start with no signal and run to completion as an orphan. Mirror a pending stop here
-    so the whole spawn tree dies with its parent."""
+    """Register the child for parent interrupt propagation."""
     if hasattr(parent_agent, "_active_children"):
         _with_children_lock(parent_agent, "append", child)
-    if getattr(parent_agent, "_interrupt_requested", False) is not True:
-        return
-    # Same soft/hard split as ``interrupt()``'s own fan-out: a hard stop cancels, a soft one redirects.
-    message = getattr(parent_agent, "_interrupt_message", None)
-    hard = getattr(parent_agent, "_hard_interrupt_requested", None)
-    if hard is None or hard.is_set():
-        _signal_child_stop(child, message or "parent agent interrupted")
-    else:
-        with _quiet("Failed to propagate interrupt to late child: %s"):
-            child.interrupt(message)
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""
@@ -560,57 +544,6 @@ def _build_result_entry(
     return entry
 
 
-def _is_image_url(ref: str) -> bool:
-    return ref.startswith(("http://", "https://", "data:image/"))
-
-
-def _build_child_goal_message(goal: str, images: List[str], child) -> Any:
-    """The child's first user message when a task forwards ``images``.
-
-    Routing reuses the inbound-image policy (``agent.image_routing``, honouring ``agent.image_input_mode``): a
-    vision-capable child gets an OpenAI-style content list (text part + one ``image_url`` part per image; local files
-    as data URLs behind the read guard, http(s)/data URLs verbatim); otherwise the goal gains ``[Image attached …]``
-    hint lines for ``vision_analyze``. Any failure degrades to the text-only goal so image plumbing never breaks a
-    spawn — logged at warning since the caller asked for the images.
-    """
-    try:
-        # data: URLs ride as image parts only — their base64 never goes into the text hint or a text-mode goal.
-        data_urls = [s for s in images if s.startswith("data:image/")]
-        urls = [s for s in images if _is_image_url(s) and s not in data_urls]
-        paths = [s for s in images if not _is_image_url(s)]
-        from agent.image_routing import build_native_content_parts, decide_image_input_mode
-        cfg = None
-        with _quiet(None):
-            from hermes_cli.config import load_config_readonly
-            cfg = load_config_readonly()
-        mode = decide_image_input_mode(
-            str(getattr(child, "provider", "") or ""), str(getattr(child, "model", "") or ""), cfg,
-            requested_provider=str(getattr(child, "requested_provider", "") or ""),
-        )
-        if mode == "native":
-            parts, skipped = build_native_content_parts(goal, paths, urls)
-            if skipped:
-                logger.warning("delegate_task: skipped %d unreadable image(s) for subagent: %s", len(skipped), ", ".join(skipped[:3]))
-            if data_urls:
-                parts = (parts or [{"type": "text", "text": goal}]) + [{"type": "image_url", "image_url": {"url": u}} for u in data_urls]
-            return parts if any(p.get("type") == "image_url" for p in parts) else goal
-        if data_urls:
-            logger.warning("delegate_task: %d inline data-URL image(s) dropped for a non-vision subagent", len(data_urls))
-        hints: List[str] = []
-        for p in paths:
-            if os.path.isfile(p):
-                hints.append(f"[Image attached at: {p}]")
-            else:
-                logger.warning("delegate_task: image path not found, not forwarded: %s", p)
-        hints.extend(f"[Image attached: {u}]" for u in urls)
-        if not hints:
-            return goal
-        return goal + "\n\n" + "\n".join(hints) + "\nUse vision_analyze to inspect these images."
-    except Exception:
-        logger.warning("delegate_task: image forwarding failed; sending text-only goal", exc_info=True)
-        return goal
-
-
 @dataclass
 class _ChildRun:
     """State of one child run, shared by every phase of ``_run_single_child``.
@@ -718,16 +651,13 @@ class _ChildRun:
         )
         # Worker thread handle so the timeout diagnostic can dump its stack.
         worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
-        # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
-        _images = list(getattr(child, "_delegate_images", None) or [])
-        user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
@@ -892,11 +822,6 @@ class _ChildRun:
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
         if not close_deferred:
             _close_child(child, "Failed to close child agent after delegation")
-        # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
-        # cap while it runs); dispose them here so they never squat the cap after the child is gone.
-        with _quiet("Failed to dispose child execute_code kernels: %s"):
-            from tools.code_kernel import shutdown_kernels_for_delegated_child
-            shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
 
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
         # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.

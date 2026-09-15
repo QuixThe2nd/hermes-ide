@@ -108,37 +108,6 @@ _ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
     # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
     "welcome-api.nousresearch.com"})
 
-# Every Nous inference gateway, production or not, lives under this domain. Consulted only when
-# the operator has pointed the process at a non-production Portal (see below).
-_NOUS_INFERENCE_HOST_SUFFIX = ".nousresearch.com"
-
-
-def _operator_selected_non_production_portal() -> bool:
-    """True when the trusted ``HERMES_PORTAL_BASE_URL`` override names a Portal outside the
-    production allowlist — the operator has deliberately put this profile on another environment.
-
-    A token minted by that Portal is meant to be spent at that environment's own inference
-    gateway, and the Portal's refresh response names it. Keyed on the operator override, never on
-    the stored ``portal_base_url``, so a poisoned auth.json cannot widen the allowlist and a
-    production-Portal session that finds a foreign inference URL in its state is still refused.
-    """
-    override = _nous_portal_env_override()
-    if not override:
-        return False
-    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS
-    host = urlparse(override).hostname
-    return bool(host) and host not in _NOUS_PORTAL_ALLOWED_HOSTS  # unparseable override: fail closed
-
-
-def _nous_inference_host_allowed(hostname: Optional[str]) -> bool:
-    """Production hosts always; any Nous-domain host when the operator selected another Portal."""
-    if hostname in _ALLOWED_NOUS_INFERENCE_HOSTS:
-        return True
-    if not hostname or not hostname.endswith(_NOUS_INFERENCE_HOST_SUFFIX):
-        return False
-    labels = hostname.removesuffix(_NOUS_INFERENCE_HOST_SUFFIX).split(".")
-    return all(labels) and _operator_selected_non_production_portal()
-
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
     """Validate a Portal-returned inference URL against the host allowlist.
@@ -157,7 +126,7 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         logger.warning(
             "nous: refusing non-https inference URL scheme %r from Portal response", parsed.scheme)
         return None
-    if not _nous_inference_host_allowed(parsed.hostname):
+    if parsed.hostname not in _ALLOWED_NOUS_INFERENCE_HOSTS:
         logger.warning(
             "nous: refusing inference URL host %r from Portal response "
             "(not in allowlist); falling back to default",
@@ -170,17 +139,10 @@ def _nous_inference_env_override() -> Optional[str]:
     """User-set ``NOUS_INFERENCE_BASE_URL`` override (trailing slash stripped) or None.
 
     Documented dev/staging escape hatch; the env source is trusted, so unlike Portal-returned URLs
-    it is intentionally NOT gated by the network host allowlist. Read through the profile-aware
-    resolver so a multiplexed profile uses its own override and never inherits the default
-    profile's process-wide value (#65941).
+    it is intentionally NOT gated by the network host allowlist.
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("NOUS_INFERENCE_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:
@@ -188,18 +150,11 @@ def _nous_portal_env_override() -> Optional[str]:
 
     Documented dev/staging escape hatch (e.g. hosted agents on the staging Portal). Trusted env
     source: must NOT be gated by ``_NOUS_PORTAL_ALLOWED_HOSTS``, which rejects untrusted
-    NETWORK-provided values persisted to auth.json, not operator config. Read through the
-    profile secret scope like ``_nous_inference_env_override``: it is reached on every routed
-    turn (``_nous_effective_routing``), and a raw environ read would POST a multiplexed
-    secondary's refresh token to the DEFAULT profile's Portal.
+    NETWORK-provided values persisted to auth.json, not operator config.
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("HERMES_PORTAL_BASE_URL") or get_secret("NOUS_PORTAL_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(
+        os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -422,7 +377,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
 
     Best-effort: failures are logged and swallowed; per-profile auth.json stays the source of truth.
     """
-    from hermes_cli.auth import _nonempty_str, _save_private_json
+    from hermes_cli.auth import _nonempty_str, _write_private_file_atomic
     refresh_token = state.get("refresh_token")
     # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
     # or a guest's anon_ credential, which is the whole identity and may not have been exchanged yet.
@@ -435,7 +390,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
-            _save_private_json(path, shared, sort_keys=True)
+            _write_private_file_atomic(
+                path, json.dumps(shared, indent=2, sort_keys=True), replace=os.replace)
         _oauth_trace(
             "nous_shared_store_written", path=str(path),
             refresh_token_fp=_token_fingerprint(refresh_token))
@@ -831,7 +787,9 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
     layers the runtime-only ``NOUS_INFERENCE_BASE_URL`` override on top and is never persisted.
     """
     from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
-    portal_url = (_optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+    portal_url = (
+        _optional_base_url(state.get("portal_base_url")) or os.getenv("HERMES_PORTAL_BASE_URL")
+        or os.getenv("NOUS_PORTAL_BASE_URL") or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
     # A persisted/stale portal_base_url is where the refresh token gets POSTed — reject any host
     # outside the allowlist so a poisoned value can't exfiltrate the bearer, healing to the
     # default. Trusted operator env overrides bypass this network-value gate.

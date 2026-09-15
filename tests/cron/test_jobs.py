@@ -880,15 +880,12 @@ class TestAdvanceNextRun:
         due_before = get_due_jobs()
         assert len(due_before) == 1
 
-        # Advance + claim (what tick() does before run_job); the claim is the point after which
-        # side effects may exist, so a restart after it must not re-fire (#3396). A restart
-        # BEFORE the claim restores the occurrence instead (#107485, test_missed_window_catchup).
+        # Advance (simulating what tick() does before run_job)
         advance_next_run(job["id"])
-        assert claim_job_for_fire(job["id"])
 
-        # Now the job should NOT be due (simulates restart after a mid-run crash)
+        # Now the job should NOT be due (simulates restart after crash)
         due_after = get_due_jobs()
-        assert len(due_after) == 0, "Job should not be due after advance + claim"
+        assert len(due_after) == 0, "Job should not be due after advance_next_run"
 
 
 class TestGetDueJobs:

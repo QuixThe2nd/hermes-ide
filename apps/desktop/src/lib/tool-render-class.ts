@@ -21,10 +21,11 @@ export function isFileEditTool(toolName: string): boolean {
 //   - File edits are the deliverable, not scaffolding. The diff is what the
 //     user reviews, so it stays visible at its place in the turn, live and
 //     settled, the way a PR shows its changes.
-//   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
+//   - `clarify`, `image_generate` and `delegate_agent` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
-//   - `manage_connections` is a consent card; its controls must stay visible.
+//   - `setup_mcp` is the same kind: an inline consent card the user has to
+//     act on. Folding it into a "Using 2 tools" summary hides the buttons.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -34,18 +35,11 @@ const CARD_TOOL_NAMES = new Set([
   // Legacy spelling from transcripts recorded before the rename.
   'delegate_task',
   'image_generate',
+  'setup_mcp',
 ])
 
-// Name the run splitter uses for a manage_connections part it has classified as a card.
-export const CONNECTION_CARD_KEY = 'manage_connections:card'
-
 export function isCardTool(toolName: string): boolean {
-  return (
-    CARD_TOOL_NAMES.has(toolName) ||
-    toolName === CONNECTION_CARD_KEY ||
-    isFileEditTool(toolName) ||
-    toolName === 'manage_connections'
-  )
+  return CARD_TOOL_NAMES.has(toolName) || isFileEditTool(toolName)
 }
 
 // Activity tools that render nothing at all: `todo` parts are hoisted to a

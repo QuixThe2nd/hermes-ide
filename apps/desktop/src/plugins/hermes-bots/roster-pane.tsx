@@ -36,7 +36,6 @@ import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from 
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
-import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
@@ -298,10 +297,8 @@ export function BotsPane() {
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
 
-  const groupKeys = useValue($activeGroupMemberKeys)
-
   const activeRosterKeys = new Set(
-    activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId, groupKeys).map(botRosterKey)
+    activeBots(roster, workingOwner, turnBusy, Date.now(), activeConnectionId).map(botRosterKey)
   )
 
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)

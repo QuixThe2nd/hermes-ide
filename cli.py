@@ -17,6 +17,7 @@ import re
 import atexit
 import errno
 import time
+import uuid
 import textwrap
 from collections import deque
 from dataclasses import dataclass
@@ -51,10 +52,6 @@ from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
-try:
-    from prompt_toolkit.enums import EditingMode
-except ImportError:  # partial prompt_toolkit stubs in tests
-    EditingMode = None
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -170,9 +167,8 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
 from hermes_constants import get_hermes_home
-from hermes_state_ids import new_session_id
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, base_url_hostname, fast_safe_load, is_truthy_value
+from utils import base_url_host_matches, base_url_hostname, fast_safe_load
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -962,16 +958,10 @@ def _wait_for_oneshot_background_completions(cli) -> None:
     Waits on the whole registry: a one-shot process hosts one agent, and task_id
     filtering would skip processes registered before the session id settled.
 
-    Skipped when the quiet -Q notify-resume loop already consumed the run's linger
-    budget: it calls wait_for_pending_completions with a shared deadline, so a
-    re-wait here would double-block on the same stuck notify_on_complete child.
-
     See #90879.
     """
     from tools.process_registry import process_registry
 
-    if getattr(cli, "_quiet_notify_linger_done", False):
-        return
     _agent, task_id = _oneshot_agent_and_session(cli)
     result = process_registry.wait_for_pending_completions(None)
     if result.get("waited"):
@@ -2156,7 +2146,7 @@ def _terminal_may_leak_cpr() -> bool:
 
     Delayed CPR replies (``ESC[<row>;<col>R`` / visible ``^[[<row>;<col>R``) leak into the status line and
     can freeze input when the reply is slow (#13870 on SSH/slow PTYs). The same race hits local POSIX TTYs
-    under heavy subagent / status-line load — see ``tests/hermes_cli/test_cpr_local_leak.py``.
+    under heavy subagent / status-line load — see ``tests/cli/test_cpr_local_leak.py``.
     """
     return os.environ.get("PROMPT_TOOLKIT_NO_CPR", "") == "1" or sys.platform != "win32"
 
@@ -2310,7 +2300,7 @@ def _build_compact_banner() -> str:
     dim_color = _color("banner_dim", "#B8860B")
 
     if (getattr(_skin, "name", "default") if _skin else "default") == "default":
-        tiny_line = "☤ NOUS HERMES"
+        tiny_line = "⚕ NOUS HERMES"
     else:
         tiny_line = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
     line1 = f"{tiny_line} - AI Agent Framework"
@@ -2789,7 +2779,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
-        self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+        self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
@@ -2853,7 +2843,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._init_session_store()
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
-        self.session_id = resume or new_session_id(self.session_start)
+        self.session_id = resume or f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         self._history_file = _hermes_home / ".hermes_history"
@@ -2865,12 +2855,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._session_db = None
         self._session_db_unavailable = False
         try:
-            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
-            # path a moment later from the REPL thread, and a second writer repeats the full
-            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
-            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
-            from hermes_state_registry import acquire
-            self._session_db = acquire()
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -2952,9 +2938,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._prompt_stash = _PromptStash()
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
-        # skills.auto_load rendered in the preload thread; None until joined. Handed to every
-        # agent this CLI builds so the prompt bytes never depend on when the agent was created.
-        self._auto_load_skills_result: Optional[tuple] = None
         # Background --skills preload, joined by finalize_preloaded_skills before any agent is built.
         self._preload_skills_thread: Optional[threading.Thread] = None
         self._preload_skills_result: Optional[tuple] = None
@@ -2976,9 +2959,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
-        # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
-        # Off by default: prompt_toolkit's standard emacs bindings.
-        self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
         # Hide rules + status bar until the next input after a resize, so SIGWINCH cannot
         # stamp a fresh status bar over one the terminal just reflowed into scrollback.
         self._status_bar_suppressed_after_resize = self._resize_recovery_pending = False
@@ -3044,6 +3024,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
+        try:
+            from tools.computer_use_tool import set_approval_callback as _set_cu_cb
+
+            _set_cu_cb(self._computer_use_approval_callback)
+        except ImportError:
+            pass
         self._tool_callbacks_installed = True
 
     def _ensure_tirith_security(self) -> None:
@@ -3103,11 +3089,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         err = getattr(self, "_preload_skills_error", None)
         if err is not None:
             raise err
-        auto_result = getattr(self, "_auto_load_skills_result", None)
-        if auto_result and auto_result[2]:
-            logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(auto_result[2]))
-        # auto_load names first, then explicit -s names that were not already pinned.
-        self.preloaded_skills = list(auto_result[1]) if auto_result else []
         result = getattr(self, "_preload_skills_result", None)
         if not result:
             return
@@ -3127,7 +3108,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
-        self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]
+            self.preloaded_skills = loaded_skills
 
     def _show_tool_availability_warnings(self):
         """Warn about tools disabled by missing API keys (not system deps)."""
@@ -3488,11 +3469,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
-        from tools.process_registry_notifications import TimelineNotification
+        from tools.process_registry_notifications import SubagentNotification
+        notification_preview = user_input if isinstance(user_input, SubagentNotification) else None
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
-        notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
         self._status_bar_suppressed_after_resize = False  # input ends post-resize suppression
 
         submit_images = []
@@ -3790,10 +3771,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             extra_kw["output"] = _cpr_disabled_output
         if _STEADY_CURSOR is not None:
             extra_kw["cursor"] = _STEADY_CURSOR
-        if EditingMode is not None:
-            # Vi editing mode when display.vim_mode is on.
-            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
-            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
         return Application(
             layout=layout,
             key_bindings=kb,
@@ -4107,63 +4084,24 @@ def _sync_cli_session_id_from_agent(cli) -> None:
 
 def _run_quiet_single_query(cli, effective_query):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
-    HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it.
-    Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
-    before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
-    stranded receipt."""
+    HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it."""
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
-    from hermes_cli.quiet_single_query import (
-        bind_quiet_session_key, continue_quiet_notify_completions, quiet_notify_linger_seconds,
-    )
 
     author = take_turn_author_from_env()
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
-    with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
-        try:
-            result = cli.agent.run_conversation(
-                user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
-            )
-        except KeyboardInterrupt:
-            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-            sys.exit(130)
-        # The exit line below reports session_id to stderr for automation wrappers;
-        # without this sync it would point at the ended parent after compression.
-        _sync_cli_session_id_from_agent(cli)
-        if isinstance(result, dict) and not result.get("failed"):
-            history = result.get("messages") or cli.conversation_history
-
-            def _follow_up(text):
-                nonlocal history
-                follow = cli.agent.run_conversation(
-                    user_message=text, conversation_history=history, **author_kwargs,
-                )
-                if isinstance(follow, dict) and follow.get("messages"):
-                    history = follow["messages"]
-                # Same sync contract as the main turn: a compression rotation during a
-                # follow-up must not leave a stale id on the exit line / drain key.
-                _sync_cli_session_id_from_agent(cli)
-                return follow
-
-            # One shared linger budget for the whole run: the loop below and the later
-            # _wait_for_oneshot_background_completions pass must not each wait the full
-            # oneshot_completion_wait_seconds on the same stuck notify_on_complete child.
-            # Flagged after the loop (finally-equivalent): the wait is the loop's first
-            # statement, so anything raising past that point has consumed budget the
-            # finalize pass must not re-wait.
-            try:
-                continued = continue_quiet_notify_completions(
-                    getattr(cli, "session_id", "") or "",
-                    _follow_up,
-                    owns_event=getattr(cli, "_owns_process_notification", None),
-                    linger_budget=quiet_notify_linger_seconds(),
-                )
-            finally:
-                cli._quiet_notify_linger_done = True
-            if isinstance(continued, dict):
-                result = continued
-        response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+    try:
+        result = cli.agent.run_conversation(
+            user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
+        )
+    except KeyboardInterrupt:
+        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+        sys.exit(130)
+    # The exit line below reports session_id to stderr for automation wrappers;
+    # without this sync it would point at the ended parent after compression.
+    _sync_cli_session_id_from_agent(cli)
+    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
     if (
@@ -4365,29 +4303,18 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             sys.exit(1)
         raise
 
-    # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
-    # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the
-    # session id is real for ${HERMES_SESSION_ID} and -s can dedupe against it.
-    from agent.skill_commands import build_auto_load_prompt, resolve_auto_load_skills
-    auto_load_names = [] if getattr(cli, "ignore_rules", ignore_rules) else resolve_auto_load_skills(CLI_CONFIG)
-    if not auto_load_names:
-        cli._auto_load_skills_result = ("", [], [])
-    if parsed_skills or auto_load_names:
+    if parsed_skills:
         # Load the skill payloads in the background: skill_view walks the full skills
         # tree per skill (~0.5s for a large library) and the result is only consumed
         # at agent init, not by the banner. finalize_preloaded_skills() joins the
         # thread before any consumer reads cli.system_prompt.
         def _load_preloaded_skills() -> None:
             try:
-                if auto_load_names:
-                    cli._auto_load_skills_result = build_auto_load_prompt(task_id=cli.session_id, user_config=CLI_CONFIG)
-                if parsed_skills:
-                    cli._preload_skills_result = build_preloaded_skills_prompt(
-                        parsed_skills, task_id=cli.session_id, excluded_loaded_names=set(cli._auto_load_skills_result[1]))
+                cli._preload_skills_result = build_preloaded_skills_prompt(parsed_skills, task_id=cli.session_id)
             except Exception as exc:  # surfaced by finalize
                 cli._preload_skills_error = exc
 
-        cli._preload_skills_requested = [*auto_load_names, *(s for s in parsed_skills if s not in auto_load_names)]
+        cli._preload_skills_requested = parsed_skills
         cli._preload_skills_thread = threading.Thread(target=_load_preloaded_skills, name="skills-preload", daemon=True)
         cli._preload_skills_thread.start()
     return cli

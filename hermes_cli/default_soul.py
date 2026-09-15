@@ -76,8 +76,12 @@ _LEGACY_TEMPLATE_SOULS = (
         "example, read into a shell variable) so they stay out of "
         "transcripts."
     ),
-    # ASCII-dashed variant seeded by scripts/install.ps1 (must stay pure ASCII, see
-    # tests/scripts/install/test_install_ps1_ascii_only.py); upgrading converges Windows installs on the em-dash text.
+    # ASCII-dashed variant of the current DEFAULT_SOUL_MD, as seeded by
+    # scripts/install.ps1 (which must stay pure ASCII -- see
+    # tests/test_install_ps1_ascii_only.py -- so it writes "--" where the
+    # canonical text has an em-dash). Still pure auto-seed, zero user intent;
+    # upgrading it in place converges Windows installs onto the canonical
+    # em-dash text on first run.
     DEFAULT_SOUL_MD.replace("\u2014", "--"),
 )
 
