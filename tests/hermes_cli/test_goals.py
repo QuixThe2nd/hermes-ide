@@ -454,6 +454,20 @@ class TestWaitBarrier:
             proc.terminate()
             proc.wait(timeout=10)
 
+    def test_wait_on_rejects_a_pid_not_alive_on_this_host(self, hermes_home, monkeypatch):
+        """Regression for #110826: do not persist a barrier for remote/dead PIDs."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        monkeypatch.setattr(goals, "_pid_alive", lambda pid: False)
+        mgr = GoalManager(session_id="wb-dead")
+        mgr.set("ship it")
+
+        with pytest.raises(ValueError, match="not alive on this host"):
+            mgr.wait_on(4242, reason="remote CI")
+
+        assert mgr.state.waiting_on_pid is None
+
 
     def test_stop_waiting_clears_barrier(self, hermes_home):
         from hermes_cli.goals import GoalManager

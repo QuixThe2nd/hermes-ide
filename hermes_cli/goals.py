@@ -1362,6 +1362,8 @@ class GoalManager:
         pid = int(pid)
         if pid <= 0:
             raise ValueError("pid must be a positive integer")
+        if not _pid_alive(pid):
+            raise ValueError("pid is not alive on this host")
         return self._park(reason, waiting_on_pid=pid)
 
     def wait_on_session(self, session_id: str, reason: str = "") -> GoalState:
