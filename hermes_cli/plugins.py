@@ -1389,9 +1389,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
         # Latch cells (_HookGenerationState) for bounded-hook callbacks keyed by (hook_name,
-        # id(cb)): a still-executing generation blocks duplicate fires, and only a timed-out one
-        # is superseded once the suppression window expires — a stuck policy hook can neither run
-        # twice concurrently nor spawn a new abandoned thread on every fire.
+        # id(cb), call_identity): a still-executing generation blocks duplicate fires, and only a
+        # timed-out one is superseded once the suppression window expires — a stuck policy hook
+        # can neither run twice concurrently nor spawn a new abandoned thread on every fire.
+        # (Abandonment bookkeeping stays coarse-keyed by (hook_name, id(cb)).)
         self._hook_running_callbacks: Dict[tuple, object] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()

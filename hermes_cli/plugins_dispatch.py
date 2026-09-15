@@ -342,7 +342,13 @@ class PluginDispatchMixin:
                 if current is not None and current.token is token:
                     current.timed_out_at = timed_out_at
                 self._hook_timeout_suppressed_until[suppression_key] = timed_out_at + suppression
-                self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
+                # The worker may have finished (and released its token) between the wait
+                # expiring and this lock; recording it as abandoned then would block the
+                # callback for that call id until reload with no thread behind it.
+                # Generation-latch form of upstream's `is token` guard: only mark abandoned
+                # while this invocation's generation still owns the gate entry.
+                if current is not None and current.token is token:
+                    self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping (retry suppressed for %gs)",
                 hook_name, callback_name, timeout, suppression)
