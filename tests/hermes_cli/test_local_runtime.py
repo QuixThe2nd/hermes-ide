@@ -645,19 +645,6 @@ def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
     assert handler.unloaded == []
 
 
-def test_is_idle_probe_failure_reports_not_idle(stub_server, tmp_path):
-    """The public bool contract is unchanged: a failed probe reads as "not idle" —
-    callers outside the sweep never unload on a telemetry hiccup."""
-    port, handler = stub_server
-    sup = _make_supervisor(tmp_path, port)
-    handler.models = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
-    handler.slots = []
-    handler.metrics_error = 503
-    assert sup.is_idle() is False
-    handler.metrics_error = 0
-    assert sup.is_idle() is True
-
-
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read

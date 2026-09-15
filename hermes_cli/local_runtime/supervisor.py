@@ -390,12 +390,8 @@ class LlamaServerSupervisor:
                 continue
             probe = self._probe_idle(model_id)
             if probe is None:
-                idle_for = int(now - self._idle_since.get(model_id, now))
-                logger.info(
-                    "idle probe for %s failed; keeping idle clock (idle %ds)",
-                    model_id,
-                    idle_for,
-                )
+                logger.info("idle probe for %s failed; keeping idle clock (idle %ds)", model_id,
+                            int(now - self._idle_since.get(model_id, now)))
                 continue
             if probe is False:
                 self._idle_since.pop(model_id, None)
