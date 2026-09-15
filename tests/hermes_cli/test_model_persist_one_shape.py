@@ -132,6 +132,24 @@ def test_custom_to_other_custom_endpoint_drops_the_inline_key(seeded_home):
     assert "api_key" not in _model_block(seeded_home)
 
 
+def test_provider_switch_drops_the_key_env_pointer_but_a_same_route_repick_keeps_it(seeded_home):
+    """``model.key_env`` is a credential POINTER (custom-endpoint activation writes it with no inline
+    key). Surviving a provider switch it routes the new provider's requests to the old endpoint's
+    env var, so it clears like ``api_key``; a same-route re-pick keeps it like ``api_key``."""
+    from hermes_cli.model_switch import persist_model_selection
+    seed = _SEED.replace("  api_key: sk-stale\n", "  key_env: CUSTOM_BOX_API_KEY\n")
+    (seeded_home / "config.yaml").write_text(seed, encoding="utf-8")
+    persist_model_selection(_RESULT)
+    assert "key_env" not in _model_block(seeded_home)
+
+    (seeded_home / "config.yaml").write_text(seed, encoding="utf-8")
+    same_route = ModelSwitchResult(
+        success=True, new_model="local-model", target_provider="custom",
+        base_url="http://localhost:1234/v1", api_mode="anthropic_messages", is_global=True)
+    persist_model_selection(same_route)
+    assert _model_block(seeded_home)["key_env"] == "CUSTOM_BOX_API_KEY"
+
+
 def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypatch):
     """Multiplexed gateway: the write lands in the routed profile's config.yaml, never the
     process-level HERMES_HOME."""

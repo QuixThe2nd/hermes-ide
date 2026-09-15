@@ -1543,7 +1543,11 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
     targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
     provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
-    The dashboard re-adds an explicitly submitted key after this (``_apply_main_model_assignment``)."""
+    The ``key_env`` / ``api_key_env`` credential POINTER (written by custom-endpoint activation,
+    resolved by runtime_provider / auxiliary_client) clears under the same rule: left behind, it
+    routes the NEW provider's requests to the OLD endpoint's env var. The dashboard re-adds an
+    explicitly submitted key / the target provider's own pointer after this
+    (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
@@ -1557,7 +1561,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
     if not target.startswith("custom") or _route_changed(model_cfg, result):
-        for key in ("api_key", "api"):
+        for key in ("api_key", "api", "key_env", "api_key_env"):
             if key in model_cfg:
                 updates[key] = None
     return updates
