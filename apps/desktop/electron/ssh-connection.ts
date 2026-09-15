@@ -346,10 +346,7 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
 // session pipes would keep the ssh channel open until the full timeout even on
 // the healthy path. Detached, the orphan is a benign self-reaping `sleep`.
 function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
-  const secs =
-    Number.isFinite(timeoutSecs) && timeoutSecs > 0
-      ? Math.floor(timeoutSecs)
-      : REMOTE_PROBE_TIMEOUT_SECS
+  const secs = Number.isFinite(timeoutSecs) && timeoutSecs > 0 ? Math.floor(timeoutSecs) : REMOTE_PROBE_TIMEOUT_SECS
 
   return (
     `(${remoteCommand}) </dev/null & __htp=$!; ` +

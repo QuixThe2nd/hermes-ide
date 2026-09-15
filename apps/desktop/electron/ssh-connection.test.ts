@@ -1075,6 +1075,10 @@ test('stopTunnelChild waits for process exit', async () => {
 })
 
 test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
+  if (process.platform === 'win32') {
+    return
+  }
+
   // Shape: POSIX watchdog — macOS remotes have no GNU `timeout`.
   const wrapped = withRemoteTimeout('hermes --version 2>&1', 15)
 
@@ -1098,10 +1102,13 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   // session pipes open until the full timeout on the healthy path.
   assert.ok(healthyElapsed < 4000, `healthy probe returned fast (took ${healthyElapsed}ms)`)
 
-  // … a hung command is killed promptly with a non-zero exit …
+  // … a hung command is killed promptly with a non-zero exit … The duration
+  // is unique to this run so the orphan sweep below cannot match an unrelated
+  // `sleep` on a busy host.
+  const hungSecs = 30_000 + (process.pid % 10_000)
   const start = Date.now()
 
-  const err: any = await execFileAsync('sh', ['-c', withRemoteTimeout('sleep 30', 1)]).then(
+  const err: any = await execFileAsync('sh', ['-c', withRemoteTimeout(`sleep ${hungSecs}`, 1)]).then(
     () => null,
     e => e
   )
@@ -1109,10 +1116,10 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   const elapsed = Date.now() - start
 
   assert.ok(err && err.code !== 0, 'hung command must exit non-zero')
-  assert.ok(elapsed < 15000, `watchdog fired promptly instead of waiting 30s (took ${elapsed}ms)`)
+  assert.ok(elapsed < 15000, `watchdog fired promptly instead of waiting ${hungSecs}s (took ${elapsed}ms)`)
 
   // … and no orphan is left behind.
-  const { stdout: strays } = await execFileAsync('sh', ['-c', 'ps -eo args | grep "[s]leep 30" || true'])
+  const { stdout: strays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${hungSecs}$" || true`])
 
   assert.equal(strays.trim(), '', 'killed probe left no orphan process')
 })

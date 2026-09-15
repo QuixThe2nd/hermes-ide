@@ -477,7 +477,9 @@ test('connect() fails closed on lockfile schema/ownership skew: skips reap, touc
       `${label}: connect must refuse with remote-lockfile-skew`
     )
     assert.ok(
-      !ssh.calls.some(c => /(^|[^-\d])kill -9 \d+/.test(c) && !/kill -0/.test(c)),
+      // Any signal, a literal pid: the probe watchdog's `kill -9 $__htp`
+      // targets its own child, not a lockfile pid.
+      !ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? \d/.test(c) && !/kill -0/.test(c)),
       `${label}: must not kill any pid`
     )
     assert.ok(!ssh.calls.some(c => /rm -f/.test(c)), `${label}: must not remove any remote file`)
