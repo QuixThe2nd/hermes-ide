@@ -12493,8 +12493,13 @@ class GatewayRunner(
         """Dedupe key for queue re-delivery: the inbound platform message id.
 
         Synthetic events (goal continuations, heartbeats) carry no id and are
-        never deduped — each is a distinct turn by construction.
+        never deduped — each is a distinct turn by construction. Internal
+        synthetic events are also exempt: watch-notification/completion events
+        inherit the spawning turn's reply-anchor id, so distinct internal
+        events can legitimately share one message id.
         """
+        if getattr(event, "internal", False):
+            return ""
         message_id = getattr(event, "message_id", None)
         return str(message_id).strip() if message_id else ""
 

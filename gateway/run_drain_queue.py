@@ -363,13 +363,14 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     disk, so True stays an honest ack — the queue holds the message, just
     not twice. Without this, a platform re-delivery inside the drain window
     wrote N records and the boot replay injected N turns for one message.
+    Internal synthetic events are exempt from this dedupe.
     """
     path = drain_queue_path()
     events = _load_snapshot_events(path)
     cap = int(getattr(runner, "_BUSY_QUEUE_MAX_PENDING", 32))
     session = str(session_key or "")
     message_id = str(getattr(event, "message_id", "") or "").strip()
-    if message_id:
+    if message_id and not getattr(event, "internal", False):
         for item in events:
             if item.get("session_key") != session:
                 continue
@@ -816,6 +817,7 @@ def replay_drain_queue(
         message_id = str(getattr(event, "message_id", "") or "").strip()
         if message_id and any(
             str(getattr(existing, "message_id", "") or "").strip() == message_id
+            and not getattr(existing, "internal", False)
             for existing, _existing_record in group
         ):
             dropped_redeliveries += 1
