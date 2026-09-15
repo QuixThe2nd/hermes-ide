@@ -493,9 +493,7 @@ class PairingStore:
         """
         with self._lock:
             self._cleanup_expired(platform)
-            # Chat UIs insert visual spacing between code characters; strip all
-            # whitespace, then match exactly (surrounding words still fail). #89937
-            code = "".join(str(code or "").upper().split())
+            code = code.upper().strip()
             # Before the lookup, or an already-issued valid code would bypass lockout.
             if self._is_locked_out(platform):
                 return None

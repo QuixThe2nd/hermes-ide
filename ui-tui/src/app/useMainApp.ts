@@ -67,13 +67,6 @@ import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
-import {
-  BACKEND_GAVE_UP_ACTIVITY,
-  BACKEND_RESTARTING,
-  BACKEND_RESTARTING_ACTIVITY,
-  backendGaveUp,
-  lastStderrLine
-} from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 
@@ -251,8 +244,6 @@ export function useMainApp(gw: GatewayClient) {
   const lastUserMsgRef = useRef(lastUserMsg)
   const recoverSidRef = useRef<null | string>(null)
   const recoveryAtRef = useRef<number[]>([])
-  // "Hermes stopped and could not be restarted" is said once per outage; reset on gateway.ready.
-  const gaveUpRef = useRef(false)
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
   const msgIdSeqRef = useRef(0)
   const heightCachesRef = useRef(new Map<string, Map<string, number>>())
@@ -946,13 +937,7 @@ export function useMainApp(gw: GatewayClient) {
   onServerRequestRef.current = onServerRequest
 
   useEffect(() => {
-    const handler = (ev: AnyGatewayEvent) => {
-      if (ev.type === 'gateway.ready') {
-        gaveUpRef.current = false
-      }
-
-      onEventRef.current(ev)
-    }
+    const handler = (ev: AnyGatewayEvent) => onEventRef.current(ev)
 
     const requestHandler = (request: ServerRequest) => {
       if (!onServerRequestRef.current(request)) {
@@ -960,7 +945,7 @@ export function useMainApp(gw: GatewayClient) {
       }
     }
 
-    const exitHandler = (code: null | number) => {
+    const exitHandler = () => {
       turnController.reset()
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
@@ -978,30 +963,20 @@ export function useMainApp(gw: GatewayClient) {
       // dead/respawning gateway. recoverSidRef carries the session forward, and
       // resumeById restores sid once the fresh gateway is ready.
       recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, compacting: false, sid: null, status: 'restarting…' })
+      patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
-        turnController.pushActivity(BACKEND_RESTARTING_ACTIVITY, 'warn')
-        sys(BACKEND_RESTARTING)
+        turnController.pushActivity('gateway exited · recovering session…', 'warn')
+        sys('gateway exited — recovering your session (any in-flight reply was lost)')
         gw.start()
 
         return
       }
 
-      // Budget spent (crash loop) or nothing to recover: GatewayClient keeps
-      // retrying on its backoff — say so ONCE, with the exit code and the last
-      // stderr line, rather than repeating "gateway exited" every tick. Keep the
-      // recovery target: when that background reconnect eventually succeeds,
-      // gateway.ready must reopen the SAME chat instead of forging a new one.
-      recoverSidRef.current = plan.sid
-      patchUiState({ status: 'stopped' })
-
-      if (!gaveUpRef.current) {
-        gaveUpRef.current = true
-        turnController.pushActivity(BACKEND_GAVE_UP_ACTIVITY, 'error')
-        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)))}`)
-      }
+      recoverSidRef.current = null
+      turnController.pushActivity('gateway exited · /logs to inspect', 'error')
+      sys('error: gateway exited')
     }
 
     gw.on('event', handler)

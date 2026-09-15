@@ -74,7 +74,6 @@ import {
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
-import { describeBootstrapFailure, missingInstallPartMessage } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
@@ -398,7 +397,6 @@ import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from '
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
-  describeUpdaterHandoffFailure,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
@@ -2476,31 +2474,10 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
-      const handoffLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')
-
-      // Async so boot is not blocked behind the dialog; the response handlers
-      // reuse the menu's open-updates path (queued until the renderer is ready)
-      // and the same reveal primitive as 'hermes:logs:reveal'.
-      void dialog
-        .showMessageBox({
-          type: 'error',
-          title: 'Hermes update',
-          message: "Hermes couldn't finish updating",
-          detail:
-            "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
-            `Details: ${result.message}`,
-          buttons: ['Try again', 'Open log', 'Close'],
-          defaultId: 0,
-          cancelId: 2,
-          noLink: true
-        })
-        .then(({ response }) => {
-          if (response === 0) {
-            sendOpenUpdatesRequested()
-          } else if (response === 1) {
-            shell.showItemInFolder(handoffLogPath)
-          }
-        })
+      dialog.showErrorBox(
+        'Hermes update did not finish',
+        `${result.message}\n\nDetails: ${path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')}`
+      )
     }
   } catch (err) {
     rememberLog(`[updates] could not read hand-off result: ${err.message}`)
@@ -3159,9 +3136,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
     return {
       supported: false,
       reason: 'not-a-git-checkout',
-      message:
-        "This copy of Hermes can't update itself from inside the app. Download the latest version from the Hermes website, " +
-        `or reinstall Hermes to enable in-app updates. Details: ${updateRoot} has no version-control metadata.`,
+      message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
       hermesRoot: updateRoot,
       branch
     }
@@ -4286,7 +4261,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
 
     if (!handoffOutcome.ok) {
-      const message = describeUpdaterHandoffFailure(handoffOutcome)
+      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
 
       rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
       emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -4639,7 +4614,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
 
   if (!handoffOutcome.ok) {
-    const message = describeUpdaterHandoffFailure(handoffOutcome)
+    const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
 
     rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
     emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -5273,10 +5248,10 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
     }
 
     if (!bootstrapResult.ok) {
-      // Plain lead sentence + trailing "Details:" line; the install overlay
-      // shows this verbatim and offers Reload and retry / Open logs itself.
       const bootstrapError = new Error(
-        describeBootstrapFailure(bootstrapResult.failedStage, bootstrapResult.error)
+        `Hermes bootstrap failed${bootstrapResult.failedStage ? ` at stage '${bootstrapResult.failedStage}'` : ''}: ` +
+          `${bootstrapResult.error || 'unknown error'}. ` +
+          `Check ${path.join(HERMES_HOME, 'logs', 'desktop.log')} for the full transcript.`
       ) as any
 
       bootstrapError.isBootstrapFailure = true
@@ -5302,7 +5277,10 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   // (install.ps1 owns those concerns now and the bootstrap-complete marker
   // attests they ran successfully).
   if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT)) {
-    throw new Error(missingInstallPartMessage(`Hermes source files are missing or incomplete at ${ACTIVE_HERMES_ROOT}`))
+    throw new Error(
+      `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
+        'Reinstall via the desktop installer or scripts/install.ps1.'
+    )
   }
 
   // On Windows, preflight Git Bash. Hermes' terminal tool calls bash.exe
@@ -5313,8 +5291,10 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   // here via an external `hermes` on PATH, this check still helps.
   if (IS_WINDOWS && !findGitBash()) {
     throw new Error(
-      "Hermes needs a helper called Git for Windows, which isn't installed. " +
-        'Choose Repair install to add it automatically, or install it yourself from git-scm.com and reopen Hermes.'
+      'Git for Windows is required for Hermes on Windows (provides Git Bash, ' +
+        "which the agent's terminal tool uses). Install it from " +
+        'https://git-scm.com/download/win or run `winget install -e --id Git.Git`, ' +
+        'then relaunch Hermes.'
     )
   }
 
@@ -5328,7 +5308,9 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
     // plus an importable hermes_cli before it hands back the active runtime.
     // If we hit this, the user (or a deleted venv) broke the invariant; tell
     // them to re-run the install.
-    throw new Error(missingInstallPartMessage(`Python environment missing at ${VENV_ROOT}`))
+    throw new Error(
+      `Hermes venv missing at ${VENV_ROOT}. Re-run the desktop installer or ` + '`scripts/install.ps1` to rebuild it.'
+    )
   }
 
   backend.command = getVenvPython(VENV_ROOT)
@@ -6853,23 +6835,15 @@ async function showPluginCompatNoticeOnce() {
   rememberLog(`[plugins] compat notice shown (${notice.key})`)
 
   try {
-    // 'OK' is the default and cancel so a stray Enter/Escape never navigates;
-    // 'Open Plugins' rides the existing deep-link channel (hermes://open/…),
-    // which the renderer already maps to its hash router.
-    const { response } = await dialog.showMessageBox(mainWindow, {
+    await dialog.showMessageBox(mainWindow, {
       type: 'warning',
       title: notice.title,
       message: notice.message,
       detail: notice.detail,
-      buttons: ['Open Plugins', 'OK'],
-      defaultId: 1,
-      cancelId: 1,
+      buttons: ['OK'],
+      defaultId: 0,
       noLink: true
     })
-
-    if (response === 0) {
-      handleDeepLink(`${HERMES_PROTOCOL}://open/skills?tab=plugins`)
-    }
   } finally {
     try {
       recordPluginCompatDismissed(app.getPath('userData'), notice.key)
@@ -6880,12 +6854,7 @@ async function showPluginCompatNoticeOnce() {
 }
 
 function sendOpenUpdatesRequested() {
-  // The renderer mounts its open-updates listener in the same effect pass that
-  // signals deep-link readiness. Before that (e.g. a boot-time dialog answered
-  // before the window is up) queue the request; 'hermes:deep-link-ready' flushes it.
-  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
-    _pendingOpenUpdates = true
-
+  if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
 
@@ -17944,8 +17913,6 @@ const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
 const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
-// Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
-let _pendingOpenUpdates = false
 
 function _extractDeepLink(argv) {
   if (!Array.isArray(argv)) {
@@ -18010,11 +17977,6 @@ function handleDeepLink(url) {
 // a link that arrived during boot/install is flushed exactly once.
 ipcMain.handle('hermes:deep-link-ready', () => {
   _rendererReadyForDeepLink = true
-
-  if (_pendingOpenUpdates) {
-    _pendingOpenUpdates = false
-    sendOpenUpdatesRequested()
-  }
 
   if (_pendingDeepLink) {
     const queued = _pendingDeepLink

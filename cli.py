@@ -4105,9 +4105,8 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-def _run_quiet_single_query(cli, effective_query, emitter=None):
+def _run_quiet_single_query(cli, effective_query):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
-    With a ``StreamJsonEmitter`` the final answer and the exit line become the terminal ``result`` JSONL record instead.
     HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it.
     Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
     before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
@@ -4127,8 +4126,6 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             )
         except KeyboardInterrupt:
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-            if emitter is not None:
-                sys.exit(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
             sys.exit(130)
         # The exit line below reports session_id to stderr for automation wrappers;
@@ -4169,9 +4166,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
-    if emitter is not None:
-        pass  # the result record below carries text/error; nothing else may touch stdout
-    elif (
+    if (
         not response and isinstance(result, dict) and result.get("error")
         and (result.get("failed") or result.get("partial"))
     ):
@@ -4187,8 +4182,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         except Exception as _goal_exc:
             logger.debug("kanban goal loop failed: %s", _goal_exc)
 
-    if emitter is None:
-        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
     # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
@@ -4202,8 +4196,6 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 _exit_code = _RL_CODE
             except Exception:
                 _exit_code = 1
-    if emitter is not None:
-        _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
     sys.exit(_exit_code)
 
 
@@ -4482,9 +4474,8 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
-def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
-    """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
-    ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
+def _run_single_query_mode(cli, query, image, quiet, oneshot):
+    """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit."""
     if _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
         logger.info(
@@ -4511,12 +4502,6 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"
-            emitter = None
-            if stream_json:
-                # Built BEFORE credentials/agent init so a failed start still closes the protocol
-                # (init + result) instead of exiting 1 with an empty stdout.
-                from hermes_cli.stream_json import StreamJsonEmitter
-                emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "")
             if cli._ensure_runtime_credentials():
                 effective_query: Any = _route_single_query_images(
                     cli, query, query, single_query_images, single_query_image_urls
@@ -4530,13 +4515,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     request_overrides=turn_route.get("request_overrides"),
                 ):
                     _configure_quiet_agent(cli.agent)
-                    if emitter is not None:
-                        emitter.attach(cli.agent)
-                    _run_quiet_single_query(cli, effective_query, emitter=emitter)
+                    _run_quiet_single_query(cli, effective_query)
 
-            if emitter is not None:
-                emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
-                                    session_id=cli.session_id or "", exit_code=1)
             sys.exit(1)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
@@ -4574,7 +4554,6 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
-    output_format: str = "text",
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -4633,11 +4612,6 @@ def main(
 
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
-    # ``hermes chat`` already validated this; the direct Fire entry point gets the same contract.
-    if output_format == "stream-json":
-        if not query:
-            raise ValueError("--format stream-json requires -q/--query")
-        quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
 
@@ -4667,7 +4641,7 @@ def main(
     _install_single_query_signal_handlers(cli)
 
     if query or image:
-        _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json")
+        _run_single_query_mode(cli, query, image, quiet, oneshot)
         return
     cli.run()
 

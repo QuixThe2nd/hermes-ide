@@ -465,7 +465,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -2690,10 +2690,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
                         continue
                 candidate_channels.append(channel)
-        # Obfuscated placeholders (bot lost VIEW_CHANNEL) fail every history read — drop them
-        # from both the wildcard and the explicit-id branch (#90154).
-        candidate_channels = [ch for ch in candidate_channels if not is_discord_channel_obfuscated(ch)]
-
         iterators = [
             self._iter_channel_and_thread_messages(
                 channel, limit=limit, after=after, seen_channels=seen,

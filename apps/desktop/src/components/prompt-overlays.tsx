@@ -21,7 +21,6 @@ import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock, ShieldLock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
-import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import {
   clearSecretRequest,
@@ -71,7 +70,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
 
         return
       }
@@ -188,7 +187,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
 
         return
       }
@@ -289,7 +288,7 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed)
 
         return
       }
@@ -386,7 +385,7 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed)
 
         return
       }
@@ -498,7 +497,7 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed, { action: reconnectAction() })
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed)
 
         return
       }

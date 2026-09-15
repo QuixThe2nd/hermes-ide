@@ -126,15 +126,17 @@ def _api_server_key(profile: str | None = None) -> str:
 
 
 def _profile_execution_policy(profile: str) -> dict:
-    """Resolve execution policy under the exact multiplexed profile's FULL runtime scope: the policy
-    reads provider credentials (``_xai_credentials_present`` -> ``get_env_value``), which under a
-    home-only override resolved from the launch process env (or raised once hosting fails closed)."""
+    """Resolve execution policy under the exact multiplexed profile home."""
     from gateway.hosted_room_execution_policy import execution_policy_mapping
-    if _bound_server is None:
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = None
+    if _bound_server is not None and profile not in {_current_profile(), _profile_name()}:
+        token = set_hermes_home_override(str(_foreign_profile_home(profile)))
+    try:
         return execution_policy_mapping(target_profile=profile)
-    home = None if profile in {_current_profile(), _profile_name()} else _foreign_profile_home(profile)
-    with _bound_server._session_profile_runtime_scope({"profile_home": str(home) if home else None}):
-        return execution_policy_mapping(target_profile=profile)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 def _room_link_run_storage_durable() -> bool:

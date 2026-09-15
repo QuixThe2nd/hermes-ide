@@ -28,7 +28,6 @@ import {
   sessionConnectionRequest
 } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
-import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
@@ -207,7 +206,7 @@ function McpSetupRow({ action, copy, request, single, target }: McpSetupRowProps
 
   const respond = async (outcome: ConnectionTargetOutcome) => {
     if (!gateway) {
-      notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
+      notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
       return
     }

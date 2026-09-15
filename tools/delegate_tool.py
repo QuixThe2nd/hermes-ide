@@ -3417,6 +3417,17 @@ def _run_single_child(
             # legacy/mock results that omit the structured failure fields.
             # (Community report Aug 2026; #97655.)
             status = "failed"
+        elif _schema_valid is False:
+            # T1-24 follow-up: a schema was declared and the final answer —
+            # after the one bounded retry — still violates it (empty `{}`
+            # fallback included). A summary exists, but it is unusable under
+            # the contract the caller asked for, so it must not be reported
+            # as a completed delegation: the batch line would print ✓ and
+            # orchestrators that read only status/icon would accept an
+            # empty verdict. schema_valid/schema_errors (below) carry the
+            # detail; status has to agree with them. _schema_valid stays
+            # None on schema-less runs, which never take this branch.
+            status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -3540,9 +3551,22 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            entry["error"] = result.get(
-                "error", "Subagent did not produce a response."
-            )
+            if _schema_valid is False and summary and not _empty_sentinel:
+                # The child DID respond — the response just violates the
+                # declared contract. Name that instead of the generic
+                # "no response" error; schema_errors (below) hold the
+                # validator's specifics verbatim.
+                entry["error"] = (
+                    "Final answer does not satisfy the declared "
+                    "output_schema (after 1 retry)."
+                    if _schema_retries
+                    else "Final answer does not satisfy the declared "
+                    "output_schema."
+                )
+            else:
+                entry["error"] = result.get(
+                    "error", "Subagent did not produce a response."
+                )
             # Classified reason from the child loop (e.g. "rate_limit",
             # "billing", "server_error") — lets the parent distinguish a
             # quota wall from a real task error without parsing prose.
@@ -3558,15 +3582,6 @@ def _run_single_child(
                 entry["schema_retries"] = _schema_retries
             if not _schema_valid and _schema_errors:
                 entry["schema_errors"] = _schema_errors
-            if _schema_valid is False and summary and not _empty_sentinel:
-                entry["schema_note"] = (
-                    "Final answer does not satisfy the declared "
-                    "output_schema"
-                    + (" (after 1 retry)" if _schema_retries else "")
-                    + "; `summary` is the child's raw, UNVALIDATED final "
-                    "text — extract what you need from it yourself (see "
-                    "schema_errors) rather than re-running the task."
-                )
 
         # A steer that queued after the child's final assistant turn had no
         # tool batch left to drain into.  The finalizer hands the undelivered
@@ -4512,15 +4527,7 @@ def delegate_agent(
                         )
                         dur = entry.get("duration_seconds", 0)
                         status = entry.get("status", "?")
-                        _schema_invalid = (
-                            entry.get("schema_valid") is False
-                            and status == "completed"
-                        )
-                        icon = (
-                            "⚠"
-                            if _schema_invalid
-                            else ("✓" if status == "completed" else "✗")
-                        )
+                        icon = "✓" if status == "completed" else "✗"
                         remaining = n_tasks - completed_count
                         _tag = format_batch_tag(live_deleg_id)
                         _slot = f"{_tag} · {idx+1}/{n_tasks}" if _tag else f"{idx+1}/{n_tasks}"
@@ -4534,12 +4541,6 @@ def delegate_agent(
                             )
                             if _err_line:
                                 completion_line += f" — {_err_line}"
-                        elif _schema_invalid:
-                            _err_line = (
-                                "output_schema not satisfied — raw text "
-                                "returned (schema_valid=false)"
-                            )
-                            completion_line += f" — {_err_line}"
                         if spinner_ref:
                             try:
                                 spinner_ref.print_above(completion_line)
@@ -5401,9 +5402,7 @@ DELEGATE_TASK_SCHEMA = {
                                 "child up front; parent validates with one "
                                 "bounded correction retry; result gains "
                                 "schema_valid, plus schema_errors on "
-                                "failure — the child's raw text is still "
-                                "returned as summary, never discarded). "
-                                "Keep it forgiving — require only "
+                                "failure). Keep it forgiving — require only "
                                 "fields you will read."
                             ),
                         },
