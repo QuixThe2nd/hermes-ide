@@ -106,10 +106,11 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _read_lock_holder_record,
     is_advisory_lock_contention,
 )
+from hermes_state_holders import read_only_db_uri
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -1144,6 +1145,14 @@ _wal_reset_bug_warned_lock = threading.Lock()
 # Dedup ERROR for the "configured delete overridden by on-disk WAL" warning.
 _delete_overridden_warned_paths: set[str] = set()
 _delete_overridden_warned_lock = threading.Lock()
+_test_instance_registry: "weakref.WeakSet[Any]" = weakref.WeakSet()
+def _register_test_instance(db: Any) -> None:
+    """Track *db* for suite-level teardown closing (test-isolation runs only)."""
+    if os.environ.get(_TEST_ISOLATION_MARKER_ENV):
+        try:
+            _test_instance_registry.add(db)
+        except Exception:  # pragma: no cover — registry must never break init
+            pass
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -4790,8 +4799,8 @@ _canonical_sqlite_path = _state_holders.canonical_sqlite_path
 def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
     base = os.path.abspath(os.fspath(db_path))
     return {
-        _canonical_sqlite_path(base + "-wal"),
-        _canonical_sqlite_path(base + "-shm"),
+        _state_holders.canonical_sqlite_path(base + "-wal"),
+        _state_holders.canonical_sqlite_path(base + "-shm"),
     }
 
 
@@ -4830,7 +4839,7 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
                     continue
                 if " (deleted)" not in target:
                     continue
-                if _canonical_sqlite_path(target) in watched:
+                if _state_holders.canonical_sqlite_path(target) in watched:
                     holders.append((pid, target))
     except Exception as exc:
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
@@ -5733,6 +5742,10 @@ class SessionDB(
             if not initialization_complete:
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+            else:
+                # Test-isolation runs only (gated inside the helper): register
+                # for the suite-level leak sweep in tests/conftest.py.
+                _register_test_instance(self)
 
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
@@ -5815,7 +5828,7 @@ class SessionDB(
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
         are borrowed by whichever thread reads next; exclusive ownership is enforced by pool checkout."""
         conn = _connect_tracked_db(
-            f"file:{self.db_path}?mode=ro", tracking_path=self.db_path, uri=True,
+            read_only_db_uri(self.db_path), tracking_path=self.db_path, uri=True,
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
@@ -6896,7 +6909,7 @@ class SessionDB(
                     # generation (OpenZFS dentry-unhash reports it for a still-linked
                     # file); confirm the fd names a generation the watched path no
                     # longer does before declaring the WAL generation lost.
-                    canonical = _canonical_sqlite_path(target)
+                    canonical = _state_holders.canonical_sqlite_path(target)
                     if (" (deleted)" in target and canonical in watched
                             and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True

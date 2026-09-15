@@ -229,6 +229,8 @@ swept hourly by gateway housekeeping and once per process on CLI-only
 installs. Set `temp_dir` to an existing absolute path to redirect session
 temp anywhere else; user-set paths are never auto-pruned.
 
+`desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
+
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
 For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
@@ -758,6 +760,19 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 ```
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
+
+### Auto-loading skills every session
+
+Pin skills so they are fully loaded at the start of every new session, on every surface:
+
+```yaml
+skills:
+  auto_load:
+    - my-workflow
+    - github-pr-workflow
+```
+
+Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](/user-guide/cli#persistent-auto-load-via-config).
 
 ### Guard on agent-created skill writes
 
@@ -2410,6 +2425,13 @@ whatsapp:
 
 - `pair` is the default for chat-style DM platforms. Hermes denies access, but replies with a one-time pairing code in DMs.
 - `ignore` silently drops unauthorized DMs.
+- `decline` sends one short, polite decline instead of a pairing code, then stays silent toward that sender for 24 hours. Override the default text:
+
+  ```yaml
+  unauthorized_dm_behavior: decline
+  unauthorized_dm_decline_message: "Sorry, this assistant is private."
+  ```
+
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing enabled broadly while making one platform quieter.
 

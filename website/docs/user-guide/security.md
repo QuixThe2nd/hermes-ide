@@ -140,6 +140,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
+The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
+
 ### User-Defined Deny Rules (`approvals.deny`)
 
 The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
@@ -439,6 +441,7 @@ whatsapp:
 
 - `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
+- `decline` sends one short, polite decline ("I can only chat with my owner") instead of a pairing code, then ignores further messages from that sender for 24 hours. Customize the text with `unauthorized_dm_decline_message`.
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 

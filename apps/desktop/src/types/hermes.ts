@@ -1,3 +1,5 @@
+import type { ConnectionRequestPayload } from '@hermes/shared'
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -413,6 +415,7 @@ export interface HermesConfig {
     timestamps?: boolean
   }
   desktop?: {
+    font_family?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
@@ -678,6 +681,8 @@ export interface SessionResumeResult {
   // handlers before this response resolves; listed here so resume can tell an
   // authoritative "nothing pending" from a request the handler declined.
   open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
+  // The connection operation still blocking this session; resume restores the backend-owned card projection.
+  pending_connection?: ConnectionRequestPayload
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
@@ -785,6 +790,15 @@ export interface ContextUsageCategory {
   tokens: number
 }
 
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
+}
+
 export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
@@ -794,6 +808,7 @@ export interface ContextBreakdown {
   context_used: number
   estimated_total: number
   model?: string
+  context_files?: ContextFileSource[]
 }
 
 export interface AnalyticsDailyEntry {

@@ -953,6 +953,7 @@ def _cmd_stats(db, args):
 # -- dispatch -----------------------------------------------------------------
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -963,15 +964,29 @@ _DB_HANDLERS = {
 }
 
 
+def _print_empty_store(action: str, args) -> None:
+    """A profile that never created state.db: report empty instead of opening a writer that creates it."""
+    if action == "stats":
+        print("Total sessions: 0\nTotal messages: 0")
+    elif action == "pinned":
+        print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
+    else:
+        print("No sessions found.")
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
         return pre(args)
+    observational = action in _OBSERVATIONAL_DB_ACTIONS
+    from hermes_state import SessionDB, _default_db_path
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=observational)
     except Exception as e:
+        # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
+        if observational and not _default_db_path().exists():
+            return _print_empty_store(action, args)
         print(f"Error: Could not open session database: {e}")
         return 1
     try:
@@ -979,6 +994,14 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        return handler(db, args)
+        try:
+            return handler(db, args)
+        except sqlite3.OperationalError as e:
+            from hermes_state_repair import _schema_not_built
+
+            if not observational or not _schema_not_built(e):
+                raise
+            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
+            return 1
     finally:
         db.close()

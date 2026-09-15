@@ -52,6 +52,7 @@ thread, not the conversation thread. Extension authors must assume:
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import copy
 import dataclasses
 import inspect
@@ -4113,14 +4114,19 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, skills: bool = True) -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool = True) -> None:
     """Advance the file-read (and skill_view) repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
+    The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
+    if session_id:
+        with contextlib.suppress(Exception):
+            from tools.computer_use.tool import reset_screenshot_dedup
+            reset_screenshot_dedup(session_id)
     if not skills:
         return
     with contextlib.suppress(Exception):
@@ -4218,7 +4224,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     return _compressed_est
 
 
@@ -6908,13 +6914,7 @@ def _compress_context_via_codex_app_server(
     except Exception:
         logger.debug("codex compaction bookkeeping failed", exc_info=True)
 
-    try:
-        from tools.file_tools import reset_file_dedup
-
-        reset_file_dedup(task_id)
-    except Exception:
-        pass
-
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s",
         getattr(agent, "session_id", None) or "none",

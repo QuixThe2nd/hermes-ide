@@ -93,6 +93,30 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     return str(resolved) if resolved else None
 
 
+_ANCHORLESS_WARNED: set[tuple] = set()
+
+
+def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
+    """A thread-shaped subscription without ``parent_chat_id`` cannot match a channel-level
+    ``profile_routes`` entry, so the fail-closed route gate skips it on every tick. Say so ONCE per
+    row at WARNING — a subscription that can never deliver was invisible below DEBUG (#110919)."""
+    metadata = sub.get("delivery_metadata") or {}
+    thread_like = bool(sub.get("thread_id")) or (sub.get("chat_type") or metadata.get("chat_type")) in {
+        "thread", "forum", "forum_post", "forum-post", "topic"}
+    if not thread_like or metadata.get("parent_chat_id"):
+        return
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _ANCHORLESS_WARNED:
+        return
+    _ANCHORLESS_WARNED.add(key)
+    logger.warning(
+        "kanban notifier: subscription for %s on %s thread %s has no parent_chat_id anchor and matched no "
+        "profile route; it will not be delivered. Re-subscribe with `hermes kanban notify-subscribe ... "
+        "--parent-chat-id <channel id> [--guild-id <guild id>]`.",
+        sub.get("task_id"), platform, sub.get("chat_id"),
+    )
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -225,6 +249,7 @@ class _Collector:
             return None
         from gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
+            _warn_anchorless_thread_sub_once(sub, platform)
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
@@ -342,6 +367,26 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_block_loop_detected(ev, n) -> tuple:
+    """Re-blocked for the same cause past the limit and routed to `triage`.
+
+    It emits no blocked/status event, so ping loudly here. A repeated-block
+    circuit breaker establishes that orchestration attention is needed; it
+    does NOT establish that a human decision or owner input exists. Use
+    neutral orchestration wording unless the block was typed as a genuine
+    owner-input request (`needs_input`, the only kind that carries a concrete
+    question for the owner).
+    """
+    kind = _payload(ev, "kind")
+    decision = kind == "needs_input"
+    msg = (
+        f"🛑 {n.head} routed to TRIAGE — "
+        f"{'needs a human decision' if decision else 'for orchestration attention'}"
+        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    )
+    return msg, None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -358,13 +403,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
-    # Re-blocked for the same cause past the limit and routed to `triage` for a
-    # human. It emits no blocked/status event, so ping loudly here.
-    "block_loop_detected": lambda ev, n: (
-        f"🛑 {n.head} routed to TRIAGE — needs a human decision"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}",
-        None, None,
-    ),
+    "block_loop_detected": _fmt_block_loop_detected,
 }
 
 

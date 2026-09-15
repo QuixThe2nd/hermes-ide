@@ -113,10 +113,9 @@ def _agent_cbs(sid: str) -> dict:
         "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
-        # setup_mcp (desktop GUI): consent card + install/enable/OAuth; long timeout on purpose
-        # (typing an API key, browser OAuth).
-        "setup_mcp_callback": lambda server, action, reason: _ask(
-            "mcp.setup", sid, {"server": server, "action": action, "reason": reason}, timeout=600),
+        # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
+        # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
+        "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 
@@ -159,6 +158,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
+    from tools.terminal_tool_sudo import get_sudo_prompt_command
+    from gateway.run import _redact_approval_command
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
 
@@ -170,7 +171,8 @@ def _wire_callbacks(sid: str):
         from hermes_cli.config import save_env_value_secure
         return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
 
-    set_sudo_password_callback(lambda: _ask("sudo", sid, {}, timeout=120))
+    set_sudo_password_callback(lambda: _ask(
+        "sudo", sid, {"command": _redact_approval_command(get_sudo_prompt_command())}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the

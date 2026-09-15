@@ -419,17 +419,15 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     page_size = max(1, min(page_size, 100))
     c = console or _console
     all_results, source_counts, timed_out = _fetch_browse_results(c, source)
+    from tools.skills_hub_github import _provider_filter_of
     if not all_results:
-        c.print("[dim]No skills found in the Skills Hub.[/]\n")
-        return
-    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their per-tap
-    # ``extra.provider`` label (the runtime index stores them all under source="github").
-    from tools.skills_hub_github import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
-    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
-        all_results = _filter_results_by_provider(all_results, source)
-        if not all_results:
+        # Provider narrowing happens inside parallel_search_sources; keep the
+        # provider-specific empty message.
+        if _provider_filter_of(source):
             c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
-            return
+        else:
+            c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        return
     deduped, page_items, page, total_pages, start = _rank_and_page(all_results, page, page_size)
     _render_browse_page(c, deduped, page_items, page, total_pages, start, source,
                         source_counts, timed_out)
