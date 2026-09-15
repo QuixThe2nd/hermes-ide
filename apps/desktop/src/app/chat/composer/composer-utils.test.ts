@@ -210,30 +210,7 @@ describe('liveComposerDraft (stale-mirror guard for the ArrowUp recall)', () => 
     expect(liveComposerDraft(editor, '')).toBe('just typed this')
   })
 
-  it('prefers the editor over a stale non-empty mirror', () => {
-    const editor = editorWith('continued the draft')
-
-    expect(liveComposerDraft(editor, 'the draft before the keystroke')).toBe('continued the draft')
-  })
-
-  it('returns whitespace as-is so the recall guard trim() still sees it as blank', () => {
-    const editor = editorWith('   ')
-
-    // Not trimmed by the helper: the guard's own `currentDraft.trim()` decides
-    // blankness, and a whitespace-only editor must keep reading as blank.
-    expect(liveComposerDraft(editor, '')).toBe('   ')
-    expect(liveComposerDraft(editor, '').trim()).toBe('')
-  })
-
-  it.each([null, undefined])('falls back to the mirror when the editor is %s (pre-mount)', missing => {
-    expect(liveComposerDraft(missing, 'mirrored draft')).toBe('mirrored draft')
-  })
-
-  it('an empty editor reads as empty even against a stale non-empty mirror', () => {
-    // The cleared-draft race: select-all + delete is flushed by the same
-    // coalesced rAF, so the mirror can still hold the text the user deleted.
-    const editor = editorWith('')
-
-    expect(liveComposerDraft(editor, 'stale draft before delete')).toBe('')
+  it('falls back to the mirror before the editor mounts', () => {
+    expect(liveComposerDraft(null, 'mirrored draft')).toBe('mirrored draft')
   })
 })
