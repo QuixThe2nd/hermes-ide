@@ -3,8 +3,13 @@ import { useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
-import { $settingsScopeOverride, setSettingsScope } from '@/store/settings-scope'
+import { $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
+import {
+  $settingsScopeEditsNonDefault,
+  $settingsScopeOverride,
+  $settingsScopeProfile,
+  setSettingsScope
+} from '@/store/settings-scope'
 
 // The same chip affordance the Gateway page uses for its per-profile
 // connection overrides (gateway-settings ScopeChip). That one stays local to
@@ -37,7 +42,8 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   const { t } = useI18n()
   const scope = t.settings.profileScope
   const override = useStore($settingsScopeOverride)
-  const active = useStore($activeGatewayProfile)
+  const selected = useStore($settingsScopeProfile)
+  const editingNonDefault = useStore($settingsScopeEditsNonDefault)
   const profiles = useStore($profiles)
 
   // Refresh lazily so a profile created elsewhere shows up; the cached list
@@ -49,10 +55,6 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   if (profiles.length < 2) {
     return null
   }
-
-  const selected = normalizeProfileKey(override ?? active)
-  const defaultProfile = profiles.find(profile => profile.is_default)
-  const editingNonDefault = defaultProfile ? selected !== normalizeProfileKey(defaultProfile.name) : false
 
   return (
     <div className={cn('grid gap-2', className)}>
@@ -69,12 +71,11 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           />
         ))}
       </div>
-      {/* The scope follows the app's ACTIVE profile when no override is set —
-          which, after opening any Bot Mode chat, is the BOT's profile. Users
-          reasonably assume Settings edit their main config, so an edit landing
-          in profiles/<bot>/config.yaml with only a faint chip tint as the tell
-          is a silent misdirect (the #89190/#89162 report class). Always state
-          the target when it isn't the default profile, and make it loud. */}
+      {/* Note truth table (override × non-default target, per the store's
+          $settingsScopeEditsNonDefault): non-default target → loud accented
+          note whether or not an override is set (the bot-active misdirect);
+          explicit override onto the default → quiet tertiary note; following
+          the active DEFAULT profile → no note. */}
       {override !== null || editingNonDefault ? (
         <p
           className={cn(
