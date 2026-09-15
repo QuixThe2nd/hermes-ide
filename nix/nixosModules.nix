@@ -364,8 +364,9 @@
               # service has no /run/user/<uid> unless the uid lingers, and the
               # dispatch fails closed — without this, no cron job runs at all.
               #
-              # Needs nixpkgs >= 25.05 (users.manageLingering).
-              linger = lib.mkDefault true;
+              # Needs nixpkgs >= 25.05 (users.manageLingering). In container mode cron
+              # runs inside the container, so the host uid needs no user manager.
+              linger = lib.mkDefault (!cfg.container.enable);
             };
           })
 
