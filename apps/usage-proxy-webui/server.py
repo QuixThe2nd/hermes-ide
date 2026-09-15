@@ -5,6 +5,28 @@ Single file, Python stdlib only (http.server + sqlite3 + json):
 
 * the ledger is opened read-only per request (``mode=ro``): the dashboard can
   never block the proxy's writers and can never modify the ledger;
+* **one shared filter state** (``Filters``) narrows everything consistently:
+  time-range preset, harness, provider (the ledger's actual upstream route),
+  model, chat type, chat, route and outcome.
+  Exact selections AND across facets; every breakdown/facet list is computed
+  over the *other* filters (cross-filtered) so it stays usable when narrowed,
+  while the stat cards, time chart, donut, per-chat table and event list
+  apply *all* filters.  Aggregates are computed over the full filtered
+  ledger in SQL — never over the latest N events — and events are filtered
+  before the LIMIT.  The state lives in the page URL (``?range=7d&harness=…``
+  …), so a refresh retains it and a copied link reproduces it; the first
+  paint is server-rendered under the same filters;
+* chat attribution comes from the proxy's ``chat_type``/``chat_id``/
+  ``chat_name`` ledger columns (written from Hermes's routed transports,
+  see ``plugins/llm_usage_proxy/server.py``).  Rows without identity —
+  written before the columns existed, or by harnesses that carry no Hermes
+  session — are the explicit **Unknown** chat; nothing is ever inferred
+  from timestamps or models.  An older ledger without the columns is read
+  as-is (never migrated here): the chat facets simply report Unknown only;
+* every SQL statement is assembled exclusively from this module's fixed
+  fragment literals (chosen by allowlisted filter keys), and request-supplied
+  values only ever travel as bound ``?`` parameters — never spliced into
+  the SQL text;
 * every model name — donut legend, per-model chart mode and events table —
   carries its provider's brand: an inline SVG logo (Simple Icons CC0 path
   data, Z.ai/Kimi as initial badges) and the brand colour on donut slices
@@ -17,15 +39,14 @@ Single file, Python stdlib only (http.server + sqlite3 + json):
   when its rank shifts; unknown callers keep the hashed rank palette and
   ``unattributed`` stays neutral — colour only, no logos;
 * ``GET /`` serves the single-page dark dashboard.  Its JavaScript polls
-  ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s and
-  updates the stat cards, the per-harness bars, the canvas charts (tokens
-  per hour, stacked by harness, and the model-usage donut) and the event
-  table in place — no
-  full page reloads.  The first paint is
-  server-rendered from the same data, so the page is meaningful even with
-  JavaScript disabled (the chart then shows as an accessible data table);
-* every SQL statement is a fully static literal; request-supplied values are
-  only ever bound ``?`` parameters, never spliced into the SQL text;
+  ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s (each
+  carrying the current filter query) and updates the stat cards, the filter
+  bar, the per-harness bars, the per-chat table, the canvas charts (tokens
+  per bucket, stacked by harness / model / chat / chat type / in-out / cache
+  — and the model-usage donut) and the event table in place — no full page
+  reloads.  The first paint is server-rendered from the same data, so the
+  page is meaningful even with JavaScript disabled (the chart then shows as
+  an accessible data table);
 * any database failure (missing file, locked, corrupt) degrades to a soft
   error payload at HTTP 200, so the poll loop never crashes;
 * nothing is written to stdout while serving (access logs are suppressed;
@@ -38,16 +59,18 @@ import argparse
 import html
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Mapping, Optional
+from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 SYDNEY = ZoneInfo("Australia/Sydney")
 UNATTRIBUTED = "unattributed"
+UNKNOWN = "unknown"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9136
 DEFAULT_DB = str(Path.home() / ".hermes" / "usage-proxy" / "usage.sqlite")
@@ -59,6 +82,49 @@ API_EVENTS_DEFAULT = 200
 API_EVENTS_MAX = 1000
 HOURS = 24
 DAYS_7D = 7
+
+# ── Filters ───────────────────────────────────────────────────────────────────
+#
+# One shared, composable filter state.  ``range`` picks the primary window and
+# bucket granularity of the cards/chart; the six exact-match facets combine
+# with AND.  Values live in the page URL and travel to every /api/* call, so
+# the browser, a shared link and the server-rendered first paint all agree.
+
+RANGE_KEYS = ("24h", "7d", "30d", "all")
+RANGE_HOURS = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30, "all": None}
+RANGE_LABELS = {
+    "24h": "last 24 h",
+    "7d": "last 7 d",
+    "30d": "last 30 d",
+    "all": "all time",
+}
+
+FILTER_KEYS = ("harness", "provider", "model", "type", "chat", "route", "outcome")
+# Request-supplied filter values are matched exactly against ledger text, so
+# their length is bounded purely to keep a hostile query string cheap.
+MAX_FILTER_CHARS = 256
+
+# Chat keys are "<type>:<chat_id>", a bare "<type>" (traffic of that surface
+# with no chat id — cli, cronjob), or "unknown" (no identity at all).  The
+# type part shares the producer's charset; the id part is free text.
+_CHAT_TYPE_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+
+# Ledgers written before chat attribution have no chat columns; this dashboard
+# reads such a schema as-is (it never writes/migrates) and every chat facet
+# collapses to Unknown.
+CHAT_COLUMNS = frozenset({"chat_type", "chat_id", "chat_name"})
+
+# Facet lists are capped so a pathological ledger cannot balloon the page;
+# exceeding a cap is reported (truncated), never silent.
+FACET_LIMITS = {
+    "harness": 100,
+    "provider": 40,
+    "model": 200,
+    "type": 40,
+    "chat": 500,
+    "route": 100,
+    "outcome": 20,
+}
 
 # Muted harness colours, assigned to callers by name hash (see
 # harness_color_idx) so the same harness always lands on the same hue in the
@@ -226,107 +292,222 @@ TONE_CRIT = "crit"
 TONE_NONE = "none"
 
 # ---------------------------------------------------------------------------
-# SQL — every statement below is a fully static literal.  Request-supplied
-# values are only ever passed as bound "?" parameters (the *_SINCE variants).
-# Nothing here is built by concatenation or f-string.
+# SQL — statements are assembled exclusively from the fixed fragment literals
+# in this section: the WHERE builder picks whole fragments by allowlisted
+# filter key, and request-supplied values only ever travel as bound "?"
+# parameters.  No request data is ever spliced into SQL text.
 # ---------------------------------------------------------------------------
 
-SQL_WINDOW_ALL = """
-    SELECT COUNT(*)                          AS requests,
-           COALESCE(SUM(total_tokens), 0)    AS tokens,
-           COALESCE(SUM(prompt_tokens), 0)   AS input_tokens,
-           COALESCE(SUM(completion_tokens), 0) AS output_tokens,
-           COALESCE(SUM(cached_tokens), 0)   AS cached_tokens,
-           MIN(ts)                           AS first_ts
-    FROM usage_events
-"""
-SQL_WINDOW_SINCE = """
-    SELECT COUNT(*)                          AS requests,
-           COALESCE(SUM(total_tokens), 0)    AS tokens,
-           COALESCE(SUM(prompt_tokens), 0)   AS input_tokens,
-           COALESCE(SUM(completion_tokens), 0) AS output_tokens,
-           COALESCE(SUM(cached_tokens), 0)   AS cached_tokens,
-           MIN(ts)                           AS first_ts
-    FROM usage_events
-    WHERE ts >= ?
-"""
+# Display/grouping expressions.  The chat ones degrade to constants when the
+# opened ledger predates the chat columns (read as-is: no write, no migrate).
+# The provider facet groups the ledger's actual ``upstream`` route name — the
+# upstream the proxy forwarded to — never a brand guessed from the model.
+_EXPR_CALLER = "COALESCE(NULLIF(caller, ''), 'unattributed')"
+_EXPR_UPSTREAM = "COALESCE(NULLIF(upstream, ''), 'unknown')"
+_EXPR_MODEL = "COALESCE(NULLIF(model, ''), 'unknown')"
+_EXPR_PATH = "COALESCE(NULLIF(path, ''), 'unknown')"
+_EXPR_OUTCOME = "COALESCE(NULLIF(outcome, ''), 'unknown')"
 
-SQL_CALLER_ALL = """
-    SELECT caller, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    GROUP BY caller
-    ORDER BY tokens DESC, requests DESC, caller ASC
-"""
-SQL_CALLER_SINCE = """
-    SELECT caller, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    WHERE ts >= ?
-    GROUP BY caller
-    ORDER BY tokens DESC, requests DESC, caller ASC
-"""
 
-SQL_ROUTE_ALL = """
-    SELECT path, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    GROUP BY path
-    ORDER BY tokens DESC, requests DESC, path ASC
-"""
-SQL_ROUTE_SINCE = """
-    SELECT path, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    WHERE ts >= ?
-    GROUP BY path
-    ORDER BY tokens DESC, requests DESC, path ASC
-"""
+def chat_exprs(has_chat_columns: bool) -> tuple[str, str, str]:
+    """``(type_expr, id_expr, name_expr)`` for this ledger's schema.
 
-SQL_MODEL_ALL = """
-    SELECT model, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    GROUP BY model
-    ORDER BY tokens DESC, requests DESC, model ASC
-"""
-SQL_MODEL_SINCE = """
-    SELECT model, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    WHERE ts >= ?
-    GROUP BY model
-    ORDER BY tokens DESC, requests DESC, model ASC
-"""
+    Every expression is one of two fixed literals, chosen by whether the
+    ledger has the chat columns — never by request data.  NULL/'' ids and
+    types normalize to the explicit Unknown, exactly how rows without
+    identity must read.
+    """
+    if has_chat_columns:
+        return (
+            "COALESCE(NULLIF(chat_type, ''), 'unknown')",
+            "NULLIF(chat_id, '')",
+            "COALESCE(NULLIF(chat_name, ''), '')",
+        )
+    return ("'unknown'", "NULL", "''")
 
-# Every ts is a UTC ISO-8601 string written by the proxy, so a plain
-# strftime bucket on the raw text is the UTC hour key ("YYYY-MM-DDTHH").
-# The buckets themselves are labelled in Sydney time (see hour_buckets).
-# caller+model are grouped too, so each hour folds into the per-harness /
-# per-model "series" that stacks the chart columns (see query_timeseries).
-# The input/output/cached sums feed the chart's in/out and cache breakdowns.
-SQL_PER_HOUR = """
-    SELECT strftime('%Y-%m-%dT%H', ts) AS hour_key,
-           caller,
-           model,
-           COUNT(*)                    AS requests,
-           SUM(total_tokens)           AS tokens,
-           COALESCE(SUM(prompt_tokens), 0)     AS input_tokens,
-           COALESCE(SUM(completion_tokens), 0) AS output_tokens,
-           COALESCE(SUM(cached_tokens), 0)     AS cached_tokens
-    FROM usage_events
-    WHERE ts >= ?
-    GROUP BY hour_key, caller, model
-"""
 
-SQL_EVENTS = """
-    SELECT id, ts, upstream, model, path, status_code, latency_ms,
-           prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens,
-           cache_creation_tokens, total_tokens, outcome, usage_complete, caller
-    FROM usage_events
-    ORDER BY id DESC
-    LIMIT ?
-"""
+def chat_key_expr(type_expr: str, id_expr: str) -> str:
+    """"<type>:<id>", the bare type when no id, 'unknown' when neither."""
+    return (
+        f"CASE WHEN {id_expr} IS NULL THEN {type_expr}"
+        f" ELSE {type_expr} || ':' || {id_expr} END"
+    )
 
-_BREAKDOWN_SQL = {
-    "caller": (SQL_CALLER_ALL, SQL_CALLER_SINCE),
-    "route": (SQL_ROUTE_ALL, SQL_ROUTE_SINCE),
-    "model": (SQL_MODEL_ALL, SQL_MODEL_SINCE),
-}
+
+class Filters:
+    """The one shared filter state (parsed from the query string).
+
+    ``range_key`` picks the window/bucket preset; the six exact-match facets
+    AND together.  ``None``/"" means "not filtered".  ``chat`` keeps its
+    parsed ``(type, id)`` parts alongside the wire key.
+    """
+
+    __slots__ = (
+        "range_key", "harness", "provider", "model", "type", "chat", "route",
+        "outcome", "chat_type_part", "chat_id_part",
+    )
+
+    def __init__(self, range_key: str = "24h") -> None:
+        self.range_key = range_key if range_key in RANGE_KEYS else "24h"
+        self.harness: Optional[str] = None
+        self.provider: Optional[str] = None
+        self.model: Optional[str] = None
+        self.type: Optional[str] = None
+        self.chat: Optional[str] = None
+        self.route: Optional[str] = None
+        self.outcome: Optional[str] = None
+        self.chat_type_part: Optional[str] = None
+        self.chat_id_part: Optional[str] = None
+
+    # dict-style access keeps the WHERE builder and the JS mirrors simple
+    def get(self, key: str) -> Optional[str]:
+        return getattr(self, key) if key in FILTER_KEYS else None
+
+    def items(self) -> list[tuple[str, str]]:
+        return [(key, value) for key in FILTER_KEYS if (value := self.get(key))]
+
+    def query(self) -> str:
+        """Canonical query string (page URL and every /api call)."""
+        pairs = [("range", self.range_key)]
+        pairs.extend(self.items())
+        return urlencode(pairs)
+
+    def active_count(self) -> int:
+        return len(self.items())
+
+
+def _clean_filter_value(value: str) -> Optional[str]:
+    text = value.strip()
+    if not text or len(text) > MAX_FILTER_CHARS:
+        return None
+    return text
+
+
+def parse_filters(query: Mapping[str, list[str]]) -> Filters:
+    """Strict parser: unknown range keys, junk values and over-long values
+    are dropped, never guessed at.  A chat key must be 'unknown', a bare
+    type, or '<type>:<id>'; anything else cannot match a real chat."""
+    filters = Filters()
+    raw_range = (query.get("range") or [""])[0].strip()
+    if raw_range in RANGE_KEYS:
+        filters.range_key = raw_range
+    for key in FILTER_KEYS:
+        raw = (query.get(key) or [""])[0]
+        value = _clean_filter_value(raw)
+        if value is None:
+            continue
+        if key == "chat":
+            if value == UNKNOWN:
+                filters.chat = value  # no identity at all
+            elif ":" in value:
+                type_part, _, id_part = value.partition(":")
+                if (
+                    _CHAT_TYPE_RE.match(type_part)
+                    and id_part
+                    and len(id_part) <= MAX_FILTER_CHARS
+                ):
+                    filters.chat = value
+                    filters.chat_type_part = type_part
+                    filters.chat_id_part = id_part
+            elif _CHAT_TYPE_RE.match(value):
+                filters.chat = value  # a surface's id-less traffic
+                filters.chat_type_part = value
+                filters.chat_id_part = None
+        else:
+            setattr(filters, key, value)
+    return filters
+
+
+def where_clause(
+    filters: Filters,
+    has_chat_columns: bool,
+    *,
+    exclude: Optional[str] = None,
+    with_range: bool = True,
+) -> tuple[str, tuple[Any, ...]]:
+    """Static WHERE fragments for the active filters (+ the time range).
+
+    ``exclude`` names the one facet dimension whose own filter is left out —
+    that is how a breakdown stays usable when narrowed (cross-filtering).
+    Every fragment below is a fixed literal keyed by the allowlisted filter
+    name; the values are bound parameters and nothing else.
+    """
+    type_expr, id_expr, _name_expr = chat_exprs(has_chat_columns)
+    parts: list[str] = []
+    params: list[Any] = []
+
+    if with_range:
+        hours = RANGE_HOURS[filters.range_key]
+        if hours is not None:
+            parts.append("ts >= ?")
+            params.append(cutoff_iso(hours))
+
+    for key in FILTER_KEYS:
+        if key == exclude:
+            continue
+        value = filters.get(key)
+        if not value:
+            continue
+        # The "empty" facet value of every dimension matches the honest
+        # empty representations alike: NULL, '' and the literal placeholder
+        # itself (a row that literally recorded 'unknown' / 'unattributed'
+        # is the same Unattributed as a row that recorded nothing).
+        if key == "harness":
+            if value == UNATTRIBUTED:
+                parts.append("(caller IS NULL OR caller = '' OR caller = 'unattributed')")
+            else:
+                parts.append(f"({_EXPR_CALLER} = ?)")
+                params.append(value)
+        elif key == "provider":
+            if value == UNKNOWN:
+                parts.append("(upstream IS NULL OR upstream = '' OR upstream = 'unknown')")
+            else:
+                parts.append(f"({_EXPR_UPSTREAM} = ?)")
+                params.append(value)
+        elif key == "model":
+            if value == UNKNOWN:
+                parts.append("(model IS NULL OR model = '' OR model = 'unknown')")
+            else:
+                parts.append(f"({_EXPR_MODEL} = ?)")
+                params.append(value)
+        elif key == "route":
+            if value == UNKNOWN:
+                parts.append("(path IS NULL OR path = '' OR path = 'unknown')")
+            else:
+                parts.append(f"({_EXPR_PATH} = ?)")
+                params.append(value)
+        elif key == "outcome":
+            if value == UNKNOWN:
+                parts.append("(outcome IS NULL OR outcome = '' OR outcome = 'unknown')")
+            else:
+                parts.append(f"({_EXPR_OUTCOME} = ?)")
+                params.append(value)
+        elif key == "type":
+            if not has_chat_columns:
+                if value != UNKNOWN:
+                    parts.append("0")  # a ledger without chat columns has no typed rows
+                continue
+            parts.append(f"({type_expr} = ?)")
+            params.append(UNKNOWN if value == UNKNOWN else value)
+        elif key == "chat":
+            if not has_chat_columns:
+                if value != UNKNOWN:
+                    parts.append("0")
+                continue
+            if value == UNKNOWN:
+                # no id AND no real type: NULL, '' and literal 'unknown' alike
+                parts.append(f"({id_expr} IS NULL AND {type_expr} = 'unknown')")
+            elif filters.chat_id_part is None:
+                parts.append(f"({id_expr} IS NULL AND {type_expr} = ?)")
+                params.append(filters.chat_type_part)
+            else:
+                parts.append(f"({id_expr} = ? AND {type_expr} = ?)")
+                params.extend((filters.chat_id_part, filters.chat_type_part))
+    return (" AND ".join(parts), tuple(params))
+
+
+def _where_sql(where: str) -> str:
+    return f" WHERE {where}" if where else ""
 
 
 # --------------------------------------------------------------------------
@@ -338,6 +519,14 @@ def open_db_readonly(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.2)
     conn.execute("PRAGMA busy_timeout = 200")
     return conn
+
+
+def ledger_columns(conn: sqlite3.Connection) -> set[str]:
+    """Column names of ``usage_events`` (read-only schema probe)."""
+    try:
+        return {row[1] for row in conn.execute("PRAGMA table_info(usage_events)")}
+    except sqlite3.Error:
+        return set()
 
 
 def utc_now() -> datetime:
@@ -369,6 +558,27 @@ def to_sydney(ts: str | None) -> str:
 def caller_label(caller: Any) -> str:
     """Traffic with no recorded caller cannot be attributed to a harness."""
     return UNATTRIBUTED if not caller else str(caller)
+
+
+def chat_label_fields(
+    chat_type: Any, chat_id: Any, chat_name: Any
+) -> tuple[str, str, str, str]:
+    """``(key, type, display, id)`` for one chat identity.
+
+    * key — the filter/URL identity: ``<type>:<id>``, the bare type when the
+      surface has no per-chat id (cli, cronjob), ``unknown`` when the row
+      carries no identity at all;
+    * type — the surface ('unknown' when absent);
+    * display — the name when recorded, else the id, else the type, else
+      'Unknown': never an inference, only a choice among recorded fields;
+    * id — the raw id ('' when absent).
+    """
+    type_part = str(chat_type) if chat_type else UNKNOWN
+    id_part = str(chat_id) if chat_id else ""
+    name_part = str(chat_name) if chat_name else ""
+    key = f"{type_part}:{id_part}" if id_part else (type_part if type_part != UNKNOWN else UNKNOWN)
+    display = name_part or id_part or (type_part if type_part != UNKNOWN else "Unknown")
+    return key, type_part, display, id_part
 
 
 def harness_color_idx(name: str) -> int:
@@ -471,17 +681,47 @@ def brand_step_map(models: list[str]) -> dict[str, int]:
     return steps
 
 
-def _pick(sql_all: str, sql_since: str, since_ts: str | None) -> tuple[str, tuple[Any, ...]]:
-    """Choose the static statement for this window and bind its parameter."""
-    if since_ts is None:
-        return sql_all, ()
-    return sql_since, (since_ts,)
+# Single grouped-totals shape shared by every facet: one fixed statement per
+# expression, only bound parameters varying.
+def query_facet(
+    conn: sqlite3.Connection,
+    expr: str,
+    where: str,
+    params: tuple[Any, ...],
+    limit: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """``[{value, requests, tokens}]`` for one allowlisted expression."""
+    sql = (
+        f"SELECT {expr} AS value, COUNT(*) AS requests,"
+        f" COALESCE(SUM(total_tokens), 0) AS tokens"
+        f" FROM usage_events{_where_sql(where)}"
+        f" GROUP BY {expr} ORDER BY tokens DESC, requests DESC, value ASC LIMIT ?"
+    )
+    rows = conn.execute(sql, (*params, limit + 1)).fetchall()
+    truncated = len(rows) > limit
+    values = [
+        {"value": r[0], "requests": r[1] or 0, "tokens": r[2] or 0}
+        for r in rows[:limit]
+    ]
+    return values, truncated
 
 
-def query_window(conn: sqlite3.Connection, since_ts: str | None) -> dict[str, Any]:
-    """Request/token totals (input, output, cached) for one window."""
-    sql, params = _pick(SQL_WINDOW_ALL, SQL_WINDOW_SINCE, since_ts)
-    requests, tokens, input_t, output_t, cached_t, first_ts = conn.execute(sql, params).fetchone()
+def query_window(
+    conn: sqlite3.Connection, where: str, params: tuple[Any, ...]
+) -> dict[str, Any]:
+    """Request/token totals (input, output, cached) over a filtered window."""
+    sql = (
+        "SELECT COUNT(*) AS requests,"
+        " COALESCE(SUM(total_tokens), 0) AS tokens,"
+        " COALESCE(SUM(prompt_tokens), 0) AS input_tokens,"
+        " COALESCE(SUM(completion_tokens), 0) AS output_tokens,"
+        " COALESCE(SUM(cached_tokens), 0) AS cached_tokens,"
+        " MIN(ts) AS first_ts"
+        f" FROM usage_events{_where_sql(where)}"
+    )
+    requests, tokens, input_t, output_t, cached_t, first_ts = conn.execute(
+        sql, params
+    ).fetchone()
     return {
         "requests": requests or 0,
         "tokens": tokens or 0,
@@ -492,125 +732,311 @@ def query_window(conn: sqlite3.Connection, since_ts: str | None) -> dict[str, An
     }
 
 
-def query_breakdown(
+def query_chat_breakdown(
     conn: sqlite3.Connection,
-    key: str,
-    since_ts: str | None,
-) -> list[dict[str, Any]]:
-    sql_all, sql_since = _BREAKDOWN_SQL[key]
-    sql, params = _pick(sql_all, sql_since, since_ts)
-    rows = conn.execute(sql, params).fetchall()
-    if key == "caller":
-        return [
+    type_expr: str,
+    id_expr: str,
+    name_expr: str,
+    where: str,
+    params: tuple[Any, ...],
+    limit: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Per-chat rows over the (already cross-filtered) window.
+
+    Groups by the chat identity alone — never by model or hour — so the
+    table's numbers are the full filtered ledger's, and requests/models can
+    be drilled into afterwards by setting the chat filter.
+    """
+    key_expr = chat_key_expr(type_expr, id_expr)
+    sql = (
+        f"SELECT {key_expr} AS chat_key, {type_expr} AS chat_type,"
+        f" {id_expr} AS chat_id,"
+        f" COALESCE(MAX(NULLIF({name_expr}, '')), '') AS chat_name,"
+        " COUNT(*) AS requests,"
+        " COALESCE(SUM(prompt_tokens), 0) AS input_tokens,"
+        " COALESCE(SUM(completion_tokens), 0) AS output_tokens,"
+        " COALESCE(SUM(cached_tokens), 0) AS cached_tokens,"
+        " COALESCE(SUM(total_tokens), 0) AS total_tokens"
+        f" FROM usage_events{_where_sql(where)}"
+        f" GROUP BY {type_expr}, {id_expr}"
+        " ORDER BY total_tokens DESC, requests DESC, chat_key ASC LIMIT ?"
+    )
+    rows = conn.execute(sql, (*params, limit + 1)).fetchall()
+    truncated = len(rows) > limit
+    chats = []
+    for key, chat_type, chat_id, chat_name, requests, in_t, out_t, cached_t, total_t in rows[:limit]:
+        _key, type_part, display, _id = chat_label_fields(chat_type, chat_id, chat_name)
+        chats.append(
             {
-                "caller": caller_label(r[0]),
-                "unattributed": not r[0],
-                "requests": r[1] or 0,
-                "total_tokens": r[2] or 0,
+                "key": key,
+                "type": type_part,
+                "display": display,
+                "id": chat_id or "",
+                "requests": requests or 0,
+                "input_tokens": in_t or 0,
+                "output_tokens": out_t or 0,
+                "cached_tokens": cached_t or 0,
+                "total_tokens": total_t or 0,
             }
-            for r in rows
-        ]
-    if key == "route":
-        return [
-            {"route": r[0] if r[0] else "—", "requests": r[1] or 0, "total_tokens": r[2] or 0}
-            for r in rows
-        ]
-    return [
-        {"model": r[0] if r[0] is not None else "(null)", "requests": r[1] or 0, "total_tokens": r[2] or 0}
-        for r in rows
-    ]
+        )
+    return chats, truncated
 
 
-def by_model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per-model rows shaped for /api/summary's ``by_model`` (24 h window).
+def by_model_rows(facet_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Donut rows from the model facet's ``{value, requests, tokens}`` rows.
 
     Events with no recorded model cannot be attributed, so they collapse into
     one ``unknown`` slice rather than vanishing from the total.
     """
     return [
         {
-            "model": "unknown" if not r["model"] or r["model"] == "(null)" else r["model"],
-            "tokens": int(r["total_tokens"] or 0),
+            "model": "unknown" if not r["value"] or r["value"] == "(null)" else r["value"],
+            "tokens": int(r["tokens"] or 0),
             "requests": int(r["requests"] or 0),
         }
-        for r in rows
+        for r in facet_rows
     ]
+
+
+def caller_rows_from(facet_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-harness bar rows from the harness facet's rows."""
+    return [
+        {
+            "caller": r["value"] or UNATTRIBUTED,
+            "requests": int(r["requests"] or 0),
+            "total_tokens": int(r["tokens"] or 0),
+            "unattributed": not r["value"] or r["value"] == UNATTRIBUTED,
+        }
+        for r in facet_rows
+    ]
+
+
+# ── time buckets ─────────────────────────────────────────────────────────────
+#
+# The chart window follows the range filter: hourly buckets for 24 h, daily
+# buckets for 7 d / 30 d, and for "all" a span from the first filtered event
+# to now folded into at most BUCKET_MAX columns (widening the bucket width
+# instead of dropping columns).  Bucket instants are UTC; labels are Sydney.
+
+BUCKET_MAX = 60
+CHAT_SERIES_TOP = 12  # per-bucket chat segments kept before the "other" fold
+
+
+def _bucket(start: datetime, label: str, day: str | None, partial: bool) -> dict[str, Any]:
+    return {
+        "start": start,
+        "hour_bucket": start.isoformat(),  # wire shape kept for the page JS
+        "label_sydney": label,
+        "day_sydney": day,
+        "requests": 0,
+        "tokens": 0,
+        # input/output/cached bucket totals behind the chart's in/out and
+        # cache breakdowns; the series entries carry the same splits per
+        # (harness, model) group (query_timeseries)
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        # per-(harness, model) token groups behind the bucket total — the
+        # stacked segments of the chart column (query_timeseries)
+        "series": [],
+        # per-chat token groups behind the chat/type chart modes
+        "chat_series": [],
+        # The first bucket is truncated by the rolling cutoff and the last
+        # is still in progress — both drawn at half strength.
+        "partial": partial,
+    }
+
+
+def bucket_plan(range_key: str, first_ts: str | None) -> list[dict[str, Any]]:
+    """Empty bucket skeletons for the range, oldest first."""
+    now = utc_now()
+    if range_key == "24h":
+        current = now.replace(minute=0, second=0, microsecond=0)
+        buckets = []
+        for i in range(HOURS - 1, -1, -1):
+            start = current - timedelta(hours=i)
+            local = start.astimezone(SYDNEY)
+            buckets.append(
+                _bucket(
+                    start,
+                    local.strftime("%H:%M"),
+                    local.strftime("%a") if local.hour == 0 else None,
+                    i in (0, HOURS - 1),
+                )
+            )
+        return buckets
+    if range_key in ("7d", "30d"):
+        days = DAYS_7D if range_key == "7d" else 30
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return [
+            _bucket(
+                today - timedelta(days=i),
+                (today - timedelta(days=i)).astimezone(SYDNEY).strftime("%b %d"),
+                None,
+                i in (0, days - 1),
+            )
+            for i in range(days - 1, -1, -1)
+        ]
+    # "all": from the first filtered event to now, ≤ BUCKET_MAX columns
+    first = to_sydney_datetime(first_ts) if first_ts else None
+    first_day = (
+        first.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        if first
+        else now.replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    span_days = max(1, (today - first_day).days + 1)
+    width = max(1, -(-span_days // BUCKET_MAX))  # ceil
+    buckets = []
+    start = first_day
+    while start <= today:
+        local = start.astimezone(SYDNEY)
+        label = local.strftime("%b %d") if width == 1 else local.strftime("%b %d") + "+"
+        buckets.append(_bucket(start, label, None, start + timedelta(days=width) > today))
+        start += timedelta(days=width)
+    return buckets
 
 
 def hour_buckets() -> list[dict[str, Any]]:
     """24 empty hourly buckets (UTC) ending with the current, just-started hour."""
-    current = utc_now().replace(minute=0, second=0, microsecond=0)
-    buckets = []
-    for i in range(HOURS - 1, -1, -1):
-        start = current - timedelta(hours=i)
-        local = start.astimezone(SYDNEY)
-        buckets.append(
-            {
-                "hour_bucket": start.isoformat(),
-                "label_sydney": local.strftime("%H:%M"),
-                "day_sydney": local.strftime("%a") if local.hour == 0 else None,
-                "requests": 0,
-                "tokens": 0,
-                # input/output/cached hour totals behind the chart's in/out
-                # and cache breakdowns; the series entries carry the same
-                # splits per (harness, model) group (query_timeseries)
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cached_tokens": 0,
-                # per-(harness, model) token groups behind the hour total —
-                # the stacked segments of the chart column (query_timeseries)
-                "series": [],
-                # The first bucket is truncated by the rolling cutoff and the
-                # last is still in progress — both drawn at half strength.
-                "partial": i in (0, HOURS - 1),
-            }
-        )
-    return buckets
+    return bucket_plan("24h", None)
 
 
-def query_timeseries(conn: sqlite3.Connection, since_ts: str) -> list[dict[str, Any]]:
-    """Tokens, requests and per-harness/model groups per hour (this is
+def query_timeseries(
+    conn: sqlite3.Connection,
+    where: str,
+    params: tuple[Any, ...],
+    buckets: list[dict[str, Any]],
+    has_chat_columns: bool,
+) -> list[dict[str, Any]]:
+    """Fill the bucket skeleton from the filtered ledger (this is
     /api/timeseries).
 
-    Rows arrive grouped by hour × caller × model and fold into the 24
-    buckets.  Each bucket's ``series`` aggregates tokens per (caller,
-    model) within the hour — sorted tokens desc, zero-token groups
-    dropped — while ``requests``/``tokens`` stay the plain hour totals.
-    Each series entry also carries the hour group's input/output/cached
-    splits so the chart can re-stack the columns by those dimensions.
+    Two fixed statements, both filtered by the shared WHERE: the main series
+    grouped by bucket × caller × model (carrying the input/output/cached
+    splits so the chart can re-stack by those dimensions), and the chat
+    series grouped by bucket × chat identity (tokens only) behind the
+    chat/type breakdown modes.  Rows arrive pre-aggregated in SQL over the
+    full filtered window — never capped by an event LIMIT.
     """
-    rows = conn.execute(SQL_PER_HOUR, (since_ts,)).fetchall()
-    groups_by_key: dict[str, dict[tuple[str, str], dict[str, int]]] = {}
-    requests_by_key: dict[str, int] = {}
-    for hour_key, caller, model, requests, tokens, input_t, output_t, cached_t in rows:
-        groups = groups_by_key.setdefault(hour_key, {})
-        pair = (caller_label(caller), str(model) if model else "unknown")
-        agg = groups.setdefault(pair, {"tokens": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0})
+    if not buckets:
+        return buckets
+    span = buckets[-1]["start"] - buckets[0]["start"]
+    hourly = span < timedelta(days=1)
+    key_len = 13 if hourly else 10
+    type_expr, id_expr, name_expr = chat_exprs(has_chat_columns)
+
+    rows = conn.execute(
+        f"SELECT substr(ts, 1, {key_len}) AS b, {_EXPR_CALLER} AS caller,"
+        f" {_EXPR_MODEL} AS model,"
+        " COUNT(*) AS requests,"
+        " COALESCE(SUM(total_tokens), 0) AS tokens,"
+        " COALESCE(SUM(prompt_tokens), 0) AS input_tokens,"
+        " COALESCE(SUM(completion_tokens), 0) AS output_tokens,"
+        " COALESCE(SUM(cached_tokens), 0) AS cached_tokens"
+        f" FROM usage_events{_where_sql(where)}"
+        f" GROUP BY b, {_EXPR_CALLER}, {_EXPR_MODEL}",
+        params,
+    ).fetchall()
+    chat_rows = conn.execute(
+        f"SELECT substr(ts, 1, {key_len}) AS b, {type_expr} AS chat_type,"
+        f" {id_expr} AS chat_id,"
+        f" COALESCE(MAX(NULLIF({name_expr}, '')), '') AS chat_name,"
+        " COALESCE(SUM(total_tokens), 0) AS tokens"
+        f" FROM usage_events{_where_sql(where)}"
+        f" GROUP BY b, {type_expr}, {id_expr}",
+        params,
+    ).fetchall()
+
+    # bucket lookup: the raw substr key of a row -> its bucket
+    if hourly:
+        index = {b["hour_bucket"][:13]: b for b in buckets}
+
+        def bucket_for(raw_key: str) -> dict[str, Any] | None:
+            return index.get(raw_key)
+
+    else:
+        width = (
+            (buckets[1]["start"] - buckets[0]["start"]).days
+            if len(buckets) > 1
+            else 1
+        )
+        first_start = buckets[0]["start"]
+
+        def bucket_for(raw_key: str) -> dict[str, Any] | None:
+            try:
+                day = datetime.fromisoformat(raw_key).replace(tzinfo=timezone.utc)
+            except ValueError:
+                return None
+            i = (day - first_start).days // max(1, width)
+            return buckets[i] if 0 <= i < len(buckets) else None
+
+    groups: dict[int, dict[tuple[str, str], dict[str, int]]] = {}
+    for raw_key, caller, model, requests, tokens, input_t, output_t, cached_t in rows:
+        bucket = bucket_for(raw_key)
+        if bucket is None:
+            continue
+        pair = (caller or UNATTRIBUTED, model or "unknown")
+        agg = groups.setdefault(id(bucket), {}).setdefault(
+            pair, {"tokens": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+        )
         agg["tokens"] += tokens or 0
         agg["input_tokens"] += input_t or 0
         agg["output_tokens"] += output_t or 0
         agg["cached_tokens"] += cached_t or 0
-        requests_by_key[hour_key] = requests_by_key.get(hour_key, 0) + (requests or 0)
+        bucket["requests"] += requests or 0
 
-    buckets = hour_buckets()
+    chat_groups: dict[int, dict[str, dict[str, Any]]] = {}
+    for raw_key, chat_type, chat_id, chat_name, tokens in chat_rows:
+        bucket = bucket_for(raw_key)
+        if bucket is None:
+            continue
+        key, type_part, display, _id = chat_label_fields(chat_type, chat_id, chat_name)
+        agg = chat_groups.setdefault(id(bucket), {}).setdefault(
+            key, {"key": key, "type": type_part, "display": display, "tokens": 0}
+        )
+        if not agg["display"] or agg["display"] == type_part:
+            agg["display"] = display  # a later row may carry the name
+        agg["tokens"] += tokens or 0
+
     for bucket in buckets:
-        key = bucket["hour_bucket"][:13]
         series = [
             {"caller": caller, "model": model, **agg}
-            for (caller, model), agg in groups_by_key.get(key, {}).items()
+            for (caller, model), agg in groups.get(id(bucket), {}).items()
             if agg["tokens"] > 0
         ]
         series.sort(key=lambda s: (-s["tokens"], s["caller"], s["model"]))
-        bucket["requests"] = requests_by_key.get(key, 0)
         bucket["tokens"] = sum(s["tokens"] for s in series)
         bucket["input_tokens"] = sum(s["input_tokens"] for s in series)
         bucket["output_tokens"] = sum(s["output_tokens"] for s in series)
         bucket["cached_tokens"] = sum(s["cached_tokens"] for s in series)
         bucket["series"] = series
+
+        chats = sorted(
+            chat_groups.get(id(bucket), {}).values(),
+            key=lambda c: (-c["tokens"], c["key"]),
+        )
+        chats = [c for c in chats if c["tokens"] > 0]
+        if len(chats) > CHAT_SERIES_TOP:
+            rest = chats[CHAT_SERIES_TOP:]
+            chats = chats[:CHAT_SERIES_TOP]
+            chats.append(
+                {
+                    "key": "other",
+                    "type": "other",
+                    "display": "other",
+                    "tokens": sum(c["tokens"] for c in rest),
+                }
+            )
+        bucket["chat_series"] = chats
+    # strip the datetime helper before JSON serialization
+    for bucket in buckets:
+        bucket.pop("start", None)
     return buckets
 
 
 def _event_row(r: tuple[Any, ...]) -> dict[str, Any]:
+    key, type_part, display, id_part = chat_label_fields(r[16], r[17], r[18])
     return {
         "id": r[0],
         "ts": r[1],
@@ -631,11 +1057,33 @@ def _event_row(r: tuple[Any, ...]) -> dict[str, Any]:
         "usage_complete": r[14],
         "caller": caller_label(r[15]),
         "unattributed": not r[15],
+        "chat_key": key,
+        "chat_type": type_part,
+        "chat_display": display,
+        "chat_id": id_part,
     }
 
 
-def query_events(conn: sqlite3.Connection, limit: int = API_EVENTS_DEFAULT) -> list[dict[str, Any]]:
-    rows = conn.execute(SQL_EVENTS, (limit,)).fetchall()
+def query_events(
+    conn: sqlite3.Connection,
+    where: str,
+    params: tuple[Any, ...],
+    has_chat_columns: bool,
+    limit: int = API_EVENTS_DEFAULT,
+) -> list[dict[str, Any]]:
+    """Newest events of the *filtered* ledger — the WHERE is applied before
+    the LIMIT, so a narrowed view shows the newest matching rows, not a
+    filtered slice of the newest N overall."""
+    type_expr, id_expr, name_expr = chat_exprs(has_chat_columns)
+    sql = (
+        "SELECT id, ts, upstream, model, path, status_code, latency_ms,"
+        " prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens,"
+        " cache_creation_tokens, total_tokens, outcome, usage_complete, caller,"
+        f" {type_expr}, {id_expr}, {name_expr}"
+        f" FROM usage_events{_where_sql(where)}"
+        " ORDER BY ts DESC, id DESC LIMIT ?"
+    )
+    rows = conn.execute(sql, (*params, limit)).fetchall()
     return [_event_row(r) for r in rows]
 
 
@@ -656,88 +1104,133 @@ def empty_window() -> dict[str, Any]:
     return {"requests": 0, "tokens": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 
-def error_snapshot(message: str) -> dict[str, Any]:
+def _filters_payload(filters: Filters) -> dict[str, Any]:
+    return {
+        "values": dict(filters.items()),
+        "query": filters.query(),
+        "active_count": filters.active_count(),
+    }
+
+
+def error_snapshot(message: str, filters: Optional[Filters] = None) -> dict[str, Any]:
     """A payload shaped like a real snapshot, but flagged as failed."""
+    filters = filters or Filters()
+    buckets = bucket_plan(filters.range_key, None)
+    for bucket in buckets:
+        bucket.pop("start", None)  # not JSON-serializable; query_timeseries strips it too
     return {
         "error": message,
         "generated_at_utc": utc_now().isoformat(timespec="seconds"),
         "generated_at_sydney": to_sydney(utc_now().isoformat(timespec="seconds")),
-        "cutoff_24h_utc": cutoff_iso(HOURS),
-        "total": {"requests": 0, "tokens": 0},
-        "total_requests": 0,
-        "total_tokens": 0,
-        "first_event_day": None,
-        "last_24h": {**empty_window(), "per_route": [], "per_caller": []},
-        "last_7d": {"requests": 0, "tokens": 0},
-        "all_time": {**empty_window(), "per_model": [], "per_route": []},
+        "range": {"key": filters.range_key, "label": RANGE_LABELS[filters.range_key]},
+        "filters": _filters_payload(filters),
+        "has_chat": False,
+        "window": empty_window(),
+        "facets": {key: {"options": [], "truncated": False} for key in FILTER_KEYS},
         "by_model": [],
         "per_caller": [],
-        "per_caller_24h": [],
-        "per_route": [],
-        "per_hour": hour_buckets(),
+        "chats": {"rows": [], "truncated": False},
+        "per_hour": buckets,
         "events": [],
     }
 
 
-def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[str, Any]:
-    """Everything one dashboard refresh needs, or a soft-error snapshot.
+def fetch_snapshot(
+    db_path: str,
+    filters: Optional[Filters] = None,
+    event_limit: int = API_EVENTS_DEFAULT,
+) -> dict[str, Any]:
+    """Everything one dashboard refresh needs under the shared filter state,
+    or a soft-error snapshot.
 
-    ``event_limit=0`` skips the events query entirely (used by /api/summary).
+    Every number is an aggregate over the full *filtered* ledger computed in
+    SQL: the stat cards and breakdowns apply all filters (range included),
+    each facet's option list is cross-filtered (all filters except its own)
+    so it stays usable when narrowed, and events are filtered before their
+    LIMIT.  ``event_limit=0`` skips the events query entirely (used by
+    /api/summary).
     """
+    filters = filters or Filters()
     try:
         conn = open_db_readonly(db_path)
     except (sqlite3.Error, OSError) as exc:
-        return error_snapshot(f"cannot open ledger read-only: {exc}")
+        return error_snapshot(f"cannot open ledger read-only: {exc}", filters)
 
     try:
-        cutoff_24h = cutoff_iso(HOURS)
-        cutoff_7d = cutoff_iso(HOURS * DAYS_7D)
-        last_24h = query_window(conn, cutoff_24h)
-        last_24h["per_route"] = query_breakdown(conn, "route", cutoff_24h)
-        last_24h["per_caller"] = query_breakdown(conn, "caller", cutoff_24h)
-        last_7d = query_window(conn, cutoff_7d)
-        all_time = query_window(conn, None)
-        per_hour = query_timeseries(conn, cutoff_24h)
-        events = query_events(conn, event_limit) if event_limit > 0 else []
-        by_model = by_model_rows(query_breakdown(conn, "model", cutoff_24h))
-        caller_rows = query_breakdown(conn, "caller", None)
-        route_rows = query_breakdown(conn, "route", None)
-        model_rows = query_breakdown(conn, "model", None)
+        has_chat = CHAT_COLUMNS <= ledger_columns(conn)
+        type_expr, id_expr, name_expr = chat_exprs(has_chat)
+        where, params = where_clause(filters, has_chat)
+
+        window = query_window(conn, where, params)
+        buckets = bucket_plan(filters.range_key, window["first_ts"])
+        per_bucket = query_timeseries(conn, where, params, buckets, has_chat)
+        events = (
+            query_events(conn, where, params, has_chat, event_limit)
+            if event_limit > 0
+            else []
+        )
+
+        # Breakdowns apply ALL filters (the filtered ledger's own shape).
+        caller_rows = caller_rows_from(
+            query_facet(conn, _EXPR_CALLER, where, params, FACET_LIMITS["harness"])[0]
+        )
+        by_model = by_model_rows(
+            query_facet(conn, _EXPR_MODEL, where, params, FACET_LIMITS["model"])[0]
+        )
+        chat_rows, chats_truncated = query_chat_breakdown(
+            conn, type_expr, id_expr, name_expr, where, params, FACET_LIMITS["chat"]
+        )
+
+        # Facet option lists are cross-filtered: every filter except the
+        # facet's own, so a narrowed view still offers meaningful choices.
+        facet_exprs = {
+            "harness": _EXPR_CALLER,
+            "provider": _EXPR_UPSTREAM,
+            "model": _EXPR_MODEL,
+            "route": _EXPR_PATH,
+            "outcome": _EXPR_OUTCOME,
+        }
+        facets: dict[str, Any] = {}
+        for key in FILTER_KEYS:
+            fwhere, fparams = where_clause(filters, has_chat, exclude=key)
+            if key == "chat":
+                options, truncated = query_chat_breakdown(
+                    conn, type_expr, id_expr, name_expr,
+                    fwhere, fparams, FACET_LIMITS["chat"],
+                )
+            elif key == "type":
+                options, truncated = query_facet(
+                    conn, type_expr, fwhere, fparams, FACET_LIMITS["type"]
+                )
+            else:
+                options, truncated = query_facet(
+                    conn, facet_exprs[key], fwhere, fparams, FACET_LIMITS[key]
+                )
+            facets[key] = {"options": options, "truncated": truncated}
     except (sqlite3.Error, OSError) as exc:
-        return error_snapshot(f"ledger query failed: {exc}")
+        return error_snapshot(f"ledger query failed: {exc}", filters)
     finally:
         conn.close()
-
-    first_event_day = None
-    if all_time["first_ts"]:
-        local = to_sydney_datetime(all_time["first_ts"])
-        first_event_day = local.strftime("%Y-%m-%d") if local else None
 
     return {
         "error": None,
         "generated_at_utc": utc_now().isoformat(timespec="seconds"),
         "generated_at_sydney": to_sydney(utc_now().isoformat(timespec="seconds")),
-        "cutoff_24h_utc": cutoff_24h,
-        "total": {"requests": all_time["requests"], "tokens": all_time["tokens"]},
-        "total_requests": all_time["requests"],
-        "total_tokens": all_time["tokens"],
-        "first_event_day": first_event_day,
-        "last_24h": last_24h,
-        "last_7d": {"requests": last_7d["requests"], "tokens": last_7d["tokens"]},
-        "all_time": {
-            "requests": all_time["requests"],
-            "tokens": all_time["tokens"],
-            "input_tokens": all_time["input_tokens"],
-            "output_tokens": all_time["output_tokens"],
-            "cached_tokens": all_time["cached_tokens"],
-            "per_model": model_rows,
-            "per_route": route_rows,
+        "range": {"key": filters.range_key, "label": RANGE_LABELS[filters.range_key]},
+        "filters": _filters_payload(filters),
+        "has_chat": has_chat,
+        "window": {
+            "requests": window["requests"],
+            "tokens": window["tokens"],
+            "input_tokens": window["input_tokens"],
+            "output_tokens": window["output_tokens"],
+            "cached_tokens": window["cached_tokens"],
         },
+        "facets": facets,
         "by_model": by_model,
         "per_caller": caller_rows,
-        "per_caller_24h": last_24h["per_caller"],
-        "per_route": route_rows,
-        "per_hour": per_hour,
+        "chats": {"rows": chat_rows, "truncated": chats_truncated},
+        "per_hour": per_bucket,
         "events": events,
     }
 
@@ -793,10 +1286,13 @@ def esc(value: Any) -> str:
 # HTML fragments
 # --------------------------------------------------------------------------
 
-def stat_card(value_id: str, hint_id: str, label: str, value: Any, hint: str) -> str:
+def stat_card(
+    value_id: str, hint_id: str, label: str, value: Any, hint: str, label_id: str = ""
+) -> str:
+    lid = f' id="{label_id}"' if label_id else ""
     return (
         '<div class="card stat">'
-        f'<div class="label">{esc(label)}</div>'
+        f'<div class="label"{lid}>{esc(label)}</div>'
         f'<div class="value" id="{value_id}">{esc(fmt_stat(value))}</div>'
         f'<div class="hint" id="{hint_id}">{esc(hint)}</div>'
         "</div>"
@@ -804,34 +1300,181 @@ def stat_card(value_id: str, hint_id: str, label: str, value: Any, hint: str) ->
 
 
 def render_cards(snapshot: dict[str, Any]) -> str:
-    last_24h = snapshot.get("last_24h") or {}
-    req = last_24h.get("requests") or 0
+    window = snapshot.get("window") or {}
+    req = window.get("requests") or 0
+    range_label = (snapshot.get("range") or {}).get("label") or "last 24 h"
     return "".join(
         [
-            stat_card("c-req-24h", "h-req-24h", "Requests · 24 h", last_24h.get("requests"), "rolling window"),
-            stat_card("c-tok-24h", "h-tok-24h", "Total tokens · 24 h", last_24h.get("tokens"), fmt_avg(last_24h.get("tokens"), req)),
-            stat_card("c-in-24h", "h-in-24h", "Input tokens · 24 h", last_24h.get("input_tokens"), fmt_cached_hint(last_24h.get("cached_tokens"))),
-            stat_card("c-out-24h", "h-out-24h", "Output tokens · 24 h", last_24h.get("output_tokens"), fmt_avg(last_24h.get("output_tokens"), req)),
+            stat_card("c-req-24h", "h-req-24h", f"Requests · {range_label}", window.get("requests"), "filtered window", "l-req-24h"),
+            stat_card("c-tok-24h", "h-tok-24h", f"Total tokens · {range_label}", window.get("tokens"), fmt_avg(window.get("tokens"), req), "l-tok-24h"),
+            stat_card("c-in-24h", "h-in-24h", f"Input tokens · {range_label}", window.get("input_tokens"), fmt_cached_hint(window.get("cached_tokens")), "l-in-24h"),
+            stat_card("c-out-24h", "h-out-24h", f"Output tokens · {range_label}", window.get("output_tokens"), fmt_avg(window.get("output_tokens"), req), "l-out-24h"),
         ]
     )
 
 
-def harness_table_body(rows: list[dict[str, Any]]) -> str:
-    """One row per harness: chip, requests, tokens and a share-of-max bar."""
+# ── filter bar ───────────────────────────────────────────────────────────────
+
+# (filter key, select id, all-option label) in filter-bar order; range and
+# chat are rendered specially (preset list, searchable picker).
+_FACET_SELECTS = (
+    ("harness", "f-harness", "All harnesses"),
+    ("provider", "f-provider", "All providers"),
+    ("model", "f-model", "All models"),
+    ("type", "f-type", "All chat types"),
+    ("route", "f-route", "All routes"),
+    ("outcome", "f-outcome", "All outcomes"),
+)
+
+
+def _facet_option(value: str, requests: Any, tokens: Any, selected: bool) -> str:
+    sel = " selected" if selected else ""
+    count = f"{fmt_compact(tokens or 0)} tok · {fmt_int(requests or 0)} req"
+    return f'<option value="{esc(value)}"{sel}>{esc(value)} · {esc(count)}</option>'
+
+
+def render_filter_bar(snapshot: dict[str, Any]) -> str:
+    """The shared filter state as controls: range preset, one select per
+    exact-match facet (options carry their cross-filtered counts), a
+    searchable chat picker, and one removable chip per active filter."""
+    filters = (snapshot.get("filters") or {}).get("values") or {}
+    facets = snapshot.get("facets") or {}
+    range_key = (snapshot.get("range") or {}).get("key") or "24h"
+
+    range_options = "".join(
+        f'<option value="{key}"{" selected" if key == range_key else ""}>'
+        f"{esc(label)}</option>"
+        for key, label in RANGE_LABELS.items()
+    )
+
+    selects = []
+    for key, select_id, all_label in _FACET_SELECTS:
+        selected_value = filters.get(key) or ""
+        options = [f'<option value="">{esc(all_label)}</option>']
+        seen = set()
+        for opt in (facets.get(key) or {}).get("options") or []:
+            value = str(opt.get("value") or "")
+            seen.add(value)
+            options.append(
+                _facet_option(
+                    value, opt.get("requests"), opt.get("tokens"),
+                    value == selected_value,
+                )
+            )
+        if selected_value and selected_value not in seen:
+            # the active filter narrowed itself out of the cross-filtered
+            # list — keep it selectable anyway (never silently dropped)
+            options.append(
+                f'<option value="{esc(selected_value)}" selected>{esc(selected_value)}</option>'
+            )
+        selects.append(
+            f'<label class="f"><span>{esc(all_label[4:])}</span>'
+            f'<select id="{select_id}" data-key="{key}">{"".join(options)}</select></label>'
+        )
+
+    # searchable chat picker: the select lists "<display> (<key>)"; the
+    # search input filters the options client-side
+    selected_chat = filters.get("chat") or ""
+    chat_options = ['<option value="">All chats</option>']
+    seen_chat = set()
+    for opt in (facets.get("chat") or {}).get("options") or []:
+        key = str(opt.get("key") or "")
+        seen_chat.add(key)
+        display = str(opt.get("display") or key)
+        count = f"{fmt_compact(opt.get('total_tokens') or 0)} tok · {fmt_int(opt.get('requests') or 0)} req"
+        sel = " selected" if key == selected_chat else ""
+        chat_options.append(
+            f'<option value="{esc(key)}"{sel}>{esc(display)} · {esc(count)}</option>'
+        )
+    if selected_chat and selected_chat not in seen_chat:
+        chat_options.insert(
+            1, f'<option value="{esc(selected_chat)}" selected>{esc(selected_chat)}</option>'
+        )
+    chat_picker = (
+        '<label class="f chatpick"><span>Chats</span>'
+        '<input type="search" id="f-chat-search" placeholder="search chats&hellip;"'
+        ' autocomplete="off" spellcheck="false" aria-label="Search chats">'
+        f'<select id="f-chat" data-key="chat">{"".join(chat_options)}</select></label>'
+    )
+
+    chips = []
+    for key, value in filters.items():
+        chips.append(
+            f'<button type="button" class="fchip" data-key="{esc(key)}"'
+            f' title="Clear the {esc(key)} filter">'
+            f'<span class="fk">{esc(key)}</span> {esc(value)}'
+            '<span class="fx" aria-hidden="true">✕</span></button>'
+        )
+    active = len(chips)
+    return (
+        '<section class="card filters" aria-label="Filters" id="filters">'
+        '<div class="card-head"><h2>Filters</h2><div class="card-meta">'
+        f'<span class="win" id="filter-count">{"" if active else "no filters active"}'
+        f'{active if active else ""}{" active" if active else ""}</span>'
+        f'<button type="button" class="fbtn" id="filter-clear"{" hidden" if not active else ""}>clear all</button>'
+        '</div></div>'
+        '<div class="filter-grid">'
+        f'<label class="f"><span>Range</span><select id="f-range">{range_options}</select></label>'
+        + "".join(selects[:2])
+        + "".join(selects[2:4])
+        + chat_picker
+        + "".join(selects[4:])
+        + '</div><div class="chips" id="filter-chips">'
+        + "".join(chips)
+        + '</div></section>'
+    )
+
+
+def chat_table_body(chats: dict[str, Any]) -> str:
+    rows = (chats or {}).get("rows") or []
     if not rows:
-        return '<tbody id="harness-body"><tr><td colspan="4" class="muted">No requests in the last 24 h</td></tr></tbody>'
+        return '<tbody id="chat-body"><tr><td colspan="6" class="muted">No requests in the filtered window</td></tr></tbody>'
+    out = []
+    for c in rows:
+        key = c.get("key") or UNKNOWN
+        display = c.get("display") or "Unknown"
+        sub = c.get("id") or c.get("type") or ""
+        sub_html = f'<div class="csub">{esc(sub)}</div>' if sub and sub != display else ""
+        unknown_cls = " c-unknown" if key == UNKNOWN else ""
+        out.append(
+            f'<tr class="crow{unknown_cls}" data-chat="{esc(key)}" tabindex="0"'
+            f' title="Filter to {esc(display)}">'
+            f'<td><div class="cname">{esc(display)}</div>{sub_html}</td>'
+            f'<td class="num">{fmt_int(c.get("requests"))}</td>'
+            f'<td class="num">{esc(fmt_stat(c.get("input_tokens")))}</td>'
+            f'<td class="num">{esc(fmt_stat(c.get("output_tokens")))}</td>'
+            f'<td class="num">{esc(fmt_stat(c.get("cached_tokens")))}</td>'
+            f'<td class="num total">{esc(fmt_stat(c.get("total_tokens")))}</td>'
+            "</tr>"
+        )
+    truncated = (chats or {}).get("truncated")
+    if truncated:
+        out.append(
+            f'<tr><td colspan="6" class="muted">showing the top {len(rows)} chats by tokens'
+            ' — narrow with filters to see the rest</td></tr>'
+        )
+    return '<tbody id="chat-body">' + "".join(out) + "</tbody>"
+
+
+def harness_table_body(rows: list[dict[str, Any]]) -> str:
+    """One row per harness: chip, requests, tokens and a share-of-max bar.
+    Rows drill down — a click sets the harness filter."""
+    if not rows:
+        return '<tbody id="harness-body"><tr><td colspan="4" class="muted">No requests in the filtered window</td></tr></tbody>'
     peak = max((float(r.get("total_tokens") or 0) for r in rows), default=0.0)
     out = []
     for r in rows:
         tokens = float(r.get("total_tokens") or 0)
         tr_class = "h-unattr" if r.get("unattributed") else harness_class_name(r.get("caller"))
+        caller = r.get("caller") or UNATTRIBUTED
         fill = ""
         if peak > 0 and tokens > 0:
             width = max(1.5, tokens / peak * 100)
             fill = f'<div class="bar-fill" style="width:{width:.1f}%"></div>'
         out.append(
-            f'<tr class="{tr_class}">'
-            f'<td><span class="chip">{esc(r.get("caller") or UNATTRIBUTED)}</span></td>'
+            f'<tr class="{tr_class} hrow" data-harness="{esc(caller)}" tabindex="0"'
+            f' title="Filter to {esc(caller)}">'
+            f'<td><span class="chip">{esc(caller)}</span></td>'
             f'<td class="num">{fmt_int(r.get("requests"))}</td>'
             f'<td class="num">{esc(fmt_stat(tokens))}</td>'
             f'<td class="bar-cell"><div class="bar-track" aria-hidden="true">{fill}</div></td>'
@@ -858,16 +1501,19 @@ def model_name_html(model: Any) -> str:
 
 def events_table_body(events: list[dict[str, Any]]) -> str:
     if not events:
-        return '<tr><td colspan="8" class="muted">No events yet</td></tr>'
+        return '<tr><td colspan="9" class="muted">No events match the filters</td></tr>'
     out = []
     for e in events:
         tone, label = badge_parts(e)
         row_cls = ' class="row-crit"' if tone == TONE_CRIT else ""
         chip_cls = "h-unattr" if e.get("unattributed") else harness_class_name(e.get("caller"))
+        chat_display = e.get("chat_display") or "Unknown"
+        chat_cls = "" if e.get("chat_key") and e.get("chat_key") != UNKNOWN else "muted"
         out.append(
             f"<tr{row_cls}>"
             f'<td class="num" title="{esc(e.get("ts"))}">{esc(e.get("ts_sydney"))}</td>'
             f'<td><span class="chip {chip_cls}">{esc(e.get("caller") or UNATTRIBUTED)}</span></td>'
+            f'<td class="{chat_cls}" title="{esc(e.get("chat_key"))}">{esc(chat_display)}</td>'
             f"<td>{model_name_html(e.get('model'))}</td>"
             f"<td>{esc(e.get('route'))}</td>"
             f'<td class="num">{esc(fmt_opt(e.get("prompt_tokens")))}</td>'
@@ -927,7 +1573,7 @@ def chart_data_table(buckets: list[dict[str, Any]]) -> str:
             "</tr>"
         )
     return (
-        '<table class="sr-only"><caption>Tokens per hour, last 24 hours (Australia/Sydney)</caption>'
+        '<table class="sr-only"><caption>Tokens per time bucket (Australia/Sydney)</caption>'
         '<thead><tr><th scope="col">Hour</th><th scope="col">Requests</th><th scope="col">Tokens</th>'
         '<th scope="col" id="chart-table-series-head">Per-harness tokens (per model)</th></tr></thead>'
         f'<tbody id="chart-table-body">{"".join(rows)}</tbody></table>'
@@ -989,7 +1635,8 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
     total = sum(s["tokens"] for s in slices)
     steps = brand_step_map([s["model"] for s in slices if s["model"] != "other"])
     items = "".join(
-        "<li>"
+        f'<li class="lrow" data-model="{esc(s["model"])}" tabindex="0"'
+        f' title="Filter to {esc(s["model"])}">'
         f'<span class="swatch" style="background:{slice_fill(slices, i, steps)}"></span>'
         f'<span class="name">{model_name_html(s["model"])}</span>'
         f'<span class="num">{esc(fmt_stat(s["tokens"]))}</span>'
@@ -1000,20 +1647,22 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
     return f'<ul class="legend" id="model-legend">{items}</ul>'
 
 
-def donut_aria(slices: list[dict[str, Any]]) -> str:
+def donut_aria(slices: list[dict[str, Any]], range_label: str) -> str:
     total = sum(s["tokens"] for s in slices)
     breakdown = ", ".join(f"{s['model']} {fmt_pct(s['tokens'], total)}" for s in slices)
-    return f"Donut chart of token share by model over the last 24 hours. {breakdown}"
+    return f"Donut chart of token share by model over {range_label}. {breakdown}"
 
 
-def model_panel_html(by_model: list[dict[str, Any]] | None) -> str:
+def model_panel_html(by_model: list[dict[str, Any]] | None, range_label: str = "last 24 h") -> str:
     """First-paint twin of the browser-rendered donut panel."""
     slices = donut_slices(by_model)
-    aria = donut_aria(slices) if slices else "Donut chart of token share by model over the last 24 hours. No usage."
+    aria = donut_aria(slices, range_label) if slices else f"Donut chart of token share by model over {range_label}. No usage."
     return (
         '<section class="card" aria-label="Model usage">'
         '<div class="card-head"><h2>Model usage</h2>'
-        '<span class="win">last 24 h &middot; by total tokens &middot; top '
+        '<span class="win" id="donut-win">'
+        + esc(range_label)
+        + " &middot; by total tokens &middot; top "
         + str(MODEL_TOP_N)
         + " + other</span></div>"
         '<div class="donut-row" id="donut-row"'
@@ -1027,7 +1676,7 @@ def model_panel_html(by_model: list[dict[str, Any]] | None) -> str:
         + model_legend_html(slices)
         + '</div><p class="muted donut-empty" id="donut-empty"'
         + (" hidden" if slices else "")
-        + ">no usage in the last 24h</p>"
+        + ">no usage in the filtered window</p>"
         "</section>"
     )
 
@@ -1217,6 +1866,53 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .tone-crit { background: var(--bad); }
 .tone-none { background: #66738a; }
 
+/* filter bar — one shared state, every control reuses the page tokens */
+.filters { margin-bottom: 12px; }
+.filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 10px 12px; }
+.f { display: grid; gap: 4px; min-width: 0; }
+.f > span { color: var(--muted); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.f select, .f input[type="search"] {
+  width: 100%; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px;
+  font: inherit; font-size: 0.8rem;
+}
+.f select:focus-visible, .f input[type="search"]:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.chatpick { grid-row: span 2; }
+.chatpick select { margin-top: 2px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chips:empty { margin-top: 0; }
+.fchip {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  background: rgba(57, 135, 229, 0.14); color: var(--text-2);
+  border: 1px solid rgba(57, 135, 229, 0.4); border-radius: 999px;
+  padding: 3px 10px; font: inherit; font-size: 0.76rem; max-width: 100%;
+}
+.fchip:hover { color: var(--text); border-color: var(--accent); }
+.fchip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.fchip .fk { color: var(--accent-bright); font-weight: 600; }
+.fchip .fx { color: var(--muted); font-size: 0.68rem; }
+.fbtn {
+  appearance: none; cursor: pointer; background: transparent;
+  border: 1px solid var(--border); border-radius: 7px; color: var(--muted);
+  padding: 3px 10px; font: inherit; font-size: 0.72rem;
+}
+.fbtn:hover { color: var(--text-2); border-color: var(--border-strong); }
+.fbtn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+
+/* per-chat table: drill-down rows + sortable numeric columns */
+.crow { cursor: pointer; }
+.crow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+.cname { color: var(--text-2); max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.crow:hover .cname, .hrow:hover .chip, .lrow:hover .name { color: var(--text); }
+.csub { color: var(--muted); font-size: 0.72rem; font-family: var(--mono); max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.c-unknown .cname { color: var(--unattr); font-style: italic; }
+.hrow, .lrow { cursor: pointer; }
+.hrow:focus-visible, .lrow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover, th.sortable:focus-visible { color: var(--text-2); outline: none; }
+th.sortable.sorted-asc::after { content: " ▲"; font-size: 0.6rem; }
+th.sortable.sorted-desc::after { content: " ▼"; font-size: 0.6rem; }
+
 footer { margin-top: 20px; color: var(--muted); font-size: 0.75rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
@@ -1307,6 +2003,189 @@ JS = r"""
 
   function fmtCachedHint(cached) {
     return (Number(cached) || 0) > 0 ? 'incl. ' + fmtCompact(cached) + ' cached' : 'prompt tokens';
+  }
+
+  /* ---- shared filter state ----
+     One state, narrowed everywhere at once: the page URL is the source of
+     truth (refresh keeps it, a copied link reproduces it), the controls
+     render it, every /api poll carries it, and the server applies the same
+     parsing to the first paint. */
+  var FILTER_KEYS = ['harness', 'provider', 'model', 'type', 'chat', 'route', 'outcome'];
+  var RANGE_KEYS = ['24h', '7d', '30d', 'all'];
+  var RANGE_LABELS = { '24h': 'last 24 h', '7d': 'last 7 d', '30d': 'last 30 d', 'all': 'all time' };
+  var BUCKET_WORDS = { '24h': '1 h buckets', '7d': '1 d buckets', '30d': '1 d buckets', 'all': 'auto-width buckets' };
+  var rangeKey = '24h';
+
+  function readStateFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    var r = params.get('range');
+    rangeKey = RANGE_KEYS.indexOf(r) >= 0 ? r : '24h';
+    var state = {};
+    FILTER_KEYS.forEach(function (k) {
+      var v = params.get(k);
+      if (v) state[k] = v;
+    });
+    return state;
+  }
+
+  function currentState() {
+    var state = {};
+    FILTER_KEYS.forEach(function (k) {
+      var sel = $('f-' + k);
+      if (sel && sel.value) state[k] = sel.value;
+    });
+    return state;
+  }
+
+  function stateQuery() {
+    var params = new URLSearchParams();
+    params.set('range', rangeKey);
+    var state = currentState();
+    FILTER_KEYS.forEach(function (k) { if (state[k]) params.set(k, state[k]); });
+    return params.toString();
+  }
+
+  function writeStateToUrl() {
+    var qs = stateQuery();
+    history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+  }
+
+  function optionExists(sel, value) {
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === value) return true;
+    }
+    return false;
+  }
+
+  function applyStateToControls(state) {
+    var r = $('f-range');
+    if (r) r.value = rangeKey;
+    FILTER_KEYS.forEach(function (k) {
+      var sel = $('f-' + k);
+      if (!sel) return;
+      var v = state[k] || '';
+      /* an active filter can be absent from the cross-filtered option list —
+         keep it selectable anyway, never silently dropped */
+      if (v && !optionExists(sel, v)) sel.appendChild(new Option(v, v));
+      sel.value = v;
+    });
+    applyChatSearch();
+  }
+
+  function onFilterChange() {
+    var r = $('f-range');
+    if (r && RANGE_KEYS.indexOf(r.value) >= 0) rangeKey = r.value;
+    writeStateToUrl();
+    renderChips();
+    poll();
+  }
+
+  function setFilter(key, value) {
+    var sel = $('f-' + key);
+    if (!sel) return;
+    if (value && !optionExists(sel, value)) sel.appendChild(new Option(value, value));
+    sel.value = value;
+    onFilterChange();
+  }
+
+  function renderChips() {
+    var box = $('filter-chips');
+    if (!box) return;
+    var state = currentState();
+    box.textContent = '';
+    var active = 0;
+    FILTER_KEYS.forEach(function (k) {
+      if (!state[k]) return;
+      active++;
+      var chip = el('button', 'fchip');
+      chip.type = 'button';
+      chip.title = 'Clear the ' + k + ' filter';
+      chip.appendChild(el('span', 'fk', k));
+      chip.appendChild(document.createTextNode(' ' + state[k] + ' '));
+      chip.appendChild(el('span', 'fx', '✕'));
+      chip.addEventListener('click', function () { setFilter(k, ''); });
+      box.appendChild(chip);
+    });
+    setText('filter-count', active ? String(active) + ' active' : 'no filters active');
+    var clear = $('filter-clear');
+    if (clear) clear.hidden = !active;
+  }
+
+  /* facet option lists are cross-filtered on the server; here they are
+     re-rendered around the current selection (which is never lost) */
+  function renderFacetOptions(key, facet) {
+    var sel = $('f-' + key);
+    if (!sel) return;
+    var current = sel.value;
+    var allLabel = sel.options.length ? sel.options[0].text : 'All';
+    sel.textContent = '';
+    sel.appendChild(new Option(allLabel, ''));
+    var seen = {};
+    (facet && facet.options ? facet.options : []).forEach(function (o) {
+      var value, label;
+      if (key === 'chat') {
+        value = String(o.key || '');
+        label = (o.display || value) + ' · ' + fmtCompact(o.total_tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+      } else {
+        value = String(o.value || '');
+        label = value + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+      }
+      if (!value || hasOwn(seen, value)) return;
+      seen[value] = true;
+      sel.appendChild(new Option(label, value));
+    });
+    if (current && !hasOwn(seen, current)) sel.appendChild(new Option(current, current));
+    sel.value = current;
+    if (key === 'chat') applyChatSearch();
+  }
+
+  function applyChatSearch() {
+    var input = $('f-chat-search'), sel = $('f-chat');
+    if (!input || !sel) return;
+    var q = input.value.trim().toLowerCase();
+    for (var i = 0; i < sel.options.length; i++) {
+      var opt = sel.options[i];
+      opt.hidden = !!(q && opt.value &&
+        opt.text.toLowerCase().indexOf(q) < 0 && opt.value.toLowerCase().indexOf(q) < 0);
+    }
+  }
+
+  function wireFilters() {
+    var r = $('f-range');
+    if (r) r.addEventListener('change', onFilterChange);
+    FILTER_KEYS.forEach(function (k) {
+      var sel = $('f-' + k);
+      if (sel) sel.addEventListener('change', onFilterChange);
+    });
+    var search = $('f-chat-search');
+    if (search) search.addEventListener('input', applyChatSearch);
+    var clear = $('filter-clear');
+    if (clear) clear.addEventListener('click', function () {
+      FILTER_KEYS.forEach(function (k) {
+        var sel = $('f-' + k);
+        if (sel) sel.value = '';
+      });
+      onFilterChange();
+    });
+    window.addEventListener('popstate', function () {
+      applyStateToControls(readStateFromUrl());
+      renderChips();
+      poll();
+    });
+    /* drill-down: chat rows, harness rows and donut legend entries set their
+       filter (delegated — every poll re-renders the rows) */
+    $('chat-body').addEventListener('click', drillHandler('chat', 'data-chat'));
+    $('harness-body').addEventListener('click', drillHandler('harness', 'data-harness'));
+    $('model-legend').addEventListener('click', drillHandler('model', 'data-model'));
+  }
+
+  function drillHandler(key, attr) {
+    return function (ev) {
+      var row = ev.target.closest('tr[' + attr + '],li[' + attr + ']');
+      if (!row) return;
+      var value = row.getAttribute(attr);
+      if (value) setFilter(key, value);
+    };
   }
 
   /* same djb2 as the server's harness_color_idx, so chip colours agree */
@@ -1521,16 +2400,21 @@ JS = r"""
   /* ---- stat cards ---- */
 
   function renderCards(s) {
-    var l24 = s.last_24h || {};
-    var req = Number(l24.requests) || 0;
-    setText('c-req-24h', fmtStat(l24.requests));
-    setText('h-req-24h', 'rolling window');
-    setText('c-tok-24h', fmtStat(l24.tokens));
-    setText('h-tok-24h', fmtAvg(Number(l24.tokens) || 0, req));
-    setText('c-in-24h', fmtStat(l24.input_tokens));
-    setText('h-in-24h', fmtCachedHint(l24.cached_tokens));
-    setText('c-out-24h', fmtStat(l24.output_tokens));
-    setText('h-out-24h', fmtAvg(Number(l24.output_tokens) || 0, req));
+    var w = s.window || {};
+    var rl = (s.range && s.range.label) || RANGE_LABELS[rangeKey];
+    var req = Number(w.requests) || 0;
+    setText('l-req-24h', 'Requests · ' + rl);
+    setText('l-tok-24h', 'Total tokens · ' + rl);
+    setText('l-in-24h', 'Input tokens · ' + rl);
+    setText('l-out-24h', 'Output tokens · ' + rl);
+    setText('c-req-24h', fmtStat(w.requests));
+    setText('h-req-24h', 'filtered window');
+    setText('c-tok-24h', fmtStat(w.tokens));
+    setText('h-tok-24h', fmtAvg(Number(w.tokens) || 0, req));
+    setText('c-in-24h', fmtStat(w.input_tokens));
+    setText('h-in-24h', fmtCachedHint(w.cached_tokens));
+    setText('c-out-24h', fmtStat(w.output_tokens));
+    setText('h-out-24h', fmtAvg(Number(w.output_tokens) || 0, req));
   }
 
   /* ---- per-harness share bars ---- */
@@ -1541,7 +2425,7 @@ JS = r"""
     tbody.textContent = '';
     if (!rows || !rows.length) {
       var emptyRow = el('tr');
-      var cell = el('td', 'muted', 'No requests in the last 24 h');
+      var cell = el('td', 'muted', 'No requests in the filtered window');
       cell.colSpan = 4;
       emptyRow.appendChild(cell);
       tbody.appendChild(emptyRow);
@@ -1551,9 +2435,12 @@ JS = r"""
     rows.forEach(function (r) { max = Math.max(max, Number(r.total_tokens) || 0); });
     rows.forEach(function (r) {
       var tokens = Number(r.total_tokens) || 0;
-      var tr = el('tr', r.unattributed ? 'h-unattr' : harnessClass(r.caller));
+      var caller = r.caller || UNATTR;
+      var tr = el('tr', (r.unattributed ? 'h-unattr' : harnessClass(r.caller)) + ' hrow');
+      tr.setAttribute('data-harness', caller);
+      tr.title = 'Filter to ' + caller;
       var tdLabel = el('td');
-      tdLabel.appendChild(el('span', 'chip', r.caller || UNATTR));
+      tdLabel.appendChild(el('span', 'chip', caller));
       tr.appendChild(tdLabel);
       tr.appendChild(el('td', 'num', fmtInt(r.requests)));
       tr.appendChild(el('td', 'num', fmtStat(tokens)));
@@ -1571,6 +2458,79 @@ JS = r"""
     });
   }
 
+  /* ---- per-chat table (sortable, rows drill into the chat filter) ---- */
+
+  var chatSort = { key: 'total_tokens', dir: -1 };
+  var lastChats = { rows: [], truncated: false };
+
+  function renderChats(chats) {
+    lastChats = chats && chats.rows ? chats : { rows: [], truncated: false };
+    var tbody = $('chat-body');
+    if (!tbody) return;
+    tbody.textContent = '';
+    var rows = lastChats.rows.slice();
+    rows.sort(function (a, b) {
+      var d = (Number(b[chatSort.key]) || 0) - (Number(a[chatSort.key]) || 0);
+      if (!d) d = String(a.key) < String(b.key) ? -1 : 1;
+      return chatSort.dir < 0 ? d : -d;
+    });
+    if (!rows.length) {
+      var emptyRow = el('tr');
+      var cell = el('td', 'muted', 'No requests in the filtered window');
+      cell.colSpan = 6;
+      emptyRow.appendChild(cell);
+      tbody.appendChild(emptyRow);
+      return;
+    }
+    rows.forEach(function (c) {
+      var key = c.key || 'unknown';
+      var display = c.display || 'Unknown';
+      var tr = el('tr', 'crow' + (key === 'unknown' ? ' c-unknown' : ''));
+      tr.setAttribute('data-chat', key);
+      tr.title = 'Filter to ' + display;
+      var tdChat = el('td');
+      tdChat.appendChild(el('div', 'cname', display));
+      var sub = c.id || c.type || '';
+      if (sub && sub !== display) tdChat.appendChild(el('div', 'csub', sub));
+      tr.appendChild(tdChat);
+      tr.appendChild(el('td', 'num', fmtInt(c.requests)));
+      tr.appendChild(el('td', 'num', fmtStat(c.input_tokens)));
+      tr.appendChild(el('td', 'num', fmtStat(c.output_tokens)));
+      tr.appendChild(el('td', 'num', fmtStat(c.cached_tokens)));
+      tr.appendChild(el('td', 'num total', fmtStat(c.total_tokens)));
+      tbody.appendChild(tr);
+    });
+    if (lastChats.truncated) {
+      var noteRow = el('tr');
+      var note = el('td', 'muted',
+        'showing the top ' + rows.length + ' chats by tokens — narrow with filters to see the rest');
+      note.colSpan = 6;
+      noteRow.appendChild(note);
+      tbody.appendChild(noteRow);
+    }
+    markChatSort();
+  }
+
+  function markChatSort() {
+    var heads = document.querySelectorAll('#chat-table th.sortable');
+    heads.forEach(function (th) {
+      var active = th.getAttribute('data-sort') === chatSort.key;
+      th.classList.toggle('sorted-desc', active && chatSort.dir < 0);
+      th.classList.toggle('sorted-asc', active && chatSort.dir > 0);
+    });
+  }
+
+  function wireChatSort() {
+    document.querySelectorAll('#chat-table th.sortable').forEach(function (th) {
+      th.addEventListener('click', function () {
+        var key = th.getAttribute('data-sort');
+        if (chatSort.key === key) chatSort.dir = -chatSort.dir;
+        else { chatSort.key = key; chatSort.dir = -1; }
+        renderChats(lastChats);
+      });
+    });
+  }
+
   /* ---- model-usage donut (24 h, top 6 + other) ---- */
 
   var DN = {
@@ -1585,6 +2545,7 @@ JS = r"""
   var donutGeom = null;      /* {slices, total, cx, cy, rIn, rOut, start} for hit tests */
   var donutHover = -1;
   var lastByModel = [];
+  var lastRangeLabel = 'last 24 h';
 
   function donutSlices(byModel) {
     var rows = (byModel || []).filter(function (r) { return (Number(r.tokens) || 0) > 0; });
@@ -1684,17 +2645,19 @@ JS = r"""
     ctx.fillText(fmtCompact(total), cx, cy - 8);
     ctx.fillStyle = DN.muted;
     ctx.font = '10px ' + mono;
-    ctx.fillText('tokens · 24 h', cx, cy + 10);
+    ctx.fillText('tokens · ' + lastRangeLabel, cx, cy + 10);
 
     donutGeom = { slices: slices, total: total, cx: cx, cy: cy, rIn: rIn, rOut: rOut, start: -Math.PI / 2 };
-    canvas.setAttribute('aria-label', 'Token share by model, last 24 h: ' +
+    canvas.setAttribute('aria-label', 'Token share by model, ' + lastRangeLabel + ': ' +
       slices.map(function (s) { return s.model + ' ' + pctLabel(s.tokens, total); }).join(', '));
 
     var legend = $('model-legend');
     if (legend) {
       legend.textContent = '';
       slices.forEach(function (s, i) {
-        var li = el('li');
+        var li = el('li', 'lrow');
+        li.setAttribute('data-model', s.model);
+        li.title = 'Filter to ' + s.model;
         var sw = el('span', 'swatch');
         sw.style.background = sliceFill(slices, i, shadeSteps);
         li.appendChild(sw);
@@ -1756,6 +2719,14 @@ JS = r"""
       if (i !== donutHover) showDonutHover(i, ev.clientX - rect.left, ev.clientY - rect.top);
     });
     canvas.addEventListener('pointerleave', hideDonutHover);
+    /* slice click drills into the model filter ("other" is a fold, not a model) */
+    canvas.addEventListener('click', function (ev) {
+      var rect = canvas.getBoundingClientRect();
+      var i = donutSliceAt(ev.clientX - rect.left, ev.clientY - rect.top);
+      if (i < 0 || !donutGeom) return;
+      var model = donutGeom.slices[i].model;
+      if (model && model !== 'other') setFilter('model', model);
+    });
     wrap.addEventListener('keydown', function (ev) {
       var n = donutGeom ? donutGeom.slices.length : 0;
       if (!n) return;
@@ -1806,7 +2777,9 @@ JS = r"""
      order, independent of segment size.  The in/out and cache dimensions
      aggregate the per-series input/output/cached splits instead of the
      (harness, model) names; cache's uncached = prompt tokens not served
-     from the cache (clamped at 0 against odd rows) */
+     from the cache (clamped at 0 against odd rows).  The chat and type
+     dimensions read the bucket's chat_series instead (tokens per recorded
+     chat identity, per-bucket top chats + an "other" fold). */
   function bucketSegments(b) {
     var byKey = {};
     var series = b && b.series ? b.series : [];
@@ -1825,6 +2798,13 @@ JS = r"""
         var uncached = Math.max(input - cached, 0);
         if (uncached > 0) byKey.uncached = uncached;
       }
+    } else if (chartMode === 'chat' || chartMode === 'type') {
+      (b && b.chat_series ? b.chat_series : []).forEach(function (s) {
+        var t = Number(s.tokens) || 0;
+        if (t <= 0) return;
+        var k = chartMode === 'chat' ? (s.display || s.key || 'Unknown') : (s.type || 'unknown');
+        byKey[k] = (byKey[k] || 0) + t;
+      });
     } else {
       series.forEach(function (s) {
         var t = Number(s.tokens) || 0;
@@ -1856,15 +2836,18 @@ JS = r"""
       segs.forEach(function (s) { if (pal[s.name]) out[s.name] = pal[s.name]; });
       return out;
     }
-    if (chartMode !== 'model') {
+    if (chartMode === 'harness') {
       segs.forEach(function (s) { out[s.name] = harnessHex(s.name); });
       return out;
     }
+    /* model mode brands known providers; chat/type segments and unknown
+       models share the hashed neutral palette (chat names are not models —
+       a brand there would be a guess) */
     var taken = [];
     var brandTaken = [];  /* brandShade(step 0) is the pure brand hex — keep
                              the neutral palette off those slots too */
     segs.forEach(function (s) {
-      var key = providerKey(s.name);
+      var key = chartMode === 'model' ? providerKey(s.name) : null;
       if (key) {
         var step = hasOwn(modelShadeSteps, s.name) ? modelShadeSteps[s.name] : 0;
         out[s.name] = brandShade(PROVIDER_HEXES[key], step);
@@ -1923,6 +2906,14 @@ JS = r"""
       return [{ text: order
         .filter(function (k) { return byName[k] !== undefined; })
         .map(function (k) { return k + ' ' + fmtCompact(byName[k]); })
+        .join(' · ') }];
+    }
+    if (chartMode === 'chat' || chartMode === 'type') {
+      var csegs = bucketSegments(b)
+        .sort(function (a, c) { return c.tokens - a.tokens || (a.name < c.name ? -1 : 1); });
+      if (!csegs.length) return [];
+      return [{ text: csegs.slice(0, 8)
+        .map(function (s) { return s.name + ' ' + fmtCompact(s.tokens); })
         .join(' · ') }];
     }
     var byCaller = {};
@@ -2011,7 +3002,10 @@ JS = r"""
     ctx.lineTo(cssW - CH.padR, baseY + 0.5);
     ctx.stroke();
 
-    /* columns + x axis (Sydney time: day name at midnight, time every 4 h) */
+    /* columns + x axis (Sydney time: day name at midnight, time every 4 h;
+       day buckets thin their labels to about a dozen) */
+    var hourly = !!(buckets[0] && String(buckets[0].label_sydney).indexOf(':') >= 0);
+    var labelEvery = Math.max(1, Math.ceil(n / 12));
     var peakIdx = tokens.indexOf(peak);
     buckets.forEach(function (b, i) {
       var v = tokens[i];
@@ -2056,7 +3050,8 @@ JS = r"""
       }
       var centre = padL + i * band + band / 2;
       var hour = parseInt(b.label_sydney, 10) || 0;
-      if (b.day_sydney || hour % 4 === 0) {
+      var showLabel = hourly ? (b.day_sydney || hour % 4 === 0) : (i % labelEvery === 0);
+      if (showLabel) {
         ctx.strokeStyle = C.axis;
         ctx.beginPath();
         ctx.moveTo(Math.round(centre) + 0.5, baseY);
@@ -2082,7 +3077,7 @@ JS = r"""
     if (hoverIdx >= n) hoverIdx = -1;
     setText('chart-peak', peak > 0
       ? 'peak ' + fmtCompact(peak) + ' · ' + bucketLabel(buckets[peakIdx])
-      : 'no traffic in the last 24 h');
+      : 'no traffic in the filtered window');
     renderChartTable(buckets);
   }
 
@@ -2091,7 +3086,10 @@ JS = r"""
     if (!tbody) return;
     setText('chart-table-series-head', chartMode === 'inout'
       ? 'Input / output tokens'
-      : chartMode === 'cache' ? 'Cached / uncached tokens' : 'Per-harness tokens (per model)');
+      : chartMode === 'cache' ? 'Cached / uncached tokens'
+      : chartMode === 'chat' ? 'Per-chat tokens'
+      : chartMode === 'type' ? 'Per-chat-type tokens'
+      : 'Per-harness tokens (per model)');
     tbody.textContent = '';
     buckets.forEach(function (b) {
       var tr = el('tr');
@@ -2174,22 +3172,25 @@ JS = r"""
   var MODE_LABELS = {
     harness: 'broken down by harness',
     model: 'broken down by model',
+    chat: 'broken down by chat',
+    type: 'broken down by chat type',
     inout: 'broken down by input and output tokens',
     cache: 'broken down by cached and uncached prompt tokens'
   };
+  var CHART_MODES = ['harness', 'model', 'chat', 'type', 'inout', 'cache'];
 
   function setChartMode(mode) {
     if (!MODE_LABELS[mode]) return;
     chartMode = mode;
-    [['mode-harness', 'harness'], ['mode-model', 'model'], ['mode-inout', 'inout'], ['mode-cache', 'cache']].forEach(function (p) {
-      var btn = $(p[0]);
+    CHART_MODES.forEach(function (m) {
+      var btn = $('mode-' + m);
       if (!btn) return;
-      btn.classList.toggle('active', mode === p[1]);
-      btn.setAttribute('aria-pressed', mode === p[1] ? 'true' : 'false');
+      btn.classList.toggle('active', mode === m);
+      btn.setAttribute('aria-pressed', mode === m ? 'true' : 'false');
     });
     var wrap = $('chart-wrap');
     if (wrap) wrap.setAttribute('aria-label',
-      'Column chart of tokens per hour over the last 24 hours, ' + MODE_LABELS[mode] +
+      'Column chart of tokens per bucket over ' + lastRangeLabel + ', ' + MODE_LABELS[mode] +
       '. Use the left and right arrow keys to read values.');
     hoverIdx = -1;
     var tip = $('chart-tip');
@@ -2203,12 +3204,10 @@ JS = r"""
   function wireChart() {
     var canvas = $('chart'), wrap = $('chart-wrap');
     if (!canvas || !wrap) return;
-    var modeHarness = $('mode-harness'), modeModel = $('mode-model');
-    if (modeHarness) modeHarness.addEventListener('click', function () { setChartMode('harness'); });
-    if (modeModel) modeModel.addEventListener('click', function () { setChartMode('model'); });
-    var modeInout = $('mode-inout'), modeCache = $('mode-cache');
-    if (modeInout) modeInout.addEventListener('click', function () { setChartMode('inout'); });
-    if (modeCache) modeCache.addEventListener('click', function () { setChartMode('cache'); });
+    CHART_MODES.forEach(function (m) {
+      var btn = $('mode-' + m);
+      if (btn) btn.addEventListener('click', function () { setChartMode(m); });
+    });
     canvas.addEventListener('pointermove', function (ev) {
       if (!chartGeom || !chartGeom.n) return;
       var rect = canvas.getBoundingClientRect();
@@ -2243,8 +3242,8 @@ JS = r"""
     tbody.textContent = '';
     if (!events || !events.length) {
       var tr = el('tr');
-      var cell = el('td', 'muted', 'No events yet');
-      cell.colSpan = 8;
+      var cell = el('td', 'muted', 'No events match the filters');
+      cell.colSpan = 9;
       tr.appendChild(cell);
       tbody.appendChild(tr);
       return;
@@ -2260,6 +3259,10 @@ JS = r"""
       var tdCaller = el('td');
       tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), e.caller || UNATTR));
       tr.appendChild(tdCaller);
+
+      var tdChat = el('td', e.chat_key && e.chat_key !== 'unknown' ? '' : 'muted', e.chat_display || 'Unknown');
+      tdChat.title = e.chat_key || '';
+      tr.appendChild(tdChat);
 
       var tdModel = el('td');
       tdModel.appendChild(brandBadge(e.model));
@@ -2324,10 +3327,11 @@ JS = r"""
     if (inFlight) return;
     inFlight = true;
     try {
+      var q = stateQuery();
       var results = await Promise.all([
-        fetchJson('/api/summary'),
-        fetchJson('/api/timeseries'),
-        fetchJson('/api/events?limit=' + DASHBOARD_EVENTS),
+        fetchJson('/api/summary?' + q),
+        fetchJson('/api/timeseries?' + q),
+        fetchJson('/api/events?limit=' + DASHBOARD_EVENTS + '&' + q),
       ]);
       var summary = results[0], series = results[1], events = results[2];
 
@@ -2340,7 +3344,15 @@ JS = r"""
 
       /* Refetch keeps the frame: previous renders hold until new data lands. */
       if (summary && !summary.error) renderSummary(summary);
-      if (Array.isArray(series)) { lastSeries = series; renderChart(series); }
+      if (series && Array.isArray(series.buckets)) {
+        lastSeries = series.buckets;
+        if (series.range && series.range.label) {
+          lastRangeLabel = series.range.label;
+          setText('chart-win', lastRangeLabel + ' · ' +
+            (BUCKET_WORDS[series.range.key] || 'buckets') + ' · axis in Sydney time');
+        }
+        renderChart(lastSeries);
+      }
       if (Array.isArray(events)) renderEvents(events);
 
       if (!errors.length) {
@@ -2360,9 +3372,17 @@ JS = r"""
   }
 
   function renderSummary(summary) {
+    if (summary.range && summary.range.label) lastRangeLabel = summary.range.label;
     renderCards(summary);
-    renderHarness(summary.per_caller_24h && summary.per_caller_24h.length ? summary.per_caller_24h : summary.per_caller);
+    renderHarness(summary.per_caller);
     renderDonut(summary.by_model);
+    renderChats(summary.chats);
+    var facets = summary.facets || {};
+    FILTER_KEYS.forEach(function (k) { renderFacetOptions(k, facets[k]); });
+    var rl = summary.range && summary.range.label ? summary.range.label : RANGE_LABELS[rangeKey];
+    setText('harness-win', rl + ' · bar = share of top harness · click to filter');
+    setText('donut-win', rl + ' · by total tokens · top 6 + other');
+    setText('chat-win', rl + ' · actual recorded identity · click a row to filter · click a column to sort');
   }
 
   var bootBuckets = [];
@@ -2370,13 +3390,17 @@ JS = r"""
   try { boot = JSON.parse($('bootstrap').textContent); } catch (e) { boot = {}; }
 
   if (boot.error) showError(boot.error);
+  applyStateToControls(readStateFromUrl());
+  renderChips();
   renderSummary(boot);
   bootBuckets = boot.per_hour || [];
   lastSeries = bootBuckets;
   renderChart(bootBuckets);
   renderEvents(boot.events || []);
+  wireFilters();
   wireChart();
   wireDonut();
+  wireChatSort();
   tick();
 
   var resizeTimer = null;
@@ -2416,9 +3440,12 @@ FAVICON = (
 def render_page(snapshot: dict[str, Any]) -> bytes:
     per_hour = snapshot.get("per_hour") or hour_buckets()
     events = snapshot.get("events") or []
-    harness_rows = snapshot.get("per_caller_24h")
-    if not harness_rows:
-        harness_rows = snapshot.get("per_caller") or []
+    harness_rows = snapshot.get("per_caller") or []
+    range_label = (snapshot.get("range") or {}).get("label") or "last 24 h"
+    range_key = (snapshot.get("range") or {}).get("key") or "24h"
+    bucket_word = {"24h": "1 h buckets", "7d": "1 d buckets", "30d": "1 d buckets"}.get(
+        range_key, "auto-width buckets"
+    )
 
     if snapshot.get("error"):
         error_class = " error-card show"
@@ -2432,7 +3459,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
     peak_note = (
         "peak " + fmt_compact(peak) + " · " + bucket_label(per_hour[tokens.index(peak)])
         if peak > 0
-        else "no traffic in the last 24 h"
+        else "no traffic in the filtered window"
     )
 
     bootstrap = json.dumps(snapshot, separators=(",", ":")).replace("</", "<\\/")
@@ -2486,17 +3513,23 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
         + """</p>
 </div>
 
-<section class="cards" aria-label="Last 24 hours">"""
+"""
+        + render_filter_bar(snapshot)
+        + """
+
+<section class="cards" aria-label="Filtered totals">"""
         + render_cards(snapshot)
         + """</section>
 
 <div class="mid">
-<section class="card chart-card" aria-label="Tokens per hour">
+<section class="card chart-card" aria-label="Tokens over time">
   <div class="card-head">
-    <h2>Tokens per hour</h2>
+    <h2>Tokens over time</h2>
     <div class="chart-mode" role="group" aria-label="Chart breakdown dimension">
       <button type="button" class="mode-btn active" id="mode-harness" aria-pressed="true">harness</button>
       <button type="button" class="mode-btn" id="mode-model" aria-pressed="false">model</button>
+      <button type="button" class="mode-btn" id="mode-chat" aria-pressed="false">chat</button>
+      <button type="button" class="mode-btn" id="mode-type" aria-pressed="false">type</button>
       <button type="button" class="mode-btn" id="mode-inout" aria-pressed="false">in/out</button>
       <button type="button" class="mode-btn" id="mode-cache" aria-pressed="false">cache</button>
     </div>
@@ -2504,10 +3537,12 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
       <span class="win" id="chart-peak">"""
         + esc(peak_note)
         + """</span>
-      <span class="win">last 24 h &middot; 1 h buckets &middot; axis in Sydney time</span>
+      <span class="win" id="chart-win">"""
+        + esc(f"{range_label} · {bucket_word} · axis in Sydney time")
+        + """</span>
     </div>
   </div>
-  <div class="chart-wrap" id="chart-wrap" tabindex="0" role="group" aria-label="Column chart of tokens per hour over the last 24 hours, broken down by harness. Use the left and right arrow keys to read values.">
+  <div class="chart-wrap" id="chart-wrap" tabindex="0" role="group" aria-label="Column chart of tokens per bucket over the filtered window, broken down by harness. Use the left and right arrow keys to read values.">
     <canvas id="chart" width="800" height="260"></canvas>
     <div class="tooltip" id="chart-tip" hidden></div>
   </div>
@@ -2518,7 +3553,9 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 <div class="side">
 <section class="card" aria-label="Per-harness usage">
-  <div class="card-head"><h2>Per-harness usage</h2><span class="win">last 24 h &middot; bar = share of top harness</span></div>
+  <div class="card-head"><h2>Per-harness usage</h2><span class="win" id="harness-win">"""
+        + esc(f"{range_label} · bar = share of top harness · click to filter")
+        + """</span></div>
   <div class="scroll-x">
   <table>
     <thead><tr><th scope="col">Harness</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Tokens</th><th scope="col"><span class="sr-only">Share of tokens</span></th></tr></thead>
@@ -2530,23 +3567,47 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 </section>
 
 """
-        + model_panel_html(snapshot.get("by_model"))
+        + model_panel_html(snapshot.get("by_model"), range_label)
         + """
 </div>
 </div>
+
+<section class="card" aria-label="Per-chat usage">
+  <div class="card-head">
+    <h2>Per-chat usage</h2>
+    <span class="win" id="chat-win">"""
+        + esc(f"{range_label} · actual recorded identity · click a row to filter · click a column to sort")
+        + """</span>
+  </div>
+  <div class="scroll-x">
+  <table id="chat-table">
+    <thead><tr>
+      <th scope="col">Chat</th>
+      <th scope="col" class="num sortable" data-sort="requests" tabindex="0">Requests</th>
+      <th scope="col" class="num sortable" data-sort="input_tokens" tabindex="0">In</th>
+      <th scope="col" class="num sortable" data-sort="output_tokens" tabindex="0">Out</th>
+      <th scope="col" class="num sortable" data-sort="cached_tokens" tabindex="0">Cached</th>
+      <th scope="col" class="num sortable sorted-desc" data-sort="total_tokens" tabindex="0">Total</th>
+    </tr></thead>
+    """
+        + chat_table_body(snapshot.get("chats"))
+        + """
+  </table>
+  </div>
+</section>
 
 <section class="card" aria-label="Recent events">
   <div class="card-head">
     <h2>Recent events</h2>
     <span class="win">last """
         + str(len(events))
-        + """ &middot; newest first &middot; <span class="dot-s tone-good"></span> final &middot; <span class="dot-s tone-crit"></span> 401/429 &middot; <span class="dot-s tone-none"></span> other</span>
+        + """ matching &middot; newest first &middot; <span class="dot-s tone-good"></span> final &middot; <span class="dot-s tone-crit"></span> 401/429 &middot; <span class="dot-s tone-none"></span> other</span>
   </div>
   <div class="scroll-x">
   <table class="events">
     <thead>
       <tr>
-        <th scope="col">Time</th><th scope="col">Harness</th><th scope="col">Model</th><th scope="col">Route</th>
+        <th scope="col">Time</th><th scope="col">Harness</th><th scope="col">Chat</th><th scope="col">Model</th><th scope="col">Route</th>
         <th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col" class="num">Total</th><th scope="col">Outcome</th>
       </tr>
     </thead>
@@ -2560,7 +3621,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <footer>
   Polls /api/summary, /api/timeseries and /api/events every """
         + str(POLL_SECONDS)
-        + """ s &middot; SQLite opened read-only (mode=ro) &middot; LAN only, no authentication.
+        + """ s with the filters in the page URL &middot; SQLite opened read-only (mode=ro) &middot; LAN only, no authentication.
   <noscript>Live updates need JavaScript &mdash; showing the snapshot from page load.</noscript>
 </footer>
 </div>
@@ -2603,6 +3664,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
 
     def _events_body(self, parsed) -> tuple[int, str, bytes]:
         qs = parse_qs(parsed.query)
+        filters = parse_filters(qs)
         limit = API_EVENTS_DEFAULT
         if "limit" in qs:
             try:
@@ -2613,7 +3675,9 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         conn: sqlite3.Connection | None = None
         try:
             conn = open_db_readonly(self.db_path)
-            events = query_events(conn, limit)
+            has_chat = CHAT_COLUMNS <= ledger_columns(conn)
+            where, params = where_clause(filters, has_chat)
+            events = query_events(conn, where, params, has_chat, limit)
         except (sqlite3.Error, OSError) as exc:
             # Soft failure: HTTP 200 with an error payload so pollers keep polling.
             body: Any = {"error": f"ledger unavailable: {exc}"}
@@ -2628,32 +3692,43 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             payload = events
         return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
 
-    def _timeseries_body(self) -> tuple[int, str, bytes]:
+    def _timeseries_body(self, parsed) -> tuple[int, str, bytes]:
+        filters = parse_filters(parse_qs(parsed.query))
         conn: sqlite3.Connection | None = None
         try:
             conn = open_db_readonly(self.db_path)
-            buckets = query_timeseries(conn, cutoff_iso(HOURS))
+            has_chat = CHAT_COLUMNS <= ledger_columns(conn)
+            where, params = where_clause(filters, has_chat)
+            first_ts = query_window(conn, where, params)["first_ts"]
+            buckets = query_timeseries(
+                conn, where, params, bucket_plan(filters.range_key, first_ts), has_chat
+            )
+            payload: Any = {
+                "buckets": buckets,
+                "range": {"key": filters.range_key, "label": RANGE_LABELS[filters.range_key]},
+            }
         except (sqlite3.Error, OSError) as exc:
             body: Any = {"error": f"ledger unavailable: {exc}"}
             return 200, "application/json; charset=utf-8", json.dumps(body, indent=2).encode("utf-8")
         finally:
             if conn is not None:
                 conn.close()
-        return 200, "application/json; charset=utf-8", json.dumps(buckets, indent=2).encode("utf-8")
+        return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
 
     def _body_for(self, parsed) -> tuple[int, str, bytes]:
         route = parsed.path
+        filters = parse_filters(parse_qs(parsed.query))
         if route == "/":
             # Always render the shell at HTTP 200 — even when the ledger is
             # unreachable — so the browser keeps a page that can keep polling.
-            snapshot = fetch_snapshot(self.db_path, DASHBOARD_EVENTS)
+            snapshot = fetch_snapshot(self.db_path, filters, DASHBOARD_EVENTS)
             return 200, "text/html; charset=utf-8", render_page(snapshot)
         if route == "/api/summary":
-            snapshot = fetch_snapshot(self.db_path, event_limit=0)
+            snapshot = fetch_snapshot(self.db_path, filters, event_limit=0)
             payload = {k: v for k, v in snapshot.items() if k != "events"}
             return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
         if route == "/api/timeseries":
-            return self._timeseries_body()
+            return self._timeseries_body(parsed)
         if route == "/api/events":
             return self._events_body(parsed)
         return 404, "text/plain; charset=utf-8", b"not found\n"

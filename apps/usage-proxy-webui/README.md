@@ -1,6 +1,6 @@
 # Usage Proxy Ledger Web UI
 
-A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) broken down by model and by harness (`usage_events.caller`), plus the most recent usage events. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
+A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. One shared filter state — time range (24 h / 7 d / 30 d / all), harness, provider (the ledger's actual upstream route), model, chat type, chat, route and outcome — narrows every card, chart, breakdown and event list at once; the state lives in the page URL so a refresh keeps it and a copied link reproduces it. Per-chat rows come from the ledger's `chat_type`/`chat_id`/`chat_name` columns (actual recorded identity only — threads stay their own chats, cron jobs and CLI sessions fall back to their durable job/session ids, and anything written before those columns existed is an explicit `Unknown`; nothing is inferred from timestamps or models). Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
 
 **LAN-only, no authentication.** Bind to a private interface and do not port-forward this service to the public internet.
 
@@ -28,20 +28,29 @@ python3 server.py --host 127.0.0.1 --port 9136 --db /tmp/my-usage-copy.sqlite
 
 ### Routes
 
-- `GET /` — HTML dashboard (auto-refreshes every 30 seconds)
-- `GET /api/summary` — JSON summary (`last_24h`, `all_time`)
-- `GET /api/events?limit=N` — JSON events (default 200, max 1000)
-- `GET /api/timeseries` — JSON hourly buckets for the chart (last 24 h, per-harness/model splits)
+All routes accept the shared filter query (`?range=24h|7d|30d|all&harness=…&provider=…&model=…&type=…&chat=…&route=…&outcome=…`; chat keys are `<type>:<id>`, a bare `<type>`, or `unknown`).
 
-## Hourly chart
+- `GET /` — HTML dashboard (polls every 5 s; first paint server-rendered under the same filters)
+- `GET /api/summary` — JSON totals, facets and breakdowns over the filtered window
+- `GET /api/events?limit=N` — JSON events, filtered before the limit (default 200, max 1000)
+- `GET /api/timeseries` — JSON buckets for the chart (granularity follows the range; per-harness/model and per-chat splits)
 
-The "Tokens per hour" stacked column chart has a segmented toggle with four breakdown modes:
+Filters combine with AND; each facet's option list is computed over all *other* filters so it stays usable when narrowed, while totals, charts, the per-chat table and events apply all of them. Aggregates are computed over the full filtered ledger in SQL — never over the latest N events — and request values travel only as bound parameters.
+
+## Time chart
+
+The "Tokens over time" stacked column chart follows the range filter (hourly buckets for 24 h, daily beyond, auto-width for all time) and has a segmented toggle with six breakdown modes:
 
 - **harness** / **model** — tokens stacked per harness or per model (stable per-name colors)
+- **chat** / **type** — tokens stacked per recorded chat identity or per chat type
 - **in/out** — prompt tokens (input) vs completion tokens (output)
 - **cache** — cached vs uncached prompt tokens (uncached = prompt − cached; columns are shorter because they sum prompt tokens only)
 
 Tooltip, the screen-reader table, and aria-labels follow the active mode.
+
+## Drill-down
+
+Per-chat rows (sortable by requests/input/output/cached/total), per-harness rows, donut slices and legend entries all set their filter on click; active filters show as removable chips, with a clear-all button. The per-chat table reads `Unknown` for rows with no recorded identity — the honest state of ledgers written before chat attribution, which the dashboard reads as-is (it never migrates anything).
 
 ## Provider branding
 
