@@ -923,9 +923,9 @@ def build_cache_parity_fork(
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
     _routed = bool(_rt.get("routed"))
-    # A configured effort is silently dropped on the same-model path (cache parity) — say so once,
-    # visible, instead of leaving the set-but-ignored key invisible (#104116). Routed forks are a
-    # separate, tracked issue (#94825) and are left alone.
+    # A configured effort is dropped on the same-model path (cache parity) — say so once, visible,
+    # instead of leaving the set-but-ignored key invisible (#104116). Routed forks honor it
+    # (_routed_reasoning_config).
     if not _routed and write_origin == "background_review":
         _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
