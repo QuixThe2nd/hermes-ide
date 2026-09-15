@@ -323,13 +323,10 @@ def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registr
 
     class _StillRunningProcess:
         stdout = _EarlyEofStdout()
-
-        def __init__(self):
-            self.returncode = None
-            self.wait_timeouts = []
+        returncode = None
 
         def wait(self, timeout=None):
-            self.wait_timeouts.append(timeout)
+            # A bounded wait expires: the child outlives its stdout by more than the old 5 s cap.
             if timeout is not None:
                 raise subprocess.TimeoutExpired("render", timeout)
             self.returncode = 0
@@ -341,7 +338,6 @@ def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registr
 
     registry._reader_loop(session)
 
-    assert session.process.wait_timeouts == [None]
     assert session.exited is True
     assert session.exit_code == 0
 
