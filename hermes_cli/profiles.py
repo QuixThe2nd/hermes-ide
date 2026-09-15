@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
 
@@ -881,10 +882,16 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
-def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> None:
+def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
+                           sync_imports: bool = False) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
-    AND user-installed skills), and memory/identity files from *source_dir*."""
+    AND user-installed skills), and memory/identity files from *source_dir*.
+
+    ``sync_imports`` also copies the source's ``import-sync.json`` (the ``hermes import-agent``
+    manifest) so the clone stays registered against the same external Claude Code / Codex trees
+    and ``hermes -p <clone> import-agent --sync`` keeps pulling from them. The link is to the
+    external tree, never to the source profile: both profiles stay independent islands."""
     profile_dir.mkdir(parents=True, exist_ok=True)
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -901,12 +908,14 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         )
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    if sync_imports:
+        _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
 
 
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, read_only: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False,
+    clone_channels: bool = False, sync_imports: bool = False,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -945,6 +954,11 @@ def create_profile(
         behind with ``channel_platforms_configured(source_dir)``). Opt in to
         keep the source's channel settings.
 
+    sync_imports:
+        If True (``--clone`` only; ``--clone-all`` copies the file anyway),
+        also copy the ``import-agent`` sync manifest so the clone can keep
+        pulling the same external agent trees.
+
     Returns
     -------
     Path
@@ -955,6 +969,9 @@ def create_profile(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
+    if sync_imports and not (clone_config or clone_all):
+        raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
+                         "manifest to carry over without a source profile).")
     cloning = clone_from is not None or clone_all or clone_config
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
@@ -986,7 +1003,7 @@ def create_profile(
         if clone_all and source_dir:
             _clone_all_into(source_dir, staging, canon)
         else:
-            _bootstrap_profile_dir(staging, source_dir)
+            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
         if source_dir is not None and not clone_channels:
             from hermes_cli.profile_channels import strip_channel_settings
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
