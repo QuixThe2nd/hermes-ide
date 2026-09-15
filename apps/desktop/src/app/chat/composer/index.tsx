@@ -37,6 +37,7 @@ import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
   implicitSlashAcceptIndex,
+  liveComposerDraft,
   type QueueEditState,
   shouldDisableComposerInput,
   slashArgStage
@@ -846,7 +847,9 @@ export function ChatBar({
     // place) then sent-message history. The history ring is derived from live
     // session messages each press — single source of truth, no mirror.
     if (event.key === 'ArrowUp') {
-      const currentDraft = draftRef.current
+      // Decide from the live editor: the mirror is a frame behind typing or a
+      // paste, and this branch can replace what the user just wrote.
+      const currentDraft = liveComposerDraft(editorRef.current, draftRef.current)
 
       // Editing a queued turn → walk to the older entry.
       if (queueEdit && stepQueuedEdit(-1)) {
