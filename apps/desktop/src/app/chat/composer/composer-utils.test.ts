@@ -1,5 +1,5 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   acceptsTriggerCompletion,
@@ -193,6 +193,12 @@ function editorWith(text: string): HTMLDivElement {
   return el
 }
 
+// editorWith appends to the shared JSDOM body; empty it so the element does not
+// leak into other cases in this file.
+afterEach(() => {
+  document.body.replaceChildren()
+})
+
 describe('liveComposerDraft (stale-mirror guard for the ArrowUp recall)', () => {
   it('reads the live editor text even when the mirror is still empty', () => {
     // The race this exists for: a keystroke or paste flushed only by the
@@ -223,12 +229,11 @@ describe('liveComposerDraft (stale-mirror guard for the ArrowUp recall)', () => 
     expect(liveComposerDraft(missing, 'mirrored draft')).toBe('mirrored draft')
   })
 
-  it('an empty editor reads as empty against a fresh mirror (behaviour unchanged)', () => {
+  it('an empty editor reads as empty even against a stale non-empty mirror', () => {
+    // The cleared-draft race: select-all + delete is flushed by the same
+    // coalesced rAF, so the mirror can still hold the text the user deleted.
     const editor = editorWith('')
 
-    editor.replaceChildren()
-    normalizeComposerEditorDom(editor)
-
-    expect(liveComposerDraft(editor, '')).toBe('')
+    expect(liveComposerDraft(editor, 'stale draft before delete')).toBe('')
   })
 })
