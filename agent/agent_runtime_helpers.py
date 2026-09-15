@@ -78,7 +78,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "tour", "gui_tour", "delegate_agent", "delegate_task"}
+    {"todo", "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "tour", "gui_tour", "delegate_agent", "delegate_task"}
 )
 
 _TRAJECTORY_SYSTEM_PROMPT = (
@@ -2310,6 +2310,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _execute(function_args)
 
         from hermes_cli.middleware import run_tool_execution_middleware
+
+        return run_tool_execution_middleware(
+            function_name, function_args,
+            lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
+            original_args=function_args, **hook_ids,
+        )
 
 
 def repair_tool_call(agent, tool_name: str) -> str | None:

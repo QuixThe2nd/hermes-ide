@@ -150,6 +150,27 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _handle_preview(args)
 
 
+def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The GUI callback lives on the agent; registry dispatch never forwards it.
+    from tools.connections_tool import _connectors_available, manage_connections
+
+    return manage_connections(
+        args, session_id=getattr(agent, "session_id", None),
+        connection_callback=getattr(agent, "connection_callback", None),
+        connectors_available=_connectors_available,
+    )
+
+
+def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # Replay shim for conversations whose cached prompt still names setup_mcp.
+    # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
+    return _manage_connections(agent, {
+        "action": args.get("action", "install"),
+        "connectors": [{"name": args.get("server", ""), "mcp": True}],
+        "reason": args.get("reason", ""),
+    }, ctx)
+
+
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
@@ -192,11 +213,8 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
     ),
-    "setup_mcp": _callback_tool(
-        "tools.setup_mcp_tool", "setup_mcp_tool", "setup_mcp_callback",
-        ("server", "server", ""), ("action", "action", "install"), ("reason", "reason", ""),
-    ),
-    "delegate_agent": lambda agent, args, ctx: agent._dispatch_delegate_agent(args),
+    "manage_connections": _manage_connections,
+    "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
 }
 
