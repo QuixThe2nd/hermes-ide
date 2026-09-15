@@ -250,7 +250,24 @@ class TestDisplayDedupe:
         assert [m["id"] for m in db.get_messages(sid, include_compacted=True)][-1:] == [newest_id]
         assert len([m for m in db.get_messages(sid, include_compacted=True) if m["content"] == "same"]) == 1
 
-    def test_display_metadata_update_does_not_invalidate_display_identity(self, db):
+    def test_display_metadata_update_does_not_invalidate_display_identity(self, tmp_path):
+        # Install the pre-narrowing trigger (``display_metadata`` in UPDATE OF, no WHEN) as an existing
+        # store would carry it; the reopen must replace it, since IF NOT EXISTS alone never would.
+        path = tmp_path / "state.db"
+        SessionDB(path).close()
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_update")
+        conn.execute(
+            "CREATE TRIGGER messages_display_identity_update AFTER UPDATE OF role, content, timestamp, "
+            "tool_call_id, tool_calls, tool_name, display_kind, display_metadata ON messages "
+            "BEGIN UPDATE messages SET display_identity = NULL, display_order = NULL WHERE id = new.id; END")
+        conn.commit()
+        conn.close()
+        db = SessionDB(path)
+        trigger_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_display_identity_update'").fetchone()[0]
+        assert "display_metadata" not in trigger_sql and "display_kind" in trigger_sql
+
         sid = "metadata"
         db.create_session(sid, source="desktop")
         row_ids = [
