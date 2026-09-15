@@ -58,6 +58,10 @@ def _critical_module_import_failures(
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
         "import importlib, json, sys\n"
+        # Importing hermes_cli.main runs the startup dotenv load, which pulls external secret
+        # sources (op/bws/command helpers, up to 120s each) unless argv says ``update``. The
+        # probe only checks importability, so it inherits the updater's own argv contract.
+        "sys.argv = ['hermes', 'update']\n"
         "failures = []\n"
         "for name in %r:\n"
         "    try:\n"

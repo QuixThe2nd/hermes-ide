@@ -604,19 +604,37 @@ class TestExternalRotationRecovery:
         assert "AFTER rotation" not in rotated.read_text()
 
 
-def test_eio_from_file_handler_is_suppressed(tmp_path, capsys):
-    """An unavailable log destination must not print a traceback per record."""
-    handler = hermes_logging._ManagedRotatingFileHandler(
-        str(tmp_path / "agent.log"), maxBytes=1024, backupCount=1, encoding="utf-8",
-    )
-    record = logging.LogRecord("test.eio", logging.INFO, __file__, 0, "message", (), None)
-    try:
-        try:
-            raise OSError(5, "Input/output error")
-        except OSError:
-            handler.handleError(record)
+def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
+    """A failing log destination is named once (no per-record traceback) and writes resume
+    once the file is reachable again."""
+    import io
 
-        assert "--- Logging error ---" not in capsys.readouterr().err
+    class _SickStream(io.TextIOBase):
+        def writable(self):
+            return True
+
+        def write(self, _s):
+            raise OSError(5, "Input/output error")
+
+        seek = tell = flush = write
+
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    try:
+        handler.stream.close()
+        handler.stream = _SickStream()
+        for i in range(5):
+            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count(str(path)) == 1 and "Input/output error" in err
+
+        # Stream dropped, so the next emit reopens the real file and logging resumes.
+        handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, "recovered", (), None))
+        assert "recovered" in path.read_text(encoding="utf-8")
     finally:
         handler.close()
 

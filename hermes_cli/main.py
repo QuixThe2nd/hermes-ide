@@ -586,17 +586,10 @@ if sys.platform == "win32":
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
-# ``update`` must not import optional secret-manager libs before ``uv``
-# replaces the environment: on Windows Bitwarden's cryptography import maps
-# ``_rust.pyd`` and the parent updater then blocks its own child installer.
-# Profile flags are already stripped, so argv[1] is the authoritative subcommand.
-# Profile flags have already been stripped above, so the first remaining argument is the authoritative
-# argparse subcommand. Dotenv/managed config still loads; only external secret fetches are unnecessary for
-# installation maintenance. See #73381.
-load_hermes_dotenv(
-    project_env=PROJECT_ROOT / ".env",
-    load_external_secrets=sys.argv[1:2] != ["update"],
-)
+# ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
+# helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
+# owns that argv check for every dotenv load in the process. See #73381.
+load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
 # imports agent.redact, which snapshots the flag exactly once at import. A
