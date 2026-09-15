@@ -128,7 +128,7 @@ The agent-facing `cronjob` tool accepts the same action (`action=resnap job_id=<
 
 ## Skill-backed cron jobs
 
-A cron job can load one or more skills before it runs the prompt.
+A cron job can load one or more skills before it runs the prompt. Each skill loads exactly as it does from `/skill-name` in a chat session, including the `[Skill config ...]` block with its resolved `metadata.hermes.config` values from `config.yaml`.
 
 ### Single skill
 
