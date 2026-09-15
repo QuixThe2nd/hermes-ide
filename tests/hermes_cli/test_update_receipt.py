@@ -325,6 +325,8 @@ class TestFleetClassification:
         assert len(fleet) == 1
         assert fleet[0]["pid"] == os.getpid()
         assert fleet[0]["state"] == "unknown"
+        assert fleet[0]["code_sha"] is None
+        assert fleet[0]["code_version"] is None
 
     def test_current_gateway(self, monkeypatch, tmp_path):
         sha = "a" * 40
@@ -397,6 +399,8 @@ class TestFleetClassification:
 
         assert len(fleet) == 1
         assert fleet[0]["state"] == "unknown"
+        assert fleet[0]["code_sha"] is None
+        assert fleet[0]["code_version"] is None
 
     def test_matrix_returns_true_only_on_stale(self, capsys):
         assert ur.print_fleet_version_matrix([]) is False

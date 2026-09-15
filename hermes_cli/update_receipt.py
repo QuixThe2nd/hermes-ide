@@ -491,9 +491,10 @@ def collect_fleet_versions_strict(
                 continue
             # A live non-gateway (or a gateway for another profile) can write a
             # plausible state file. Keep the fail-open visibility row, but never
-            # let that file's SHA classify the process as current or stale.
+            # let that file's self-reported SHA or version classify or label
+            # the process — both claims have the same trust problem.
             if runtime_status_pid_is_live(record):
-                results.append(_fleet_row(profile, pid, None, record.get("code_version"), None))
+                results.append(_fleet_row(profile, pid, None, None, None))
                 continue
             # Dead PID (or a live PID recycled by an unrelated process during the update's own
             # churn — #93258): a DOWN row only when this exact pid was alive at update start AND the
