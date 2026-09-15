@@ -24,6 +24,8 @@ The roster shows one row per agent profile: avatar, latest-message preview, and 
 
 :::note The canonical Bot Chat is a forever-chat
 Typing `/new` (or `/reset`) inside a Bot's canonical chat would fork the relationship into a scratch session — the one thing Bot Mode promises never happens. The composer reroutes it to `/compact` instead: fresh working context, same conversation. Regular sessions on the same profile keep full `/new` freedom.
+
+Archiving a Bot Chat from the sidebar retires it: the next click on the Bot starts a fresh conversation that becomes the new canonical Bot Chat, and the archived one keeps its history (untitled) in the archive.
 :::
 
 ### Organize bots into sections
