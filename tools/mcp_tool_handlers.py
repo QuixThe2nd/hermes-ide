@@ -8,6 +8,7 @@ import inspect
 import json
 import time
 from contextlib import asynccontextmanager
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from tools.registry import tool_error
@@ -36,17 +37,28 @@ _STDIO_DIED_AGAIN_MSG = (
 _STDIO_OUTCOME_UNCERTAIN_MSG = (
     "MCP server '{s}' lost its stdio subprocess after the tool call began. The operation may have completed, so "
     "Hermes did not replay it. Do NOT retry automatically; inspect the external state first.")
+_SESSION_OUTCOME_UNCERTAIN_MSG = (
+    "The MCP transport session to '{s}' expired while this write-capable call was in flight, so the outcome is "
+    "UNKNOWN — the operation may or may not have taken effect server-side. It was NOT automatically retried to "
+    "avoid a duplicate side effect. The connection has {state}. Verify whether the operation took effect (e.g. "
+    "with a read-only tool) before re-invoking it.")
+
+
+def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
+    """True only when discovery captured ``readOnlyHint=True`` for the tool. Missing or malformed
+    metadata fails safe to False (treated as write-capable). readOnlyHint is a property of the
+    connection's tools, so it lives under the connection key."""
+    from tools.mcp_tool_scope import _resolve_server_key
+    return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    from tools.mcp_tool_scope import _resolve_server_key, _server_key
-    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier);
-    # readOnlyHint is a property of the connection's tools, so it lives under the connection key.
+    from tools.mcp_tool_scope import _server_key
+    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
     trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
-    if (trust != _core._TRUST_UNTRUSTED
-            or _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True):
+    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
@@ -181,7 +193,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
     return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
 
 
-def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
+                                      *, call_may_have_side_effects: bool = False):
     """Transport reconnect + one retry on session expiry; None to fall through. Skips
     ``handle_401``: the token is valid, only the server-side session is stale.
 
@@ -190,10 +203,29 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     ``_reconnect_event`` causes the server task's lifecycle loop to tear down the current
     ``streamablehttp_client`` + ``ClientSession`` and rebuild them, reusing the existing OAuth provider
     instance. See #13383.
+
+    At-most-once for writes: a session-expired shape can be synthesized by a proxy AFTER the upstream
+    executed the request, and the transport errors this classifier also matches (``ClosedResourceError``,
+    broken pipe) routinely fire mid-response. With ``call_may_have_side_effects`` the transport is still
+    healed but the call is never re-run; the model gets an ``outcome_uncertain`` error instead (same
+    contract as the mid-call stdio death path). Callers pass True unless the tool is positively read-only.
     """
     srv = _lookup_reconnectable_server(server_name, require_loop=True) if _is_session_expired_error(exc) else None
     if srv is None:
         return None
+    if call_may_have_side_effects:
+        reconnected = _loop._signal_reconnect_and_wait(
+            server_name, srv, op_description=f"{op_description} (write, no auto-retry)", timeout=15)
+        if reconnected:  # session state failed, not server health: no breaker strike
+            _core._reset_server_error(server_name)
+        else:
+            _core._bump_server_error(server_name)
+        logger.warning("MCP server '%s': %s failed with a session-expired/transport error after the request may "
+                       "have been dispatched; NOT auto-retrying a write-capable tool (reconnect %s).",
+                       server_name, op_description, "succeeded" if reconnected else "failed")
+        return tool_error(_SESSION_OUTCOME_UNCERTAIN_MSG.format(
+            s=server_name, state="been re-established" if reconnected else "not recovered yet"),
+            outcome_uncertain=True, server=server_name)
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
                 "and retrying once.", server_name, op_description, exc)
     if not _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=15):
@@ -502,9 +534,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+        # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
+        # pre-dispatch so the auth recoverer keeps its retry for every tool.
+        session_expired = partial(_handle_session_expired_and_retry,
+                                  call_may_have_side_effects=not _tool_is_read_only(server_name, tool_name))
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
+            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
     return _handler
 
