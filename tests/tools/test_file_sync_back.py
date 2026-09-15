@@ -5,6 +5,8 @@ import logging
 import os
 import signal
 import tarfile
+import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,11 +16,12 @@ fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
-    _cleanup_stale_sync_back_tars,
+    _cleanup_stale_sync_back_temp,
     _sha256_file,
     _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
-    _SYNC_BACK_STALE_TAR_SECONDS,
+    _SYNC_BACK_STALE_SECONDS,
+    _SYNC_BACK_TEMP_PREFIX,
 )
 
 
@@ -91,47 +94,52 @@ def _make_manager(
     return mgr
 
 
-class TestStaleSyncBackTarCleanup:
-    """Hard-killed sync-back archives are cleaned up conservatively."""
+class TestStaleSyncBackTempCleanup:
+    """Sync-back temp entries leaked by a hard kill are reclaimed by the next sync-back (#110812)."""
 
-    def test_removes_only_stale_hermes_sync_back_tars(self, tmp_path, monkeypatch):
-        stale = tmp_path / "hermes-sync-back-stale.tar"
+    def test_removes_only_stale_prefixed_entries(self, tmp_path, monkeypatch):
+        stale_tar = tmp_path / "hermes-sync-back-stale.tar"
+        stale_dir = tmp_path / "hermes-sync-back-stale-staging"
         recent = tmp_path / "hermes-sync-back-recent.tar"
         unrelated = tmp_path / "other-process.tar"
-        for path in (stale, recent, unrelated):
+        for path in (stale_tar, recent, unrelated):
             path.write_bytes(b"tar")
+        stale_dir.mkdir()
+        (stale_dir / "root").mkdir()
         now = 10_000.0
-        os.utime(stale, (now - _SYNC_BACK_STALE_TAR_SECONDS - 1,) * 2)
-        os.utime(recent, (now - _SYNC_BACK_STALE_TAR_SECONDS + 1,) * 2)
+        for path in (stale_tar, stale_dir):
+            os.utime(path, (now - _SYNC_BACK_STALE_SECONDS - 1,) * 2)
+        os.utime(recent, (now - _SYNC_BACK_STALE_SECONDS + 1,) * 2)
         monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
 
-        _cleanup_stale_sync_back_tars(tmp_path)
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
 
-        assert not stale.exists()
+        assert not stale_tar.exists()
+        assert not stale_dir.exists()
         assert recent.exists()
         assert unrelated.exists()
 
-    def test_preserves_active_tar_when_stat_or_unlink_fails(self, tmp_path, monkeypatch):
-        active = tmp_path / "hermes-sync-back-active.tar"
-        stale = tmp_path / "hermes-sync-back-stale.tar"
-        active.write_bytes(b"tar")
-        stale.write_bytes(b"tar")
-        now = 10_000.0
-        os.utime(stale, (now - _SYNC_BACK_STALE_TAR_SECONDS - 1,) * 2)
-        monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
-        original_unlink = Path.unlink
+    def test_sync_back_sweeps_leaked_entry_and_uses_identifiable_tar(self, tmp_path, monkeypatch):
+        tmp_root = tmp_path / "tmproot"
+        tmp_root.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
+        leaked = tmp_root / "hermes-sync-back-leaked.tar"
+        leaked.write_bytes(b"x" * 1024)
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(leaked, (old, old))
 
-        def fail_for_stale(path, *args, **kwargs):
-            if path == stale:
-                raise OSError("busy")
-            return original_unlink(path, *args, **kwargs)
+        seen = {}
 
-        monkeypatch.setattr(Path, "unlink", fail_for_stale)
+        def download(dest: Path):
+            seen["tar"] = dest
+            _make_tar({"root/.hermes/x.txt": b"hi"}, dest)
 
-        _cleanup_stale_sync_back_tars(tmp_path)
+        mgr = _make_manager(tmp_path, bulk_download_fn=download)
+        mgr.sync_back()
 
-        assert active.exists()
-        assert stale.exists()
+        assert seen["tar"].name.startswith(_SYNC_BACK_TEMP_PREFIX)
+        assert not leaked.exists()
+        assert list(tmp_root.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
