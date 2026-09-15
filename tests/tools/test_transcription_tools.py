@@ -1246,10 +1246,15 @@ class TestRunCommandSttIdleTimeout:
             encoding="utf-8",
         )
 
+        # Same budget rule as the progress test above: the idle window must
+        # comfortably exceed process spawn latency on a loaded runner, or the
+        # child is killed before its first stderr line is ever read and the
+        # pre-stall-output assertion fails spuriously. 30s of silence still
+        # trips a 0.25s window by a wide margin.
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_stt(
                 self._shell_command(sys.executable, "-u", str(script)),
-                timeout=0.1,
+                timeout=0.25,
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
