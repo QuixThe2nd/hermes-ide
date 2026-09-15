@@ -589,6 +589,63 @@ def _with_guidance(result: Dict[str, Any], job: Dict[str, Any], deliver: Optiona
     return result
 
 
+def _cron_inbox_delivery_enforce_enabled() -> bool:
+    """``cron.inbox_delivery_enforce`` (default true): the opt-out for the
+    creation-time inbox-thread rewrite. Read through the same readonly config
+    lane as ``_api_server_base_url``; any read failure keeps the default."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return bool(cfg_get(
+            load_config_readonly() or {}, "cron", "inbox_delivery_enforce", default=True))
+    except Exception:
+        return True
+
+
+def _enforce_inbox_delivery(
+    deliver: Optional[str], origin: Optional[Dict[str, str]]
+) -> Optional[str]:
+    """Rewrite a job that would root in its creating chat to the ``inbox`` token.
+
+    Operator convention on home-server installs: every cron job gets its own
+    dedicated, job-named thread under the provisioned inbox channel. The
+    rewrite applies only when the EFFECTIVE deliver lane is ``origin`` (the
+    user-supplied value if given, else the create-time default) — jobs naming
+    an explicit target, ``local``, ``thread:`` or ``bot-chat`` pass through
+    untouched — and only when the creating session is a Discord session whose
+    guild (``HERMES_SESSION_SCOPE_ID``, already carried by ``origin``) matches
+    the provisioned inbox's guild. No REST calls at creation time: the inbox
+    comes from local plugin state, the guild from the session env. Gated by
+    ``cron.inbox_delivery_enforce``. Returns the replacement deliver value, or
+    None to keep the value as computed.
+    """
+    from cron.scheduler import INBOX_DELIVER_TOKEN
+    effective = deliver if deliver is not None else ("origin" if origin else "local")
+    if effective.strip().lower() != "origin":
+        return None
+    if not origin or str(origin.get("platform") or "").lower() != "discord":
+        return None
+    scope_id = str(origin.get("scope_id") or "").strip()
+    if not scope_id:
+        return None
+    try:
+        from plugins.hermes_starts import provisioned_inbox
+        inbox = provisioned_inbox() or {}
+    except Exception:
+        logger.debug("cron create: provisioned inbox lookup failed", exc_info=True)
+        return None
+    if not str(inbox.get("channel_id") or "").strip():
+        return None
+    if str(inbox.get("guild_id") or "").strip() != scope_id:
+        return None
+    if not _cron_inbox_delivery_enforce_enabled():
+        return None
+    logger.info(
+        "Cron create: deliver would root in the creating Discord chat (guild %s) "
+        "with a provisioned inbox — rewriting deliver to the inbox thread token",
+        scope_id)
+    return INBOX_DELIVER_TOKEN
+
+
 def _action_create(a: Dict[str, Any]) -> str:
     prompt, script = a["prompt"], a["script"]
     deliver = _normalize_deliver_param(a["deliver"])
@@ -631,10 +688,17 @@ def _action_create(a: Dict[str, Any]) -> str:
         context_from = _apply_continuity(context_from, a["continuity"])
 
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
+    _deliver_arg = _resolve_cron_context_deliver(deliver)
+    _origin = _origin_from_env()
+    # Home-server operator convention: a job that would root in its creating chat
+    # gets its own dedicated, job-named thread under the provisioned inbox instead.
+    _inbox_deliver = _enforce_inbox_delivery(_deliver_arg, _origin)
+    if _inbox_deliver is not None:
+        _deliver_arg = _inbox_deliver
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            deliver=_resolve_cron_context_deliver(deliver), origin=_origin_from_env(), skills=canonical_skills,
+            deliver=_deliver_arg, origin=_origin, skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
             script=_normalize_optional_job_value(script), context_from=context_from,

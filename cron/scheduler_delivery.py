@@ -407,6 +407,17 @@ def _resolve_single_delivery_target(
         return _sched._resolve_thread_delivery_target(
             job, deliver_value, thread_token, for_failure=for_failure)
 
+    # inbox / inbox:<guild_id> — the provisioned inbox channel (hermes_starts state,
+    # home_server fallback) as the parent of the SAME auto-created job-named delivery
+    # thread the thread: token opens (helper lives in cron.scheduler, reached
+    # late-bound), parsed before the generic platform:chat_id split below so "inbox" is
+    # never misread as a platform name. The failure lane resolves to the plain inbox
+    # channel (never auto-creates), mirroring thread:.
+    inbox_guild = _sched._parse_inbox_deliver_token(deliver_value)
+    if inbox_guild is not None:
+        return _sched._resolve_inbox_delivery_target(
+            job, deliver_value, inbox_guild, for_failure=for_failure)
+
     if deliver_value == "origin":
         if origin:
             return {

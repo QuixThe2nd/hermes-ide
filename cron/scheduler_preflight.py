@@ -258,6 +258,23 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                     )
                 platform_parts.append(platform)
                 continue
+            # inbox / inbox:<guild_id> — same treatment via the inbox resolver: the
+            # naive split below would read platform "inbox" and block a perfectly
+            # runnable job. A token with no provisioned inbox (or a guild mismatch)
+            # resolves to nothing and still blocks, naming the token.
+            inbox_guild = _sched._parse_inbox_deliver_token(part)
+            if inbox_guild is not None:
+                resolved = _sched._resolve_inbox_delivery_target(job, part, inbox_guild)
+                platform = str(resolved.get("platform") or "").strip() if resolved else ""
+                if not platform:
+                    return (
+                        f"deliver target '{part}' does not resolve to a provisioned "
+                        "inbox channel (no provisioned inbox, or a guild id that does "
+                        "not match it). Fix the job's `deliver` value or provision the "
+                        "inbox channel."
+                    )
+                platform_parts.append(platform)
+                continue
             platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None

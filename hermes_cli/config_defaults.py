@@ -1838,6 +1838,13 @@ DEFAULT_CONFIG = {
         # untouched. User-written bare platforms address home conversations, unlike `all`
         # broadcast expansions, which do not gain mirror eligibility.
         "mirror_delivery": False,
+        # Creation-time enforcement of the dedicated inbox-thread convention (home-server
+        # layout): a job created from a Discord session in the guild of the provisioned
+        # inbox channel (hermes_starts state, home_server fallback) whose deliver would
+        # default to `origin` is rewritten to the `inbox` token — its own job-named
+        # thread under that channel. Explicit targets are never rewritten; installs
+        # without a provisioned inbox are unaffected. False opts out.
+        "inbox_delivery_enforce": True,
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,

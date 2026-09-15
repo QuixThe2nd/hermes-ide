@@ -97,12 +97,13 @@ def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> Li
         # warn once here instead of carrying the warning in the schema.
         # thread:<id> is exempt: the auto-created delivery thread IS the
         # token's point, so "no :thread_id segment" describes the feature,
-        # not a mistake.
+        # not a mistake. inbox:<guild_id> is exempt for the same reason
+        # (its thread is auto-created under the provisioned inbox).
         for target in _deliver.split(","):
             parts = target.strip().split(":")
             if (
                 len(parts) == 2
-                and parts[0] not in ("bot-chat", "sms", "thread")
+                and parts[0] not in ("bot-chat", "sms", "thread", "inbox")
                 and parts[1]
                 and not parts[1].startswith("#")):
                 notes.append(

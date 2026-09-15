@@ -246,6 +246,24 @@ def _home_server_inbox() -> Dict[str, str]:
     return {"guild_id": str(data.get("guild_id") or ""), "channel_id": channel_id}
 
 
+def provisioned_inbox() -> Optional[Dict[str, str]]:
+    """The provisioned inbox channel, for consumers outside this plugin.
+
+    Returns ``{"guild_id": ..., "channel_id": ...}`` or ``None``. Hermes
+    Starts' own state wins; when it has no channel of its own (not
+    provisioned, or a corrupt state) the home_server plugin's shared inbox
+    is the fallback. Read-only and total: a missing or corrupt state must
+    never raise into a caller.
+    """
+    state = _load_state()
+    if state.get("channel_id"):
+        return {
+            "guild_id": str(state.get("guild_id") or ""),
+            "channel_id": str(state["channel_id"]),
+        }
+    return _home_server_inbox() or None
+
+
 def adopt_home_server_inbox() -> str:
     """Target the home_server inbox instead of provisioning a duplicate one.
 
