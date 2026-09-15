@@ -56,6 +56,7 @@ Launch flags are unchanged — see ``usage-proxy-webui.service``.
 """
 
 import argparse
+from bisect import bisect_right
 import html
 import json
 from pathlib import Path
@@ -71,6 +72,13 @@ from zoneinfo import ZoneInfo
 SYDNEY = ZoneInfo("Australia/Sydney")
 UNATTRIBUTED = "unattributed"
 UNKNOWN = "unknown"
+# The Hermes gateway's caller values: plain `hermes` (pre-profile-split
+# traffic) and `hermes:<profile>` once the gateway names its profiles.  Only
+# these spellings display as "Hermes IDE"; every other caller keeps its raw
+# string as label (see caller_display).
+HERMES_CALLER = "hermes"
+HERMES_PROFILE_PREFIX = "hermes:"
+HERMES_DISPLAY = "Hermes IDE"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9136
 DEFAULT_DB = str(Path.home() / ".hermes" / "usage-proxy" / "usage.sqlite")
@@ -424,13 +432,15 @@ def where_clause(
     *,
     exclude: Optional[str] = None,
     with_range: bool = True,
+    now: Optional[datetime] = None,
 ) -> tuple[str, tuple[Any, ...]]:
     """Static WHERE fragments for the active filters (+ the time range).
 
     ``exclude`` names the one facet dimension whose own filter is left out —
     that is how a breakdown stays usable when narrowed (cross-filtering).
     Every fragment below is a fixed literal keyed by the allowlisted filter
-    name; the values are bound parameters and nothing else.
+    name; the values are bound parameters and nothing else.  ``now`` pins the
+    rolling cutoff to the snapshot's shared instant (see ``cutoff_iso``).
     """
     type_expr, id_expr, _name_expr = chat_exprs(has_chat_columns)
     parts: list[str] = []
@@ -440,7 +450,7 @@ def where_clause(
         hours = RANGE_HOURS[filters.range_key]
         if hours is not None:
             parts.append("ts >= ?")
-            params.append(cutoff_iso(hours))
+            params.append(cutoff_iso(hours, now))
 
     for key in FILTER_KEYS:
         if key == exclude:
@@ -533,9 +543,14 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def cutoff_iso(hours: float) -> str:
-    """UTC ISO cutoff in the same format the proxy writes into ``ts``."""
-    return (utc_now() - timedelta(hours=hours)).isoformat(timespec="milliseconds")
+def cutoff_iso(hours: float, now: Optional[datetime] = None) -> str:
+    """UTC ISO cutoff in the same format the proxy writes into ``ts``.
+
+    ``now`` lets one snapshot share a single instant across its window
+    totals, bucket skeleton and facet queries (``fetch_snapshot``), so the
+    WHERE cutoff and the bucket plan can never straddle an hour boundary.
+    """
+    return ((now or utc_now()) - timedelta(hours=hours)).isoformat(timespec="milliseconds")
 
 
 def to_sydney_datetime(ts: str | None) -> datetime | None:
@@ -558,6 +573,32 @@ def to_sydney(ts: str | None) -> str:
 def caller_label(caller: Any) -> str:
     """Traffic with no recorded caller cannot be attributed to a harness."""
     return UNATTRIBUTED if not caller else str(caller)
+
+
+def is_hermes_profile(caller: Any) -> bool:
+    """True for the gateway's per-profile callers (`hermes:<profile>`)."""
+    return (
+        isinstance(caller, str)
+        and caller.startswith(HERMES_PROFILE_PREFIX)
+        and len(caller) > len(HERMES_PROFILE_PREFIX)
+    )
+
+
+def caller_display(caller: Any) -> str:
+    """Human-facing name for a raw caller value — display text only.
+
+    Everything else (JSON payloads, element keys/values/classes, the colour
+    hash) keeps the raw string; only the rendered label is prettified.
+    Mirrored exactly in the browser JS (callerDisplay).
+    """
+    if not caller:
+        return UNATTRIBUTED
+    name = str(caller)
+    if name == HERMES_CALLER:
+        return HERMES_DISPLAY
+    if is_hermes_profile(name):
+        return f"{HERMES_DISPLAY} · {name[len(HERMES_PROFILE_PREFIX):]}"
+    return name
 
 
 def chat_label_fields(
@@ -847,13 +888,23 @@ def _bucket(start: datetime, label: str, day: str | None, partial: bool) -> dict
     }
 
 
-def bucket_plan(range_key: str, first_ts: str | None) -> list[dict[str, Any]]:
-    """Empty bucket skeletons for the range, oldest first."""
-    now = utc_now()
+def bucket_plan(
+    range_key: str, first_ts: str | None, now: Optional[datetime] = None
+) -> list[dict[str, Any]]:
+    """Empty bucket skeletons covering the full filtered window, oldest first.
+
+    Rolling ranges start at the bucket *containing* the WHERE cutoff — the
+    first column is the partial hour/day the cutoff falls inside — and end
+    with the current, still-in-progress bucket, so the chart accounts for
+    exactly the same events as the stat cards and breakdowns (which filter
+    ``ts >= now - <range>``).  ``now`` is the snapshot's shared instant when
+    called from ``fetch_snapshot`` (see ``cutoff_iso``).
+    """
+    now = now or utc_now()
     if range_key == "24h":
         current = now.replace(minute=0, second=0, microsecond=0)
         buckets = []
-        for i in range(HOURS - 1, -1, -1):
+        for i in range(HOURS, -1, -1):  # the cutoff's partial hour … now
             start = current - timedelta(hours=i)
             local = start.astimezone(SYDNEY)
             buckets.append(
@@ -861,7 +912,7 @@ def bucket_plan(range_key: str, first_ts: str | None) -> list[dict[str, Any]]:
                     start,
                     local.strftime("%H:%M"),
                     local.strftime("%a") if local.hour == 0 else None,
-                    i in (0, HOURS - 1),
+                    i in (0, HOURS),
                 )
             )
         return buckets
@@ -873,9 +924,9 @@ def bucket_plan(range_key: str, first_ts: str | None) -> list[dict[str, Any]]:
                 today - timedelta(days=i),
                 (today - timedelta(days=i)).astimezone(SYDNEY).strftime("%b %d"),
                 None,
-                i in (0, days - 1),
+                i in (0, days),  # the cutoff's partial day … today
             )
-            for i in range(days - 1, -1, -1)
+            for i in range(days, -1, -1)
         ]
     # "all": from the first filtered event to now, ≤ BUCKET_MAX columns
     first = to_sydney_datetime(first_ts) if first_ts else None
@@ -921,8 +972,13 @@ def query_timeseries(
     """
     if not buckets:
         return buckets
-    span = buckets[-1]["start"] - buckets[0]["start"]
-    hourly = span < timedelta(days=1)
+    starts = [b["start"] for b in buckets]
+    # Hourly grouping only when the plan itself is hourly (the 24 h range);
+    # everything else groups by UTC day.  Placement below is arithmetic over
+    # the skeleton's own starts, so a one-bucket "all" window or a widened
+    # all-time span can never be misread as hourly by a span guess.
+    width = starts[1] - starts[0] if len(starts) > 1 else None
+    hourly = width is not None and width < timedelta(days=1)
     key_len = 13 if hourly else 10
     type_expr, id_expr, name_expr = chat_exprs(has_chat_columns)
 
@@ -948,28 +1004,18 @@ def query_timeseries(
         params,
     ).fetchall()
 
-    # bucket lookup: the raw substr key of a row -> its bucket
-    if hourly:
-        index = {b["hour_bucket"][:13]: b for b in buckets}
-
-        def bucket_for(raw_key: str) -> dict[str, Any] | None:
-            return index.get(raw_key)
-
-    else:
-        width = (
-            (buckets[1]["start"] - buckets[0]["start"]).days
-            if len(buckets) > 1
-            else 1
-        )
-        first_start = buckets[0]["start"]
-
-        def bucket_for(raw_key: str) -> dict[str, Any] | None:
-            try:
-                day = datetime.fromisoformat(raw_key).replace(tzinfo=timezone.utc)
-            except ValueError:
-                return None
-            i = (day - first_start).days // max(1, width)
-            return buckets[i] if 0 <= i < len(buckets) else None
+    # bucket lookup: the raw substr key of a row -> its bucket.  A row's key
+    # is its hour/day truncated to text, i.e. the *start* of its hour/day, so
+    # placement is one bisect over the skeleton's starts — uniform for hourly,
+    # daily and widened all-time buckets alike, and correct for the shared
+    # first partial bucket (a row at the cutoff keys exactly to its start).
+    def bucket_for(raw_key: str) -> dict[str, Any] | None:
+        try:
+            ts = datetime.fromisoformat(raw_key).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        i = bisect_right(starts, ts) - 1
+        return buckets[i] if i >= 0 else None
 
     groups: dict[int, dict[tuple[str, str], dict[str, int]]] = {}
     for raw_key, caller, model, requests, tokens, input_t, output_t, cached_t in rows:
@@ -1149,6 +1195,12 @@ def fetch_snapshot(
     so it stays usable when narrowed, and events are filtered before their
     LIMIT.  ``event_limit=0`` skips the events query entirely (used by
     /api/summary).
+
+    All queries run inside one read transaction over one shared ``now``, so
+    the cards, the chart buckets and the breakdowns always describe the same
+    instant and the same ledger contents even while the proxy keeps writing
+    (a deferred read transaction is snapshot-consistent under WAL and never
+    blocks the writer longer than its own commit).
     """
     filters = filters or Filters()
     try:
@@ -1157,12 +1209,14 @@ def fetch_snapshot(
         return error_snapshot(f"cannot open ledger read-only: {exc}", filters)
 
     try:
+        now = utc_now()
+        conn.execute("BEGIN")  # one consistent read snapshot for every query below
         has_chat = CHAT_COLUMNS <= ledger_columns(conn)
         type_expr, id_expr, name_expr = chat_exprs(has_chat)
-        where, params = where_clause(filters, has_chat)
+        where, params = where_clause(filters, has_chat, now=now)
 
         window = query_window(conn, where, params)
-        buckets = bucket_plan(filters.range_key, window["first_ts"])
+        buckets = bucket_plan(filters.range_key, window["first_ts"], now=now)
         per_bucket = query_timeseries(conn, where, params, buckets, has_chat)
         events = (
             query_events(conn, where, params, has_chat, event_limit)
@@ -1192,7 +1246,7 @@ def fetch_snapshot(
         }
         facets: dict[str, Any] = {}
         for key in FILTER_KEYS:
-            fwhere, fparams = where_clause(filters, has_chat, exclude=key)
+            fwhere, fparams = where_clause(filters, has_chat, exclude=key, now=now)
             if key == "chat":
                 options, truncated = query_chat_breakdown(
                     conn, type_expr, id_expr, name_expr,
@@ -1207,6 +1261,7 @@ def fetch_snapshot(
                     conn, facet_exprs[key], fwhere, fparams, FACET_LIMITS[key]
                 )
             facets[key] = {"options": options, "truncated": truncated}
+        conn.commit()  # read-only: ends the snapshot; nothing was written
     except (sqlite3.Error, OSError) as exc:
         return error_snapshot(f"ledger query failed: {exc}", filters)
     finally:
@@ -1327,10 +1382,10 @@ _FACET_SELECTS = (
 )
 
 
-def _facet_option(value: str, requests: Any, tokens: Any, selected: bool) -> str:
+def _facet_option(value: str, requests: Any, tokens: Any, selected: bool, label: str = "") -> str:
     sel = " selected" if selected else ""
     count = f"{fmt_compact(tokens or 0)} tok · {fmt_int(requests or 0)} req"
-    return f'<option value="{esc(value)}"{sel}>{esc(value)} · {esc(count)}</option>'
+    return f'<option value="{esc(value)}"{sel}>{esc(label or value)} · {esc(count)}</option>'
 
 
 def render_filter_bar(snapshot: dict[str, Any]) -> str:
@@ -1359,13 +1414,17 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
                 _facet_option(
                     value, opt.get("requests"), opt.get("tokens"),
                     value == selected_value,
+                    # harness options label the Hermes family "Hermes IDE";
+                    # the option VALUE stays the raw caller (the filter key)
+                    caller_display(value) if key == "harness" else "",
                 )
             )
         if selected_value and selected_value not in seen:
             # the active filter narrowed itself out of the cross-filtered
             # list — keep it selectable anyway (never silently dropped)
+            sel_label = caller_display(selected_value) if key == "harness" else selected_value
             options.append(
-                f'<option value="{esc(selected_value)}" selected>{esc(selected_value)}</option>'
+                f'<option value="{esc(selected_value)}" selected>{esc(sel_label)}</option>'
             )
         selects.append(
             f'<label class="f"><span>{esc(all_label[4:])}</span>'
@@ -1456,25 +1515,90 @@ def chat_table_body(chats: dict[str, Any]) -> str:
     return '<tbody id="chat-body">' + "".join(out) + "</tbody>"
 
 
+def _harness_rank(r: dict[str, Any]) -> tuple[int, int, str]:
+    """The per-harness facet's ORDER BY (tokens desc, requests desc, caller
+    asc), reused to place the Hermes IDE subtotal among the other callers."""
+    return (-(r.get("total_tokens") or 0), -(r.get("requests") or 0), str(r.get("caller")))
+
+
+def harness_display_rows(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    """Per-harness rows for the table: ``hermes:<profile>`` callers become
+    indented subrows under a ``Hermes IDE`` parent whose totals also fold in
+    any plain ``hermes`` traffic (the pre-profile-split caller value).
+
+    Each entry is ``(row, kind)`` with kind "" / "subtotal" / "subrow".
+    Without profile callers the input rows come back untouched, so a ledger
+    that never recorded them renders exactly as before.  Mirrored exactly in
+    the browser JS (harnessDisplayRows) — display grouping only: the raw
+    rows (and every total elsewhere) are untouched, so the subtotal can
+    never double-count.
+    """
+    profile_rows = [r for r in rows if is_hermes_profile(r.get("caller"))]
+    if not profile_rows:
+        return [(r, "") for r in rows]
+    hermes_rows: list[dict[str, Any]] = []
+    other_rows: list[dict[str, Any]] = []
+    for r in rows:
+        if r.get("caller") == HERMES_CALLER or is_hermes_profile(r.get("caller")):
+            hermes_rows.append(r)
+        else:
+            other_rows.append(r)
+    parent = {
+        "caller": HERMES_CALLER,
+        "unattributed": False,
+        "requests": sum(r.get("requests") or 0 for r in hermes_rows),
+        "total_tokens": sum(r.get("total_tokens") or 0 for r in hermes_rows),
+    }
+    out: list[tuple[dict[str, Any], str]] = []
+    for r in sorted(other_rows + [parent], key=_harness_rank):
+        if r is parent:
+            out.append((r, "subtotal"))
+            out.extend((p, "subrow") for p in sorted(profile_rows, key=_harness_rank))
+        else:
+            out.append((r, ""))
+    return out
+
+
 def harness_table_body(rows: list[dict[str, Any]]) -> str:
     """One row per harness: chip, requests, tokens and a share-of-max bar.
-    Rows drill down — a click sets the harness filter."""
+    Rows drill down — a click sets the harness filter.
+
+    Hermes profile callers render as indented subrows under a Hermes IDE
+    parent subtotal row (see harness_display_rows).  The subtotal is NOT
+    clickable: the harness filter matches one exact caller, so no single
+    selection would honestly represent the whole Hermes family — its title
+    says the scope instead.  Subrows drill to their exact profile caller.
+    """
     if not rows:
         return '<tbody id="harness-body"><tr><td colspan="4" class="muted">No requests in the filtered window</td></tr></tbody>'
-    peak = max((float(r.get("total_tokens") or 0) for r in rows), default=0.0)
+    display = harness_display_rows(rows)
+    peak = max((float(r.get("total_tokens") or 0) for r, _ in display), default=0.0)
     out = []
-    for r in rows:
+    for r, kind in display:
         tokens = float(r.get("total_tokens") or 0)
         tr_class = "h-unattr" if r.get("unattributed") else harness_class_name(r.get("caller"))
+        if kind:
+            tr_class += f" {kind}"
         caller = r.get("caller") or UNATTRIBUTED
         fill = ""
         if peak > 0 and tokens > 0:
             width = max(1.5, tokens / peak * 100)
             fill = f'<div class="bar-fill" style="width:{width:.1f}%"></div>'
+        if kind == "subtotal":
+            attrs = (
+                ' title="Hermes IDE total across every hermes caller (plain'
+                " 'hermes' plus all profiles) — the harness filter matches one"
+                ' exact caller, so pick a profile below to filter"'
+            )
+        else:
+            attrs = (
+                f' data-harness="{esc(caller)}" tabindex="0"'
+                f' title="Filter to {esc(caller_display(caller))}"'
+            )
+            tr_class += " hrow"
         out.append(
-            f'<tr class="{tr_class} hrow" data-harness="{esc(caller)}" tabindex="0"'
-            f' title="Filter to {esc(caller)}">'
-            f'<td><span class="chip">{esc(caller)}</span></td>'
+            f'<tr class="{tr_class}"{attrs}>'
+            f'<td><span class="chip">{esc(caller_display(caller))}</span></td>'
             f'<td class="num">{fmt_int(r.get("requests"))}</td>'
             f'<td class="num">{esc(fmt_stat(tokens))}</td>'
             f'<td class="bar-cell"><div class="bar-track" aria-hidden="true">{fill}</div></td>'
@@ -1512,7 +1636,7 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
         out.append(
             f"<tr{row_cls}>"
             f'<td class="num" title="{esc(e.get("ts"))}">{esc(e.get("ts_sydney"))}</td>'
-            f'<td><span class="chip {chip_cls}">{esc(e.get("caller") or UNATTRIBUTED)}</span></td>'
+            f'<td><span class="chip {chip_cls}">{esc(caller_display(e.get("caller")))}</span></td>'
             f'<td class="{chat_cls}" title="{esc(e.get("chat_key"))}">{esc(chat_display)}</td>'
             f"<td>{model_name_html(e.get('model'))}</td>"
             f"<td>{esc(e.get('route'))}</td>"
@@ -1552,11 +1676,13 @@ def bucket_series_groups(bucket: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def series_line_html(group: dict[str, Any]) -> str:
-    """``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one branded line."""
+    """``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one branded line.
+    The harness name is the display label (Hermes IDE · <profile>); model
+    names stay raw beside their brand logos."""
     detail = " · ".join(
         f"{model_name_html(m)} {esc(fmt_compact(t))}" for m, t in group["models"]
     )
-    return f"{esc(group['caller'])} {esc(fmt_compact(group['tokens']))} ({detail})"
+    return f"{esc(caller_display(group['caller']))} {esc(fmt_compact(group['tokens']))} ({detail})"
 
 
 def chart_data_table(buckets: list[dict[str, Any]]) -> str:
@@ -1908,6 +2034,14 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .c-unknown .cname { color: var(--unattr); font-style: italic; }
 .hrow, .lrow { cursor: pointer; }
 .hrow:focus-visible, .lrow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+/* Hermes IDE profile subcategories: `hermes:<profile>` rows indent under a
+   parent row whose totals also fold in pre-split plain `hermes` traffic;
+   the subtotal is display-only (not clickable) — the harness filter matches
+   one exact caller, so the family row has no honest single selection */
+tr.subrow td:first-child { padding-left: 26px; }
+tr.subtotal td { background: var(--surface-2); border-bottom-color: var(--border-strong); }
+tr.subtotal .chip { color: var(--text); }
+tr.subtotal td.num { font-weight: 600; }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover, th.sortable:focus-visible { color: var(--text-2); outline: none; }
 th.sortable.sorted-asc::after { content: " ▲"; font-size: 0.6rem; }
@@ -1943,6 +2077,9 @@ JS = r"""
   var DASHBOARD_EVENTS = __DASHBOARD_EVENTS__;
   var N_COLORS = __HARNESS_COLOR_COUNT__;
   var UNATTR = 'unattributed';
+  var HERMES = 'hermes';
+  var HERMES_PREFIX = 'hermes:';
+  var HERMES_DISPLAY = 'Hermes IDE';
   var RATE_LIMIT_CODES = [401, 429];
   var CH = { H: 260, padL: 50, padR: 12, padT: 24, padB: 26, barMax: 30 };
   var C = {
@@ -2077,6 +2214,7 @@ JS = r"""
     if (r && RANGE_KEYS.indexOf(r.value) >= 0) rangeKey = r.value;
     writeStateToUrl();
     renderChips();
+    tick();  /* 'updating…' until the refetch for this state lands */
     poll();
   }
 
@@ -2126,6 +2264,11 @@ JS = r"""
       if (key === 'chat') {
         value = String(o.key || '');
         label = (o.display || value) + ' · ' + fmtCompact(o.total_tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+      } else if (key === 'harness') {
+        /* label shows the Hermes family as 'Hermes IDE [· profile]'; the
+           option VALUE stays the raw caller — it is the filter key */
+        value = String(o.value || '');
+        label = callerDisplay(value) + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
       } else {
         value = String(o.value || '');
         label = value + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
@@ -2170,6 +2313,7 @@ JS = r"""
     window.addEventListener('popstate', function () {
       applyStateToControls(readStateFromUrl());
       renderChips();
+      tick();
       poll();
     });
     /* drill-down: chat rows, harness rows and donut legend entries set their
@@ -2219,6 +2363,20 @@ JS = r"""
     if (key) return 'hb-' + key;
     if (!caller || caller === UNATTR) return 'h-unattr';
     return 'h' + (djb2(caller) % N_COLORS);
+  }
+
+  /* display name for a raw caller value — labels only.  Raw caller strings
+     stay the keys, option values, filter values and colour-hash inputs
+     everywhere (same contract as the server's caller_display) */
+  function isHermesProfile(c) {
+    return typeof c === 'string' && c.indexOf(HERMES_PREFIX) === 0 && c.length > HERMES_PREFIX.length;
+  }
+
+  function callerDisplay(c) {
+    if (!c) return UNATTR;
+    if (c === HERMES) return HERMES_DISPLAY;
+    if (isHermesProfile(c)) return HERMES_DISPLAY + ' · ' + c.slice(HERMES_PREFIX.length);
+    return c;
   }
 
   /* hex mirror of the .h0…h5/.h-unattr/.hb-* CSS palette — a canvas cannot
@@ -2419,6 +2577,44 @@ JS = r"""
 
   /* ---- per-harness share bars ---- */
 
+  /* the per-harness facet's ORDER BY (tokens desc, requests desc, caller
+     asc) — reused to place the Hermes IDE subtotal among the other callers */
+  function harnessRank(a, b) {
+    return (Number(b.total_tokens) || 0) - (Number(a.total_tokens) || 0)
+      || (Number(b.requests) || 0) - (Number(a.requests) || 0)
+      || (String(a.caller) < String(b.caller) ? -1 : String(a.caller) > String(b.caller) ? 1 : 0);
+  }
+
+  /* hermes:<profile> rows become indented subrows under a Hermes IDE parent
+     whose totals also fold in plain `hermes` traffic (pre-profile-split
+     rows); without profile rows the input order passes through unchanged —
+     same contract as the server's harness_display_rows.  Display grouping
+     only: raw rows are untouched, so the subtotal never double-counts. */
+  function harnessDisplayRows(rows) {
+    var profileRows = rows.filter(function (r) { return isHermesProfile(r.caller); });
+    if (!profileRows.length) return rows.map(function (r) { return [r, '']; });
+    var hermesRows = [], otherRows = [];
+    rows.forEach(function (r) {
+      (r.caller === HERMES || isHermesProfile(r.caller) ? hermesRows : otherRows).push(r);
+    });
+    var parent = {
+      caller: HERMES,
+      unattributed: false,
+      requests: hermesRows.reduce(function (a, r) { return a + (Number(r.requests) || 0); }, 0),
+      total_tokens: hermesRows.reduce(function (a, r) { return a + (Number(r.total_tokens) || 0); }, 0)
+    };
+    var out = [];
+    otherRows.concat([parent]).sort(harnessRank).forEach(function (r) {
+      if (r === parent) {
+        out.push([r, 'subtotal']);
+        profileRows.slice().sort(harnessRank).forEach(function (p) { out.push([p, 'subrow']); });
+      } else {
+        out.push([r, '']);
+      }
+    });
+    return out;
+  }
+
   function renderHarness(rows) {
     var tbody = $('harness-body');
     if (!tbody) return;
@@ -2431,16 +2627,29 @@ JS = r"""
       tbody.appendChild(emptyRow);
       return;
     }
+    var display = harnessDisplayRows(rows);
     var max = 0;
-    rows.forEach(function (r) { max = Math.max(max, Number(r.total_tokens) || 0); });
-    rows.forEach(function (r) {
+    display.forEach(function (d) { max = Math.max(max, Number(d[0].total_tokens) || 0); });
+    display.forEach(function (d) {
+      var r = d[0], kind = d[1];
       var tokens = Number(r.total_tokens) || 0;
       var caller = r.caller || UNATTR;
-      var tr = el('tr', (r.unattributed ? 'h-unattr' : harnessClass(r.caller)) + ' hrow');
-      tr.setAttribute('data-harness', caller);
-      tr.title = 'Filter to ' + caller;
+      var cls = (r.unattributed ? 'h-unattr' : harnessClass(r.caller)) + (kind ? ' ' + kind : '');
+      var tr = el('tr', cls);
+      if (kind === 'subtotal') {
+        /* no honest single selection represents the whole Hermes family —
+           the harness filter matches one exact caller, so the subtotal
+           states its scope instead of being clickable */
+        tr.title = 'Hermes IDE total across every hermes caller (plain \'hermes\' plus all' +
+          ' profiles) — pick a profile below to filter';
+      } else {
+        tr.classList.add('hrow');
+        tr.setAttribute('data-harness', caller);  /* raw caller = filter value */
+        tr.setAttribute('tabindex', '0');
+        tr.title = 'Filter to ' + callerDisplay(caller);
+      }
       var tdLabel = el('td');
-      tdLabel.appendChild(el('span', 'chip', caller));
+      tdLabel.appendChild(el('span', 'chip', callerDisplay(caller)));
       tr.appendChild(tdLabel);
       tr.appendChild(el('td', 'num', fmtInt(r.requests)));
       tr.appendChild(el('td', 'num', fmtStat(tokens)));
@@ -3105,8 +3314,9 @@ JS = r"""
             div.textContent = l.text;
           } else {
             /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" with each model's
-               provider logo beside its name */
-            div.appendChild(document.createTextNode(l.caller + ' ' + fmtCompact(l.total) + ' ('));
+               provider logo beside its name; the harness name is the display
+               label (Hermes IDE · <profile>), models stay raw */
+            div.appendChild(document.createTextNode(callerDisplay(l.caller) + ' ' + fmtCompact(l.total) + ' ('));
             l.models.forEach(function (m, mi) {
               if (mi) div.appendChild(document.createTextNode(' · '));
               var logo = brandLogoEl(providerKey(m.name));
@@ -3149,7 +3359,8 @@ JS = r"""
       line.appendChild(dot);
       var logo = chartMode === 'model' ? brandLogoEl(providerKey(seg.name)) : null;
       if (logo) line.appendChild(logo);
-      line.appendChild(document.createTextNode(seg.name + ' · ' + fmtCompact(seg.tokens)));
+      var segName = chartMode === 'harness' ? callerDisplay(seg.name) : seg.name;
+      line.appendChild(document.createTextNode(segName + ' · ' + fmtCompact(seg.tokens)));
       tip.appendChild(line);
     });
     tip.hidden = false;
@@ -3257,7 +3468,7 @@ JS = r"""
       tr.appendChild(tdTime);
 
       var tdCaller = el('td');
-      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), e.caller || UNATTR));
+      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), callerDisplay(e.caller)));
       tr.appendChild(tdCaller);
 
       var tdChat = el('td', e.chat_key && e.chat_key !== 'unknown' ? '' : 'muted', e.chat_display || 'Unknown');
@@ -3305,13 +3516,18 @@ JS = r"""
     var live = $('live');
     if (live.classList.contains('error')) { setText('tick', 'retrying…'); return; }
     if (lastOkAt === null) { setText('tick', 'connecting…'); return; }
+    /* the controls moved ahead of the data on screen: say so, never pass
+       the old render off as the new filter state's results */
+    if (renderedQuery !== null && renderedQuery !== stateQuery()) {
+      setText('tick', 'updating…');
+      return;
+    }
     var age = Math.max(0, Math.round((Date.now() - lastOkAt) / 1000));
     setText('tick', 'live');
     if (age >= POLL_MS / 1000 + 4) setLive('stale');
   }
 
-  async function fetchJson(url) {
-    var ctrl = new AbortController();
+  async function fetchJson(url, ctrl) {
     var timer = setTimeout(function () { ctrl.abort(); }, FETCH_TIMEOUT_MS);
     try {
       var res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
@@ -3321,18 +3537,30 @@ JS = r"""
     }
   }
 
-  var inFlight = false;
+  /* Latest-state-wins polling.  Every poll() supersedes the one still in
+     flight: its requests are aborted and its response — success OR failure —
+     is dropped, so an older filter state's data or error can never render
+     under newer chips/URL.  A filter change therefore converges immediately
+     (no waiting for the next interval tick), and while the network catches
+     up tick() reads 'updating…' until the rendered data matches the
+     controls again. */
+  var pollGen = 0;
+  var inFlightCtrl = null;
+  var renderedQuery = null;  /* the stateQuery() the screen currently shows */
 
   async function poll() {
-    if (inFlight) return;
-    inFlight = true;
+    var gen = ++pollGen;
+    var q = stateQuery();
+    if (inFlightCtrl) inFlightCtrl.abort();  // supersede the older request
+    var ctrl = new AbortController();
+    inFlightCtrl = ctrl;
     try {
-      var q = stateQuery();
       var results = await Promise.all([
-        fetchJson('/api/summary?' + q),
-        fetchJson('/api/timeseries?' + q),
-        fetchJson('/api/events?limit=' + DASHBOARD_EVENTS + '&' + q),
+        fetchJson('/api/summary?' + q, ctrl),
+        fetchJson('/api/timeseries?' + q, ctrl),
+        fetchJson('/api/events?limit=' + DASHBOARD_EVENTS + '&' + q, ctrl),
       ]);
+      if (gen !== pollGen) return;  // superseded while awaiting — never render stale
       var summary = results[0], series = results[1], events = results[2];
 
       var errors = [];
@@ -3354,6 +3582,7 @@ JS = r"""
         renderChart(lastSeries);
       }
       if (Array.isArray(events)) renderEvents(events);
+      renderedQuery = q;
 
       if (!errors.length) {
         lastOkAt = Date.now();
@@ -3363,11 +3592,14 @@ JS = r"""
         setLive('error');
       }
     } catch (err) {
+      if (gen !== pollGen) return;  // aborted by a newer state — obsolete failure
       showError('fetch failed: ' + err);
       setLive('error');
     } finally {
-      inFlight = false;
-      tick();
+      if (gen === pollGen) {
+        inFlightCtrl = null;
+        tick();
+      }
     }
   }
 
@@ -3397,6 +3629,7 @@ JS = r"""
   lastSeries = bootBuckets;
   renderChart(bootBuckets);
   renderEvents(boot.events || []);
+  renderedQuery = stateQuery();  /* the first paint already matches the URL */
   wireFilters();
   wireChart();
   wireDonut();
@@ -3480,7 +3713,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Harness Usage — Live</title>
+<title>AI Usage — Live</title>
 <link rel="icon" href=\""""
         + FAVICON
         + """\">
@@ -3493,7 +3726,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 <header class="topbar">
   <div>
-    <h1>Harness <span class="accent">Usage</span></h1>
+    <h1>AI <span class="accent">Usage</span></h1>
     <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney</p>
   </div>
   <div class="live" id="live" role="status">
@@ -3697,12 +3930,15 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         conn: sqlite3.Connection | None = None
         try:
             conn = open_db_readonly(self.db_path)
+            now = utc_now()  # one instant for the cutoff and the bucket plan
+            conn.execute("BEGIN")  # consistent read while the proxy writes
             has_chat = CHAT_COLUMNS <= ledger_columns(conn)
-            where, params = where_clause(filters, has_chat)
+            where, params = where_clause(filters, has_chat, now=now)
             first_ts = query_window(conn, where, params)["first_ts"]
             buckets = query_timeseries(
-                conn, where, params, bucket_plan(filters.range_key, first_ts), has_chat
+                conn, where, params, bucket_plan(filters.range_key, first_ts, now=now), has_chat
             )
+            conn.commit()  # read-only: ends the snapshot; nothing was written
             payload: Any = {
                 "buckets": buckets,
                 "range": {"key": filters.range_key, "label": RANGE_LABELS[filters.range_key]},
