@@ -34,14 +34,45 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
 )
 
+# Loopback hosts that must never be proxied: the browser backends dial local CDP
+# endpoints (ws://127.0.0.1:<port>/devtools/...), and websockets>=14 defaults to
+# proxy=True with proxies resolved via urllib.request.getproxies() — which reads the
+# macOS/Windows *system* proxy config even with no *_proxy env vars set. Without an
+# explicit NO_PROXY the CDP handshake is routed into the system proxy and fails with
+# "did not receive a valid HTTP response" (#110565). See #14372 for the env-var flavor.
+_LOOPBACK_NO_PROXY_ENTRIES: tuple[str, ...] = ("127.0.0.1", "localhost", "::1")
+
+
+def _ensure_loopback_no_proxy(env: dict) -> None:
+    """Append the loopback hosts to NO_PROXY/no_proxy (both casings) without dropping
+    operator-provided entries."""
+    for key in ("NO_PROXY", "no_proxy"):
+        entries = [part.strip() for part in env.get(key, "").split(",") if part.strip()]
+        missing = [host for host in _LOOPBACK_NO_PROXY_ENTRIES if host not in entries]
+        if missing:
+            env[key] = ",".join(entries + missing)
+
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package)."""
+    harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
+    profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
+    Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
     from tools.environments.local import hermes_subprocess_env
 
     env = hermes_subprocess_env(inherit_credentials=False)
-    env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+    # NOTE(future-me): upstream base calls served_profile_child_env() here; the fork's
+    # local.py lost it (pre-2026-09-14). restore the upstream call once that function is
+    # back in tools/environments/local.py. remove when: re-synced with upstream.
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        try:
+            value = get_secret(key)
+        except UnscopedSecretError:
+            value = None  # multiplex, no scope bound: no key rather than a sibling profile's
+        if value is not None:
+            env[key] = value
+    _ensure_loopback_no_proxy(env)
     return env
 
 
