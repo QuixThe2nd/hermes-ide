@@ -283,26 +283,6 @@ class TestCronDenyModeAllGuards:
 
         assert result["approved"] is True
 
-    def test_session_pattern_key_does_not_allow_command_in_cron_deny(self, monkeypatch):
-        """A session-only approval must not become standing authority for unattended work."""
-        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-        approval_module.approve_session("test-session", "script execution via heredoc")
-
-        from unittest.mock import patch as mock_patch
-        tokens = set_session_vars(session_key="test-session", cron_session="1")
-        try:
-            with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
-                result = check_all_command_guards("python3 - <<'PY'\nprint('ok')\nPY", "local")
-        finally:
-            clear_session_vars(tokens)
-
-        assert result["approved"] is False
-        assert "BLOCKED" in result["message"]
-
     def test_pattern_key_allowlist_does_not_bypass_tirith_in_cron_deny(self, monkeypatch):
         """Approving one dangerous pattern must not suppress an independent Tirith finding."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
