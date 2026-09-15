@@ -827,3 +827,54 @@ def test_invalid_label_with_no_other_name_hits_the_gate(
     assert upstream.requests == []
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == "unattributed"
+
+
+# ── 6. Config schema registration ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "llm_usage_proxy",
+        "llm_usage_proxy.caller_label",
+        "llm_usage_proxy.port",
+        "llm_usage_proxy.enabled",
+        "llm_usage_proxy.manage_keys",
+    ],
+)
+def test_llm_usage_proxy_keys_validate_as_known(key):
+    from hermes_cli.config import _validate_config_key
+
+    is_known, suggestion = _validate_config_key(key)
+    assert is_known is True
+    assert suggestion is None
+
+
+def test_llm_usage_proxy_caller_label_typo_suggests_caller_label():
+    from hermes_cli.config import _validate_config_key
+
+    is_known, suggestion = _validate_config_key("llm_usage_proxy.caller_lable")
+    assert not is_known
+    assert suggestion is not None
+    assert "caller_label" in suggestion
+
+
+def test_configured_caller_label_inert_when_default_unset(tmp_path, monkeypatch):
+    """DEFAULT_CONFIG caller_label=None must not produce a configured label."""
+    from hermes_cli.llm_usage_routes import _configured_caller_label
+
+    home = tmp_path / "profiles" / "coder"
+    home.mkdir(parents=True)
+    _write_home_config(home)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    token = set_hermes_home_override(str(home))
+    try:
+        assert _configured_caller_label(str(home.resolve())) is None
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_default_config_llm_usage_proxy_port():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["llm_usage_proxy"]["port"] == 8790
