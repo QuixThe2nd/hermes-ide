@@ -512,6 +512,12 @@ Every messaging target must name an explicit chat — a bare platform name (`del
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
+### The inbox token (`inbox`) and dedicated inbox threads
+
+On installs with a provisioned inbox channel (the `hermes_starts` plugin's channel, or the `home_server` layout's shared `#inbox`), `deliver: "inbox"` — or `deliver: "inbox:<guild_id>"` to pin the guild — delivers each job into its own dedicated thread under that channel. Resolution reads local plugin state only (no API calls): the thread is created on first delivery, named after the job, and the concrete `discord:<channel>:<thread>` target is written back onto the job so later runs reuse it. When no inbox is provisioned, or `inbox:<guild_id>` names a different guild than the inbox's, the token resolves to nothing and the job records a delivery error. Failure notices never create threads — on the failure lane the token resolves to the plain inbox channel.
+
+The same convention is enforced at creation time: a job created from a Discord session in the inbox's guild whose delivery would otherwise default to `origin` (rooting it in whatever chat the job was created from) is automatically created with `deliver: "inbox"` instead. Jobs that name an explicit target — `platform:chat_id[:thread_id]`, `thread:...`, `bot-chat...`, `local` — are never rewritten, and installs without a provisioned inbox are unaffected. Set `cron.inbox_delivery_enforce: false` in config to opt out of the rewrite.
+
 ### Delivery failures are a distinct status
 
 Execution and delivery are tracked separately. When the agent run succeeds but

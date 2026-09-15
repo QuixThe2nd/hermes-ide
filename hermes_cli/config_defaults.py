@@ -1740,6 +1740,20 @@ DEFAULT_CONFIG = {
         # old paths raise ImportError once the compat layer is actually removed.
         "allow_deprecated_imports": False,
     },
+    "llm_usage_proxy": {
+        # LLM usage proxy (bundled plugin). Keys mirror
+        # plugins/llm_usage_proxy/config.py load_llm_usage_proxy_config defaults.
+        "enabled": True,
+        "port": 8790,
+        # name -> base URL for extra proxied upstreams (user-supplied names).
+        "upstreams": {},
+        # Key-manager mode: proxy owns provider keys, callers hold local tokens.
+        "manage_keys": False,
+        # Per-profile ledger attribution override; empty string = unset, falls
+        # back to the home-path-derived label (see hermes_cli/llm_usage_routes.py).
+        # Str-typed default so `config set` stores labels verbatim (_coerce_config_set_value).
+        "caller_label": "",
+    },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
@@ -1845,6 +1859,13 @@ DEFAULT_CONFIG = {
         # untouched. User-written bare platforms address home conversations, unlike `all`
         # broadcast expansions, which do not gain mirror eligibility.
         "mirror_delivery": False,
+        # Creation-time enforcement of the dedicated inbox-thread convention (home-server
+        # layout): a job created from a Discord session in the guild of the provisioned
+        # inbox channel (hermes_starts state, home_server fallback) whose deliver would
+        # default to `origin` is rewritten to the `inbox` token — its own job-named
+        # thread under that channel. Explicit targets are never rewritten; installs
+        # without a provisioned inbox are unaffected. False opts out.
+        "inbox_delivery_enforce": True,
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,

@@ -4060,6 +4060,92 @@ def _resolve_thread_delivery_target(
     return None
 
 
+INBOX_DELIVER_TOKEN = "inbox"
+
+
+def _parse_inbox_deliver_token(part: str) -> Optional[str]:
+    """Parse an ``inbox`` deliver token into its optional guild id.
+
+    Returns ``None`` when ``part`` is not an inbox token at all, ``""`` for
+    the bare ``inbox`` form, and the guild id for ``inbox:<guild_id>``.
+    Case-insensitive on the leading word only.
+    """
+    raw = (part or "").strip()
+    if not raw:
+        return None
+    word, sep, rest = raw.partition(":")
+    if word.strip().lower() != INBOX_DELIVER_TOKEN:
+        return None
+    return rest.strip() if sep else ""
+
+
+def _resolve_inbox_delivery_target(
+    job: dict,
+    deliver_value: str,
+    guild_ref: str,
+    *,
+    for_failure: bool = False,
+) -> Optional[dict]:
+    """Resolve an ``inbox`` deliver token to the provisioned inbox channel.
+
+    The inbox is read from local plugin state (``plugins.hermes_starts.
+    provisioned_inbox``: hermes_starts state first, the home_server shared
+    inbox as fallback) — no REST calls, no channel-existence probe: a bad
+    channel id surfaces as a delivery error from the adapter naturally.
+    The returned target carries the SAME ``_thread_auto`` /
+    ``_deliver_token`` markers as a ``thread:`` token with the inbox
+    channel as parent, so ``_deliver_result``'s existing auto-create
+    machinery opens a job-named thread under the inbox on first delivery
+    and rewrites the token on the job to the concrete
+    ``discord:<inbox_id>:<thread_id>`` (see
+    ``_persist_thread_delivery_token``).
+
+    Unresolved (returns ``None`` → delivery error listing the token): no
+    provisioned inbox, or an ``inbox:<guild_id>`` naming a guild that does
+    not match the provisioned inbox's guild. The failure lane
+    (``for_failure``) resolves to the plain inbox channel — a failure
+    notice must not mint threads.
+    """
+    job_label = job.get("name", job.get("id", "?"))
+    inbox = None
+    try:
+        from plugins.hermes_starts import provisioned_inbox
+
+        inbox = provisioned_inbox()
+    except Exception:
+        logger.debug(
+            "Job '%s': inbox deliver token '%s' could not read the provisioned "
+            "inbox state", job_label, deliver_value, exc_info=True)
+        inbox = None
+    if not inbox or not str(inbox.get("channel_id") or "").strip():
+        logger.warning(
+            "Job '%s': inbox deliver token '%s' has no provisioned inbox "
+            "channel to resolve to", job_label, deliver_value)
+        return None
+    if guild_ref and str(guild_ref) != str(inbox.get("guild_id") or ""):
+        logger.warning(
+            "Job '%s': inbox deliver token '%s' names guild %s but the "
+            "provisioned inbox belongs to guild %s",
+            job_label, deliver_value, guild_ref, inbox.get("guild_id"))
+        return None
+    target = {
+        # hermes_starts is Discord-only today; the channel id comes from
+        # Discord-provisioned state.
+        "platform": "discord",
+        "chat_id": str(inbox["channel_id"]),
+        "thread_id": None,
+        # The token names a real destination: same lane as an explicit
+        # platform:chat target (mirror-eligible only under the job's own
+        # attach_to_session opt-in — see _target_mirror_eligible).
+        "_resolved_from": "explicit",
+    }
+    if not for_failure:
+        target["_thread_auto"] = True
+        # The verbatim token, used by the persistence rewrite.
+        target["_deliver_token"] = deliver_value
+    return target
+
+
 def _persist_thread_delivery_token(
     job: dict,
     deliver_token: Optional[str],
