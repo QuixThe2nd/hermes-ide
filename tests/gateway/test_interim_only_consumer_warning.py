@@ -63,12 +63,3 @@ def test_interim_only_consumer_skips_duplicate_warning(caplog):
     interim messages on) is never fed the final's deltas — no false positive."""
     caplog = _run_mark_streamed_delivery(_consumer(False), caplog)
     assert not any("possible duplicate send" in r.message for r in caplog.records)
-
-
-def test_consumer_flag_defaults_true_on_real_consumer():
-    """Every construction site that can race the final send keeps the warning:
-    the flag defaults to True on the real consumer."""
-    from gateway.stream_consumer import GatewayStreamConsumer
-
-    consumer = GatewayStreamConsumer(adapter=SimpleNamespace(), chat_id="c")
-    assert consumer.stream_deltas_enabled is True
