@@ -131,9 +131,12 @@ def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
     except LocalEntryNotFoundError:
         logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
 
+    # huggingface_hub surfaces every Hub/network failure as an OSError subclass
+    # (LocalEntryNotFoundError wrapping the ConnectTimeout, HfHubHTTPError). Anything else
+    # (CUDA runtime, invalid model size) is not a download problem and propagates untouched.
     try:
         return WhisperModel(model_name, local_files_only=False, **kwargs)
-    except Exception as exc:
+    except OSError as exc:
         raise RuntimeError(
             f"Unable to download faster-whisper model '{model_name}': {exc}. "
             "If huggingface.co is unreachable, set HF_ENDPOINT to an accessible mirror; "
