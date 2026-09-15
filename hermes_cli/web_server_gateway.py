@@ -405,9 +405,12 @@ def _action_targets_system_gateway(subcommand: List[str]) -> bool:
 
     Scope is decided by the CLI's own picker (``_select_systemd_scope``) evaluated for the profile
     the action addresses, not by "a system unit exists": a host carrying both units resolves to the
-    user unit, which the dashboard user operates unelevated. Root already has the privilege.
+    user unit, which the dashboard user operates unelevated. Same root/sudo posture as the
+    ``hermes update`` fleet restart (``update_cmd_fleet._needs_sudo``).
     """
-    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+    from hermes_cli.update_cmd_fleet import _needs_sudo
+
+    if not _needs_sudo("system"):
         return False
     try:
         verb = subcommand[subcommand.index("gateway") + 1]
