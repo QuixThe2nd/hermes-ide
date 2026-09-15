@@ -22,6 +22,7 @@ import logging
 import os
 import struct
 import sys
+import threading
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger("hermes_state")
@@ -50,6 +51,11 @@ _FLOCK_FORMAT = "@qqihh" if sys.platform == "darwin" or "bsd" in sys.platform el
 
 Identity = Tuple[int, int]
 Held = Dict[int, Identity]  # fd -> (st_dev, st_ino) it referenced when locked
+
+# Several handles in one process share the same inodes (and see each other's descriptors), so a
+# lock on a given (fd, inode) is reference-counted: only the last holder unlocks it.
+_LOCK = threading.Lock()
+_REFS: Dict[Tuple[int, Identity], int] = {}
 
 
 def supported() -> bool:
@@ -117,11 +123,13 @@ def hold(db_path, held: Optional[Held] = None) -> Held:
         if ident is not None:
             wanted[ident] = rng
     try:
-        for fd, ident, (start, length) in _own_fds_for(wanted):
-            if held.get(fd) == ident:
-                continue
-            if _ofd_lock(fd, _F_RDLCK, start, length):
-                held[fd] = ident
+        with _LOCK:
+            for fd, ident, (start, length) in _own_fds_for(wanted):
+                if held.get(fd) == ident:
+                    continue
+                if _REFS.get((fd, ident)) or _ofd_lock(fd, _F_RDLCK, start, length):
+                    held[fd] = ident
+                    _REFS[(fd, ident)] = _REFS.get((fd, ident), 0) + 1
     except OSError:
         logger.debug("WAL lock guard unavailable for %s", base, exc_info=True)
     return held
@@ -135,12 +143,18 @@ def release(held: Held) -> None:
     replace never pairs with a stale WAL."""
     if not supported():
         return
-    for fd, ident in list(held.items()):
-        try:
-            st = os.fstat(fd)
-            if (st.st_dev, st.st_ino) == ident:
-                _ofd_lock(fd, _F_UNLCK, _SHARED_FIRST, _SHARED_SIZE)
-                _ofd_lock(fd, _F_UNLCK, _SHM_DMS_BYTE, 1)
-        except OSError:
-            pass
-    held.clear()
+    with _LOCK:
+        for fd, ident in list(held.items()):
+            remaining = _REFS.get((fd, ident), 1) - 1
+            if remaining > 0:
+                _REFS[(fd, ident)] = remaining
+                continue
+            _REFS.pop((fd, ident), None)
+            try:
+                st = os.fstat(fd)
+                if (st.st_dev, st.st_ino) == ident:
+                    _ofd_lock(fd, _F_UNLCK, _SHARED_FIRST, _SHARED_SIZE)
+                    _ofd_lock(fd, _F_UNLCK, _SHM_DMS_BYTE, 1)
+            except OSError:
+                pass
+        held.clear()
