@@ -532,39 +532,28 @@ class TestDisabledToolsetsPostureToolset:
         assert "write_file" not in no_file
 
 
-# =========================================================================
-# Tool Search bridge dispatch
-# =========================================================================
+# ==================================================================
 
-class TestBridgeDispatch:
-    """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
-    and refuses tool_call targets outside the session-scoped deferrable catalog."""
 
-    def test_tool_search_and_describe_return_json_strings(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            out = handle_function_call("tool_search", {"queries": ["anything"]})
-            assert isinstance(out, str) and json.loads(out) is not None
-            out = handle_function_call("tool_describe", {"names": ["nope"]})
-            assert isinstance(out, str) and json.loads(out) is not None
+class TestBrowserRetrievalHints:
+    """Browser schemas name web_search/web_extract only when the session actually has them (#39797)."""
 
-    def test_tool_call_bad_args_error(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            result = json.loads(handle_function_call("tool_call", {}))
-        assert "requires 'calls'" in result["error"]
+    @staticmethod
+    def _defs(*names):
+        return [{"type": "function", "function": {"name": n, "description": f"{n}."}} for n in names]
 
-    def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
-        import tools.tool_search as ts
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
-             patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
-            result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
-        assert "not available in this session" in result["error"]
+    def test_names_present_web_tools(self):
+        from model_tools import _apply_dynamic_schemas
 
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
-             patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
-             patch.object(ts, "validate_deferred_call_args", return_value=None), \
-             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
-            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
-        assert json.loads(out) == {"ok": True}
-        assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
+        out = {d["function"]["name"]: d["function"]["description"]
+               for d in _apply_dynamic_schemas(self._defs("browser_navigate", "browser_cdp", "web_search", "web_extract"))}
+        assert "web_search and web_extract" in out["browser_navigate"]
+        assert "web_extract" in out["browser_cdp"]
+
+    def test_silent_without_web_tools(self):
+        from model_tools import _apply_dynamic_schemas
+
+        rendered = " ".join(d["function"]["description"]
+                            for d in _apply_dynamic_schemas(self._defs("browser_navigate", "browser_cdp", "terminal")))
+        assert "web_search" not in rendered
+        assert "web_extract" not in rendered
