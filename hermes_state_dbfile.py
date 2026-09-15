@@ -287,7 +287,7 @@ def _iter_darwin_fd_targets():
             yield pid, fd, target, identity
 
 
-def _iter_darwin_sidecar_holders(db_path, *, own_pid: int, skip_fds=frozenset()) -> List[Tuple[int, str]]:
+def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     """The macOS leg of :func:`iter_deleted_sqlite_sidecar_holders`: libproc enumeration matched
     against the watched sidecar paths, judged by identity.
 
@@ -297,9 +297,7 @@ def _iter_darwin_sidecar_holders(db_path, *, own_pid: int, skip_fds=frozenset())
     base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
     watched = {os.path.normcase(path): path for path in (base + "-wal", base + "-shm")}
     holders: List[Tuple[int, str]] = []
-    for pid, fd, target, identity in _iter_darwin_fd_targets():
-        if pid == own_pid and fd in skip_fds:
-            continue  # our lock guard's descriptor (hermes_state_lockguard), not a SQLite connection
+    for pid, _fd, target, identity in _iter_darwin_fd_targets():
         literal = watched.get(os.path.normcase(target))
         if literal is not None and _identity_is_truly_unlinked(identity, literal):
             holders.append((pid, target))
@@ -322,15 +320,11 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
         return []
     holders: List[Tuple[int, str]] = []
     try:
-        from hermes_state_lockguard import owned_fds
-        own_pid, guard_fds = os.getpid(), owned_fds()
         if sys.platform == "darwin":
-            holders = _iter_darwin_sidecar_holders(db_path, own_pid=own_pid, skip_fds=guard_fds)
+            holders = _iter_darwin_sidecar_holders(db_path)
         elif sys.platform.startswith("linux"):
             watched = _watched_sqlite_sidecar_paths(db_path)
             for pid, target, fd_path in _iter_proc_fd_targets():
-                if pid == own_pid and int(fd_path.rsplit("/", 1)[1]) in guard_fds:
-                    continue  # our lock guard's descriptor, not a connection on a dead generation
                 canonical = _canonical_sqlite_path(target)
                 if (" (deleted)" in target and canonical in watched
                         and _fd_is_truly_unlinked(fd_path, watched[canonical])):
