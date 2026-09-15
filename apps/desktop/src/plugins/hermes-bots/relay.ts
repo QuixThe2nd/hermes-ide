@@ -264,8 +264,9 @@ async function syncRelayRosters() {
       // Nothing to relay — but the gateways that remain still hold the last
       // pushed roster, so a departed machine's agents would stay in every
       // bot's prompt (and as message_agent targets) until a second connection
-      // reappears. Push the now-empty roster once so they forget it.
-      if (!relay.rosterCleared) {
+      // reappears. Push the now-empty roster once so they forget it. An empty
+      // route list (registry not loaded yet) must not spend the one clear.
+      if (connections.length === 1 && !relay.rosterCleared) {
         relay.rosterCleared = true
         await Promise.all(
           connections.map(async connection => {

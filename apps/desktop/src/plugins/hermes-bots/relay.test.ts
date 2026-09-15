@@ -467,10 +467,32 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(calls).toEqual([expect.objectContaining({ connectionId: 'a', method: 'bot_relay.roster.sync', params: { agents: [] } })])
+    expect(calls).toEqual([
+      expect.objectContaining({ connectionId: 'a', method: 'bot_relay.roster.sync', params: { agents: [] } })
+    ])
 
     await vi.advanceTimersByTimeAsync(60_000)
     expect(calls).toHaveLength(1)
+
+    stopBotRelay()
+  })
+
+  it('an empty route list before the registry loads does not spend the one roster clear', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [])
+
+    const calls = respondWith(() => ({}))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toHaveLength(0)
+
+    // The registry arrives with a single connection: it still gets its clear.
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls).toEqual([
+      expect.objectContaining({ connectionId: 'a', method: 'bot_relay.roster.sync', params: { agents: [] } })
+    ])
 
     stopBotRelay()
   })
@@ -711,7 +733,10 @@ describe('the roster loop forgets a machine that left', () => {
     // A returning peer starts the union pushes again.
     hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual(['a', 'b'])
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual([
+      'a',
+      'b'
+    ])
 
     stopBotRelay()
   })
