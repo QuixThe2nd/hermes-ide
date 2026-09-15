@@ -367,8 +367,10 @@ class CLITerminalMixin:
             CLI_CONFIG, _DIM, _RST, _TERMINAL_INPUT_MODE_RESET_SEQ,
             _cli_multiline_shortcuts_enabled, _cprint, _enable_extended_enter_keys, logger)
         now = time.monotonic()
-        # Rate-limit to avoid thrashing if a terminal floods reports.
-        if now - self._last_input_mode_recovery < 0.5:
+        # Rate-limit to avoid thrashing if a terminal floods reports. None = never
+        # (monotonic epoch is arbitrary, see _invalidate).
+        last = self._last_input_mode_recovery
+        if last is not None and now - last < 0.5:
             return
         self._last_input_mode_recovery = now
         app = getattr(self, "_app", None)
@@ -408,7 +410,8 @@ class CLITerminalMixin:
         if getattr(app, "_running_in_terminal", False):
             return
         now = time.monotonic()
-        if now - self._last_termios_drift_check < 1.0:
+        last = self._last_termios_drift_check  # None = never (monotonic epoch is arbitrary)
+        if last is not None and now - last < 1.0:
             return
         self._last_termios_drift_check = now
         try:

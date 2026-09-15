@@ -444,3 +444,16 @@ class TestFocusRegainRedraw:
         bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
 
         assert calls == ["redraw"]
+
+    def test_first_invalidate_fires_even_with_small_monotonic_clock(
+        self, bare_cli, monkeypatch
+    ):
+        """Same class as above for the streaming/spinner repaint throttle."""
+        app = MagicMock()
+        bare_cli._app = app
+        bare_cli._last_invalidate = None
+        monkeypatch.setattr(cli_mod.time, "monotonic", lambda: 0.1)
+
+        bare_cli._invalidate(min_interval=0.25)
+
+        app.invalidate.assert_called_once()
