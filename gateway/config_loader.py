@@ -303,20 +303,37 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
 
 
 def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
-    """The two YAML→env bridges that stay in core (per-platform ones live in plugin hooks).
+    """The YAML→env bridges that stay in core (per-platform ones live in plugin hooks).
 
     Top-level ``require_mention`` → Telegram when the ``telegram:`` section has none: users write it
     alongside ``group_sessions_per_user`` expecting it to work, and the telegram plugin's hook only
     runs when a telegram block exists. Signal ``require_mention`` → ``SIGNAL_REQUIRE_MENTION`` (env wins).
+    ``allow_all_users`` (top-level or ``gateway.allow_all_users``) → ``GATEWAY_ALLOW_ALL_USERS``: every
+    allow-all reader (authz mixin, startup access check, own-policy adapters, plugin gates) consults
+    that env var, so the bridge is the one seam that makes the YAML key reach all of them (#110690).
 
-    Both values are ALWAYS seeded into the owning platform's ``extra`` (the adapters read extra first);
-    the process-env write is skipped while a multiplexed secondary profile's scope is active — the
-    loader runs inside ``_profile_runtime_scope`` for every secondary, and a first-writer-wins write
-    there would make the secondary's mention policy the DEFAULT profile's (#80099 class).
+    Platform values are ALWAYS seeded into the owning platform's ``extra`` (the adapters read extra
+    first); the process-env write is skipped while a multiplexed secondary profile's scope is active —
+    the loader runs inside ``_profile_runtime_scope`` for every secondary, and a first-writer-wins write
+    there would make the secondary's policy the DEFAULT profile's (#80099 class). A secondary profile
+    sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
     from gateway.platforms._shared import profile_scoped
 
     skip_env_bridge = profile_scoped()
+    gateway_section = yaml_cfg.get("gateway")
+    allow_all = yaml_cfg.get("allow_all_users")
+    if allow_all is None and isinstance(gateway_section, dict):
+        allow_all = gateway_section.get("allow_all_users")
+    if allow_all is not None and not skip_env_bridge and not os.getenv("GATEWAY_ALLOW_ALL_USERS"):
+        os.environ["GATEWAY_ALLOW_ALL_USERS"] = str(allow_all).lower()
+        if os.environ["GATEWAY_ALLOW_ALL_USERS"] in {"true", "1", "yes"}:
+            # The key was inert before it was bridged, so a forgotten line silently flips the
+            # posture to open — name the grant source at startup.
+            logger.warning(
+                "config.yaml allow_all_users: true grants every sender on every platform access "
+                "(bridged to GATEWAY_ALLOW_ALL_USERS; an explicit env var wins)."
+            )
     tl_require_mention = yaml_cfg.get("require_mention")
     if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})

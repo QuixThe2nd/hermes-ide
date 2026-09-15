@@ -410,6 +410,8 @@ DISCORD_ALLOW_ALL_USERS=true
 GATEWAY_ALLOW_ALL_USERS=true
 ```
 
+The global allow-all can also live in `config.yaml` as `gateway.allow_all_users: true` (or top-level `allow_all_users: true`); it is bridged to `GATEWAY_ALLOW_ALL_USERS` at gateway startup, an explicit env var wins, and the gateway logs a warning naming `config.yaml` as the grant source. In a multi-profile gateway a secondary profile sets `GATEWAY_ALLOW_ALL_USERS` in its own `.env` (its `config.yaml` is never bridged into the process environment).
+
 :::warning
 If **no allowlists are configured** and `GATEWAY_ALLOW_ALL_USERS` is not set, **all users are denied**. The gateway logs a warning at startup:
 

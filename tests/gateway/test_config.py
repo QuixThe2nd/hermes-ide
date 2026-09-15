@@ -843,6 +843,50 @@ class TestLoadGatewayConfig:
         ]
         assert os.environ.get("DINGTALK_ALLOWED_USERS") == "user-id-1,user-id-2"
 
+    @pytest.mark.parametrize("yaml_text", ["gateway:\n  allow_all_users: true\n", "allow_all_users: true\n"])
+    def test_allow_all_users_yaml_reaches_the_authz_gate(self, tmp_path, monkeypatch, yaml_text):
+        """Both spellings must open the gate for an unknown sender; before #110690 the key was inert
+        because every allow-all reader consults GATEWAY_ALLOW_ALL_USERS only."""
+        from gateway.authz_mixin import GatewayAuthorizationMixin
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        runner = object.__new__(GatewayAuthorizationMixin)
+        runner.config = load_gateway_config()
+        runner.adapters = {}
+        stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+        assert runner._is_user_authorized(stranger) is True
+
+    @pytest.mark.parametrize("yaml_text, env, expected", [
+        ("gateway:\n  allow_all_users: false\n", None, "false"),
+        ("gateway:\n  allow_all_users: true\n", "false", "false"),  # explicit env wins over YAML
+        ("gateway: {}\n", None, None),
+    ])
+    def test_allow_all_users_yaml_never_widens_past_env(self, tmp_path, monkeypatch, yaml_text, env, expected):
+        from gateway.authz_mixin import GatewayAuthorizationMixin
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        if env is None:
+            monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        else:
+            monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", env)
+
+        runner = object.__new__(GatewayAuthorizationMixin)
+        runner.config = load_gateway_config()
+        runner.adapters = {}
+        assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") == expected
+        stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+        assert runner._is_user_authorized(stranger) is False
+
 
     def test_top_level_platforms_override_nested_gateway_platforms(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
