@@ -3975,6 +3975,7 @@ export const en: Translations = {
       statusError: 'Error',
       statusRecovered: 'Recovered',
       statusDone: 'Done',
+      resultUnavailable: 'Result unavailable',
       memoryWriteNoted: 'Memory write noted',
       actions: {
         read: 'Read',
