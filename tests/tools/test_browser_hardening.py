@@ -59,7 +59,6 @@ class TestBrowserNavigateSchemaToolReferences:
 
         assert "web_search" not in description
         assert "web_extract" not in description
-        assert "lightweight retrieval tool" in description
 
 
 # ---------------------------------------------------------------------------

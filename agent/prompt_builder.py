@@ -506,13 +506,10 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 def execution_guidance_text(valid_tool_names=None) -> str:
     """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
 
-    Without web tools (e.g. Blank Slate) the ``web_search`` mentions would dangle, so they are dropped/adjusted.
+    The guidance names no web tool (#39797: a hard "use web_search" overrode SOUL.md and dangled in Blank Slate),
+    so the text is the same for every toolset; the seam stays so a future toolset-dependent line has a home.
     """
-    text = OPENAI_MODEL_EXECUTION_GUIDANCE
-    if valid_tool_names is not None and "web_search" not in valid_tool_names:
-        text = text.replace("- Current facts (weather, news, versions) → use web_search\n", "")
-        text = text.replace("(search_files, web_search, read_file, etc.)", "(search_files, read_file, etc.)")
-    return text
+    return OPENAI_MODEL_EXECUTION_GUIDANCE
 
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
