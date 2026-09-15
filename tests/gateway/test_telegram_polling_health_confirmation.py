@@ -10,7 +10,6 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
-from unittest.mock import patch
 from gateway.config import Platform  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -29,7 +28,6 @@ def _bare_adapter():
     a._polling_conflict_count = 3
     a._polling_conflict_recovery_generation = None
     a._send_path_degraded = True
-    a._polling_last_liveness_log_monotonic = None
     return a
 
 
@@ -43,22 +41,25 @@ class TestPollingHealthConfirmation:
         assert "generation 1" in rendered
         assert a._polling_progress_event.is_set()
 
-    def test_subsequent_progress_before_liveness_interval_is_silent(self, caplog):
-        """Progress before the liveness interval must not spam INFO logs."""
+    def test_subsequent_progress_is_silent(self, caplog):
+        """Only the FIRST round-trip of a generation logs — a quiet evening
+        must not spam one INFO per getUpdates poll."""
         a = _bare_adapter()
-        with patch(
-            "plugins.platforms.telegram.adapter.time.monotonic",
-            side_effect=[10.0, 100.0, 909.0],
-        ):
-            a._record_polling_progress(1)  # first — logs
-            caplog.clear()
-            with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
-                a._record_polling_progress(1)  # second — silent
-                a._record_polling_progress(1)  # third — still below 900 seconds
+        a._record_polling_progress(1)  # first — logs
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+            a._record_polling_progress(1)  # second — silent
+            a._record_polling_progress(1)  # third — silent
+        assert not [rec for rec in caplog.records if "Telegram polling" in rec.getMessage()]
 
+    def test_clean_bootstrap_stays_confirmed_healthy(self, caplog):
+        """No preceding network errors → no fake "recovered" wording."""
+        a = _bare_adapter()
+        a._polling_network_error_count = 0
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+            a._record_polling_progress(1)
         rendered = " | ".join(rec.getMessage() for rec in caplog.records)
-        assert "Telegram polling" not in rendered
-        assert "Telegram inbound liveness" not in rendered
+        assert "confirmed healthy" in rendered
+        assert "recovered" not in rendered
 
     def test_new_generation_logs_again(self, caplog):
         """A reconnect starts a new generation with a fresh event; its first
@@ -76,18 +77,6 @@ class TestPollingHealthConfirmation:
         rendered = " | ".join(rec.getMessage() for rec in caplog.records)
         assert "polling recovered" in rendered
         assert "generation 2" in rendered
-
-    def test_established_generation_emits_low_frequency_inbound_liveness(self, caplog):
-        a = _bare_adapter()
-        with patch("plugins.platforms.telegram.adapter.time.monotonic", return_value=10.0):
-            a._record_polling_progress(1)
-        caplog.clear()
-
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
-            with patch("plugins.platforms.telegram.adapter.time.monotonic", return_value=910.0):
-                a._record_polling_progress(1)
-
-        assert "Telegram inbound liveness: getUpdates progressing" in caplog.text
 
     def test_stale_generation_progress_stays_silent(self, caplog):
         """Progress from an abandoned generation must neither log nor set the
