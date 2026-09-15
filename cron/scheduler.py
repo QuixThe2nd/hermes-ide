@@ -2436,6 +2436,9 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
                 if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                    if self_removal_delivery_allowed(job_id):
+                        # Record dropped by this run; nothing left to keep fresh.
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
@@ -2643,11 +2646,11 @@ class _FireOwnership:
         )
 
     def lost(self) -> bool:
+        if self_removal_delivery_allowed(self.job["id"]):
+            return False
         if self.fire_claim_lost is not None and self.fire_claim_lost.is_set():
             return True
         if self.owner is None:
-            return False
-        if self_removal_delivery_allowed(self.job["id"]):
             return False
         try:
             if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
