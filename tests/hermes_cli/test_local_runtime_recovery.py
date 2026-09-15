@@ -362,25 +362,32 @@ def test_reparented_router_keeps_its_endpoint(tmp_path, monkeypatch):
     from hermes_cli.local_runtime import endpoint, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
-    owner = subprocess.Popen([sys.executable, "-c", """
+    read_fd, write_fd = os.pipe()
+    # EOF ends the test child without signaling outside the test's subtree after reparenting.
+    with os.fdopen(write_fd, "wb") as control:
+        try:
+            owner = subprocess.Popen([sys.executable, "-c", """
 import json, os, psutil, subprocess, sys
-p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdout=subprocess.DEVNULL)
+p = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'],
+                     stdin=int(sys.argv[1]), stdout=subprocess.DEVNULL)
 proc = psutil.Process(p.pid)
 print(json.dumps({'pid': proc.pid, 'create_time': proc.create_time(), 'executable': proc.exe(),
                   'owner_pid': os.getpid(), 'owner_create_time': psutil.Process().create_time()}), flush=True)
-"""], stdout=subprocess.PIPE, text=True)
-    state = json.loads(owner.stdout.readline())
-    proc = psutil.Process(state["pid"])
-    try:
-        owner.wait(timeout=10)
-        route = {"base_url": "http://127.0.0.1:59999/v1", "api_key": "test-only"}
-        supervisor.state_path().write_text(json.dumps({**state, **route}))
-        assert proc.ppid() != state["owner_pid"]
-        assert endpoint._state_endpoint() == route
-    finally:
-        proc.kill()
-        proc.wait(timeout=10)
-        owner.stdout.close()
+""", str(read_fd)], pass_fds=(read_fd,), stdout=subprocess.PIPE, text=True)
+        finally:
+            os.close(read_fd)
+        state = json.loads(owner.stdout.readline())
+        proc = psutil.Process(state["pid"])
+        try:
+            owner.wait(timeout=10)
+            route = {"base_url": "http://127.0.0.1:59999/v1", "api_key": "test-only"}
+            supervisor.state_path().write_text(json.dumps({**state, **route}))
+            assert proc.ppid() != state["owner_pid"]
+            assert endpoint._state_endpoint() == route
+        finally:
+            control.close()
+            proc.wait(timeout=10)
+            owner.stdout.close()
 
 
 @pytest.mark.windows_only
