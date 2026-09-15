@@ -595,7 +595,6 @@ def test_configured_label_still_yields_to_a_client_supplied_one(
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == LABEL
 
-
 # ── 5. The harness User-Agent, and the managed-mode attribution gate ─────────
 
 CLAUDE_CLI_UA = "claude-cli/2.1.226 (external, cli)"
