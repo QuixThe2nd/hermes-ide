@@ -62,7 +62,7 @@ async def test_steer_pending_sentinel_preserves_fifo_head():
     _prequeue(runner, adapter, sk)
 
     result = await runner._handle_message(
-        _make_event("/steer wait up", channel_context="ctx3")
+        _make_event("/steer wait up", channel_context="ctx3", message_id="m3")
     )
     assert result is not None
     assert "queued" in result.lower()
@@ -86,7 +86,7 @@ async def test_steer_no_steer_method_preserves_fifo_head():
     _prequeue(runner, adapter, sk)
 
     result = await runner._handle_message(
-        _make_event("/steer fallback", channel_context="ctx3")
+        _make_event("/steer fallback", channel_context="ctx3", message_id="m3")
     )
     assert result is not None
     assert "queued" in result.lower()

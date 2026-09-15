@@ -108,7 +108,6 @@ def _execute(command: str, **ctx_kwargs):
     from hermes_cli.slash_exec import CommandContext, execute_command
     return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
 
-
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
@@ -235,10 +234,11 @@ class GatewaySlashCommandsMixin(
         return self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
     def _adapter_and_key_for(self, event: MessageEvent):
-        """``(adapter, session_key)`` for the event's source, either None when no source."""
+        """``(adapter, session_key)`` for the event's source, either None when no source. The source's
+        OWN transport (profile-aware, fail-closed) — ``self.adapters`` is the default profile's map."""
         if not event.source:
             return None, None
-        return self.adapters.get(event.source.platform), self._session_key_for_source(event.source)
+        return self._adapter_for_source(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -282,7 +282,7 @@ class GatewaySlashCommandsMixin(
         (WeCom msgtype:"stream"), which need it sent directly with control-lane metadata (reliable
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
-        adapter = self.adapters.get(source.platform)
+        adapter = self._adapter_for_source(source)  # the receiving bot, not the default profile's
         if adapter:
             adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
@@ -462,7 +462,7 @@ class GatewaySlashCommandsMixin(
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
+        if sibling_keys and self._is_user_authorized_for_source(source):
             for sibling_key in sibling_keys:
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
@@ -1128,8 +1128,8 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply("Busy input mode could not be saved to config. Mode unchanged.")
         profile_name = self._busy_profile_name_for_source(event.source)
         if profile_name:
-            from gateway.run import _load_gateway_runtime_config
-            self._snapshot_profile_busy_modes(profile_name, _load_gateway_runtime_config())
+            from gateway.run import _load_gateway_config
+            self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
         else:
             self._busy_input_mode = arg
             # busy_input_mode is also the source of truth for the text mode — re-derive it so the
@@ -1416,7 +1416,10 @@ class GatewaySlashCommandsMixin(
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
             "timestamp": datetime.now().isoformat()}
-        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id)) if v})
+        # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
+        # requester's own profile bot, not the default profile's adapter for the same platform.
+        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
+                                          ("profile", getattr(src, "profile", None))) if v})
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)

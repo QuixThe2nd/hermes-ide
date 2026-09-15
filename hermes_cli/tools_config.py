@@ -66,6 +66,7 @@ CONFIGURABLE_TOOLSETS = [
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo_list"),
+    ("kanban",          "📌 Kanban",                    "opt-in task board tools for this platform"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
@@ -128,7 +129,9 @@ def gui_toolset_label(label: str) -> str:
 # install. Enabling it is a deliberate swap of `file` for its read-only
 # mirror (`hermes tools enable file_readonly`, or `hermes profile create
 # --read-only`), never something a default session should drift into.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly"}
+# "kanban" (from upstream) is opt-in: registered for dispatcher-spawned task
+# workers and profiles that list the toolset explicitly (see toolsets.py).
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -144,12 +147,8 @@ def _xai_credentials_present() -> bool:
         return True
     except Exception:
         pass
-    try:
-        from tools.xai_http import get_env_value as _xai_get_env_value
-        if str(_xai_get_env_value("XAI_API_KEY") or "").strip():
-            return True
-    except Exception:
-        pass
+    if str(get_env_value("XAI_API_KEY") or "").strip():
+        return True
     try:
         from agent.secret_scope import get_secret
     except ImportError:  # pragma: no cover — secret_scope is in-repo
@@ -202,7 +201,7 @@ def _get_plugin_toolset_keys() -> set:
 
 def _checklist_toolset_keys(platform: str) -> Set[str]:
     """Toolset keys the ``hermes tools`` checklist offers for ``platform`` (mirrors ``_prompt_toolset_checklist``);
-    read-time-resolved toolsets (``kanban``, recovered composites, MCP names) are NOT here."""
+    read-time-resolved toolsets (recovered composites, MCP names) are NOT here."""
     return {
         ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()
         if _toolset_allowed_for_platform(ts_key, platform) and ts_key not in _CONFIG_ONLY_TOOLSETS}
@@ -643,6 +642,11 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     }
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
 
+    # Legacy profile opt-in is a fallback only. A saved platform list (even
+    # empty) is authoritative, so a later disable cannot silently re-enable it.
+    if not explicitly_configured and "kanban" in (config.get("toolsets") or []):
+        enabled_toolsets.add("kanban")
+
     # agent.disabled_toolsets is a global suppression list (#86661) and runs LAST so it overrides everything
     # above. It may arrive as a JSON-array string ("['memory']") from `hermes config set` or a JSON-mode editor.
     disabled_toolsets = (config.get("agent") or {}).get("disabled_toolsets")
@@ -1021,7 +1025,7 @@ def _platform_menu_label(config: dict, pkey: str) -> str:
 def _print_tools_summary(config: dict, enabled_platforms: List[str]) -> None:
     """``hermes tools --summary``: enabled toolsets per platform, non-interactive."""
     total = len(_get_effective_configurable_toolsets())
-    print(color("⚕ Tool Summary", Colors.CYAN, Colors.BOLD))
+    print(color("☤ Tool Summary", Colors.CYAN, Colors.BOLD))
     print()
     for pkey, enabled in _platform_toolset_summary(config, enabled_platforms).items():
         print(color(f"  {PLATFORMS[pkey]['label']}", Colors.BOLD) + color(f"  ({len(enabled)}/{total})", Colors.DIM))
@@ -1048,7 +1052,7 @@ def _configure_list(to_configure: List[str], config: dict, *, selected: bool = T
 
 
 def _checklist_diff(new_enabled: Set[str], prev: Set[str], platform: str) -> tuple[Set[str], Set[str]]:
-    """``(added, removed)`` scoped to the checklist universe, so read-time toolsets (``kanban``) the user never
+    """``(added, removed)`` scoped to the checklist universe, so read-time toolsets (MCP names) the user never
     saw a checkbox for don't print as spurious removals."""
     universe = _checklist_toolset_keys(platform)
     return (new_enabled - prev) & universe, (prev - new_enabled) & universe
@@ -1128,7 +1132,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if getattr(args, "summary", False):
         _print_tools_summary(config, enabled_platforms)
         return
-    print(color("⚕ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
+    print(color("☤ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
     print(color("  Enable or disable tools per platform.", Colors.DIM))
     print(color("  Tools that need API keys will be configured when enabled.", Colors.DIM))
     print(color("  Guide: https://hermes-agent.nousresearch.com/docs/user-guide/features/tools", Colors.DIM))
