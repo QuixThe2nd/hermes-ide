@@ -856,3 +856,39 @@ class TestLiteralDotKeyEscaping:
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+class TestConfigGetRedaction:
+    """#84106 / #110758: `config get` is run by the agent from persisted sessions, so every
+    path (section dump, dotted leaf, .env-routed key) masks credentials unless ``--raw``."""
+
+    SECRET = "OPAQUEKEYVALUE12345678"
+
+    def _seed(self, home, monkeypatch):
+        (home / "config.yaml").write_text(
+            "providers:\n  gemini:\n    api_key: " + self.SECRET + "\n"
+            "mcp_servers:\n  s:\n    env:\n      MY_API_KEY: ${MY_API_KEY}\n    url: https://x.example\n",
+            encoding="utf-8")
+        (home / ".env").write_text("GEMINI_API_KEY=" + self.SECRET + "\n", encoding="utf-8")
+        monkeypatch.setenv("MY_API_KEY", self.SECRET)
+
+    @pytest.mark.parametrize("key", ["providers", "providers.gemini.api_key", "GEMINI_API_KEY",
+                                     "mcp_servers.s.env.MY_API_KEY"])
+    def test_config_get_masks_every_credential_path(self, _isolated_hermes_home, capsys, monkeypatch, key):
+        self._seed(_isolated_hermes_home, monkeypatch)
+        from hermes_cli.config import get_config_value
+
+        get_config_value(key)
+        out = capsys.readouterr().out
+        assert self.SECRET not in out
+        # Still identifies the key (mask keeps head/tail) and non-secret siblings stay readable.
+        assert self.SECRET[:4] in out
+        if key == "providers":
+            assert "gemini" in out
+
+    def test_config_get_raw_prints_the_real_value(self, _isolated_hermes_home, capsys, monkeypatch):
+        self._seed(_isolated_hermes_home, monkeypatch)
+        from hermes_cli.config import get_config_value
+
+        get_config_value("providers.gemini.api_key", raw=True)
+        assert capsys.readouterr().out.strip() == self.SECRET

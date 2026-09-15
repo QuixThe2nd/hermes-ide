@@ -2786,6 +2786,15 @@ _SECRET_CONFIG_KEYS = frozenset({
     "api_key", "apikey", "key", "token", "access_token", "refresh_token", "id_token",
     "secret", "client_secret", "password", "passwd", "auth", "authorization",
     "private_key", "bearer", "jwt"})
+# Env-map shapes (``mcp_servers.<s>.env.FOO_API_KEY``, ``GEMINI_API_KEY``) — the same suffixes
+# ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
+_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password")
+
+
+def _is_secret_config_key(key: str) -> bool:
+    """Whether the LAST segment of a config key names a credential value."""
+    leaf = key.rsplit(".", 1)[-1].lower()
+    return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
 
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
@@ -2798,7 +2807,7 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         return {
             k: mask_secret(v)
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v
+            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
             else redact_config_value(v, _depth + 1)
             for k, v in value.items()}
     if isinstance(value, list):
@@ -3554,7 +3563,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
     # ``model.api_key`` (lowercase, so it misses the .env routing above).
     _display_value = value
-    if key.rsplit(".", 1)[-1].lower() in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+    if _is_secret_config_key(key) and isinstance(value, str) and value:
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
@@ -3566,8 +3575,10 @@ def set_config_value(key: str, value: str, force: bool = False):
         _print_unknown_key_notice(key, suggestion)
 
 
-def get_config_value(key: str, *, as_json: bool = False):
-    """Print a resolved configuration value."""
+def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
+    """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
+    ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
+    this command from sessions whose transcripts persist (#84106, #110758)."""
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -3579,6 +3590,10 @@ def get_config_value(key: str, *, as_json: bool = False):
 
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
+
+    from agent.redact import _redact_enabled, mask_secret
+    if not raw and _redact_enabled():
+        value = mask_secret(value) if isinstance(value, str) and _is_secret_config_key(key) else redact_config_value(value)
 
     print(_format_config_get_value(value, as_json=as_json))
 
@@ -3643,7 +3658,7 @@ def _run_write_command(fn, *args) -> None:
         _exit_invalid(f"✗ {exc}")
 
 
-_USAGE_GET = ("Usage: hermes config get <key> [--json]", [
+_USAGE_GET = ("Usage: hermes config get <key> [--json] [--raw]", [
     "hermes config get model", "hermes config get terminal.backend",
     "hermes config get skills.config --json"], None)
 _USAGE_SET = ("Usage: hermes config set [--force] <key> <value>", [
@@ -3660,7 +3675,7 @@ def _cmd_config_get(args):
     key = getattr(args, 'key', None)
     if not key:
         _usage_exit(*_USAGE_GET)
-    get_config_value(key, as_json=getattr(args, 'json', False))
+    get_config_value(key, as_json=getattr(args, 'json', False), raw=bool(getattr(args, 'raw', False)))
 
 
 def _cmd_config_set(args):
