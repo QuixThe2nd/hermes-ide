@@ -994,6 +994,16 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        return handler(db, args)
+        try:
+            return handler(db, args)
+        except sqlite3.OperationalError as e:
+            # Fork: SessionDB handles retry/quarantine internally, so the blanket
+            # observational catch is gone. Upstream's narrowing is still honored:
+            # only a missing column/table on a read-only store (an older release
+            # pre-migration) prints the migration hint; anything else propagates.
+            if not observational or not str(e).lower().startswith("no such "):
+                raise
+            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
+            return 1
     finally:
         db.close()
