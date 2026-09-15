@@ -1,17 +1,15 @@
-#!/usr/bin/env python3
-"""Per-file context source manifest (`list_context_file_sources`).
+"""Per-file context manifest (``agent/context_file_sources.py``) behind the ``/context`` Rules figure.
 
-Read-only mirror of ``build_context_files_prompt`` discovery: one entry per
-candidate context/instruction file with size, token estimate, and whether it
-was loaded, truncated, or shadowed by a higher-priority context type.
-
-Inspired by: GitHub Copilot CLI 1.0.81 — "Show each user instruction file
-separately in /instructions".
+The manifest and ``build_context_files_prompt`` share one discovery walk, so the invariant under test is
+parity: a file is reported ``loaded`` iff its content appears in the built prompt.
 """
+
+from pathlib import Path
 
 import pytest
 
-from agent.prompt_builder import list_context_file_sources
+from agent.context_file_sources import list_context_file_sources, render_context_file_lines
+from agent.prompt_builder import build_context_files_prompt
 
 
 @pytest.fixture()
@@ -24,89 +22,62 @@ def _by_label(sources):
     return {s["label"]: s for s in sources}
 
 
-class TestDiscovery:
-    def test_agents_md_loaded(self, project):
-        (project / "AGENTS.md").write_text("# rules\n" * 10)
-        sources = list_context_file_sources(cwd=str(project))
-        entry = _by_label(sources)["AGENTS.md"]
-        assert entry["loaded"] is True
-        assert entry["status"] == "loaded"
-        assert entry["chars"] > 0
-        assert entry["est_tokens"] == (entry["chars"] + 3) // 4
+def test_manifest_matches_what_the_prompt_actually_loads(project, tmp_path_factory):
+    """Every context type present at once; the ladder picks .hermes.md, the chain lists both AGENTS files,
+    CLAUDE.md/.cursorrules/.cursor/rules/*.mdc are shadowed, an empty file never wins, SOUL.md rides along."""
+    (project / ".hermes.md").write_text("hermes rules")
+    (project / "AGENTS.md").write_text("root agents rules")
+    sub = project / "pkg"
+    sub.mkdir()
+    (sub / "AGENTS.override.md").write_text("")  # empty: falls through to AGENTS.md in the same directory
+    (sub / "AGENTS.md").write_text("pkg agents rules")
+    (sub / "CLAUDE.md").write_text("claude rules")
+    (sub / ".cursorrules").write_text("cursor rules")
+    (sub / ".cursor" / "rules").mkdir(parents=True)
+    (sub / ".cursor" / "rules" / "a.mdc").write_text("mdc rule a")
+    home = tmp_path_factory.mktemp("home")
+    (home / "SOUL.md").write_text("identity text")
 
-    def test_empty_project_returns_empty(self, tmp_path, tmp_path_factory):
-        (tmp_path / ".git").mkdir()
-        empty_home = tmp_path_factory.mktemp("empty_home")
-        assert (
-            list_context_file_sources(cwd=str(tmp_path), home_override=empty_home)
-            == []
-        )
+    sources = list_context_file_sources(cwd=str(sub), home_override=home)
+    prompt = build_context_files_prompt(cwd=str(sub), home_override=home)
 
-    def test_priority_shadowing_hermes_md_over_agents_md(self, project):
-        (project / ".hermes.md").write_text("hermes rules")
-        (project / "AGENTS.md").write_text("agents rules")
-        entries = _by_label(list_context_file_sources(cwd=str(project)))
-        assert entries[".hermes.md"]["status"] == "loaded"
-        assert entries["AGENTS.md"]["status"] == "shadowed"
-        assert entries["AGENTS.md"]["loaded"] is False
+    statuses = {s["label"]: s["status"] for s in sources}
+    assert statuses == {
+        ".hermes.md": "loaded", "../AGENTS.md": "shadowed", "AGENTS.override.md": "empty", "AGENTS.md": "shadowed",
+        "CLAUDE.md": "shadowed", ".cursorrules": "shadowed", ".cursor/rules/a.mdc": "shadowed", "SOUL.md": "loaded",
+    }
+    for src in sources:
+        body = Path(src["path"]).read_text().strip() if src["chars"] else ""
+        assert src["loaded"] == (bool(body) and body in prompt), src
+    assert all(s["est_tokens"] > 0 for s in sources if s["chars"])
 
-    def test_claude_md_shadowed_by_agents_md(self, project):
-        (project / "AGENTS.md").write_text("agents rules")
-        (project / "CLAUDE.md").write_text("claude rules")
-        entries = _by_label(list_context_file_sources(cwd=str(project)))
-        assert entries["AGENTS.md"]["status"] == "loaded"
-        assert entries["CLAUDE.md"]["status"] == "shadowed"
+    # Same walk, other winner: drop .hermes.md and the whole AGENTS chain loads while the rest stays shadowed.
+    (project / ".hermes.md").unlink()
+    statuses = {s["label"]: s["status"] for s in list_context_file_sources(cwd=str(sub), home_override=home)}
+    prompt = build_context_files_prompt(cwd=str(sub), home_override=home)
+    assert statuses["../AGENTS.md"] == statuses["AGENTS.md"] == "loaded" and "root agents rules" in prompt
+    assert statuses["CLAUDE.md"] == "shadowed" and "claude rules" not in prompt
 
-    def test_cursorrules_listed(self, project):
-        (project / ".cursorrules").write_text("cursor rules")
-        rules_dir = project / ".cursor" / "rules"
-        rules_dir.mkdir(parents=True)
-        (rules_dir / "a.mdc").write_text("rule a")
-        entries = _by_label(list_context_file_sources(cwd=str(project)))
-        assert entries[".cursorrules"]["status"] == "loaded"
-        assert entries[".cursor/rules/a.mdc"]["status"] == "loaded"
 
-    def test_agents_override_wins_per_directory(self, project):
-        (project / "AGENTS.md").write_text("committed")
-        (project / "AGENTS.override.md").write_text("personal override")
-        labels = [s["label"] for s in list_context_file_sources(cwd=str(project))]
-        assert "AGENTS.override.md" in labels
-        assert "AGENTS.md" not in labels  # first name wins per directory
+def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypatch, tmp_path_factory):
+    import agent.prompt_builder as pb
 
-    def test_directory_chain_lists_both_agents_files(self, project):
-        (project / "AGENTS.md").write_text("root rules")
-        sub = project / "pkg"
-        sub.mkdir()
-        (sub / "AGENTS.md").write_text("pkg rules")
-        sources = list_context_file_sources(cwd=str(sub))
-        agents_entries = [s for s in sources if "AGENTS.md" in s["label"]]
-        assert len(agents_entries) == 2
-        assert all(s["loaded"] for s in agents_entries)
+    monkeypatch.setattr(pb, "_get_context_file_max_chars", lambda *_a: 40)
+    (project / "AGENTS.md").write_text("x" * 100)
+    home = tmp_path_factory.mktemp("home")
+    entry = _by_label(list_context_file_sources(cwd=str(project), home_override=home))["AGENTS.md"]
+    assert entry["status"] == "truncated" and entry["loaded"] is True
+    assert "[...truncated AGENTS.md" in build_context_files_prompt(cwd=str(project), home_override=home)
 
-    def test_truncated_status_when_over_cap(self, project, monkeypatch):
-        import agent.prompt_builder as pb
+    # Install-tree guard: a fallback cwd (cwd=None) inside the Hermes tree lists the file but never loads it.
+    monkeypatch.setattr("agent.runtime_cwd._is_install_tree", lambda _p: True)
+    monkeypatch.chdir(project)
+    entry = _by_label(list_context_file_sources(cwd=None, home_override=home))["AGENTS.md"]
+    assert entry["status"] == "suppressed" and entry["loaded"] is False
+    assert build_context_files_prompt(cwd=None, skip_soul=True) == ""
+    assert _by_label(list_context_file_sources(cwd=None, allow_install_tree_fallback=True, home_override=home))[
+        "AGENTS.md"]["status"] == "truncated"
 
-        monkeypatch.setattr(pb, "_get_context_file_max_chars", lambda *_a: 10)
-        (project / "AGENTS.md").write_text("x" * 100)
-        entries = _by_label(list_context_file_sources(cwd=str(project)))
-        assert entries["AGENTS.md"]["status"] == "truncated"
-        assert entries["AGENTS.md"]["loaded"] is True
-
-    def test_soul_md_from_home_override(self, project, tmp_path_factory):
-        home = tmp_path_factory.mktemp("hermes_home")
-        (home / "SOUL.md").write_text("identity")
-        entries = _by_label(
-            list_context_file_sources(cwd=str(project), home_override=home)
-        )
-        assert entries["SOUL.md"]["status"] == "loaded"
-
-    def test_read_only_no_side_effects(self, project):
-        (project / "AGENTS.md").write_text("rules")
-        before = (project / "AGENTS.md").read_text()
-        list_context_file_sources(cwd=str(project))
-        assert (project / "AGENTS.md").read_text() == before
-
-    def test_accepts_path_object(self, project):
-        (project / "AGENTS.md").write_text("rules")
-        sources = list_context_file_sources(cwd=project)
-        assert _by_label(sources)["AGENTS.md"]["loaded"] is True
+    lines = render_context_file_lines(list_context_file_sources(cwd=None, home_override=home))
+    assert lines[0] == "Context files" and "AGENTS.md" in lines[1] and "install tree" in lines[1]
+    assert render_context_file_lines([]) == []

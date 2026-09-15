@@ -488,7 +488,9 @@ class GatewayStatusCommandsMixin:
             if not (payload.get("categories") or []):
                 return []
             details = _quiet_sync(lambda: compute_context_details(agent), {"skills": [], "toolsets": []}) if expanded else None
-            return render_context_breakdown_lines(payload, details=details, grid=False)
+            from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+            file_lines = _quiet_sync(lambda: render_context_file_lines(context_file_sources_for_agent(agent)), [])
+            return render_context_breakdown_lines(payload, details=details, grid=False) + ([""] + file_lines if file_lines else [])
         except Exception:
             return []
 
