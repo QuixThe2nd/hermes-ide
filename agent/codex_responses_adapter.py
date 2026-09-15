@@ -912,8 +912,16 @@ def _text_chunks(parts: Any, types: Optional[set] = None) -> List[str]:
 
 
 def _extract_responses_message_text(item: Any) -> str:
-    """Extract assistant text from a Responses message output item."""
-    return "".join(_text_chunks(getattr(item, "content", None), _OUTPUT_TEXT_TYPES)).strip()
+    """Assistant text from a Responses message output item. A ``refusal`` part carries the
+    model's explanation in ``refusal`` instead of ``text``; it is message text too, otherwise a
+    refusal-only turn reads as an empty response (sibling of chat_completions ``message.refusal``)."""
+    chunks = []
+    for part in _as_list(_field(item, "content")):
+        ptype = _field(part, "type")
+        text = _field(part, "refusal") if ptype == "refusal" else (_field(part, "text") if ptype in _OUTPUT_TEXT_TYPES else None)
+        if _nonempty_str(text):
+            chunks.append(text)
+    return "".join(chunks).strip()
 
 
 def _extract_responses_reasoning_text(item: Any) -> str:
