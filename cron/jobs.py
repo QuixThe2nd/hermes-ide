@@ -137,9 +137,12 @@ def self_removal_delivery_scope(job_id: str):
 
 
 def self_removal_delivery_allowed(job_id: str) -> bool:
-    """Whether the active run deleted exactly its own job record."""
+    """Whether the active run deleted exactly its own job record and no record has since taken
+    its id (a replacement record belongs to another owner, so that stays fail-closed)."""
     marker = _self_removal_delivery.get()
-    return bool(marker is not None and marker.job_id == job_id and marker.removed)
+    if marker is None or marker.job_id != job_id or not marker.removed:
+        return False
+    return all(item.get("id") != job_id for item in load_jobs())
 
 # Import-time snapshot so deliberate re-pointing of CRON_DIR/JOBS_FILE/OUTPUT_DIR (the documented
 # escape hatch for tests/embedders) is distinguishable from the constants merely being stale.
@@ -382,11 +385,9 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
 
 
 @contextlib.contextmanager
-def fire_claim_fence(job_id: str, *, expected_owner: str, allow_self_removed: bool = False):
-    """Hold a per-job fence while an owner performs an external side effect.
-
-    A missing record is accepted only for the active run that removed this exact job.
-    """
+def fire_claim_fence(job_id: str, *, expected_owner: str):
+    """Hold a per-job fence while an owner performs an external side effect. A missing record
+    is accepted only for the active run that removed this exact job (#111039)."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
             yield False
@@ -395,7 +396,7 @@ def fire_claim_fence(job_id: str, *, expected_owner: str, allow_self_removed: bo
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
             claim = job.get("fire_claim") if isinstance(job, dict) else None
             owns_claim = isinstance(claim, dict) and claim.get("by") == expected_owner
-            if not owns_claim and job is None and allow_self_removed:
+            if job is None:
                 owns_claim = self_removal_delivery_allowed(job_id)
         yield owns_claim
 

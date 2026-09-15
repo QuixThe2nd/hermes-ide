@@ -2640,17 +2640,15 @@ class _FireOwnership:
     def side_effect_fence(self):
         if self.owner is None:
             return contextlib.nullcontext(True)
-        return fire_claim_fence(
-            self.job["id"], expected_owner=self.owner,
-            allow_self_removed=self_removal_delivery_allowed(self.job["id"]),
-        )
+        return fire_claim_fence(self.job["id"], expected_owner=self.owner)
 
     def lost(self) -> bool:
-        if self_removal_delivery_allowed(self.job["id"]):
-            return False
         if self.fire_claim_lost is not None and self.fire_claim_lost.is_set():
             return True
         if self.owner is None:
+            return False
+        if self_removal_delivery_allowed(self.job["id"]):
+            # The run deleted its own record; there is no claim left to re-resolve.
             return False
         try:
             if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
@@ -2798,8 +2796,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
-    marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
-    if fire_owner is not None and not marked and not self_removal_delivery_allowed(job["id"]):
+    # A run that removed its own record has nothing left to mark; the delivery above is its result.
+    marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
+        job["id"], d.success, d.error, **mark_kwargs)
+    if fire_owner is not None and not marked:
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")

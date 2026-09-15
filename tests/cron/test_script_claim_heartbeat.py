@@ -418,49 +418,14 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     mark_run.assert_not_called()
 
 
-def test_self_removed_job_still_delivers_its_completed_response(tmp_path, monkeypatch):
-    """Removing itself during a run releases its record, not this run's final response."""
+def _run_claimed_job_with_mid_run_action(tmp_path, monkeypatch, mid_run, *, execution_id):
+    """Fire a claimed job through run_one_job with a stubbed agent run that performs ``mid_run``
+    on its own record, keeps working past one fire-claim heartbeat tick, then completes."""
     import cron.jobs as jobs
     import cron.scheduler as scheduler
 
     def _run_job(job, **_kwargs):
-        assert jobs.remove_job(job["id"])
-        return True, "saved output", "final response", None
-
-    delivered = MagicMock(return_value=None)
-    finished = MagicMock()
-    monkeypatch.setattr(scheduler, "run_job", _run_job)
-    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args: True)
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
-    monkeypatch.setattr(scheduler, "finish_execution", finished)
-    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
-    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
-
-    with jobs.use_cron_store(tmp_path):
-        job = jobs.create_job(
-            prompt="work", schedule="every 5m", name="remove self", deliver="telegram")
-        assert jobs.claim_job_for_fire(job["id"])
-        claimed = jobs.get_job(job["id"])
-        claimed["execution_id"] = "self-removal-execution"
-
-        with patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
-             patch("agent.secret_scope.reset_secret_scope"):
-            assert scheduler.run_one_job(claimed) is True
-
-        delivered.assert_called_once()
-        finished.assert_called_once_with(
-            "self-removal-execution", success=True, error=None, delivery_outcome="delivered")
-        assert jobs.get_job(job["id"]) is None
-
-
-def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, monkeypatch):
-    """A run that keeps working past one heartbeat after self-removal must still deliver."""
-    import cron.jobs as jobs
-    import cron.scheduler as scheduler
-
-    def _run_job(job, **_kwargs):
-        assert jobs.remove_job(job["id"]) is True
+        mid_run(jobs, job)
         time.sleep(0.3)
         return True, "saved output", "D1 is promoting", None
 
@@ -479,18 +444,50 @@ def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, 
             prompt="work", schedule="every 5m", name="remove self", deliver="telegram")
         assert jobs.claim_job_for_fire(job["id"])
         claimed = jobs.get_job(job["id"])
-        claimed["execution_id"] = "self-removal-heartbeat-execution"
+        claimed["execution_id"] = execution_id
 
         with patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
              patch("agent.secret_scope.reset_secret_scope"):
             assert scheduler.run_one_job(claimed) is True
+    return delivered, finished
 
-        delivered.assert_called_once()
-        finished.assert_called_once_with(
-            "self-removal-heartbeat-execution",
-            success=True, error=None, delivery_outcome="delivered")
-        assert jobs.get_job(job["id"]) is None
+
+def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, monkeypatch):
+    """A run that removes its own job (cronjob remove on its own id) and keeps working past a
+    heartbeat tick must still deliver its final response and complete its ledger row (#111039)."""
+    import cron.jobs as jobs
+
+    delivered, finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch,
+        lambda jobs_mod, job: jobs_mod.remove_job(job["id"]),
+        execution_id="self-removal-heartbeat-execution")
+
+    delivered.assert_called_once()
+    finished.assert_called_once_with(
+        "self-removal-heartbeat-execution",
+        success=True, error=None, delivery_outcome="delivered")
+    with jobs.use_cron_store(tmp_path):
+        assert jobs.load_jobs() == []
+
+
+def test_self_removal_followed_by_replacement_record_stays_fail_closed(tmp_path, monkeypatch):
+    """Self-removal only excuses a MISSING record: once another owner's record reclaims the id,
+    the run is stale again and its result must be discarded, never delivered."""
+
+    def _remove_then_replace(jobs_mod, job):
+        assert jobs_mod.remove_job(job["id"])
+        replacement = {k: v for k, v in job.items() if k != "execution_id"}
+        replacement["fire_claim"] = {"at": job["fire_claim"]["at"], "by": "other-machine:owner"}
+        jobs_mod.save_jobs(jobs_mod.load_jobs() + [replacement])
+
+    delivered, finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch, _remove_then_replace, execution_id="replacement-execution")
+
+    delivered.assert_not_called()
+    finished.assert_called_once_with(
+        "replacement-execution", success=False,
+        error="Fire claim ownership lost; stale result was discarded.")
 
 
 def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatch):

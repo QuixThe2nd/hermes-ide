@@ -314,6 +314,13 @@ cadence, or run a "cron librarian" job that reconciles the whole table
   job delivers nowhere). A job created by a scheduled agent can never point
   its output at a session that no longer exists. Explicit targets
   (`local`, `all`, `telegram:<chat_id>`) are honored verbatim.
+- **A job may remove itself and still report.** The "watch for X, tell me
+  once, then stop" pattern — a recurring job whose run calls
+  `cronjob(action="remove", job_id=<its own id>)` and then answers — delivers
+  that final response and records the run as `completed`; only the job record
+  is gone afterwards. Deleting the record from *outside* the run (another
+  process, or a replacement job reusing the id) still discards the stale
+  run's output, as before.
 
 Prefer prompts that update existing jobs (list first, then update by ID)
 over ones that create new jobs each run.
