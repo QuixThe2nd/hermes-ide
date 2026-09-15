@@ -1,0 +1,13 @@
+name: hermes-resetwatch
+repo: https://github.com/Adolanium/hermes-resetwatch
+sha: ecd19c62fa987ff3de9cd617d07dc6983b1800f2
+description: Track subscription quotas and reset times in Hermes Desktop.
+maintainer: Adolanium
+tier: community
+docs_url: https://github.com/Adolanium/hermes-resetwatch#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+subdir: catalog
