@@ -317,6 +317,11 @@ Safety rules:
   every hardline class are excluded outright. `rm -rf build/` approved 100
   times still never yields an `rm` entry.
 - Proposals already covered by your existing `command_allowlist` are skipped.
+- **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
+  URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
+  examples and the `--json` payload, using the same redactor as terminal
+  output. Note this masks the *display* only — the session database itself
+  still holds the command as it was executed.
 
 Useful flags: `--days N` (history window, default 90), `--min-count N`
 (minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
