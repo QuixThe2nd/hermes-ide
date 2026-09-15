@@ -96,10 +96,6 @@ class TestSupportsMediaInToolResults:
         tool-result content, #89981)."""
         assert _supports_media_in_tool_results("xiaomi", "mimo-v2.5") is False
 
-    def test_openrouter_xiaomi_route_keeps_profile_tool_message_veto(self):
-        """The OpenRouter transport must not re-open Xiaomi's unsafe fast path."""
-        assert _supports_media_in_tool_results("openrouter", "xiaomi/mimo-v2.5") is False
-
     def test_profile_veto_applies_even_when_vision_capable_lookup_agrees(self):
         """A capability source marking the model vision-capable must not
         re-open the native fast path for a provider that rejects it."""

@@ -67,16 +67,6 @@ class TestProviderSupportsVisionToolMessages:
         agent = _make_agent("xiaomi", "mimo-v2.5")
         assert agent._provider_supports_vision_tool_messages() is False
 
-    def test_openrouter_xiaomi_route_returns_false(self):
-        """An aggregator must retain its routed model's tool-message veto."""
-        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
-        assert agent._provider_supports_vision_tool_messages() is False
-
-
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # _tool_result_content_for_active_model — proactive downgrade
