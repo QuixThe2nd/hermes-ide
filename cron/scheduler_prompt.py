@@ -197,6 +197,8 @@ _CRON_HINT = (
     "final response and the system handles the rest. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+    "[SILENT] is a literal ASCII control token — never translate or "
+    "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
     "findings normally, or say [SILENT] and nothing more. "
     "RECURSION: This is a run of an EXISTING scheduled job — execute "
