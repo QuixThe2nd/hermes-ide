@@ -302,6 +302,40 @@ def admit_durable_turn_lease(
     return admission
 
 
+def carry_unadmitted_user_message(
+    early_result: Dict[str, Any], user_message: Any, persist_user_message: Any, *,
+    timestamp: Optional[float], display_kind: Optional[str], display_metadata: Optional[Dict[str, Any]],
+    platform_id: Optional[str],
+) -> None:
+    """A follow-up that interrupted the lease wait must not consume the accepted input: append it to
+    the early result's history so the follow-up turn sees it and persists it (the flush honours
+    ``_PERSIST_AFTER_ADMISSION_INTERRUPT`` because this turn never owned the lease). A hard stop
+    (``/stop``) cancels the input instead."""
+    hard_interrupted = early_result.pop("_hard_interrupted", False)
+    if hard_interrupted or not early_result.get("interrupted") or user_message in (None, ""):
+        return
+    from agent.message_metadata import append_message
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    durable_content = user_message
+    if persist_user_message is not None and (
+        not isinstance(user_message, list) or isinstance(persist_user_message, list)
+    ):
+        durable_content = persist_user_message
+    deferred_user: Dict[str, Any] = {
+        "role": "user", "content": durable_content, _PERSIST_AFTER_ADMISSION_INTERRUPT: True,
+    }
+    if isinstance(user_message, str) and user_message != durable_content:
+        deferred_user["api_content"] = user_message
+    if display_kind:
+        deferred_user["display_kind"] = display_kind
+    if display_metadata:
+        deferred_user["display_metadata"] = display_metadata
+    if platform_id is not None:
+        deferred_user["platform_message_id"] = platform_id
+    append_message(early_result["messages"], deferred_user, timestamp=timestamp)
+
+
 def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):

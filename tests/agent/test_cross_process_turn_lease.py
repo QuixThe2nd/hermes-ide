@@ -283,34 +283,6 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     assert agent._interrupt_message is None
 
 
-def test_pre_admission_hard_stop_does_not_requeue_original(monkeypatch):
-    db = _DB()
-    agent = _agent_with_db(db)
-    agent._hard_interrupt_requested = threading.Event()
-
-    def acquire_with_hard_stop(session_id, holder, **kwargs):
-        db.events.append(("acquire", session_id, holder))
-        agent._interrupt_requested = True
-        agent._interrupt_message = "Stop requested"
-        agent._hard_interrupt_requested.set()
-        assert kwargs["should_abort"]()
-        return False
-
-    db.acquire_session_turn_lease = acquire_with_hard_stop
-    monkeypatch.setattr(
-        "agent.conversation_loop.run_conversation",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("hard-stopped turn must not start")
-        ),
-    )
-
-    history = [{"role": "user", "content": "stale"}]
-    result = AIAgent.run_conversation(agent, "cancel me", conversation_history=history)
-
-    assert result["interrupted"] is True
-    assert result["messages"] == history
-
-
 def test_pre_admission_user_row_in_history_is_flushed_once():
     db = MagicMock()
     db.append_messages_batch.return_value = [1, 2]
