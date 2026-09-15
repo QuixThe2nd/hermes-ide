@@ -81,13 +81,22 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert all("timestamp" in n for n in graph["nodes"])
 
 
-def test_learning_signal_predicate_includes_user_taught_skills():
-    """created_by='learn' (foreground /learn, zero uses) is graph-worthy; an unmarked
-    unused skill is not; 'installed' alone is not a learning signal."""
-    from agent.learning_graph import SkillNode, _has_learning_signal
+def test_foreground_created_skill_is_in_journey_before_first_use(tmp_path):
+    """A skill created in the foreground (/learn, skill_manage) shows in the journey with zero
+    uses, while an unmarked never-used local skill (hand-written) stays out."""
+    from tools import skill_usage
 
-    assert _has_learning_signal(SkillNode(name="a", category="x", created_by="learn"))
-    assert _has_learning_signal(SkillNode(name="b", category="x", created_by="agent"))
-    assert _has_learning_signal(SkillNode(name="c", category="x", use_count=3))
-    assert not _has_learning_signal(SkillNode(name="d", category="x"))
-    assert not _has_learning_signal(SkillNode(name="e", category="x", created_by="installed"))
+    home = tmp_path / ".hermes"
+    for name in ("fresh-learn-skill", "hand-written"):
+        (home / "skills" / "demo" / name).mkdir(parents=True)
+        (home / "skills" / "demo" / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d.\n---\n\n# {name}\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+    try:
+        skill_usage.record_created("fresh-learn-skill", agent_created=False)
+        skill_nodes = {n["id"] for n in learning_graph.build_learning_graph()["nodes"] if n["kind"] == "skill"}
+    finally:
+        reset_hermes_home_override(token)
+
+    assert "fresh-learn-skill" in skill_nodes
+    assert "hand-written" not in skill_nodes
