@@ -143,7 +143,7 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
 
 
 _runtime_cache_lock = threading.Lock()
-_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
@@ -260,20 +260,26 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
     GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
     Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
-    resolved base_url/api_key when available). Falls back to the bare
-    provider/model on any resolution error so a misconfigured slot still
-    attempts the call rather than aborting the whole MoA turn.
+    resolved base_url/api_key when available).
 
-    The resolved runtime is cached per (provider, model) with a short TTL
-    (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O (catalog
-    query + config read) that used to run serially per create() call before
-    the parallel fan-out could start — the dominant source of MoA cold-start
-    latency (#66793). The TTL bounds credential staleness (key rotation,
-    base_url edits) instead of caching for the process lifetime.
+    The resolved runtime is cached per (profile home, provider, model) with a
+    short TTL (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O
+    (catalog query + config read) that used to run serially per create() call
+    before the parallel fan-out could start — the dominant source of MoA
+    cold-start latency (#66793), and under a multiplex gateway two profiles
+    can share (provider, model) with different accounts. The TTL bounds
+    credential staleness (key rotation, base_url edits) instead of caching for
+    the process lifetime. A resolution error falls back to the bare
+    provider/model so a misconfigured slot still attempts the call rather
+    than aborting the whole MoA turn — never cached, or a transient error
+    would pin bare kwargs for a TTL.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    cache_key = (provider, model)
+    # hermes_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
+    # multiplex gateway two profiles can share (provider, model) with different accounts.
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)

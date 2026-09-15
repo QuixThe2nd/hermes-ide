@@ -400,7 +400,7 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     not_git_repo:            "✗ Git deposu değil — güncellenemiyor."
     hermes_cmd_not_found:    "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
     start_failed:            "✗ Güncelleme başlatılamadı: {error}"
-    starting:                "⚕ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
+    starting:                "☤ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
 
   usage:
     rate_limits:              "⏱️ **Hız Sınırları:** {state}"

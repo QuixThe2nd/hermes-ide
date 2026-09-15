@@ -78,6 +78,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
+from hermes_cli.sqlite_util import add_column_if_missing
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -229,23 +230,15 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        _initialize_schema(conn)
-    except Exception:
-        # A PRAGMA/DDL failure after a successful connect() must not leak the
-        # just-opened connection back to the caller.
-        conn.close()
-        raise
-    return conn
+    from hermes_cli.sqlite_util import open_db
+
+    # Shared state.db: SessionDB owns the durable PRAGMA set; this opener keeps the plain-tuple rows
+    # and the 10 s busy timeout it always had.
+    return open_db(_db_path(), db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
+                   row_factory=None, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
-
-    apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,
