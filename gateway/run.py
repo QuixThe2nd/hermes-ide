@@ -12493,8 +12493,13 @@ class GatewayRunner(
         """Dedupe key for queue re-delivery: the inbound platform message id.
 
         Synthetic events (goal continuations, heartbeats) carry no id and are
-        never deduped — each is a distinct turn by construction.
+        never deduped — each is a distinct turn by construction. Internal
+        synthetic events are also exempt: watch-notification/completion events
+        inherit the spawning turn's reply-anchor id, so distinct internal
+        events can legitimately share one message id.
         """
+        if getattr(event, "internal", False):
+            return ""
         message_id = getattr(event, "message_id", None)
         return str(message_id).strip() if message_id else ""
 
@@ -36998,7 +37003,6 @@ def _start_gateway_housekeeping(
     interval: int = 60,
     cron_provider=None,
     runner=None,
-    cron_thread=None,
 ):
     """Background thread for gateway-only periodic chores (NOT cron).
 
@@ -37057,14 +37061,6 @@ def _start_gateway_housekeeping(
         # their final send for whichever gateway instance is live.  Drain on
         # the gateway-wide housekeeper rather than the built-in scheduler tick:
         # external providers do not run that ticker.
-        if cron_thread is not None:
-            # The ticker's own guards keep its loop alive; this is the outer layer for a thread that has
-            # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
-            try:
-                cron_thread.restart_if_dead()
-            except Exception as exc:
-                logger.debug("Cron ticker supervisor error: %s", exc)
-
         if adapters is not None or runner is not None:
             try:
                 _drain_restart_safe_cron_deliveries(adapters, loop, runner)
@@ -38210,10 +38206,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         cron_start_kwargs["can_dispatch"] = lambda: not (
             runner._draining or runner._external_drain_active
         )
-    # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
-    from cron.scheduler_thread import SupervisedTickerThread
-    cron_thread = SupervisedTickerThread(
-        cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
+    cron_thread = threading.Thread(
+        target=cron_provider.start,
+        args=(cron_stop,),
+        kwargs=cron_start_kwargs,
+        daemon=True,
+        name="cron-scheduler",
+    )
     cron_thread.start()
 
     # Preflight tell for the hosted fire path: an external cron provider
@@ -38253,7 +38252,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "loop": asyncio.get_running_loop(),
             "cron_provider": cron_provider,
             "runner": runner,
-            "cron_thread": cron_thread,
         },
         daemon=True,
         name="gateway-housekeeping",
