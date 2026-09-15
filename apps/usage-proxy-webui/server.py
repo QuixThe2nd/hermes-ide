@@ -10,6 +10,12 @@ Single file, Python stdlib only (http.server + sqlite3 + json):
   data, Z.ai/Kimi as initial badges) and the brand colour on donut slices
   and per-model series (``PROVIDER_BRANDS``, mirrored as ``PROVIDER_HEXES``
   in the page JS); models from unknown providers keep the neutral palette;
+* every harness chip, share bar, harness-mode chart segment and events-table
+  caller cell carries the caller's identity colour from a stable prefix map
+  (``HARNESS_BRANDS``, mirrored as ``HARNESS_HEX`` entries in the page JS and
+  as ``.hb-*`` rules in the CSS), so a known caller keeps its colour even
+  when its rank shifts; unknown callers keep the hashed rank palette and
+  ``unattributed`` stays neutral — colour only, no logos;
 * ``GET /`` serves the single-page dark dashboard.  Its JavaScript polls
   ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s and
   updates the stat cards, the per-harness bars, the canvas charts (tokens
@@ -58,6 +64,35 @@ DAYS_7D = 7
 # harness_color_idx) so the same harness always lands on the same hue in the
 # bars, the chips and the chart — on both the server and the browser.
 HARNESS_COLOR_COUNT = 6
+
+# Harness identity colours — the harness twin of PROVIDER_BRANDS: known
+# callers keep a stable brand colour no matter how their token rank shifts,
+# resolved ahead of the hashed rank palette above.  Longest prefix first,
+# matched case-insensitively (harness_key) on the caller string, so
+# hindsight-smoke/hindsight-migrate/… fold onto hindsight's teal.  Every hex
+# lives in all three views of the truth — this table, the .hb-* CSS rules
+# and the browser's HARNESS_HEX mirror — because the canvases cannot read
+# CSS custom properties.  Colour only, no logos; the light #BFC7D3 tints the
+# chip dot and share bar on the dark surface (the chip text itself keeps
+# --text-2), the same contrast situation the grok slices already handle.
+HARNESS_PREFIXES = (
+    ("openai-codex", "codex"),   # ahead of the bare "codex" rule
+    ("codex", "codex"),
+    ("claude-code", "claude-code"),
+    ("hermes", "hermes"),        # this dashboard's own home turf
+    ("hindsight", "hindsight"),
+    ("openrouter", "openrouter"),
+    ("grok", "grok"),
+    ("xai", "grok"),
+)
+HARNESS_BRANDS = {
+    "hermes": "#3987e5",       # the dashboard's own accent blue
+    "claude-code": "#D97757",
+    "codex": "#10A37F",
+    "hindsight": "#2ea79a",    # teal — clear of Claude orange, OpenAI green, --stale
+    "openrouter": "#6467F2",
+    "grok": "#BFC7D3",
+}
 
 # Model-usage donut: the top MODEL_TOP_N models by 24 h tokens, the remainder
 # folded into an "other" bucket.  Slice colour follows token rank (index i of
@@ -344,7 +379,25 @@ def harness_color_idx(name: str) -> int:
     return value % HARNESS_COLOR_COUNT
 
 
+def harness_key(caller: Any) -> str | None:
+    """Longest-prefix, case-insensitive identity match on the caller string —
+    mirrored exactly in the browser JS (harnessKey) so colours agree."""
+    if not caller or caller == UNATTRIBUTED:
+        return None
+    name = str(caller).lower()
+    for prefix, key in HARNESS_PREFIXES:
+        if name.startswith(prefix):
+            return key
+    return None
+
+
 def harness_class_name(name: str | None) -> str:
+    """Identity class first (``.hb-*``, from HARNESS_BRANDS), then the hashed
+    rank palette — unknown callers keep the exact h0…h5 behaviour and
+    ``unattributed`` stays neutral."""
+    key = harness_key(name)
+    if key:
+        return "hb-" + key
     if not name or name == UNATTRIBUTED:
         return "h-unattr"
     return "h" + str(harness_color_idx(name))
@@ -1077,7 +1130,10 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 
 .muted { color: var(--muted); }
 
-/* harness palette — muted, one hue per caller, applied via these classes */
+/* harness palette — muted, one hue per caller, applied via these classes.
+   .hb-* are the stable identity colours (HARNESS_BRANDS): a known caller
+   keeps its brand ahead of the hashed rank slots; the browser's HARNESS_HEX
+   mirror carries the same hexes for the canvas paths */
 .h0 { --hc: #5b8def; }
 .h1 { --hc: #3fb0a3; }
 .h2 { --hc: #9a7be0; }
@@ -1085,6 +1141,12 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .h4 { --hc: #d9708f; }
 .h5 { --hc: #7fae83; }
 .h-unattr { --hc: #66738a; }
+.hb-hermes { --hc: #3987e5; }
+.hb-claude-code { --hc: #D97757; }
+.hb-codex { --hc: #10A37F; }
+.hb-hindsight { --hc: #2ea79a; }
+.hb-openrouter { --hc: #6467F2; }
+.hb-grok { --hc: #BFC7D3; }
 .chip { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
 .chip::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--hc, var(--muted)); }
 .h-unattr .chip { color: var(--unattr); font-style: italic; }
@@ -1224,16 +1286,40 @@ JS = r"""
     return h;
   }
 
+  /* harness identity prefixes — the twin of the server's HARNESS_PREFIXES
+     (same longest-prefix-first order), consulted before the hashed rank
+     palette so a known caller keeps its colour as ranks shift */
+  var HARNESS_PREFIXES = [
+    ['openai-codex', 'codex'], ['codex', 'codex'], ['claude-code', 'claude-code'],
+    ['hermes', 'hermes'], ['hindsight', 'hindsight'], ['openrouter', 'openrouter'],
+    ['grok', 'grok'], ['xai', 'grok']
+  ];
+
+  /* same longest-prefix, case-insensitive match as the server's harness_key */
+  function harnessKey(caller) {
+    if (!caller || caller === UNATTR) return null;
+    var name = String(caller).toLowerCase();
+    for (var i = 0; i < HARNESS_PREFIXES.length; i++) {
+      if (name.indexOf(HARNESS_PREFIXES[i][0]) === 0) return HARNESS_PREFIXES[i][1];
+    }
+    return null;
+  }
+
   function harnessClass(caller) {
+    var key = harnessKey(caller);
+    if (key) return 'hb-' + key;
     if (!caller || caller === UNATTR) return 'h-unattr';
     return 'h' + (djb2(caller) % N_COLORS);
   }
 
-  /* hex mirror of the .h0…h5/.h-unattr CSS palette — a canvas cannot read
-     CSS custom properties, so the chart resolves harnessClass() to hex here */
+  /* hex mirror of the .h0…h5/.h-unattr/.hb-* CSS palette — a canvas cannot
+     read CSS custom properties, so the chart resolves harnessClass() to hex
+     here; the hb-* entries are the server's HARNESS_BRANDS twin */
   var HARNESS_HEX = {
     h0: '#5b8def', h1: '#3fb0a3', h2: '#9a7be0',
-    h3: '#d9a13b', h4: '#d9708f', h5: '#7fae83', 'h-unattr': '#66738a'
+    h3: '#d9a13b', h4: '#d9708f', h5: '#7fae83', 'h-unattr': '#66738a',
+    'hb-hermes': '#3987e5', 'hb-claude-code': '#D97757', 'hb-codex': '#10A37F',
+    'hb-hindsight': '#2ea79a', 'hb-openrouter': '#6467F2', 'hb-grok': '#BFC7D3'
   };
 
   function harnessHex(caller) {
