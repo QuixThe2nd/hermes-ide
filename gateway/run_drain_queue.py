@@ -815,7 +815,7 @@ def replay_drain_queue(
     for session_key, event, record in claimed:
         group = grouped.setdefault(session_key, [])
         message_id = str(getattr(event, "message_id", "") or "").strip()
-        if message_id and any(
+        if message_id and not getattr(event, "internal", False) and any(
             str(getattr(existing, "message_id", "") or "").strip() == message_id
             and not getattr(existing, "internal", False)
             for existing, _existing_record in group

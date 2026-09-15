@@ -86,7 +86,21 @@ def _job(deliver="inbox", origin=None):
 
 
 # ---------------------------------------------------------------------------
-# (a) Token parsing
+# (a) Schema documentation
+# ---------------------------------------------------------------------------
+
+
+class TestCronjobSchemaDeliverDescription:
+    def test_deliver_description_documents_inbox_token(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+
+        desc = CRONJOB_SCHEMA["parameters"]["properties"]["deliver"]["description"]
+        assert "inbox:" in desc
+        assert "inbox'" in desc or "'inbox'" in desc
+
+
+# ---------------------------------------------------------------------------
+# (b) Token parsing
 # ---------------------------------------------------------------------------
 
 

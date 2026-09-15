@@ -395,6 +395,47 @@ def test_enqueue_fifo_still_dedupes_platform_events_with_same_message_id():
     assert survivor.redelivered is True
 
 
+@pytest.mark.asyncio
+async def test_replay_keeps_internal_event_sharing_external_message_id():
+    """A claimed replay group with an external event and an internal completion
+    sharing the same reply-anchor message id must retain both — dropping the
+    internal would lose the completion notification permanently on restart."""
+    source = make_restart_source(chat_id="internal-replay-chat")
+    fresh, fresh_adapter = make_restart_runner()
+    session_key = fresh._session_key_for_source(source)
+    external = _event("user question", source=source, message_id="m-anchor")
+    internal = _event("job completed", source=source, message_id="m-anchor")
+    internal.internal = True
+    records = [
+        serialize_drain_event(session_key, external),
+        serialize_drain_event(session_key, internal),
+    ]
+    drain_queue_path().parent.mkdir(parents=True, exist_ok=True)
+    drain_queue_path().write_text(
+        json.dumps({"version": 1, "events": records}, indent=None),
+        encoding="utf-8",
+    )
+
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+
+    fresh_adapter.handle_message.assert_awaited_once()
+    dispatched = fresh_adapter.handle_message.await_args.args[0]
+    assert dispatched.text == "user question"
+    assert dispatched.message_id == "m-anchor"
+    assert not getattr(dispatched, "internal", False)
+
+    state = fresh._peek_session_state(session_key)
+    slot = fresh_adapter._pending_messages.get(session_key)
+    overflow = state.conversation.queued_events
+    queued = ([slot] if slot else []) + list(overflow)
+    assert len(queued) == 1
+    assert queued[0].text == "job completed"
+    assert queued[0].internal is True
+    assert queued[0].message_id == "m-anchor"
+
+
 def test_record_drain_event_keeps_distinct_internal_events_sharing_reply_anchor_id():
     runner, _adapter = make_restart_runner()
     source = make_restart_source(chat_id="internal-drain-chat")
