@@ -318,7 +318,16 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
+    # Unquoted brace/glob spellings the shell can expand into the flags above at run time
+    # (`find . -{delete,print}`, `find . -del*`). Additive: catches these spellings only; approval is
+    # still decided from source text, so `$var`/`$(...)`-built words are not covered here.
+    (r'\bfind\b[^;|&\n]*-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
+     "find dynamic shell word may expand to destructive flag"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # Same for program-bearing read-tool options, which _execution_flag_findings() parses structurally
+    # only when the option is spelled literally.
+    (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
+     "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
