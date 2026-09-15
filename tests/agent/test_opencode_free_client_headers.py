@@ -94,3 +94,20 @@ def test_other_providers_unaffected(mock_openai):
     assert "Authorization" not in headers, (
         "opencode-zen (keyed) must not have its Authorization header blanked"
     )
+
+
+@patch("agent.process_bootstrap.OpenAI")
+def test_keyless_placeholder_blanks_authorization_under_paid_opencode_profile(mock_openai):
+    """A free slug selected under the paid ``opencode`` profile resolves to the keyless
+    placeholder; it must be blanked exactly like under ``opencode-free``, or every request
+    401s with nothing in the pool to rotate (#110831)."""
+    mock_openai.return_value = MagicMock()
+    agent = _FakeAgent(api_key="opencode-zen-free-keyless")
+    agent.provider = "opencode"
+    create_openai_client(
+        agent,
+        {"api_key": "opencode-zen-free-keyless", "base_url": ZEN_V1},
+        reason="test",
+        shared=False,
+    )
+    assert _zen_call_headers(mock_openai).get("Authorization") == ""
