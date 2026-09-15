@@ -17,7 +17,7 @@ from hermes_cli.web_server_config import (
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -234,7 +234,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        with _profile_scope(body.profile or profile):
+        # load→mutate→save runs on a worker thread (sync-def endpoint); the
+        # desktop's debounced PUT /api/config autosave races it, so the whole
+        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
+        with config_write_scope(body.profile or profile):
             cfg = load_config()
             if body.presets:
                 raw = {
@@ -296,7 +299,9 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
 
         def _apply_assignment():
-            with _profile_scope(body.profile or profile):
+            # Same RMW span as PUT /api/config: applyMainModel fires this while
+            # the settings-page autosave is in flight — hold the mutation lock.
+            with config_write_scope(body.profile or profile):
                 return _apply_model_assignment_sync(
                     scope, provider, model, task, base_url, api_key, reasoning_effort=reasoning_effort)
 
