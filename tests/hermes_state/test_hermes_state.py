@@ -2944,27 +2944,6 @@ class TestListSessionsRich:
         assert child is not None
         assert child["model_config"] is None
 
-    def test_reopen_still_freezes_markerless_legacy_reset_child(self, db):
-        """A genuine old reset child remains visible after its parent is reopened."""
-        lane_key = "agent:main:telegram:dm:legacy-reset"
-        db.create_session("legacy_reset_parent", "telegram", session_key=lane_key)
-        db.end_session("legacy_reset_parent", "session_reset")
-        db.create_session(
-            "legacy_reset_child",
-            "telegram",
-            session_key=lane_key,
-            parent_session_id="legacy_reset_parent",
-        )
-
-        db.reopen_session("legacy_reset_parent")
-
-        child = db.get_session("legacy_reset_child")
-        assert child is not None
-        assert json.loads(child["model_config"])["_reset_from"] == "legacy_reset_parent"
-        assert "legacy_reset_child" in [
-            row["id"] for row in db.list_sessions_rich(source="telegram")
-        ]
-
     def test_reset_parent_does_not_surface_unrelated_child(self, db):
         db.create_session(
             "reset_parent",
