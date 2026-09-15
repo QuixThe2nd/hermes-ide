@@ -98,18 +98,15 @@ def _get_real_hermes_home() -> str | None:
 
 
 def _hermes_exempt_homes() -> tuple[str, ...]:
-    """Realpaths of the Hermes home tree(s) the protected-instruction gate must stay out of.
-
-    Always the ACTIVE profile's home; PLUS the Hermes ROOT when that home is a named
-    profile (``<root>/profiles/<name>``). Exempting only the profile dir left the root's
-    DIRECT files (LEDGER.md / MEMORY.md / SOUL.md / AGENTS.md / DECISIONS.md ...) to fall
-    through to the ``.hermes`` component rule in ``_protected_instruction_reason``, which
-    then gated them as if they were a project-local ``<repo>/.hermes/config.yaml`` — and
-    that gate has no approval channel headless, so every write there failed closed (#60;
-    it blocked #54). Those files are the agent's own store, governed by their own guards,
-    exactly like ``~/.hermes`` under the default profile. The root is only added when the
-    shape really is a named profile (``named_profile_home``), so a coincidental
-    ``profiles/`` directory elsewhere never exempts its parent."""
+    """Realpaths of the Hermes home tree(s) the protected-instruction gate must stay out of:
+    the ACTIVE profile's home, plus the Hermes ROOT when that home is a named profile
+    (``<root>/profiles/<name>``). Exempting only the profile dir left the root's DIRECT files
+    (LEDGER.md / MEMORY.md / SOUL.md / AGENTS.md ...) to the ``.hermes`` component rule, which
+    gated them like a project-local ``<repo>/.hermes/config.yaml`` — fail-closed headless
+    (#110630). They are the agent's own store, governed by their own guards, exactly like
+    ``~/.hermes`` under the default profile. The root is added only when the shape really is a
+    named profile (``named_profile_home``), so a coincidental ``profiles/`` dir elsewhere never
+    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone."""
     home = _get_real_hermes_home()
     if not home:
         return ()

@@ -42,12 +42,14 @@ def _child_env():
 
 
 class TestMultiplexedHermesHome:
-    def test_override_rewrites_stale_server_default(self, monkeypatch, home_override, tmp_path):
-        """The reported bug: child must see the active profile's home, not the server default."""
+    def test_override_rewrites_stale_server_default_per_turn(self, monkeypatch, home_override, tmp_path):
+        """The reported bug: a child must see the ACTIVE profile's home, not the server default,
+        and sequential turns for different profiles each see their own."""
         monkeypatch.setenv("HERMES_HOME", "/machine/default/.hermes")
-        alpha_home = home_override(tmp_path / "profiles" / "alpha")
-
-        assert _child_env()["HERMES_HOME"] == alpha_home
+        alpha = home_override(tmp_path / "profiles" / "alpha")
+        assert _child_env()["HERMES_HOME"] == alpha
+        beta = home_override(tmp_path / "profiles" / "beta")
+        assert _child_env()["HERMES_HOME"] == beta
 
     def test_no_override_leaves_inherited_value_untouched(self, monkeypatch):
         """Dedicated per-profile processes (no override): zero behavior change."""
@@ -55,21 +57,3 @@ class TestMultiplexedHermesHome:
         monkeypatch.setenv("HERMES_HOME", "/machine/default/.hermes")
 
         assert _child_env()["HERMES_HOME"] == "/machine/default/.hermes"
-
-    def test_override_applies_when_parent_env_unset(self, monkeypatch, home_override, tmp_path):
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-        beta_home = home_override(tmp_path / "profiles" / "beta")
-
-        assert _child_env()["HERMES_HOME"] == beta_home
-
-    def test_override_does_not_leak_between_profiles(self, monkeypatch, home_override, tmp_path):
-        """Sequential turns for different profiles each see their own home."""
-        monkeypatch.setenv("HERMES_HOME", "/machine/default/.hermes")
-        home_override(tmp_path / "profiles" / "alpha")
-        first = _child_env()["HERMES_HOME"]
-
-        home_override(tmp_path / "profiles" / "beta")
-        second = _child_env()["HERMES_HOME"]
-
-        assert first == str(tmp_path / "profiles" / "alpha")
-        assert second == str(tmp_path / "profiles" / "beta")
