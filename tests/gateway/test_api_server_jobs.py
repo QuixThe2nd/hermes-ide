@@ -12,7 +12,7 @@ Covers:
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -556,4 +556,51 @@ class TestCronPromptScanParity:
                 data = await resp.json()
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 19. test_cron_fire_estop
+# ---------------------------------------------------------------------------
+
+class TestCronFireEstop:
+    """ESTOP must halt the NAS-managed cron fire webhook (Door 2 of the bug report).
+
+    See ``agent/estop.py:1-9`` contract: "the cron scheduler ... skips work;
+    in-flight work is never killed." The webhook path was the gap — a managed-cron
+    operator running ``hermes pause`` previously kept getting fires through.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fire_webhook_returns_503_when_estop_engaged(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Engaged ESTOP → 503 + Retry-After; claim_fire never reached."""
+        from agent import estop
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        estop._logged_components.clear()
+        estop.engage(reason="ops window")
+
+        try:
+            app = web.Application(middlewares=[cors_middleware])
+            app["api_server_adapter"] = adapter
+            app.router.add_post("/api/cron/fire", adapter._handle_cron_fire)
+
+            claims = {"sub": "chronos", "aud": "test"}
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                    f"{_MOD}._call_verifier", AsyncMock(return_value=claims)
+                ):
+                    resp = await cli.post(
+                        "/api/cron/fire",
+                        json={"job_id": "aabbccddeeff"},
+                        headers={"Authorization": "Bearer test-token"},
+                    )
+                    assert resp.status == 503
+                    assert resp.headers.get("Retry-After") == "60"
+                    data = await resp.json()
+                    assert "paused" in data["error"].lower()
+                    assert data["job_id"] == "aabbccddeeff"
+        finally:
+            estop.disengage()
 

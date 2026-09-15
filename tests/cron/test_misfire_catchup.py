@@ -161,3 +161,51 @@ class TestFireOverdueJobs:
         assert time.monotonic() - start < 1.0  # returned before the run
         assert provider.wait_fired(timeout=10)
         assert provider.fired == [job["id"]]
+
+    def test_estop_engaged_skips_backstop(self, tmp_cron_dir, tmp_path, monkeypatch):
+        """Engaged ESTOP → backstop returns 0 and spawns no fire threads.
+
+        Matches the contract at ``agent/estop.py:1-9``: cron skips work,
+        in-flight work is untouched. The misfire sweep is the backstop; it
+        must yield to operator pause, then resume naturally on disengage.
+        """
+        from agent import estop
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        estop._logged_components.clear()
+
+        job = create_job(prompt="p", schedule="every 1h")
+        _park_in_past(job["id"], minutes=30)
+        provider = RecordingProvider()
+
+        estop.engage(reason="ops window")
+        try:
+            assert fire_overdue_jobs(provider) == 0
+            assert provider.fired == []
+            assert not provider.wait_fired(timeout=0.5)
+        finally:
+            estop.disengage()
+
+    def test_estop_release_restores_backstop(self, tmp_cron_dir, tmp_path, monkeypatch):
+        """ESTOP release → next sweep catches up via the existing claim_fire path.
+
+        No state to unwind — the sweep's job is already "fire things whose
+        scheduled fire never arrived," so a paused sweep just extends that
+        window until resume.
+        """
+        from agent import estop
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        estop._logged_components.clear()
+
+        job = create_job(prompt="p", schedule="every 1h")
+        _park_in_past(job["id"], minutes=30)
+        provider = RecordingProvider()
+
+        estop.engage(reason="ops window")
+        assert fire_overdue_jobs(provider) == 0  # paused — no fire
+
+        estop.disengage()
+        assert fire_overdue_jobs(provider) == 1
+        assert provider.wait_fired()
+        assert provider.fired == [job["id"]]
