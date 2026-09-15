@@ -571,13 +571,20 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.scan_skill_commands(), f"/{name}"
-        if key in cmds:
-            msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
-            if msg:  # UIs render `display`, never `message`.
-                return _ok(rid, {
-                    "type": "skill", "message": msg, "name": cmds[key].get("name", name),
-                    "display": _skill_scaffold_projection(msg)})
+        hc = _tools_mod("hermes_constants")
+        profile_home = session.get("profile_home") if session else None
+        token = hc.set_hermes_home_override(profile_home) if profile_home else None
+        try:
+            cmds, key = sc.scan_skill_commands(), f"/{name}"
+            if key in cmds:
+                msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
+                if msg:  # UIs render `display`, never `message`.
+                    return _ok(rid, {
+                        "type": "skill", "message": msg, "name": cmds[key].get("name", name),
+                        "display": _skill_scaffold_projection(msg)})
+        finally:
+            if token is not None:
+                hc.reset_hermes_home_override(token)
     return None
 
 
