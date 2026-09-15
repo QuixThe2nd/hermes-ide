@@ -1659,26 +1659,20 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     return None
 
 
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
     """Resolve a clarify prompt: send disposition, then the bounded wait.
 
-    The full caller contract in one testable seam: a definitive send failure
-    returns the undeliverable sentinel (registration torn down); ``sent`` and
-    ``ambiguous`` both proceed to ``wait_for_response`` with the configured
-    timeout — for ambiguous, the registration stays armed so a late reply to
-    the (probably rendered) card still resolves.
-    """
-    abort = _clarify_send_disposition(
-        fut, session_key=session_key, clarify_mod=clarify_mod
-    )
+    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
+    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
+    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
     if abort is not None:
-        return abort
+        return abort, False
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     if response is None or response == "":
         # Timeout or session-boundary cancellation
-        return f"[user did not respond within {int(timeout / 60)}m]"
-    return response
+        return f"[user did not respond within {int(timeout / 60)}m]", False
+    return response, True
 
 
 def _resolve_progress_thread_id(
@@ -8487,19 +8481,32 @@ class TurnRunner:
             # AMBIGUOUS — the card may have posted with a late ack. Only a
             # definitive failure tears down the registration; ambiguous
             # falls through to the bounded wait so a late reply resolves.
-            _clarify_response = _clarify_send_then_wait(
+            _clarify_response, _clarify_answered = _clarify_send_then_wait(
                 fut,
                 clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
                 clarify_mod=_clarify_mod,
             )
-            # Only re-arm typing when the user actually answered — the
-            # undeliverable sentinel and the timeout/cancellation strings
-            # start with '[' and must pass through untouched.
-            if not (
-                isinstance(_clarify_response, str)
-                and _clarify_response.startswith("[")
-            ):
+            # Branch on the explicit answered flag, never on the text: a
+            # real answer can start with '[' (a "[A] staging" label, free
+            # text) and must not be mistaken for a sentinel.
+            if not _clarify_answered:
+                # No answer arrived (timeout, /new, run end): retire the
+                # native card so it stops looking answerable. Adapters
+                # without a persistent card have no such method.
+                _retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
+                if callable(_retire):
+                    safe_schedule_threadsafe(
+                        _retire(
+                            ctx._status_adapter,
+                            clarify_id,
+                            "⏳ This prompt expired — please send a new request.",
+                        ),
+                        ctx._loop_for_step,
+                        logger=logger,
+                        log_message="Clarify card retire failed to schedule",
+                    )
+            else:
                 # User answered.  Reopen the typing indicator IMMEDIATELY —
                 # don't wait for the LLM's first post-answer token.  On native
                 # streaming (WeCom) the typing bubble is driven by the stream
