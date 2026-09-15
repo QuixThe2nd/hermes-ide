@@ -47,10 +47,11 @@ class GatewayBusySessionMixin:
     def _fifo_message_id(event: Any) -> str:
         """Dedupe key for queue re-delivery: the inbound platform message id.
 
-        Synthetic events (goal continuations, heartbeats) carry no id and are never deduped.
-        Internal synthetic events are also exempt: watch-notification/completion events
-        inherit the spawning turn's reply-anchor id, so distinct internal events can
-        legitimately share one message id.
+        Synthetic events are never deduped: not the no-id kind (goal continuations,
+        heartbeats), but also not internal events riding a shared reply anchor —
+        background-process watchers inherit the spawning turn's ``message_id``
+        (``HERMES_SESSION_MESSAGE_ID``), so two distinct synthetic completions can
+        carry the SAME id; dropping the second would silently lose a model turn.
         """
         if getattr(event, "internal", False):
             return ""

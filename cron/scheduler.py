@@ -45,6 +45,7 @@ from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
+from agent.memory_provider import ctx_bound
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +348,17 @@ def _upsert_incident_for_failure(
         return False, None
 
 
+def _resolve_incidents_for_recovered_job(job: dict) -> None:
+    """Best-effort: a successful run marks the job's open incidents ``resolved`` (never touches an
+    operator ``closed`` ack). Store errors log at debug; delivery is unaffected."""
+    try:
+        from cron.incidents import close_incidents_for_recovered_job
+
+        close_incidents_for_recovered_job(job["id"])
+    except Exception as exc:
+        logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
+
+
 def _mark_incident_alerted(incident_id: Optional[str]) -> None:
     """Best-effort: mark incident ``alerted`` (no-op for closed; never resurrects an acked one)."""
     if not incident_id:
@@ -464,7 +476,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -1173,7 +1185,7 @@ def _run_cron_cleanup_with_timeout(
     # Daemon thread is deliberate: unlike ThreadPoolExecutor workers it is not joined at interpreter
     # exit if cleanup never returns, so the gateway can still shut down.
     worker = threading.Thread(
-        target=_runner, name=f"cron-cleanup-{job_id}", daemon=True)
+        target=ctx_bound(_runner), name=f"cron-cleanup-{job_id}", daemon=True)
     worker.start()
     if not done.wait(timeout):
         logger.error(
@@ -2424,6 +2436,9 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
                 if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                    if self_removal_delivery_allowed(job_id):
+                        # Record dropped by this run; nothing left to keep fresh.
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
@@ -2511,20 +2526,21 @@ def run_one_job(
         _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
             fire_owner or None, profile_home)
     try:
-        return _run_with_fire_claim_heartbeat(
-            job,
-            lambda lost_ownership: _run_one_job_body(
+        with self_removal_delivery_scope(job["id"]):
+            return _run_with_fire_claim_heartbeat(
                 job,
-                adapters=adapters,
-                loop=loop,
-                verbose=verbose,
-                extra_prompt=extra_prompt,
-                fire_claim_lost=(
-                    _CombinedCancelEvent(lost_ownership, cancel_event)
-                    if cancel_event is not None
-                    else lost_ownership
-                ),
-                execution_token=execution_token))
+                lambda lost_ownership: _run_one_job_body(
+                    job,
+                    adapters=adapters,
+                    loop=loop,
+                    verbose=verbose,
+                    extra_prompt=extra_prompt,
+                    fire_claim_lost=(
+                        _CombinedCancelEvent(lost_ownership, cancel_event)
+                        if cancel_event is not None
+                        else lost_ownership
+                    ),
+                    execution_token=execution_token))
     finally:
         with _running_lock:
             executions = _running_fire_owners.get(job["id"])
@@ -2592,6 +2608,7 @@ def _compose_run_delivery(
         )
     elif success:
         deliver_content = final_response
+        _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; if already acked by the operator, suppress the
         # per-run ping. Best-effort: a ledger failure never breaks delivery.
@@ -2629,6 +2646,9 @@ class _FireOwnership:
         if self.fire_claim_lost is not None and self.fire_claim_lost.is_set():
             return True
         if self.owner is None:
+            return False
+        if self_removal_delivery_allowed(self.job["id"]):
+            # The run deleted its own record; there is no claim left to re-resolve.
             return False
         try:
             if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
@@ -2668,8 +2688,11 @@ def _save_compose_deliver(
     with fence.side_effect_fence() as owns_output:
         if not owns_output:
             raise _FireClaimLostDuringSideEffect
-        output_file = save_job_output(job["id"], output)
-    if verbose:
+        # remove_job() already deleted this job's output dir; saving would re-create an orphan.
+        output_file = (
+            None if self_removal_delivery_allowed(job["id"])
+            else save_job_output(job["id"], output))
+    if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 
     # A shutdown-killed tool subprocess can leave a plausible final_response from truncated
@@ -2776,7 +2799,9 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
-    marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
+    # A run that removed its own record has nothing left to mark; the delivery above is its result.
+    marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
+        job["id"], d.success, d.error, **mark_kwargs)
     if fire_owner is not None and not marked:
         finish_execution(
             execution_id, success=False,
@@ -2838,6 +2863,44 @@ def _deliver_crash_failure(
 
 
 
+def _install_fire_secret_scope() -> "tuple[contextvars.Token, Optional[contextvars.Token]]":
+    """Install the firing profile's secret scope for the span ``_run_one_job_body`` runs, delivery
+    included, and return the tokens ``_reset_fire_secret_scope`` needs.
+
+    Hydrate the profile's external secret sources BEFORE freezing the scope — the order
+    gateway/run.py and the external cron worker already use: ``build_profile_secret_scope`` only
+    READS the per-home source map, so a scope frozen first would carry no vault-backed value.
+
+    For a fire routed to a profile other than the process's own (marked by
+    ``cron.scheduler_provider._profile_cron_scope``) also run under multiplex semantics — for
+    exactly this span and no wider. The desktop backend ticks every local profile from a process
+    that is not a multiplexer, so nothing else isolates that fire; and switching the context on
+    here rather than at the tick means no read is ever fail-closed without a scope to read — the
+    restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope, set_multiplex_context, set_secret_scope)
+    from cron.scheduler_provider import routed_profile_fire
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+    home = Path(_get_hermes_home())
+    hydrate_profile_secret_sources(home)
+    scope_token = set_secret_scope(build_profile_secret_scope(home))
+    context_token = set_multiplex_context(True) if routed_profile_fire() else None
+    return scope_token, context_token
+
+
+def _reset_fire_secret_scope(tokens: "tuple[contextvars.Token, Optional[contextvars.Token]]") -> None:
+    """Undo ``_install_fire_secret_scope`` — the context first, so multiplex semantics never
+    outlive the scope they depend on."""
+    from agent.secret_scope import reset_multiplex_context, reset_secret_scope
+
+    scope_token, context_token = tokens
+    if context_token is not None:
+        reset_multiplex_context(context_token)
+    reset_secret_scope(scope_token)
+
+
 def _run_one_job_body(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, fire_claim_lost: Optional[_CancelEventLike] = None,
@@ -2854,10 +2917,8 @@ def _run_one_job_body(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
     delivery_attempted = False
     delivery_error = None
-    from agent.secret_scope import (
-        build_profile_secret_scope, reset_secret_scope, set_secret_scope)
 
-    _scope_token = None
+    _fire_scope_tokens = None
     _terminal_scope_token = None
     try:
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
@@ -2883,7 +2944,7 @@ def _run_one_job_body(
 
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally).
-        _scope_token = set_secret_scope(build_profile_secret_scope(_get_hermes_home()))
+        _fire_scope_tokens = _install_fire_secret_scope()
         # Same for terminal policy (gateway/run.py _profile_runtime_scope): else the ticker reads
         # process-global TERMINAL_* env a concurrent profile pinned. Resolution failure installs a
         # refusal scope — terminal execution raises instead of using the launch process's policy.
@@ -3001,7 +3062,10 @@ def _run_one_job_body(
             delivery_error, delivery_outcome = _deliver_crash_failure(
                 job, _err_text, adapters=adapters, loop=loop)
         try:
-            if not _consume_interrupted_flag(job["id"], execution_token):
+            if (
+                not _consume_interrupted_flag(job["id"], execution_token)
+                and not self_removal_delivery_allowed(job["id"])  # no record left to mark
+            ):
                 mark_kwargs = {}
                 if fire_owner is not None:
                     mark_kwargs["expected_fire_owner"] = fire_owner
@@ -3022,8 +3086,8 @@ def _run_one_job_body(
     finally:
         # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
         # bookkeeping — not just run_job. Do not move into the run block's finally.
-        if _scope_token is not None:
-            reset_secret_scope(_scope_token)
+        if _fire_scope_tokens is not None:
+            _reset_fire_secret_scope(_fire_scope_tokens)
         if _terminal_scope_token is not None:
             from tools.terminal_scope import reset_terminal_scope
 
@@ -3108,6 +3172,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ownership handoff: in a transient user scope, or — when no user D-Bus
     session exists and ``cron.require_restart_safe_scope`` is false — as a
     direct subprocess (process separation kept, cgroup isolation lost).
+
+    A fire routed to a profile other than the process's own is multiplexed at THIS boundary too.
+    ``run_one_job`` switches the context on in ``_install_fire_secret_scope``, which runs AFTER
+    this handoff, so a routed desktop fire on the managed path serialized ``multiplex_active=False``
+    and built the worker environment with the launch profile's residue and no scrub (review on
+    f5f88d5058). Enable it for exactly this span; the worker then re-establishes it from the payload.
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3124,26 +3194,25 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        is_multiplex_active,
-        reset_secret_scope,
-        set_secret_scope,
-    )
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from agent.secret_scope import is_multiplex_active
+    from cron.scheduler_provider import routed_profile_fire
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         systemd_user_bus_env,
     )
 
+    # A fire routed to another profile is multiplexed at this handoff even when the process flag is
+    # off (the desktop ticker is not a multiplexer): the payload says so, and the worker env is built
+    # under that context so the scrub and the launch-residue strip both apply. The context is set
+    # for exactly the env build; nothing else here reads it.
+    multiplex_active = is_multiplex_active() or routed_profile_fire()
     try:
         require_restart_safe_scope = bool(
             (load_config_readonly().get("cron") or {}).get("require_restart_safe_scope", False)
         )
     except Exception:
         require_restart_safe_scope = False
-    multiplex_active = is_multiplex_active()
     dispatch = restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
@@ -3180,16 +3249,19 @@ def _launch_external_cron_worker(job: dict) -> bool:
         raise
 
     profile_home = _get_hermes_home().resolve()
-    hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
+    # the env build; the helper's reset order keeps the context from outliving its scope.
+    fire_scope_tokens = _install_fire_secret_scope()
     try:
+        # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
+        # import, and strip_launch_profile_env leaves managed keys in place.
         worker_env = strip_launch_profile_env(build_subprocess_env(
             scrub_secrets=multiplex_active,
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
         ))
     finally:
-        reset_secret_scope(secret_token)
+        _reset_fire_secret_scope(fire_scope_tokens)
     worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
@@ -3778,6 +3850,11 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        from cron.bot_chat_delivery import drain, drain_in_background
+        if sync:
+            drain()
+        else:
+            drain_in_background()
         _maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
