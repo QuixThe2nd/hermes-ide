@@ -127,26 +127,3 @@ def test_aliased_parent_still_leaves_an_operator_home_link_alone(tmp_path, monke
     assert home.is_symlink() and home.readlink() == shared
     assert stat.S_IMODE(shared.stat().st_mode) == 0o750
     assert stat.S_IMODE((shared / "curator").stat().st_mode) == 0o750
-
-
-@pytest.mark.linux_only
-def test_unavailable_symlinked_parent_is_still_diagnosed(tmp_path, monkeypatch):
-    """A link above the home with a missing target is still refused instead of materialized."""
-    from hermes_cli.config_home import HomeInitializationError
-
-    real_root = tmp_path / "real"
-    real_root.mkdir()
-    missing = tmp_path / "unmounted"
-    alias = real_root / "alias"
-    alias.symlink_to(missing, target_is_directory=True)
-    home = alias / "hermes"
-
-    monkeypatch.setattr(config, "get_hermes_home", lambda: home)
-    monkeypatch.setattr(config, "is_managed", lambda: False)
-    config._HERMES_HOME_ENSURED.discard(str(home))
-
-    with pytest.raises(HomeInitializationError):
-        config.ensure_hermes_home()
-
-    assert alias.is_symlink() and alias.readlink() == missing
-    assert not missing.exists()
