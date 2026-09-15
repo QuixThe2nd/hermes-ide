@@ -354,6 +354,8 @@ def test_auto_multiplex_migration_false_opts_out_of_the_update_hook_but_not_the_
     (fleet.root / "config.yaml").write_text(
         "model:\n  default: x\nauto_multiplex_migration: false\n", encoding="utf-8")
     assert auto_migration_opted_out(fleet.root) is False
+    (fleet.root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
+    assert auto_migration_opted_out(fleet.root) is False
     (fleet.root / "config.yaml").write_text(
         "model:\n  default: x\ngateway:\n  auto_multiplex_migration: true\n", encoding="utf-8")
     assert auto_migration_opted_out(fleet.root) is False
