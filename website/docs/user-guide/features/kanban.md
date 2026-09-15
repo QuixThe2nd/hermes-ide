@@ -285,22 +285,9 @@ kanban:
   dispatch_profiles: null           # default: this home may claim cards for any
                                    # existing profile. Set to a list (or
                                    # comma-separated string) of profile names to
-                                   # restrict which assignees this home claims.
-                                   # ["none"] claims nothing. Override at
-                                   # runtime with HERMES_KANBAN_DISPATCH_PROFILES.
+                                   # restrict which assignees this home claims;
+                                   # fail-closed, an empty list claims nothing.
 ```
-
-### Shared boards across homes
-
-Mounting one `kanban.db` in several Hermes homes (containers, fleet hosts) shares
-the board, but profile names are home-local: every home has a root profile named
-`default`, and the dispatcher's spawn gate checks `profile_exists(assignee)`
-against the *claiming* home. Without further configuration, every home's
-dispatcher considers a card assigned to `default` claimable, so the wrong home
-can claim and run it. Either give each home unique profile names, or set
-`kanban.dispatch_profiles` per home to declare exactly which assignees that home
-may claim — anything else lands in the dispatcher's `skipped_nonspawnable`
-bucket instead of spawning.
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway
@@ -315,6 +302,20 @@ policy forbids long-lived services, etc.) a `--force` escape hatch keeps
 the old standalone daemon alive for one release cycle, but running both
 a gateway-embedded dispatcher AND a standalone daemon against the same
 `kanban.db` causes claim races and is not supported.
+
+### Shared boards across homes
+
+Mounting one `kanban.db` in several Hermes homes (containers, fleet hosts) shares
+the board, but profile names are home-local and every home has a root profile
+named `default` — so `default` collides by construction. The dispatcher's spawn
+gate checks `profile_exists(assignee)` against the *claiming* home, and without
+further configuration every home's dispatcher considers a card assigned to
+`default` claimable, so the wrong home can claim and run it. Either give each
+home unique profile names and never assign cards to `default` on a shared board,
+or set `kanban.dispatch_profiles` per home to declare exactly which assignees
+that home may claim — anything else lands in the dispatcher's
+`skipped_nonspawnable` bucket instead of spawning, and no longer counts as
+spawnable work for the gateway's wake-up probe.
 
 ### Idempotent create (for automation / webhooks)
 
@@ -898,6 +899,7 @@ All commands are also available as a slash command in the interactive CLI and in
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When set, this home's dispatcher only claims cards whose assignee is listed (fail-closed; an empty list claims nothing); other assignees land in `skipped_nonspawnable`. See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 

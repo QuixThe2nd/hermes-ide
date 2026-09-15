@@ -1220,11 +1220,10 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     imported (local import avoids a cycle; callers fall back to trusting the
     assignee).
 
-    When a per-home claim allowlist is configured (``kanban.dispatch_profiles``
-    or ``HERMES_KANBAN_DISPATCH_PROFILES``, #110995), the returned predicate
-    additionally requires the assignee to be listed — so a card assigned to
-    ``default`` is only claimable by homes that opted into it. Foreign
-    assignees land in the existing ``skipped_nonspawnable`` bucket.
+    When ``kanban.dispatch_profiles`` is set (#110995) the returned predicate
+    additionally requires the assignee to be listed, fail-closed — so a card
+    assigned to ``default`` is only claimable by homes that opted into it.
+    Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
     """
     try:
         from hermes_cli.profiles import normalize_profile_name, profile_exists
@@ -1238,61 +1237,42 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
         try:
             canon = normalize_profile_name(name)
         except ValueError:
-            canon = (name or "").strip().lower()
+            return False
         return canon in allowlist and bool(profile_exists(name))
 
     return _gated
 
 
-# Env-var bridge for the per-home kanban dispatch claim allowlist (#110995).
-# Non-secret behavioral settings live in config.yaml; this is the fleet-friendly
-# runtime override (containers set env per home more easily than per-home
-# config.yaml edits), mirroring terminal.cwd -> TERMINAL_CWD.
-KANBAN_DISPATCH_PROFILES_ENV = "HERMES_KANBAN_DISPATCH_PROFILES"
-
-
 def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
-    """Per-home claim allowlist for the kanban dispatcher (#110995).
+    """Per-home claim allowlist ``kanban.dispatch_profiles`` (#110995).
 
     On a shared board (one ``kanban.db`` mounted across several Hermes homes),
     every home's ``profile_exists`` returns True for ``default`` — the root
     profile every home has — so a card assigned to ``default`` is claimable by
     every home's dispatcher. A home opts out of foreign claims by declaring
-    which assignees it may claim, canonically in config.yaml:
+    which assignees it may claim::
 
         kanban:
           dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
 
-    (``HERMES_KANBAN_DISPATCH_PROFILES`` overrides config at runtime.)
-
-    Returns ``None`` when neither is set (upstream behavior: any existing
-    profile is claimable). The special value ``none`` (or an empty value)
-    yields an empty allowlist — the home claims nothing.
+    Returns ``None`` when the key is unset (upstream behavior: any existing
+    profile is claimable). A set value is fail-closed: an empty list claims
+    nothing. Config read is fail-open like the sibling ``kanban.*`` readers.
     """
-    raw = os.environ.get(KANBAN_DISPATCH_PROFILES_ENV)
-    if raw is None:
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-            raw = kanban_cfg.get("dispatch_profiles")
-        except Exception:
-            return None
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("dispatch_profiles")
+    except Exception:
+        return None
     if raw is None:
         return None
-    if isinstance(raw, (list, tuple)):
-        names = [str(n) for n in raw]
-    else:
-        names = str(raw).split(",")
-    names = [n.strip() for n in names if n.strip()]
-    if not names or all(n.casefold() == "none" for n in names):
-        return frozenset()
+    names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
     allowed = set()
     for n in names:
         try:
             allowed.add(normalize_profile_name(n))
         except ValueError:
-            allowed.add(n.strip().lower())
+            continue
     return frozenset(allowed)
 
 

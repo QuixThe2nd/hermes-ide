@@ -1,69 +1,54 @@
-"""Per-home kanban dispatch claim allowlist.
+"""kanban.dispatch_profiles: per-home claim allowlist for shared boards (#110995).
 
-Regression tests for #110995: on a shared kanban board (one kanban.db mounted
-across several Hermes homes) every home's ``profile_exists("default")`` is
-unconditionally True, so any home's dispatcher could claim cards assigned to
-``default``. ``kanban.dispatch_profiles`` (or the
-``HERMES_KANBAN_DISPATCH_PROFILES`` env bridge) declares which assignees this
-home may claim; anything else lands in ``skipped_nonspawnable``.
+On a board shared across Hermes homes (one kanban.db mounted in several
+containers) every home's ``profile_exists("default")`` is True, so any home's
+dispatcher could claim cards assigned to ``default``. The allowlist wraps the
+same predicate consumed by the spawn gate and the spawnable telemetry, so a
+foreign assignee lands in ``skipped_nonspawnable`` and does not keep the
+gateway wake-up loop hot.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
-def every_home_has_default(monkeypatch):
-    """Reproduce the incident premise: ``profile_exists("default")`` is True."""
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+def kanban_home(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME with an empty kanban DB."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    return home
 
 
-# Env bridge for the claim allowlist (mirrors
-# kanban_db_dispatch.KANBAN_DISPATCH_PROFILES_ENV; spelled out so the tests
-# stay red-on-base against code that lacks the constant).
-_DISPATCH_PROFILES_ENV = "HERMES_KANBAN_DISPATCH_PROFILES"
+def test_allowlist_without_default_skips_default_card(kanban_home, all_assignees_spawnable):
+    """Fail-closed: the allowlist is set and ``default`` is not on it, so the
+    card is neither spawnable (wake-up telemetry) nor claimed (spawn gate),
+    even though every profile exists locally."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles:\n    - sage\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
 
 
-@pytest.fixture
-def no_env_bridge(monkeypatch):
-    monkeypatch.delenv(_DISPATCH_PROFILES_ENV, raising=False)
-
-
-def test_allowlist_env_restricts_default_claim(monkeypatch, every_home_has_default):
-    monkeypatch.setenv(_DISPATCH_PROFILES_ENV, "sage,researcher")
-    claim = kbd._profile_exists_fn()
-    assert claim is not None
-    assert claim("sage") is True
-    assert claim("researcher") is True
-    # The incident: this home must NOT claim another home's "default".
-    assert claim("default") is False
-
-
-def test_allowlist_env_none_claims_nothing(monkeypatch, every_home_has_default):
-    monkeypatch.setenv(_DISPATCH_PROFILES_ENV, "none")
-    claim = kbd._profile_exists_fn()
-    assert claim is not None
-    assert claim("sage") is False
-    assert claim("default") is False
-
-
-def test_allowlist_config_key_end_to_end(every_home_has_default, no_env_bridge):
-    """Real config.yaml -> real load_config() -> gated predicate."""
-    home = Path(os.environ["HERMES_HOME"])
-    (home / "config.yaml").write_text("kanban:\n  dispatch_profiles:\n    - sage\n")
-    claim = kbd._profile_exists_fn()
-    assert claim is not None
-    assert claim("sage") is True
-    assert claim("default") is False
-
-
-def test_unset_allowlist_preserves_upstream(every_home_has_default, no_env_bridge):
-    claim = kbd._profile_exists_fn()
-    assert claim is not None
-    assert claim("default") is True
+def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spawnable):
+    """No key = upstream behaviour: any existing profile, ``default`` included."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="local card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is True
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert [t for t, _a, _w in res.spawned] == [tid]
+    assert res.skipped_nonspawnable == []
