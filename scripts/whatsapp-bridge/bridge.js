@@ -46,6 +46,7 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -203,15 +204,6 @@ function rememberSentMessage(sent, payload) {
 
 function trackSentMessageId(sent) {
   rememberSentId(sent?.key?.id);
-}
-
-function normalizeWhatsAppId(value) {
-  if (!value) return '';
-  // Strip the :<device> suffix (e.g. 447999674698:14@s.whatsapp.net -> ...@s.whatsapp.net)
-  // so bot/mention/quoted ids compare consistently. The old .replace(':','@') produced a
-  // malformed '...@14@lid', which never matched the bot's own id (breaking @mention and
-  // reply-to-bot detection in groups).
-  return String(value).replace(/:\d+@/, '@').replace(/:\d+$/, '');
 }
 
 function redactWhatsAppId(value) {
