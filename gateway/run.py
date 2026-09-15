@@ -13530,6 +13530,12 @@ class GatewayRunner(
             if unavailable:
                 unavailable.clear()
 
+    def _running_agent_ids(self) -> set:
+        """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
+        ``AIAgent.__eq__`` (MagicMock overrides it in tests)."""
+        return {id(a) for _, a in self._running_agent_items()
+                if a is not None and a is not _AGENT_PENDING_SENTINEL}
+
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
             session_key: agent
