@@ -4790,8 +4790,8 @@ _canonical_sqlite_path = _state_holders.canonical_sqlite_path
 def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
     base = os.path.abspath(os.fspath(db_path))
     return {
-        _canonical_sqlite_path(base + "-wal"),
-        _canonical_sqlite_path(base + "-shm"),
+        _state_holders.canonical_sqlite_path(base + "-wal"),
+        _state_holders.canonical_sqlite_path(base + "-shm"),
     }
 
 
@@ -4830,7 +4830,7 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
                     continue
                 if " (deleted)" not in target:
                     continue
-                if _canonical_sqlite_path(target) in watched:
+                if _state_holders.canonical_sqlite_path(target) in watched:
                     holders.append((pid, target))
     except Exception as exc:
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
