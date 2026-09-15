@@ -6219,6 +6219,8 @@ class SessionDB(
                 f"state.db reopen after close() succeeded but connection "
                 f"setup failed: {exc}"
             ) from exc
+        if self._wal_active:  # a reopened writer is a live generation holder like the first open
+            self._wal_lock_guard = _lockguard.hold(self.db_path)
         # Schema was initialised by this instance's original open; the file
         # cannot have lost it, so no _init_schema here (no DDL races with
         # sibling processes during teardown).
@@ -7301,10 +7303,12 @@ class SessionDB(
         """
         if self._db_corrupt:
             return  # quarantined: never checkpoint over a damaged image
-        if self._wal_lock_guard:
-            _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
         try:
             with self._lock:
+                if self._conn is None:
+                    return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
+                if self._wal_lock_guard:
+                    _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
                 result = self._conn.execute(
                     "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
