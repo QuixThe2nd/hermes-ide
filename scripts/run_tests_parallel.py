@@ -333,6 +333,26 @@ def _effective_file_timeout(
     return max(file_timeout, float(cached) * 3.0)
 
 
+def _clean_pass_durations(
+    file_times: List[Tuple[Path, float]],
+    failures: List[Tuple[Path, str, Dict[str, int]]],
+    flaky: List[Tuple[Path, str]],
+) -> List[Tuple[Path, float]]:
+    """Keep only durations from files that passed on their first attempt.
+
+    ``file_times`` records every file's total subprocess wall, including a
+    timed-out attempt (~the cap) and retry-summed walls for FLAKY files.
+    Feeding those into the cache would let the timeout scaler compound: a
+    file that hung once is cached at ~300s, gets a 900s bound next run,
+    hangs again and is cached at ~900s, and so on until the job timeout
+    is the only bound left. A duration is a measurement of a healthy run
+    or it is not a measurement; failed and retried files keep their last
+    known-good entry instead.
+    """
+    excluded = {f for f, _o, _s in failures} | {f for f, _o in flaky}
+    return [(f, t) for f, t in file_times if f not in excluded]
+
+
 def _run_one_file(
     file: Path,
     pytest_args: List[str],
@@ -1225,13 +1245,15 @@ def main() -> int:
             print(f"  {_format_file(f, repo_root)}")
             print(output.rstrip())
 
-    # Save durations for future --slice runs. Each slice writes its own
-    # partial test_durations.json; a CI merge step joins them later.
-    # Locally, _save_durations merges with any existing cache so entries
-    # from previous runs aren't lost.
-    if file_times:
-        _save_durations(file_times, repo_root)
-        print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
+    # Save durations for future runs (LPT slicing and the per-file timeout
+    # scaler, see _effective_file_timeout). _save_durations merges with any
+    # existing cache so entries from previous runs aren't lost.
+    clean_times = _clean_pass_durations(
+        file_times, failures, _FLAKY_RESULTS,
+    )
+    if clean_times:
+        _save_durations(clean_times, repo_root)
+        print(f"  Durations cached to {_DURATIONS_FILE} ({len(clean_times)} files)")
 
     # Per-file time distribution (throwaway diagnostic — shows how
     # subprocess time is distributed so we can see if startup dominates).
