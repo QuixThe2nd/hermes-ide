@@ -1395,8 +1395,7 @@ export const en: Translations = {
       updateAction: 'Update engine',
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
-      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the latest build Hermes ships.`,
-      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
+      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the configured build.`,
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',
@@ -4211,6 +4210,11 @@ export const en: Translations = {
       'composer-mentions': {
         title: 'Attach and command',
         text: 'Type @ to bring a file into the conversation, / to run a command.'
+      },
+      'local-runtime-update': {
+        title: 'A local engine update is available',
+        text: 'Update the engine that runs your local models. Active local requests may be interrupted.',
+        action: 'Update now'
       },
       'local-setup': {
         title: 'This machine can run models locally',

@@ -1237,8 +1237,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新組建。`,
-      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -3561,6 +3560,11 @@ export const zhHant = defineLocale({
       'composer-mentions': {
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
+      },
+      'local-runtime-update': {
+        title: '本機引擎有可用更新',
+        text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
+        action: '立即更新'
       },
       'local-setup': {
         title: '這台電腦可以本地執行模型',
