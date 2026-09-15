@@ -3155,8 +3155,12 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     if not param_lower:
         return False
     err_lower = str(exc).lower()
+    # Bedrock Converse rejects sampling params for reasoning-first models with the contraction
+    # ("This model doesn't support the temperature field", xAI Grok) and inference-profile Claude
+    # with "`temperature` is deprecated for this model" (#111043).
     return param_lower in err_lower and _contains_any(err_lower, (
         "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
+        "doesn't support", "is deprecated for this model",
         "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
     ))
 
