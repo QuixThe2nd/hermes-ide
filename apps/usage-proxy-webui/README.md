@@ -1,6 +1,6 @@
 # Usage Proxy Ledger Web UI
 
-A small, read-only web dashboard (the "AI Usage" page) for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) broken down by model and by harness (`usage_events.caller`), plus the most recent usage events. Harness names are display-mapped: the gateway's `hermes` caller renders as **Hermes IDE** and per-profile `hermes:<profile>` callers as **Hermes IDE · &lt;profile&gt;**. Every harness breakdown treats each distinct caller as its own series; in the per-harness table, profile callers render as indented subrows under a Hermes IDE parent row whose totals also fold in any pre-split plain `hermes` traffic. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
+A small, read-only web dashboard for the Hermes usage-proxy SQLite ledger. It shows request/token summaries (last 24 hours and all-time) broken down by model and by harness (`usage_events.caller`), plus the most recent usage events. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
 
 **LAN-only, no authentication.** Bind to a private interface and do not port-forward this service to the public internet.
 
@@ -37,11 +37,30 @@ python3 server.py --host 127.0.0.1 --port 9136 --db /tmp/my-usage-copy.sqlite
 
 The "Tokens per hour" stacked column chart has a segmented toggle with four breakdown modes:
 
-- **harness** / **model** — tokens stacked per harness or per model (stable per-name colors; each `hermes:<profile>` caller stacks as its own series)
+- **harness** / **model** — tokens stacked per harness or per model (stable per-name colors)
 - **in/out** — prompt tokens (input) vs completion tokens (output)
 - **cache** — cached vs uncached prompt tokens (uncached = prompt − cached; columns are shorter because they sum prompt tokens only)
 
 Tooltip, the screen-reader table, and aria-labels follow the active mode.
+
+## Provider branding
+
+Everywhere a model name appears — the model-usage donut and its legend, the hourly chart's **model** mode (columns, tooltip lines, screen-reader table) and the recent-events table — it carries its provider's brand: a small inline SVG logo beside the name and the provider's brand colour on the donut slices and per-model chart series. Matching is longest-prefix-first and case-insensitive on the model string:
+
+| Prefixes | Provider | Colour |
+|----------|----------|--------|
+| `gpt-*`, `o3`, `o4-*`, `codex*` | ChatGPT/OpenAI (knot logo) | `#10A37F` |
+| `glm-*`, `zai*` | Z.ai (initial badge) | `#8A8AF0` |
+| `kimi-*` | Kimi / Moonshot AI (initial badge) | `#5A5AF5` |
+| `claude-*` | Claude / Anthropic ("A" logo) | `#D97757` |
+| `grok-*` | Grok / xAI (white X glyph) | `#BFC7D3` |
+| `openrouter/*` | OpenRouter | `#6467F2` |
+
+Z.ai's identity is monochrome, so the glyph renders near-white and the violet is the one slice/dot accent; Grok's X glyph renders white on the dark page. Logo path data comes from Simple Icons (CC0) where a dependable path exists; Z.ai and Kimi use a clean initial badge instead. Everything is inline in `server.py` — no image files, no runtime fetches. Models from unknown providers (and the folded "other" slice) keep the existing neutral palette; caller/harness chips represent client apps, not model providers, so they stay out of this table — they carry their own identity colours (below).
+
+Because the `<canvas>` charts cannot read CSS values, each brand colour exists in both the Python table (`PROVIDER_BRANDS`) and the JS mirror (`PROVIDER_HEXES`) — the same pairing the neutral model palette uses (`MODEL_COLORS` / `MODEL_HEXES`). When one provider has several models in the same ring or column, repeats shade toward the card surface so same-brand neighbours stay distinguishable.
+
+Harness/caller chips carry identity colours too — hermes blue (`#3987e5`), Claude orange for `claude-code`, OpenAI green for `codex`, teal for the `hindsight` family, plus OpenRouter and grok/xai — matched longest-prefix-first and case-insensitively on the caller string, so `hindsight-smoke`/`hindsight-migrate` fold onto the same teal and a known caller keeps its colour even when its rank shifts. Unknown callers keep the existing rank palette and `unattributed` stays neutral. The twin-table rule applies here as well: every hex lives in the Python `HARNESS_BRANDS` table, the JS `HARNESS_HEX` mirror and the `.hb-*` CSS rules.
 
 ## systemd (optional, not installed by default)
 

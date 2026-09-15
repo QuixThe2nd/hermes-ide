@@ -5,15 +5,23 @@ Single file, Python stdlib only (http.server + sqlite3 + json):
 
 * the ledger is opened read-only per request (``mode=ro``): the dashboard can
   never block the proxy's writers and can never modify the ledger;
+* every model name — donut legend, per-model chart mode and events table —
+  carries its provider's brand: an inline SVG logo (Simple Icons CC0 path
+  data, Z.ai/Kimi as initial badges) and the brand colour on donut slices
+  and per-model series (``PROVIDER_BRANDS``, mirrored as ``PROVIDER_HEXES``
+  in the page JS); models from unknown providers keep the neutral palette;
+* every harness chip, share bar, harness-mode chart segment and events-table
+  caller cell carries the caller's identity colour from a stable prefix map
+  (``HARNESS_BRANDS``, mirrored as ``HARNESS_HEX`` entries in the page JS and
+  as ``.hb-*`` rules in the CSS), so a known caller keeps its colour even
+  when its rank shifts; unknown callers keep the hashed rank palette and
+  ``unattributed`` stays neutral — colour only, no logos;
 * ``GET /`` serves the single-page dark dashboard.  Its JavaScript polls
   ``/api/summary``, ``/api/timeseries`` and ``/api/events`` every 5 s and
   updates the stat cards, the per-harness bars, the canvas charts (tokens
   per hour, stacked by harness, and the model-usage donut) and the event
   table in place — no
-  full page reloads.  The model donut and the per-harness table each carry
-  a segmented filter (all / by harness, totals / by model) fed by
-  per-caller-per-model breakdowns of the same 24 h window; the server paints
-  only the default views.  The first paint is
+  full page reloads.  The first paint is
   server-rendered from the same data, so the page is meaningful even with
   JavaScript disabled (the chart then shows as an accessible data table);
 * every SQL statement is a fully static literal; request-supplied values are
@@ -40,13 +48,6 @@ from zoneinfo import ZoneInfo
 
 SYDNEY = ZoneInfo("Australia/Sydney")
 UNATTRIBUTED = "unattributed"
-# The Hermes gateway's caller values: plain `hermes` (pre-profile-split
-# traffic) and `hermes:<profile>` once the gateway names its profiles.  Only
-# the rendered labels change (see caller_display); raw caller strings stay the
-# JSON keys, element values and colour-hash inputs so colours stay stable.
-HERMES_CALLER = "hermes"
-HERMES_PROFILE_PREFIX = "hermes:"
-HERMES_DISPLAY = "Hermes IDE"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9136
 DEFAULT_DB = str(Path.home() / ".hermes" / "usage-proxy" / "usage.sqlite")
@@ -64,6 +65,35 @@ DAYS_7D = 7
 # bars, the chips and the chart — on both the server and the browser.
 HARNESS_COLOR_COUNT = 6
 
+# Harness identity colours — the harness twin of PROVIDER_BRANDS: known
+# callers keep a stable brand colour no matter how their token rank shifts,
+# resolved ahead of the hashed rank palette above.  Longest prefix first,
+# matched case-insensitively (harness_key) on the caller string, so
+# hindsight-smoke/hindsight-migrate/… fold onto hindsight's teal.  Every hex
+# lives in all three views of the truth — this table, the .hb-* CSS rules
+# and the browser's HARNESS_HEX mirror — because the canvases cannot read
+# CSS custom properties.  Colour only, no logos; the light #BFC7D3 tints the
+# chip dot and share bar on the dark surface (the chip text itself keeps
+# --text-2), the same contrast situation the grok slices already handle.
+HARNESS_PREFIXES = (
+    ("openai-codex", "codex"),   # ahead of the bare "codex" rule
+    ("codex", "codex"),
+    ("claude-code", "claude-code"),
+    ("hermes", "hermes"),        # this dashboard's own home turf
+    ("hindsight", "hindsight"),
+    ("openrouter", "openrouter"),
+    ("grok", "grok"),
+    ("xai", "grok"),
+)
+HARNESS_BRANDS = {
+    "hermes": "#3987e5",       # the dashboard's own accent blue
+    "claude-code": "#D97757",
+    "codex": "#10A37F",
+    "hindsight": "#2ea79a",    # teal — clear of Claude orange, OpenAI green, --stale
+    "openrouter": "#6467F2",
+    "grok": "#BFC7D3",
+}
+
 # Model-usage donut: the top MODEL_TOP_N models by 24 h tokens, the remainder
 # folded into an "other" bucket.  Slice colour follows token rank (index i of
 # MODEL_COLORS), so neighbours never repeat and "other" always draws the
@@ -76,6 +106,117 @@ MODEL_TOP_N = 6
 MODEL_COLORS = ("#bd8714", "#d46c8b", "#5b8def", "#2ea79a", "#9a7be0", "#65a46c")
 MODEL_OTHER_COLOR = "#66738a"   # same neutral the page uses for unattributed
 DONUT_SIZE = 180                # square canvas, CSS px (device-pixel scaled in JS)
+
+# Provider brands for model names: a small inline SVG logo plus the brand
+# colour, matched longest-prefix-first, case-insensitively (provider_key).
+# Like MODEL_COLORS / MODEL_HEXES, every brand colour exists in BOTH this
+# table and the browser's PROVIDER_HEXES mirror — the canvases cannot read
+# CSS custom properties.  Logo path data is Simple Icons (CC0): the OpenAI
+# knot, the Anthropic "A", OpenRouter, and the X glyph xAI uses white-on-dark;
+# Z.ai and Kimi have no dependable path, so they get a clean initial badge (a
+# brand-coloured rounded square with the letter).  Everything is inline in
+# this one file — no image assets, no runtime fetches.
+CARD_SURFACE = "#11151c"       # --surface: same-brand repeats shade toward it
+
+_LOGO_OPENAI = (
+    "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9"
+    "A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 "
+    "0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001"
+    "A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 "
+    "0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 "
+    "0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369"
+    "l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607"
+    "-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 "
+    ".7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 "
+    "0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 "
+    "0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865"
+    "A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 "
+    "0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-"
+    ".407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 "
+    "9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 "
+    "4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 "
+    "7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602"
+    "-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"
+)
+_LOGO_ANTHROPIC = (
+    "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527"
+    "h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 "
+    "5.9456Z"
+)
+_LOGO_OPENROUTER = (
+    "M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728"
+    "-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225"
+    "-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 "
+    "1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005"
+    "v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417"
+    "-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822"
+    "-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 "
+    "6.014Z"
+)
+_LOGO_X = (
+    "M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83"
+    "L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"
+)
+
+
+def _path_logo(d: str) -> str:
+    """Inline logo whose glyph follows the text colour (currentColor)."""
+    return (
+        '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        f'<path fill="currentColor" d="{d}"/></svg>'
+    )
+
+
+def _badge_logo(letter: str, tile: str) -> str:
+    """Initial badge for brands without a dependable logo path."""
+    return (
+        '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        f'<rect width="24" height="24" rx="6" fill="{tile}"/>'
+        '<text x="12" y="17.2" text-anchor="middle" font-family="inherit" '
+        f'font-size="14.5" font-weight="700" fill="#e8edf4">{letter}</text></svg>'
+    )
+
+
+# Longest prefix first, so "openrouter/…" never falls through to a shorter
+# rule, a bare "glm" (no dash) stays neutral, and shorter rules (Kimi's
+# native "k3"/"k2", the bare "o3") sit behind their longer siblings — the
+# table also covers the aggregator-normalized "vendor/model" spellings
+# ("anthropic/…", "openai/…", "z-ai/…", "x-ai/…", "kimi/…") ledgers record,
+# and the canonical unhyphenated catalog spellings ("xai/…", "moonshotai/…").
+PROVIDER_PREFIXES = (
+    ("openrouter/", "openrouter"),
+    ("claude-", "claude"),
+    ("anthropic/", "claude"),
+    ("codex", "openai"),
+    ("openai/", "openai"),
+    ("gpt-", "openai"),
+    ("grok-", "grok"),
+    ("x-ai/", "grok"),
+    ("xai/", "grok"),
+    ("kimi-", "kimi"),
+    ("kimi/", "kimi"),
+    ("moonshot/", "kimi"),
+    ("moonshotai/", "kimi"),
+    ("glm-", "zai"),
+    ("z-ai/", "zai"),
+    ("zai", "zai"),
+    ("o4-", "openai"),
+    ("o3", "openai"),
+)
+
+# Kimi Coding's native bare identifiers (no dash, no vendor prefix): exact
+# match only, so unrelated future "k3…"/"k2…" spellings stay neutral.
+PROVIDER_EXACT = {"k3": "kimi", "k2": "kimi"}
+
+PROVIDER_BRANDS = {
+    "openai": {"name": "ChatGPT/OpenAI", "color": "#10A37F", "logo": _path_logo(_LOGO_OPENAI)},
+    "zai": {"name": "Z.ai", "color": "#8A8AF0", "logo": _badge_logo("Z", "#8A8AF0")},
+    "kimi": {"name": "Kimi (Moonshot AI)", "color": "#5A5AF5", "logo": _badge_logo("K", "#5A5AF5")},
+    "claude": {"name": "Claude (Anthropic)", "color": "#D97757", "logo": _path_logo(_LOGO_ANTHROPIC)},
+    # Grok/xAI is monochrome: white X glyph, restrained light-grey slices.
+    "grok": {"name": "Grok (xAI)", "color": "#BFC7D3", "glyph": "#E8EDF4", "logo": _path_logo(_LOGO_X)},
+    "openrouter": {"name": "OpenRouter", "color": "#6467F2", "logo": _path_logo(_LOGO_OPENROUTER)},
+}
 
 # Outcome badge: green when usage is final, red for auth/rate-limit
 # rejections, grey for everything else.
@@ -150,25 +291,6 @@ SQL_MODEL_SINCE = """
     WHERE ts >= ?
     GROUP BY model
     ORDER BY tokens DESC, requests DESC, model ASC
-"""
-
-# Two-dimensional breakdown of the same 24 h window — tokens per (caller,
-# model) pair, readable in both directions.  The two right-hand cards filter
-# on these: the model donut narrows to one harness's models, the per-harness
-# table to one model's harnesses.
-SQL_CALLER_MODEL_SINCE = """
-    SELECT caller, model, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    WHERE ts >= ?
-    GROUP BY caller, model
-    ORDER BY tokens DESC, requests DESC, caller ASC, model ASC
-"""
-SQL_MODEL_CALLER_SINCE = """
-    SELECT model, caller, COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
-    FROM usage_events
-    WHERE ts >= ?
-    GROUP BY model, caller
-    ORDER BY tokens DESC, requests DESC, model ASC, caller ASC
 """
 
 # Every ts is a UTC ISO-8601 string written by the proxy, so a plain
@@ -249,31 +371,6 @@ def caller_label(caller: Any) -> str:
     return UNATTRIBUTED if not caller else str(caller)
 
 
-def is_hermes_profile(caller: Any) -> bool:
-    """True for the gateway's per-profile callers (`hermes:<profile>`)."""
-    return (
-        isinstance(caller, str)
-        and caller.startswith(HERMES_PROFILE_PREFIX)
-        and len(caller) > len(HERMES_PROFILE_PREFIX)
-    )
-
-
-def caller_display(caller: Any) -> str:
-    """Human-facing name for a raw caller value — display text only.
-
-    Everything else (JSON payloads, element keys/values/classes, the colour
-    hash) keeps the raw string; only the rendered label is prettified.
-    """
-    if not caller:
-        return UNATTRIBUTED
-    name = str(caller)
-    if name == HERMES_CALLER:
-        return HERMES_DISPLAY
-    if is_hermes_profile(name):
-        return f"{HERMES_DISPLAY} · {name[len(HERMES_PROFILE_PREFIX):]}"
-    return name
-
-
 def harness_color_idx(name: str) -> int:
     """djb2 — mirrored exactly in the browser JS so colours agree."""
     value = 5381
@@ -282,10 +379,96 @@ def harness_color_idx(name: str) -> int:
     return value % HARNESS_COLOR_COUNT
 
 
+def harness_key(caller: Any) -> str | None:
+    """Longest-prefix, case-insensitive identity match on the caller string —
+    mirrored exactly in the browser JS (harnessKey) so colours agree."""
+    if not caller or caller == UNATTRIBUTED:
+        return None
+    name = str(caller).lower()
+    for prefix, key in HARNESS_PREFIXES:
+        if name.startswith(prefix):
+            return key
+    return None
+
+
 def harness_class_name(name: str | None) -> str:
+    """Identity class first (``.hb-*``, from HARNESS_BRANDS), then the hashed
+    rank palette — unknown callers keep the exact h0…h5 behaviour and
+    ``unattributed`` stays neutral."""
+    key = harness_key(name)
+    if key:
+        return "hb-" + key
     if not name or name == UNATTRIBUTED:
         return "h-unattr"
     return "h" + str(harness_color_idx(name))
+
+
+def provider_key(model: Any) -> str | None:
+    """Longest-prefix, case-insensitive provider match on the model string —
+    mirrored exactly in the browser JS (providerKey) so brands agree."""
+    if not model:
+        return None
+    name = str(model).lower()
+    exact = PROVIDER_EXACT.get(name)
+    if exact:
+        return exact
+    for prefix, key in PROVIDER_PREFIXES:
+        if name.startswith(prefix):
+            return key
+    return None
+
+
+BRAND_SHADE_STEPS = (
+    0.62, 0.40, 0.52, 0.34, 0.58, 0.28,  # the reviewed six-repeat ring ramp
+    0.24, 0.19, 0.15, 0.11, 0.08, 0.05,  # overflow: keep dimming, never repeat
+)
+BRAND_SHADE_TAIL_RATIO = 0.75  # geometric dim past the table: strictly decreasing
+
+
+def brand_shade(color: str, step: int) -> str:
+    """Brand colour dimmed toward the card surface — the second and later
+    models of one provider in the same ring or column, so same-brand
+    neighbours stay told apart while still reading as one brand.  Stays a
+    plain hex so the canvas partial-dim pass (hexToRgba) keeps working.
+    The factors never repeat and never clamp (the hourly chart can stack
+    more same-provider models than the six-slot donut): past the table the
+    factor keeps shrinking geometrically (×0.75 per repeat), staying
+    strictly darker until 8-bit hex saturation.  Mirrored exactly in the
+    browser JS (brandShade)."""
+    if step <= 0:
+        return color
+    i = step - 1
+    if i < len(BRAND_SHADE_STEPS):
+        t = BRAND_SHADE_STEPS[i]
+    else:
+        t = BRAND_SHADE_STEPS[-1] * BRAND_SHADE_TAIL_RATIO ** (i - len(BRAND_SHADE_STEPS) + 1)
+    channels = []
+    for j in (1, 3, 5):
+        c = int(color[j:j + 2], 16)
+        s = int(CARD_SURFACE[j:j + 2], 16)
+        channels.append(round(c * t + s * (1 - t)))
+    return "#{:02x}{:02x}{:02x}".format(*channels)
+
+
+def brand_step_map(models: list[str]) -> dict[str, int]:
+    """Shade step for each model: its index among its provider's models,
+    sorted by name — a function of the model's own identity alone, so the
+    shade is stable wherever the model appears.  The donut builds this over
+    its own slice list, the browser's hourly chart over its whole visible
+    window (brandShadeSteps/chartShadeMap in the page JS, mirrored exactly):
+    one rule on both sides, so the two views agree whenever they show the
+    same model set.  (Counting repeats in ring order instead would not —
+    ring order is tokens-desc, not name order.)"""
+    by_provider: dict[str, list[str]] = {}
+    for model in models:
+        key = provider_key(model)
+        if key:
+            by_provider.setdefault(key, []).append(model)
+    steps: dict[str, int] = {}
+    for names in by_provider.values():
+        for i, name in enumerate(sorted(names)):
+            steps[name] = i
+    return steps
 
 
 def _pick(sql_all: str, sql_since: str, since_ts: str | None) -> tuple[str, tuple[Any, ...]]:
@@ -352,59 +535,6 @@ def by_model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
-
-
-def _sorted_groups(
-    groups: dict[str, list[dict[str, Any]]], tokens_key: str
-) -> dict[str, list[dict[str, Any]]]:
-    """Outer keys ordered by the group's token total (desc), then name, so
-    the client pickers offer the busiest harness/model first."""
-    return dict(
-        sorted(groups.items(), key=lambda kv: (-sum(r[tokens_key] for r in kv[1]), kv[0]))
-    )
-
-
-def query_models_by_caller(
-    conn: sqlite3.Connection, since_ts: str
-) -> dict[str, list[dict[str, Any]]]:
-    """caller -> ``by_model``-shaped rows over the window.
-
-    The browser donut re-renders one harness's list unchanged through
-    donutSlices(); a NULL model folds into ``unknown`` exactly like by_model.
-    """
-    rows = conn.execute(SQL_CALLER_MODEL_SINCE, (since_ts,)).fetchall()
-    out: dict[str, list[dict[str, Any]]] = {}
-    for caller, model, requests, tokens in rows:
-        out.setdefault(caller_label(caller), []).append(
-            {
-                "model": str(model) if model else "unknown",
-                "requests": requests or 0,
-                "tokens": tokens or 0,
-            }
-        )
-    return _sorted_groups(out, "tokens")
-
-
-def query_callers_by_model(
-    conn: sqlite3.Connection, since_ts: str
-) -> dict[str, list[dict[str, Any]]]:
-    """model -> ``per_caller_24h``-shaped rows over the window.
-
-    The browser harness table re-renders one model's list unchanged through
-    renderHarness(); a NULL model folds into ``unknown`` exactly like by_model.
-    """
-    rows = conn.execute(SQL_MODEL_CALLER_SINCE, (since_ts,)).fetchall()
-    out: dict[str, list[dict[str, Any]]] = {}
-    for model, caller, requests, tokens in rows:
-        out.setdefault(str(model) if model else "unknown", []).append(
-            {
-                "caller": caller_label(caller),
-                "unattributed": not caller,
-                "requests": requests or 0,
-                "total_tokens": tokens or 0,
-            }
-        )
-    return _sorted_groups(out, "total_tokens")
 
 
 def hour_buckets() -> list[dict[str, Any]]:
@@ -543,8 +673,6 @@ def error_snapshot(message: str) -> dict[str, Any]:
         "by_model": [],
         "per_caller": [],
         "per_caller_24h": [],
-        "per_caller_model_24h": {},
-        "per_model_caller_24h": {},
         "per_route": [],
         "per_hour": hour_buckets(),
         "events": [],
@@ -572,8 +700,6 @@ def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[
         per_hour = query_timeseries(conn, cutoff_24h)
         events = query_events(conn, event_limit) if event_limit > 0 else []
         by_model = by_model_rows(query_breakdown(conn, "model", cutoff_24h))
-        per_caller_model = query_models_by_caller(conn, cutoff_24h)
-        per_model_caller = query_callers_by_model(conn, cutoff_24h)
         caller_rows = query_breakdown(conn, "caller", None)
         route_rows = query_breakdown(conn, "route", None)
         model_rows = query_breakdown(conn, "model", None)
@@ -610,8 +736,6 @@ def fetch_snapshot(db_path: str, event_limit: int = API_EVENTS_DEFAULT) -> dict[
         "by_model": by_model,
         "per_caller": caller_rows,
         "per_caller_24h": last_24h["per_caller"],
-        "per_caller_model_24h": per_caller_model,
-        "per_model_caller_24h": per_model_caller,
         "per_route": route_rows,
         "per_hour": per_hour,
         "events": events,
@@ -692,76 +816,44 @@ def render_cards(snapshot: dict[str, Any]) -> str:
     )
 
 
-def _harness_rank(r: dict[str, Any]) -> tuple[int, int, str]:
-    """The per-harness SQL's ORDER BY (tokens desc, requests desc, caller asc),
-    reused to place the Hermes IDE subtotal among the other callers."""
-    return (-(r.get("total_tokens") or 0), -(r.get("requests") or 0), str(r.get("caller")))
-
-
-def harness_display_rows(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
-    """Per-harness rows for the table: ``hermes:<profile>`` callers become
-    indented subrows under a ``Hermes IDE`` parent whose totals also fold in
-    any plain ``hermes`` traffic (the pre-profile-split caller value).
-
-    Each entry is ``(row, kind)`` with kind "" / "subtotal" / "subrow".
-    Without profile callers the input rows come back untouched, so a ledger
-    that never recorded them renders exactly as before.
-    """
-    profile_rows = [r for r in rows if is_hermes_profile(r.get("caller"))]
-    if not profile_rows:
-        return [(r, "") for r in rows]
-    hermes_rows: list[dict[str, Any]] = []
-    other_rows: list[dict[str, Any]] = []
-    for r in rows:
-        if r.get("caller") == HERMES_CALLER or is_hermes_profile(r.get("caller")):
-            hermes_rows.append(r)
-        else:
-            other_rows.append(r)
-    parent = {
-        "caller": HERMES_CALLER,
-        "unattributed": False,
-        "requests": sum(r.get("requests") or 0 for r in hermes_rows),
-        "total_tokens": sum(r.get("total_tokens") or 0 for r in hermes_rows),
-    }
-    out: list[tuple[dict[str, Any], str]] = []
-    for r in sorted(other_rows + [parent], key=_harness_rank):
-        if r is parent:
-            out.append((r, "subtotal"))
-            out.extend((p, "subrow") for p in sorted(profile_rows, key=_harness_rank))
-        else:
-            out.append((r, ""))
-    return out
-
-
 def harness_table_body(rows: list[dict[str, Any]]) -> str:
-    """One row per harness: chip, requests, tokens and a share-of-max bar.
-
-    Hermes profile callers render as indented subrows under a Hermes IDE
-    parent subtotal row (see harness_display_rows).
-    """
+    """One row per harness: chip, requests, tokens and a share-of-max bar."""
     if not rows:
         return '<tbody id="harness-body"><tr><td colspan="4" class="muted">No requests in the last 24 h</td></tr></tbody>'
-    display = harness_display_rows(rows)
-    peak = max((float(r.get("total_tokens") or 0) for r, _ in display), default=0.0)
+    peak = max((float(r.get("total_tokens") or 0) for r in rows), default=0.0)
     out = []
-    for r, kind in display:
+    for r in rows:
         tokens = float(r.get("total_tokens") or 0)
         tr_class = "h-unattr" if r.get("unattributed") else harness_class_name(r.get("caller"))
-        if kind:
-            tr_class += f" {kind}"
         fill = ""
         if peak > 0 and tokens > 0:
             width = max(1.5, tokens / peak * 100)
             fill = f'<div class="bar-fill" style="width:{width:.1f}%"></div>'
         out.append(
             f'<tr class="{tr_class}">'
-            f'<td><span class="chip">{esc(caller_display(r.get("caller")))}</span></td>'
+            f'<td><span class="chip">{esc(r.get("caller") or UNATTRIBUTED)}</span></td>'
             f'<td class="num">{fmt_int(r.get("requests"))}</td>'
             f'<td class="num">{esc(fmt_stat(tokens))}</td>'
             f'<td class="bar-cell"><div class="bar-track" aria-hidden="true">{fill}</div></td>'
             "</tr>"
         )
     return '<tbody id="harness-body">' + "".join(out) + "</tbody>"
+
+
+def model_name_html(model: Any) -> str:
+    """Provider logo beside the escaped model name — the model twin of the
+    harness chip, used by every model-name cell (donut legend, chart table,
+    events table).  Unknown providers and missing models stay plain text."""
+    key = provider_key(model)
+    if not key:
+        return esc(model)
+    brand = PROVIDER_BRANDS[key]
+    glyph = brand.get("glyph", brand["color"])
+    return (
+        f'<span class="mbrand" title="{esc(brand["name"])}">'
+        f'<span class="plogo" style="color:{glyph}">{brand["logo"]}</span>'
+        f"{esc(model)}</span>"
+    )
 
 
 def events_table_body(events: list[dict[str, Any]]) -> str:
@@ -775,8 +867,8 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
         out.append(
             f"<tr{row_cls}>"
             f'<td class="num" title="{esc(e.get("ts"))}">{esc(e.get("ts_sydney"))}</td>'
-            f'<td><span class="chip {chip_cls}">{esc(caller_display(e.get("caller")))}</span></td>'
-            f"<td>{esc(e.get('model'))}</td>"
+            f'<td><span class="chip {chip_cls}">{esc(e.get("caller") or UNATTRIBUTED)}</span></td>'
+            f"<td>{model_name_html(e.get('model'))}</td>"
             f"<td>{esc(e.get('route'))}</td>"
             f'<td class="num">{esc(fmt_opt(e.get("prompt_tokens")))}</td>'
             f'<td class="num">{esc(fmt_opt(e.get("completion_tokens")))}</td>'
@@ -787,14 +879,11 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
     return "".join(out)
 
 
-def bucket_series_lines(bucket: dict[str, Any]) -> list[str]:
-    """Per-harness token totals with per-model detail, e.g.
-    ``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one line per harness
-    (display name; ``hermes:<profile>`` callers get their own line, labelled
-    ``Hermes IDE · <profile>``).
-
-    The text twin of the canvas stacking (and of the browser-side
-    ``seriesLines``) for the sr-only chart table.
+def bucket_series_groups(bucket: dict[str, Any]) -> list[dict[str, Any]]:
+    """One entry per harness: ``{caller, tokens, models: [(model, tokens), …]}``
+    with harnesses and models both sorted tokens-desc — the structured text
+    twin of the canvas stacking (and of the browser-side ``seriesLines``) for
+    the sr-only chart table, where each model name also carries its brand.
     """
     by_caller: dict[str, dict[str, int]] = {}
     for s in bucket.get("series") or []:
@@ -804,20 +893,31 @@ def bucket_series_lines(bucket: dict[str, Any]) -> list[str]:
         models = by_caller.setdefault(s.get("caller") or UNATTRIBUTED, {})
         name = s.get("model") or "unknown"
         models[name] = models.get(name, 0) + tokens
-    lines = []
-    for caller, models in sorted(by_caller.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
-        detail = " · ".join(
-            f"{m} {fmt_compact(t)}" for m, t in sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))
-        )
-        lines.append(f"{caller_display(caller)} {fmt_compact(sum(models.values()))} ({detail})")
-    return lines
+    groups = [
+        {
+            "caller": caller,
+            "tokens": sum(models.values()),
+            "models": sorted(models.items(), key=lambda kv: (-kv[1], kv[0])),
+        }
+        for caller, models in by_caller.items()
+    ]
+    groups.sort(key=lambda g: (-g["tokens"], g["caller"]))
+    return groups
+
+
+def series_line_html(group: dict[str, Any]) -> str:
+    """``claude 12.3k (modelA 8.1k · modelB 4.2k)`` — one branded line."""
+    detail = " · ".join(
+        f"{model_name_html(m)} {esc(fmt_compact(t))}" for m, t in group["models"]
+    )
+    return f"{esc(group['caller'])} {esc(fmt_compact(group['tokens']))} ({detail})"
 
 
 def chart_data_table(buckets: list[dict[str, Any]]) -> str:
     """Screen-reader table twin of the stacked canvas chart."""
     rows = []
     for b in buckets:
-        cell = "".join(f"<div>{esc(line)}</div>" for line in bucket_series_lines(b)) or "—"
+        cell = "".join(f"<div>{series_line_html(g)}</div>" for g in bucket_series_groups(b)) or "—"
         rows.append(
             "<tr>"
             f"<td>{esc(bucket_label(b))}</td>"
@@ -859,6 +959,23 @@ def slice_color(index: int) -> str:
     return MODEL_COLORS[index] if index < len(MODEL_COLORS) else MODEL_OTHER_COLOR
 
 
+def slice_fill(slices: list[dict[str, Any]], index: int, steps: dict[str, int]) -> str:
+    """Slice colour: the model's provider brand when known, the rank palette
+    when not, and the neutral grey for the folded "other" bucket.  A brand
+    repeated in the ring shades toward the surface (brand_shade) at the
+    model's own name-sorted step — ``steps`` is brand_step_map over this
+    ring's models, the same rule the browser chart's window-wide map uses,
+    so both views agree when the model sets match.  Mirrored in the browser
+    JS (sliceFill) for the canvas and the re-rendered legend."""
+    model = slices[index]["model"]
+    if model == "other":
+        return MODEL_OTHER_COLOR
+    key = provider_key(model)
+    if not key:
+        return slice_color(index)
+    return brand_shade(PROVIDER_BRANDS[key]["color"], steps.get(model, 0))
+
+
 def fmt_pct(part: int, total: int) -> str:
     if total <= 0 or part <= 0:
         return "0%"
@@ -867,12 +984,14 @@ def fmt_pct(part: int, total: int) -> str:
 
 
 def model_legend_html(slices: list[dict[str, Any]]) -> str:
-    """Legend body: swatch, model, tokens, share — colour never carries it alone."""
+    """Legend body: swatch, brand logo, model, tokens, share — colour never
+    carries it alone."""
     total = sum(s["tokens"] for s in slices)
+    steps = brand_step_map([s["model"] for s in slices if s["model"] != "other"])
     items = "".join(
         "<li>"
-        f'<span class="swatch" style="background:{slice_color(i)}"></span>'
-        f'<span class="name">{esc(s["model"])}</span>'
+        f'<span class="swatch" style="background:{slice_fill(slices, i, steps)}"></span>'
+        f'<span class="name">{model_name_html(s["model"])}</span>'
         f'<span class="num">{esc(fmt_stat(s["tokens"]))}</span>'
         f'<span class="pct">{esc(fmt_pct(s["tokens"], total))}</span>'
         "</li>"
@@ -888,20 +1007,12 @@ def donut_aria(slices: list[dict[str, Any]]) -> str:
 
 
 def model_panel_html(by_model: list[dict[str, Any]] | None) -> str:
-    """First-paint twin of the browser-rendered donut panel.
-
-    The harness filter dropdown ships with only the default "all" option;
-    the browser appends per-caller choices from the snapshot on first poll.
-    """
+    """First-paint twin of the browser-rendered donut panel."""
     slices = donut_slices(by_model)
     aria = donut_aria(slices) if slices else "Donut chart of token share by model over the last 24 hours. No usage."
     return (
         '<section class="card" aria-label="Model usage">'
         '<div class="card-head"><h2>Model usage</h2>'
-        '<select class="mode-pick" id="model-caller-pick"'
-        ' aria-label="Filter model usage by harness">'
-        '<option value="all" selected>All harnesses</option>'
-        "</select>"
         '<span class="win">last 24 h &middot; by total tokens &middot; top '
         + str(MODEL_TOP_N)
         + " + other</span></div>"
@@ -1002,17 +1113,6 @@ h1 .accent { color: var(--accent-bright); }
 .chart-mode .mode-btn:hover { color: var(--text-2); }
 .chart-mode .mode-btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); outline: none; }
 .chart-mode .mode-btn.active { background: rgba(57, 135, 229, 0.28); color: var(--text); }
-
-/* secondary-dimension picker that appears beside a segmented toggle when a
-   filtered view is active — styled to read as part of the same control */
-.mode-pick {
-  appearance: none; border: 1px solid var(--border); border-radius: 7px;
-  background: rgba(255, 255, 255, 0.04); color: var(--text-2); cursor: pointer;
-  padding: 3px 8px; max-width: 132px; text-overflow: ellipsis;
-  font-family: var(--mono); font-size: 0.66rem; font-weight: 600;
-  letter-spacing: 0.05em; line-height: 1.5;
-}
-.mode-pick:focus-visible { box-shadow: 0 0 0 2px var(--accent); outline: none; }
 .stat .label { color: var(--muted); font-size: 0.71rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
 .stat .value { font-family: var(--mono); font-size: 1.78rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin-top: 9px; font-variant-numeric: tabular-nums; }
 .stat .hint { color: var(--muted); font-size: 0.74rem; margin-top: 7px; font-variant-numeric: tabular-nums; }
@@ -1049,7 +1149,10 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 
 .muted { color: var(--muted); }
 
-/* harness palette — muted, one hue per caller, applied via these classes */
+/* harness palette — muted, one hue per caller, applied via these classes.
+   .hb-* are the stable identity colours (HARNESS_BRANDS): a known caller
+   keeps its brand ahead of the hashed rank slots; the browser's HARNESS_HEX
+   mirror carries the same hexes for the canvas paths */
 .h0 { --hc: #5b8def; }
 .h1 { --hc: #3fb0a3; }
 .h2 { --hc: #9a7be0; }
@@ -1057,16 +1160,24 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .h4 { --hc: #d9708f; }
 .h5 { --hc: #7fae83; }
 .h-unattr { --hc: #66738a; }
+.hb-hermes { --hc: #3987e5; }
+.hb-claude-code { --hc: #D97757; }
+.hb-codex { --hc: #10A37F; }
+.hb-hindsight { --hc: #2ea79a; }
+.hb-openrouter { --hc: #6467F2; }
+.hb-grok { --hc: #BFC7D3; }
 .chip { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); }
 .chip::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--hc, var(--muted)); }
 .h-unattr .chip { color: var(--unattr); font-style: italic; }
 
-/* Hermes IDE profile subcategories: `hermes:<profile>` rows indent under a
-   parent row whose totals also fold in pre-split plain `hermes` traffic */
-tr.subrow td:first-child { padding-left: 26px; }
-tr.subtotal td { background: var(--surface-2); border-bottom-color: var(--border-strong); }
-tr.subtotal .chip { color: var(--text); }
-tr.subtotal td.num { font-weight: 600; }
+/* provider brand mark beside model names — the model twin of the harness
+   chip.  Glyph colour is an inline style; the canvas twins are the
+   PROVIDER_HEXES mirror in the page JS (a canvas cannot read CSS values) */
+.mbrand { display: inline-flex; align-items: center; gap: 6px; }
+.plogo { display: inline-flex; flex: none; }
+.plogo svg { width: 12px; height: 12px; display: block; }
+.legend .plogo svg { width: 11px; height: 11px; }
+.tooltip .tl .plogo svg { width: 10px; height: 10px; }
 
 .bar-track { height: 6px; background: rgba(255, 255, 255, 0.05); border-radius: 3px; overflow: hidden; }
 .bar-fill { height: 100%; min-width: 3px; background: var(--hc, var(--accent)); border-radius: 0 3px 3px 0; }
@@ -1136,9 +1247,6 @@ JS = r"""
   var DASHBOARD_EVENTS = __DASHBOARD_EVENTS__;
   var N_COLORS = __HARNESS_COLOR_COUNT__;
   var UNATTR = 'unattributed';
-  var HERMES = 'hermes';
-  var HERMES_PREFIX = 'hermes:';
-  var HERMES_DISPLAY = 'Hermes IDE';
   var RATE_LIMIT_CODES = [401, 429];
   var CH = { H: 260, padL: 50, padR: 12, padT: 24, padB: 26, barMax: 30 };
   var C = {
@@ -1157,6 +1265,17 @@ JS = r"""
   }
 
   function setText(id, text) { var node = $(id); if (node) node.textContent = text; }
+
+  /* Prototype-safe own-property test: every plain-object lookup keyed by a
+     DB-derived string (a model name) goes through this, so a model literally
+     named "constructor" or "toString" can never resolve through
+     Object.prototype.  The brand/harness tables (PROVIDER_EXACT, PROVIDER_HEXES,
+     PROVIDER_LOGOS, PROVIDER_GLYPHS, HARNESS_HEX, …) are safe without it
+     because their keys reach them only via providerKey()/harnessKey(), whose
+     results are the author-controlled key strings. */
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
 
   function fmtCompact(value) {
     var n = Number(value) || 0;
@@ -1197,39 +1316,174 @@ JS = r"""
     return h;
   }
 
+  /* harness identity prefixes — the twin of the server's HARNESS_PREFIXES
+     (same longest-prefix-first order), consulted before the hashed rank
+     palette so a known caller keeps its colour as ranks shift */
+  var HARNESS_PREFIXES = [
+    ['openai-codex', 'codex'], ['codex', 'codex'], ['claude-code', 'claude-code'],
+    ['hermes', 'hermes'], ['hindsight', 'hindsight'], ['openrouter', 'openrouter'],
+    ['grok', 'grok'], ['xai', 'grok']
+  ];
+
+  /* same longest-prefix, case-insensitive match as the server's harness_key */
+  function harnessKey(caller) {
+    if (!caller || caller === UNATTR) return null;
+    var name = String(caller).toLowerCase();
+    for (var i = 0; i < HARNESS_PREFIXES.length; i++) {
+      if (name.indexOf(HARNESS_PREFIXES[i][0]) === 0) return HARNESS_PREFIXES[i][1];
+    }
+    return null;
+  }
+
   function harnessClass(caller) {
+    var key = harnessKey(caller);
+    if (key) return 'hb-' + key;
     if (!caller || caller === UNATTR) return 'h-unattr';
     return 'h' + (djb2(caller) % N_COLORS);
   }
 
-  /* hex mirror of the .h0…h5/.h-unattr CSS palette — a canvas cannot read
-     CSS custom properties, so the chart resolves harnessClass() to hex here */
+  /* hex mirror of the .h0…h5/.h-unattr/.hb-* CSS palette — a canvas cannot
+     read CSS custom properties, so the chart resolves harnessClass() to hex
+     here; the hb-* entries are the server's HARNESS_BRANDS twin */
   var HARNESS_HEX = {
     h0: '#5b8def', h1: '#3fb0a3', h2: '#9a7be0',
-    h3: '#d9a13b', h4: '#d9708f', h5: '#7fae83', 'h-unattr': '#66738a'
+    h3: '#d9a13b', h4: '#d9708f', h5: '#7fae83', 'h-unattr': '#66738a',
+    'hb-hermes': '#3987e5', 'hb-claude-code': '#D97757', 'hb-codex': '#10A37F',
+    'hb-hindsight': '#2ea79a', 'hb-openrouter': '#6467F2', 'hb-grok': '#BFC7D3'
   };
 
   function harnessHex(caller) {
     return HARNESS_HEX[harnessClass(caller)] || HARNESS_HEX['h-unattr'];
   }
 
-  /* display name for a raw caller value — labels only.  Raw caller strings
-     stay the keys, option values and colour-hash inputs everywhere (same
-     contract as the server's caller_display) */
-  function isHermesProfile(c) {
-    return typeof c === 'string' && c.indexOf(HERMES_PREFIX) === 0 && c.length > HERMES_PREFIX.length;
-  }
-
-  function callerDisplay(c) {
-    if (!c) return UNATTR;
-    if (c === HERMES) return HERMES_DISPLAY;
-    if (isHermesProfile(c)) return HERMES_DISPLAY + ' · ' + c.slice(HERMES_PREFIX.length);
-    return c;
-  }
-
   /* hex mirror of the server's MODEL_COLORS + MODEL_OTHER_COLOR — the chart's
-     per-model mode hashes into these instead of the harness palette */
+     per-model mode hashes into these instead of the harness palette when a
+     model has no provider brand */
   var MODEL_HEXES = ['#bd8714', '#d46c8b', '#5b8def', '#2ea79a', '#9a7be0', '#65a46c', '#66738a'];
+
+  /* provider brand mirror of the server's PROVIDER_PREFIXES / PROVIDER_BRANDS
+     (same longest-prefix-first order): the re-rendered DOM and the canvases
+     need the same prefixes, colours, glyph tints and inline logos the first
+     paint got from Python.  Logos are Simple Icons (CC0) path data; Z.ai and
+     Kimi are clean initial badges (brand-coloured rounded square + letter) */
+  var PROVIDER_PREFIXES = [
+    ['openrouter/', 'openrouter'], ['claude-', 'claude'], ['anthropic/', 'claude'],
+    ['codex', 'openai'], ['openai/', 'openai'], ['gpt-', 'openai'],
+    ['grok-', 'grok'], ['x-ai/', 'grok'], ['xai/', 'grok'],
+    ['kimi-', 'kimi'], ['kimi/', 'kimi'], ['moonshot/', 'kimi'],
+    ['moonshotai/', 'kimi'], ['glm-', 'zai'], ['z-ai/', 'zai'],
+    ['zai', 'zai'], ['o4-', 'openai'], ['o3', 'openai']
+  ];
+  var PROVIDER_EXACT = { k3: 'kimi', k2: 'kimi' };  /* native bare IDs */
+  var PROVIDER_NAMES = {
+    openai: 'ChatGPT/OpenAI', zai: 'Z.ai', kimi: 'Kimi (Moonshot AI)',
+    claude: 'Claude (Anthropic)', grok: 'Grok (xAI)', openrouter: 'OpenRouter'
+  };
+  var PROVIDER_HEXES = {
+    openai: '#10A37F', zai: '#8A8AF0', kimi: '#5A5AF5',
+    claude: '#D97757', grok: '#BFC7D3', openrouter: '#6467F2'
+  };
+  var PROVIDER_GLYPHS = { grok: '#E8EDF4' };  /* monochrome white-on-dark X */
+  var PROVIDER_LOGOS = {
+    openai: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>',
+    zai: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#8A8AF0"/><text x="12" y="17.2" text-anchor="middle" font-family="inherit" font-size="14.5" font-weight="700" fill="#e8edf4">Z</text></svg>',
+    kimi: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#5A5AF5"/><text x="12" y="17.2" text-anchor="middle" font-family="inherit" font-size="14.5" font-weight="700" fill="#e8edf4">K</text></svg>',
+    claude: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>',
+    grok: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>',
+    openrouter: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>'
+  };
+
+  /* same longest-prefix, case-insensitive match as the server's provider_key;
+     the exact table is consulted own-property-only, so prototype names
+     ("constructor", "toString", …) fall through to the prefixes — and then
+     to no brand at all — instead of resolving through Object.prototype */
+  function providerKey(model) {
+    if (!model) return null;
+    var name = String(model).toLowerCase();
+    if (hasOwn(PROVIDER_EXACT, name)) return PROVIDER_EXACT[name];
+    for (var i = 0; i < PROVIDER_PREFIXES.length; i++) {
+      if (name.indexOf(PROVIDER_PREFIXES[i][0]) === 0) return PROVIDER_PREFIXES[i][1];
+    }
+    return null;
+  }
+
+  /* server twin: brand_shade — same-brand repeats dim toward the card surface
+     and stay plain hex, so the partial-bar dim (hexToRgba) keeps working */
+  var CARD_SURFACE = '#11151c';
+  function mixHex(a, b, t) {
+    var pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    var out = '#';
+    for (var shift = 16; shift >= 0; shift -= 8) {
+      var v = Math.round(((pa >> shift) & 255) * t + ((pb >> shift) & 255) * (1 - t)).toString(16);
+      out += v.length < 2 ? '0' + v : v;
+    }
+    return out;
+  }
+  function brandShade(hex, step) {
+    if (step <= 0) return hex;
+    /* server twin BRAND_SHADE_STEPS: never repeats and never clamps — past
+       the table the factor keeps shrinking ×0.75 per repeat, strictly
+       darker until 8-bit hex saturation */
+    var STEPS = [0.62, 0.40, 0.52, 0.34, 0.58, 0.28,
+                 0.24, 0.19, 0.15, 0.11, 0.08, 0.05];
+    var i = step - 1;
+    var t = i < STEPS.length ? STEPS[i]
+      : STEPS[STEPS.length - 1] * Math.pow(0.75, i - STEPS.length + 1);
+    return mixHex(hex, CARD_SURFACE, t);
+  }
+
+  /* deterministic name order — plain code-point comparison, the twin of the
+     server's sorted(), so both sides build identical step maps */
+  function nameOrder(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+
+  /* A model's brand-shade step: its index among its provider's models,
+     sorted by name — a function of the model's own identity alone, so the
+     shade is stable wherever the model appears.  The hourly chart builds
+     this over every model visible in the window (chartShadeMap, cached in
+     modelShadeSteps), the donut over its own slice list (donutShadeSteps):
+     one rule, so whenever the two views show the same model set they
+     resolve the same steps — and therefore the same shades.  (Counting
+     repeats in ring order instead would not agree: ring order is
+     tokens-desc, not name order.)  Server twin: brand_step_map. */
+  function brandShadeSteps(models) {
+    var byProvider = {};
+    var steps = {};
+    models.forEach(function (m) {
+      var key = providerKey(m);
+      if (!key) return;
+      if (!hasOwn(byProvider, key)) byProvider[key] = [];
+      byProvider[key].push(m);
+    });
+    Object.keys(byProvider).forEach(function (key) {
+      var names = byProvider[key].sort(nameOrder);
+      for (var i = 0; i < names.length; i++) steps[names[i]] = i;
+    });
+    return steps;
+  }
+
+  /* coloured logo span for a provider key — the markup is the static,
+     author-controlled PROVIDER_LOGOS twin of the server's model_name_html,
+     so innerHTML is safe here; model names themselves always stay textContent */
+  function brandLogoEl(key) {
+    if (!key) return null;
+    var span = el('span', 'plogo');
+    span.style.color = PROVIDER_GLYPHS[key] || PROVIDER_HEXES[key];
+    span.innerHTML = PROVIDER_LOGOS[key];
+    return span;
+  }
+
+  /* provider logo + model name — the events-table cell twin of the server's
+     model_name_html */
+  function brandBadge(model) {
+    var key = providerKey(model);
+    var wrap = el('span', 'mbrand');
+    if (key) {
+      wrap.title = PROVIDER_NAMES[key];
+      wrap.appendChild(brandLogoEl(key));
+    }
+    wrap.appendChild(document.createTextNode(model || '—'));
+    return wrap;
+  }
 
   /* fixed two-slot palettes for the in/out and cache breakdowns — the
      accent/input blue and the --stale amber are var() values the canvas
@@ -1281,69 +1535,25 @@ JS = r"""
 
   /* ---- per-harness share bars ---- */
 
-  /* harness-model-pick: "all" shows per_caller_24h totals; a model key shows
-     that model's per-harness rows (per_model_caller_24h) */
-  var harnessModel = 'all';
-  var lastModelCallers = {};    /* per_model_caller_24h: model -> per-caller rows */
-
-  /* the per-harness SQL's ORDER BY (tokens desc, requests desc, caller asc) —
-     reused to place the Hermes IDE subtotal among the other callers */
-  function harnessRank(a, b) {
-    return (Number(b.total_tokens) || 0) - (Number(a.total_tokens) || 0)
-      || (Number(b.requests) || 0) - (Number(a.requests) || 0)
-      || (a.caller < b.caller ? -1 : a.caller > b.caller ? 1 : 0);
-  }
-
-  /* hermes:<profile> rows become indented subrows under a Hermes IDE parent
-     whose totals also fold in plain `hermes` traffic (pre-profile-split
-     rows); without profile rows the input order passes through unchanged —
-     same contract as the server's harness_display_rows */
-  function harnessDisplayRows(rows) {
-    var profileRows = rows.filter(function (r) { return isHermesProfile(r.caller); });
-    if (!profileRows.length) return rows.map(function (r) { return [r, '']; });
-    var hermesRows = [], otherRows = [];
-    rows.forEach(function (r) {
-      (r.caller === HERMES || isHermesProfile(r.caller) ? hermesRows : otherRows).push(r);
-    });
-    var parent = {
-      caller: HERMES,
-      unattributed: false,
-      requests: hermesRows.reduce(function (a, r) { return a + (Number(r.requests) || 0); }, 0),
-      total_tokens: hermesRows.reduce(function (a, r) { return a + (Number(r.total_tokens) || 0); }, 0)
-    };
-    var out = [];
-    otherRows.concat([parent]).sort(harnessRank).forEach(function (r) {
-      if (r === parent) {
-        out.push([r, 'subtotal']);
-        profileRows.slice().sort(harnessRank).forEach(function (p) { out.push([p, 'subrow']); });
-      } else {
-        out.push([r, '']);
-      }
-    });
-    return out;
-  }
-
-  function renderHarness(rows, emptyMsg) {
+  function renderHarness(rows) {
     var tbody = $('harness-body');
     if (!tbody) return;
     tbody.textContent = '';
     if (!rows || !rows.length) {
       var emptyRow = el('tr');
-      var cell = el('td', 'muted', emptyMsg || 'No requests in the last 24 h');
+      var cell = el('td', 'muted', 'No requests in the last 24 h');
       cell.colSpan = 4;
       emptyRow.appendChild(cell);
       tbody.appendChild(emptyRow);
       return;
     }
-    var display = harnessDisplayRows(rows);
     var max = 0;
-    display.forEach(function (d) { max = Math.max(max, Number(d[0].total_tokens) || 0); });
-    display.forEach(function (d) {
-      var r = d[0], kind = d[1];
+    rows.forEach(function (r) { max = Math.max(max, Number(r.total_tokens) || 0); });
+    rows.forEach(function (r) {
       var tokens = Number(r.total_tokens) || 0;
-      var tr = el('tr', (r.unattributed ? 'h-unattr' : harnessClass(r.caller)) + (kind ? ' ' + kind : ''));
+      var tr = el('tr', r.unattributed ? 'h-unattr' : harnessClass(r.caller));
       var tdLabel = el('td');
-      tdLabel.appendChild(el('span', 'chip', callerDisplay(r.caller)));
+      tdLabel.appendChild(el('span', 'chip', r.caller || UNATTR));
       tr.appendChild(tdLabel);
       tr.appendChild(el('td', 'num', fmtInt(r.requests)));
       tr.appendChild(el('td', 'num', fmtStat(tokens)));
@@ -1361,63 +1571,13 @@ JS = r"""
     });
   }
 
-  /* rows for the current totals / by-model choice — read on every poll so
-     the choice survives without ever resetting the user's selection */
-  function refreshHarness(summary) {
-    var rows = summary && summary.per_caller_24h && summary.per_caller_24h.length
-      ? summary.per_caller_24h
-      : (summary ? summary.per_caller : null);
-    var emptyMsg = 'No requests in the last 24 h';
-    if (harnessModel && harnessModel !== 'all') {
-      rows = lastModelCallers[harnessModel] || [];
-      emptyMsg = 'No ' + harnessModel + ' usage in the last 24 h';
-    }
-    renderHarness(rows, emptyMsg);
-  }
-
-  function wireHarnessPick() {
-    var pick = $('harness-model-pick');
-    if (pick) pick.addEventListener('change', function () {
-      harnessModel = pick.value || 'all';
-      refreshHarness(lastSummary);
-    });
-  }
-
-  /* Rebuild a picker's options only when its key set changed (a rebuild
-     while the dropdown is open would yank it). The sentinel "all" option is
-     always first; keep the previous value when still valid, else fall back
-     to "all".  labelFn maps a raw key to its display text (option values and
-     the data-sig signature stay raw). */
-  function syncPickOptions(select, keys, allLabel, labelFn) {
-    if (!select) return 'all';
-    var sig = 'all\n' + keys.join('\n');
-    if (select.getAttribute('data-sig') !== sig) {
-      select.setAttribute('data-sig', sig);
-      var prev = select.value || 'all';
-      select.textContent = '';
-      var allOpt = el('option', '', allLabel);
-      allOpt.value = 'all';
-      select.appendChild(allOpt);
-      keys.forEach(function (k) {
-        var opt = el('option', '', labelFn ? labelFn(k) : k);
-        opt.value = k;
-        select.appendChild(opt);
-      });
-      select.value = (prev === 'all' || keys.indexOf(prev) !== -1) ? prev : 'all';
-    }
-    return select.value || 'all';
-  }
-
-  function syncPickers() {
-    donutCaller = syncPickOptions($('model-caller-pick'), Object.keys(lastCallerModels), 'All harnesses', callerDisplay);
-    harnessModel = syncPickOptions($('harness-model-pick'), Object.keys(lastModelCallers), 'All models');
-  }
-
   /* ---- model-usage donut (24 h, top 6 + other) ---- */
 
   var DN = {
     size: __DONUT_SIZE__, ring: 26,
-    /* rank-order slice colours — server twin: MODEL_COLORS / MODEL_OTHER_COLOR */
+    /* rank-order slice colours — server twin: MODEL_COLORS / MODEL_OTHER_COLOR.
+     * Provider-branded models override these with PROVIDER_HEXES (sliceFill);
+     * these stay the neutral palette for unknown providers */
     colors: ['#bd8714', '#d46c8b', '#5b8def', '#2ea79a', '#9a7be0', '#65a46c'],
     other: '#66738a', surface: '#11151c',
     text: '#a7b2c3', muted: '#6d7889', bright: '#e8edf4'
@@ -1425,12 +1585,6 @@ JS = r"""
   var donutGeom = null;      /* {slices, total, cx, cy, rIn, rOut, start} for hit tests */
   var donutHover = -1;
   var lastByModel = [];
-
-  /* model-caller-pick: "all" shows aggregate by_model; a caller key shows
-     that caller's per-model rows (per_caller_model_24h) */
-  var donutCaller = 'all';
-  var donutFilterNote = '';    /* '' or ' for <caller>' — folded into the aria label */
-  var lastCallerModels = {};   /* per_caller_model_24h: caller -> by-model rows */
 
   function donutSlices(byModel) {
     var rows = (byModel || []).filter(function (r) { return (Number(r.tokens) || 0) > 0; });
@@ -1450,6 +1604,29 @@ JS = r"""
   }
 
   function sliceColor(i) { return i < DN.colors.length ? DN.colors[i] : DN.other; }
+
+  /* the donut's step map: brandShadeSteps over this ring's own models.  The
+     slice list is the stable set here, and the name-sorted rule is the same
+     one the chart's window-wide map uses, so the two views agree whenever
+     they show the same models */
+  function donutShadeSteps(slices) {
+    return brandShadeSteps(slices
+      .filter(function (s) { return s.model !== 'other'; })
+      .map(function (s) { return s.model; }));
+  }
+
+  /* provider brand colour, rank palette when the provider is unknown, neutral
+     grey for the folded "other" bucket — and same-brand repeats shade toward
+     the surface at each model's own name-sorted step (steps: donutShadeSteps
+     over this ring, built once per render).  Server twin: slice_fill */
+  function sliceFill(slices, i, steps) {
+    var model = slices[i].model;
+    if (model === 'other') return DN.other;
+    var key = providerKey(model);
+    if (!key) return sliceColor(i);
+    var step = hasOwn(steps, model) ? steps[model] : 0;
+    return brandShade(PROVIDER_HEXES[key], step);
+  }
 
   function pctLabel(part, total) {
     if (!total || part <= 0) return '0%';
@@ -1481,6 +1658,7 @@ JS = r"""
     var rOut = DN.size / 2 - 4, rIn = rOut - DN.ring;
     var mono = 'ui-monospace, Menlo, Consolas, monospace';
     var a0 = -Math.PI / 2;
+    var shadeSteps = donutShadeSteps(slices);
 
     slices.forEach(function (s, i) {
       var ang = total > 0 ? (s.tokens / total) * Math.PI * 2 : 0;
@@ -1489,7 +1667,7 @@ JS = r"""
       ctx.arc(cx, cy, rOut + (i === donutHover ? 3 : 0), a0, a0 + ang);
       ctx.arc(cx, cy, rIn, a0 + ang, a0, true);
       ctx.closePath();
-      ctx.fillStyle = sliceColor(i);
+      ctx.fillStyle = sliceFill(slices, i, shadeSteps);
       ctx.fill();
       /* 2 px surface ring = the gap between neighbouring slices */
       ctx.strokeStyle = DN.surface;
@@ -1509,7 +1687,7 @@ JS = r"""
     ctx.fillText('tokens · 24 h', cx, cy + 10);
 
     donutGeom = { slices: slices, total: total, cx: cx, cy: cy, rIn: rIn, rOut: rOut, start: -Math.PI / 2 };
-    canvas.setAttribute('aria-label', 'Token share by model, last 24 h' + donutFilterNote + ': ' +
+    canvas.setAttribute('aria-label', 'Token share by model, last 24 h: ' +
       slices.map(function (s) { return s.model + ' ' + pctLabel(s.tokens, total); }).join(', '));
 
     var legend = $('model-legend');
@@ -1518,8 +1696,10 @@ JS = r"""
       slices.forEach(function (s, i) {
         var li = el('li');
         var sw = el('span', 'swatch');
-        sw.style.background = sliceColor(i);
+        sw.style.background = sliceFill(slices, i, shadeSteps);
         li.appendChild(sw);
+        var logo = brandLogoEl(providerKey(s.model));
+        if (logo) li.appendChild(logo);
         li.appendChild(el('span', 'name', s.model));
         li.appendChild(el('span', 'num', fmtStat(s.tokens)));
         li.appendChild(el('span', 'pct', pctLabel(s.tokens, total)));
@@ -1590,32 +1770,6 @@ JS = r"""
     });
   }
 
-  /* rows for the current all / by-harness choice — read on every poll so
-     the choice survives without ever resetting the user's selection */
-  function refreshDonut(summary) {
-    var rows = summary ? summary.by_model : null;
-    donutFilterNote = (donutCaller && donutCaller !== 'all') ? ' for ' + callerDisplay(donutCaller) : '';
-    if (donutCaller && donutCaller !== 'all') {
-      rows = lastCallerModels[donutCaller] || [];
-    }
-    renderDonut(rows);
-    var empty = $('donut-empty');
-    if (empty) empty.textContent = donutFilterNote
-      ? 'no' + donutFilterNote + ' usage in the last 24h'
-      : 'no usage in the last 24h';
-    var wrap = $('donut-wrap');
-    if (wrap) wrap.setAttribute('aria-label',
-      'Donut chart of token share by model over the last 24 hours' + donutFilterNote + '.');
-  }
-
-  function wireDonutPick() {
-    var pick = $('model-caller-pick');
-    if (pick) pick.addEventListener('change', function () {
-      donutCaller = pick.value || 'all';
-      refreshDonut(lastSummary);
-    });
-  }
-
   /* ---- 24 h column chart on a canvas ---- */
 
   function niceStep(rough) {
@@ -1631,6 +1785,7 @@ JS = r"""
   var chartGeom = null;
   var hoverIdx = -1;
   var chartMode = 'harness';   /* breakdown dimension: 'harness' | 'model' | 'inout' | 'cache' */
+  var modelShadeSteps = {};    /* window-wide brand-shade steps for model mode — chartShadeMap */
 
   function barTopPath(ctx, x, y, w, h) {
     var r = Math.min(3, w / 2, h);
@@ -1684,10 +1839,16 @@ JS = r"""
   }
 
   /* segment colours for one bar: the harness palette in harness mode; in
-     model mode a stable djb2 hash of the model name into MODEL_HEXES, where
-     a slot already claimed by an earlier (alphabetical) model in this bar is
-     advanced +1 so stacked neighbours stay distinguishable; the in/out and
-     cache modes have fixed two-slot palettes */
+     model mode each model's provider brand (PROVIDER_HEXES), shaded toward
+     the surface (brandShade — never repeating, so uncapped hourly stacks
+     stay told apart) at the model's OWN step from the window-wide step map
+     (modelShadeSteps, built by chartShadeMap before the render), so a
+     model's shade is the same in every hour column no matter which
+     same-provider siblings share the bucket; a model with no provider still
+     hashes into MODEL_HEXES, a slot already claimed by an earlier
+     (alphabetical) model or a brand's first slice advanced +1 so stacked
+     neighbours stay distinguishable; the in/out and cache modes have fixed
+     two-slot palettes */
   function segmentHexes(segs) {
     var out = {};
     if (chartMode === 'inout' || chartMode === 'cache') {
@@ -1700,22 +1861,58 @@ JS = r"""
       return out;
     }
     var taken = [];
+    var brandTaken = [];  /* brandShade(step 0) is the pure brand hex — keep
+                             the neutral palette off those slots too */
     segs.forEach(function (s) {
+      var key = providerKey(s.name);
+      if (key) {
+        var step = hasOwn(modelShadeSteps, s.name) ? modelShadeSteps[s.name] : 0;
+        out[s.name] = brandShade(PROVIDER_HEXES[key], step);
+        if (step === 0) {
+          for (var b = 0; b < MODEL_HEXES.length; b++) {
+            if (MODEL_HEXES[b].toLowerCase() === PROVIDER_HEXES[key].toLowerCase()) {
+              brandTaken[b] = true;
+            }
+          }
+        }
+        return;
+      }
       var idx = djb2(s.name) % MODEL_HEXES.length;
-      for (var bump = 0; taken[idx] && bump < MODEL_HEXES.length; bump++) {
+      for (var bump = 0;
+           bump < MODEL_HEXES.length && (taken[idx] || brandTaken[idx]);
+           bump++) {
         idx = (idx + 1) % MODEL_HEXES.length;
       }
       taken[idx] = true;
+      brandTaken[idx] = true;
       out[s.name] = MODEL_HEXES[idx];
     });
     return out;
   }
 
-  /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness (display name;
-     hermes:<profile> callers get their own line) — textContent twin of the
-     server's bucket_series_lines for the sr-only chart table.
-     In the in/out and cache modes the row collapses to the same two
-     segments the columns stack, e.g. "output 12.3k · input 45.6k" */
+  /* Window-wide step map for model mode: brandShadeSteps over every model
+     name visible anywhere in the current chart window, cached in
+     modelShadeSteps for the render (and the tooltip's segmentHexes call).
+     A model's shade must depend only on its own identity, so an hour where
+     gpt-4 is absent must not promote gpt-5 from its shaded step to the pure
+     brand hex.  The donut builds the same map over its own slice list
+     (donutShadeSteps), so the two views agree when the sets match */
+  function chartShadeMap(buckets) {
+    var seen = {};
+    (buckets || []).forEach(function (b) {
+      (b && b.series ? b.series : []).forEach(function (s) {
+        if ((Number(s.tokens) || 0) > 0) seen[s.model || 'unknown'] = true;
+      });
+    });
+    return brandShadeSteps(Object.keys(seen));
+  }
+
+  /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" per harness — textContent
+     twin of the server's bucket_series_groups for the sr-only chart table,
+     as structured entries ({caller, total, models}) so renderChartTable can
+     hang each model's brand logo beside its name; in the in/out and cache
+     modes the row collapses to the same two segments the columns stack, as a
+     plain {text} line, e.g. "output 12.3k · input 45.6k" */
   function seriesLines(b) {
     if (chartMode === 'inout' || chartMode === 'cache') {
       var segs = bucketSegments(b);
@@ -1723,10 +1920,10 @@ JS = r"""
       var order = chartMode === 'inout' ? ['output', 'input'] : ['cached', 'uncached'];
       var byName = {};
       segs.forEach(function (s) { byName[s.name] = s.tokens; });
-      return [order
+      return [{ text: order
         .filter(function (k) { return byName[k] !== undefined; })
         .map(function (k) { return k + ' ' + fmtCompact(byName[k]); })
-        .join(' · ')];
+        .join(' · ') }];
     }
     var byCaller = {};
     (b && b.series ? b.series : []).forEach(function (s) {
@@ -1743,11 +1940,13 @@ JS = r"""
       })
       .map(function (c) {
         var models = byCaller[c];
-        var detail = Object.keys(models)
-          .sort(function (a, m) { return models[m] - models[a] || (a < m ? -1 : a > m ? 1 : 0); })
-          .map(function (m) { return m + ' ' + fmtCompact(models[m]); })
-          .join(' · ');
-        return callerDisplay(c) + ' ' + fmtCompact(modelsTotal(models)) + ' (' + detail + ')';
+        return {
+          caller: c,
+          total: modelsTotal(models),
+          models: Object.keys(models)
+            .sort(function (a, m) { return models[m] - models[a] || (a < m ? -1 : a > m ? 1 : 0); })
+            .map(function (m) { return { name: m, tokens: models[m] }; })
+        };
       });
   }
 
@@ -1781,6 +1980,10 @@ JS = r"""
     var tokens = buckets.map(function (b) { return Number(b.tokens) || 0; });
     var peak = 0;
     tokens.forEach(function (t) { if (t > peak) peak = t; });
+
+    /* model mode: refresh the window-wide step map before any column reads
+       it, so every hour resolves the same per-model shades */
+    if (chartMode === 'model') modelShadeSteps = chartShadeMap(buckets);
 
     /* y gridlines + tick labels */
     ctx.font = '11px ' + 'ui-monospace, Menlo, Consolas, monospace';
@@ -1898,7 +2101,24 @@ JS = r"""
       var td = el('td');
       var lines = seriesLines(b);
       if (lines.length) {
-        lines.forEach(function (l) { td.appendChild(el('div', '', l)); });
+        lines.forEach(function (l) {
+          var div = el('div');
+          if (l.text) {
+            div.textContent = l.text;
+          } else {
+            /* "caller 12.3k (modelA 8.1k · modelB 4.2k)" with each model's
+               provider logo beside its name */
+            div.appendChild(document.createTextNode(l.caller + ' ' + fmtCompact(l.total) + ' ('));
+            l.models.forEach(function (m, mi) {
+              if (mi) div.appendChild(document.createTextNode(' · '));
+              var logo = brandLogoEl(providerKey(m.name));
+              if (logo) div.appendChild(logo);
+              div.appendChild(document.createTextNode(m.name + ' ' + fmtCompact(m.tokens)));
+            });
+            div.appendChild(document.createTextNode(')'));
+          }
+          td.appendChild(div);
+        });
       } else {
         td.textContent = '—';
       }
@@ -1919,17 +2139,19 @@ JS = r"""
     tip.appendChild(el('div', 'tl',
       bucketLabel(b) + ' · ' + fmtInt(b.requests) + ' req' + (b.partial ? ' · partial' : '')));
     /* one line per member of the active dimension present in that hour,
-       dot coloured like its segment; harness-mode names are raw callers, so
-       they display-map (the other modes' names are not callers) */
+       dot coloured like its segment — and in model mode the provider logo
+       beside the name (harness names are client apps, not model providers,
+       so they stay unbranded) */
     var segs = bucketSegments(b);
     var hexes = segmentHexes(segs);
     segs.forEach(function (seg) {
       var line = el('div', 'tl');
       var dot = el('span', 'tl-dot');
       dot.style.background = hexes[seg.name];
-      var name = chartMode === 'harness' ? callerDisplay(seg.name) : seg.name;
       line.appendChild(dot);
-      line.appendChild(document.createTextNode(name + ' · ' + fmtCompact(seg.tokens)));
+      var logo = chartMode === 'model' ? brandLogoEl(providerKey(seg.name)) : null;
+      if (logo) line.appendChild(logo);
+      line.appendChild(document.createTextNode(seg.name + ' · ' + fmtCompact(seg.tokens)));
       tip.appendChild(line);
     });
     tip.hidden = false;
@@ -2036,10 +2258,12 @@ JS = r"""
       tr.appendChild(tdTime);
 
       var tdCaller = el('td');
-      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), callerDisplay(e.caller)));
+      tdCaller.appendChild(el('span', 'chip ' + (e.unattributed ? 'h-unattr' : harnessClass(e.caller)), e.caller || UNATTR));
       tr.appendChild(tdCaller);
 
-      tr.appendChild(el('td', '', e.model || '—'));
+      var tdModel = el('td');
+      tdModel.appendChild(brandBadge(e.model));
+      tr.appendChild(tdModel);
       tr.appendChild(el('td', '', e.route || e.path || '—'));
       tr.appendChild(el('td', 'num', fmtOpt(e.prompt_tokens)));
       tr.appendChild(el('td', 'num', fmtOpt(e.completion_tokens)));
@@ -2135,18 +2359,10 @@ JS = r"""
     }
   }
 
-  var lastSummary = null;
-
   function renderSummary(summary) {
-    lastSummary = summary;
     renderCards(summary);
-    lastCallerModels = summary.per_caller_model_24h || {};
-    lastModelCallers = summary.per_model_caller_24h || {};
-    /* re-offers the pickers' options, keeping whatever is still served
-       selected, then re-renders both cards' active views from the new data */
-    syncPickers();
-    refreshHarness(summary);
-    refreshDonut(summary);
+    renderHarness(summary.per_caller_24h && summary.per_caller_24h.length ? summary.per_caller_24h : summary.per_caller);
+    renderDonut(summary.by_model);
   }
 
   var bootBuckets = [];
@@ -2161,8 +2377,6 @@ JS = r"""
   renderEvents(boot.events || []);
   wireChart();
   wireDonut();
-  wireDonutPick();
-  wireHarnessPick();
   tick();
 
   var resizeTimer = null;
@@ -2239,7 +2453,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>AI Usage — Live</title>
+<title>Harness Usage — Live</title>
 <link rel="icon" href=\""""
         + FAVICON
         + """\">
@@ -2252,7 +2466,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 <header class="topbar">
   <div>
-    <h1>AI <span class="accent">Usage</span></h1>
+    <h1>Harness <span class="accent">Usage</span></h1>
     <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney</p>
   </div>
   <div class="live" id="live" role="status">
@@ -2304,11 +2518,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 <div class="side">
 <section class="card" aria-label="Per-harness usage">
-  <div class="card-head"><h2>Per-harness usage</h2>
-    <select class="mode-pick" id="harness-model-pick" aria-label="Filter per-harness usage by model">
-      <option value="all" selected>All models</option>
-    </select>
-    <span class="win">last 24 h &middot; bar = share of top harness</span></div>
+  <div class="card-head"><h2>Per-harness usage</h2><span class="win">last 24 h &middot; bar = share of top harness</span></div>
   <div class="scroll-x">
   <table>
     <thead><tr><th scope="col">Harness</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Tokens</th><th scope="col"><span class="sr-only">Share of tokens</span></th></tr></thead>
