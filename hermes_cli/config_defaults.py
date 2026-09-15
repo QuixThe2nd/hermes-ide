@@ -1740,6 +1740,20 @@ DEFAULT_CONFIG = {
         # old paths raise ImportError once the compat layer is actually removed.
         "allow_deprecated_imports": False,
     },
+    "llm_usage_proxy": {
+        # LLM usage proxy (bundled plugin). Keys mirror
+        # plugins/llm_usage_proxy/config.py load_llm_usage_proxy_config defaults.
+        "enabled": True,
+        "port": 8790,
+        # name -> base URL for extra proxied upstreams (user-supplied names).
+        "upstreams": {},
+        # Key-manager mode: proxy owns provider keys, callers hold local tokens.
+        "manage_keys": False,
+        # Per-profile ledger attribution override; empty string = unset, falls
+        # back to the home-path-derived label (see hermes_cli/llm_usage_routes.py).
+        # Str-typed default so `config set` stores labels verbatim (_coerce_config_set_value).
+        "caller_label": "",
+    },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
