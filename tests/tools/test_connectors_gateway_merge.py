@@ -1,4 +1,4 @@
-"""Behavior tests for the pure tool_gateway merge/partition/name logic.
+"""Behavior tests for the pure connectors.gateway merge/partition/name logic.
 
 Pure functions, zero fakes, no I/O — matching the DI-callable test idiom
 (``test_managed_tool_gateway.py``). Wire/client behavior is covered in the
@@ -7,21 +7,21 @@ client PR; this file owns partition → splice → assemble and the name codec.
 
 import pytest
 
-from tools.tool_gateway.config import ConnectorConfig, connectors_available
-from tools.tool_gateway.errors import (
+from tools.connectors.gateway.config import ConnectorConfig, connectors_available
+from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
     ToolGatewayError,
     parse_gateway_error,
 )
-from tools.tool_gateway.merge import (
+from tools.connectors.gateway.merge import (
     assemble_results,
     fill_remote_failure,
     partition_calls,
     splice_remote_results,
 )
-from tools.tool_gateway.names import (
+from tools.connectors.gateway.names import (
     CONNECTOR_BATCH_SENTINEL,
     format_connector_name,
     parse_connector_name,

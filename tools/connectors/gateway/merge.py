@@ -30,8 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from tools.tool_gateway.errors import render_connection_required
-from tools.tool_gateway.names import parse_connector_name
+from tools.connectors.gateway.errors import render_connection_required
+from tools.connectors.gateway.names import parse_connector_name
 
 __all__ = [
     "Partition",

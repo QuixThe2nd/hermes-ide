@@ -83,18 +83,33 @@ def _module_registers_tools(module_path: Path) -> bool:
         for stmt in tree.body)
 
 
+def _tool_module_candidates(tools_path: Path) -> List[Path]:
+    """Flat ``tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
+    sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
+    by construction. Sorted after merging: ``register()`` lets a same-name, same-toolset duplicate
+    overwrite silently, so the import order must not depend on file depth."""
+    candidates = list(tools_path.glob("*.py")) + list(tools_path.glob("*/tool.py"))
+    return sorted(candidates)
+
+
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     """Import built-in self-registering tool modules and return their module names. The
     per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
-    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    tools_path = (Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent).resolve()
     cache = _load_discovery_cache()
     fresh_cache: Dict[str, list] = {}
     cache_dirty = False
     module_names: List[str] = []
-    for path in sorted(tools_path.glob("*.py")):
+    for path in _tool_module_candidates(tools_path):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        rel_parts = path.relative_to(tools_path).with_suffix("").parts
+        if len(rel_parts) > 1 and not (path.parent / "__init__.py").exists():
+            # setuptools' package finder drops a directory without __init__.py, so this tool would
+            # register from a checkout and vanish from an installed wheel.
+            logger.warning("Skipping %s: package %s has no __init__.py", path, path.parent.name)
             continue
         abs_path = str(path.resolve())
         try:
@@ -110,7 +125,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
             cache_dirty = True
         fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
         if registers:
-            module_names.append(f"tools.{path.stem}")
+            module_names.append(".".join(("tools", *rel_parts)))
 
     # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):

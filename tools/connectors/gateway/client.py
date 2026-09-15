@@ -34,14 +34,14 @@ from typing import Any, Callable, Optional, Protocol, Sequence
 
 import requests
 
-from tools.tool_gateway import wire
-from tools.tool_gateway.errors import (
+from tools.connectors.gateway import wire
+from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     ToolGatewayError,
     parse_gateway_error,
 )
-from tools.tool_gateway.merge import PlannedCall
+from tools.connectors.gateway.merge import PlannedCall
 
 logger = logging.getLogger(__name__)
 

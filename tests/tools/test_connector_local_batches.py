@@ -10,7 +10,7 @@ import pytest
 def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
     import model_tools
     from tools.tool_search import resolve_underlying_call
-    from tools.tool_gateway import bridge, config
+    from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)

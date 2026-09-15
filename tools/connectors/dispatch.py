@@ -4,8 +4,8 @@ import json
 from dataclasses import asdict
 
 from tools.registry import tool_error
-from tools.tool_gateway.config import MAX_CALLS_PER_DISPATCH
-from tools.tool_gateway.merge import assemble_results, fill_remote_failure, partition_calls
+from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
+from tools.connectors.gateway.merge import assemble_results, fill_remote_failure, partition_calls
 
 
 def dispatch_connector_call(name, arguments, tool_call_id):
@@ -14,7 +14,7 @@ def dispatch_connector_call(name, arguments, tool_call_id):
     Execution middleware wraps the actual I/O, so connector entries execute
     individually rather than queuing side effects after a policy callback returns.
     """
-    from tools.tool_gateway.bridge import run_remote
+    from tools.connectors.gateway.bridge import run_remote
 
     partition = partition_calls([{"name": name, "arguments": arguments}])
     entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None)

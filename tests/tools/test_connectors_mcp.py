@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.connections_tool  # registers the tool
-from tools import connections_tool_operation as op
-from tools.connections_tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+import tools.connectors.tool  # registers the tool
+from tools.connectors import operation as op
+from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
 from tools.registry import registry
 
 CATALOG = ["figma", "linear", "notion"]
@@ -27,8 +27,8 @@ CONFIGURED = {"paper": {"command": "paper-mcp"}, "linear": {"url": "https://mcp.
 
 @pytest.fixture(autouse=True)
 def _catalog():
-    with patch("tools.connections_tool_mcp._catalog_names", return_value=CATALOG), \
-         patch("tools.connections_tool_mcp._configured_names", return_value=sorted(CONFIGURED)):
+    with patch("tools.connectors.mcp._catalog_names", return_value=CATALOG), \
+         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)):
         yield
 
 
@@ -220,7 +220,7 @@ def test_the_bounded_wait_owns_the_deadline_not_the_sequential_guard():
 def test_default_wait_comes_from_the_config_key(monkeypatch):
     monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "3")
     seen = {}
-    with patch("tools.connections_tool_mcp.resolve_wait_timeout", return_value=77.0):
+    with patch("tools.connectors.mcp.resolve_wait_timeout", return_value=77.0):
         manage_connections({"action": "install", "connectors": [_linear()]},
                            connection_callback=lambda p: seen.update(p) or "")
     assert seen["timeout_seconds"] == 77.0

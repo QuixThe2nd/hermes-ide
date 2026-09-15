@@ -82,7 +82,7 @@ def _connector_rpc(rid, params, action):
 
 def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
     import model_tools
-    from tools.tool_gateway.config import connectors_available
+    from tools.connectors import connectors_available
     from tui_gateway.connector_payload import connector_ui_payload
 
     agent = owner.get("agent")

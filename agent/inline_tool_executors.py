@@ -152,12 +152,13 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The GUI callback lives on the agent; registry dispatch never forwards it.
-    from tools.connections_tool import _connectors_available, manage_connections
+    from tools.connectors import manage_connections
+    from tools.connectors.gateway import config as gateway_config
 
     return manage_connections(
         args, session_id=getattr(agent, "session_id", None),
         connection_callback=getattr(agent, "connection_callback", None),
-        connectors_available=_connectors_available,
+        connectors_available=gateway_config.connectors_available,
     )
 
 

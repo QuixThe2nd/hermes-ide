@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools import connections_tool_operation as op
+from tools.connectors import operation as op
 
 
 def _two_targets():

@@ -26,18 +26,18 @@ Layering rules (enforced by review, not imports — keep them true):
   Approval is settled by the core BEFORE the bridge is called; denied
   entries never reach it.
 
-Core reaches this package through ``model_tools_connectors.py``, which
+Core reaches this package through ``tools.connectors.dispatch.py``, which
 dispatches one gateway request per connector entry via ``bridge.run_remote``
 and re-enters core dispatch for each entry so per-tool policy fires against
 the composed ``connectors__`` name.
 """
 
-from tools.tool_gateway.config import (
+from tools.connectors.gateway.config import (
     MAX_CALLS_PER_DISPATCH,
     ConnectorConfig,
     connectors_available,
 )
-from tools.tool_gateway.errors import (
+from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
@@ -45,7 +45,7 @@ from tools.tool_gateway.errors import (
     parse_gateway_error,
     render_connection_required,
 )
-from tools.tool_gateway.names import (
+from tools.connectors.gateway.names import (
     CONNECTOR_BATCH_SENTINEL,
     CONNECTOR_NAME_PREFIX,
     ConnectorName,

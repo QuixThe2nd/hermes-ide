@@ -10,15 +10,15 @@ from dataclasses import replace as dataclass_replace
 
 import pytest
 
-from tools.tool_gateway.bridge import connector_search_hits
-from tools.tool_gateway.client import ConnectorClient
-from tools.tool_gateway.errors import (
+from tools.connectors.gateway.bridge import connector_search_hits
+from tools.connectors.gateway.client import ConnectorClient
+from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
     ToolGatewayError,
 )
-from tools.tool_gateway.names import vendor_slug_candidates
+from tools.connectors.gateway.names import vendor_slug_candidates
 
 
 class FakeResponse:
@@ -73,7 +73,7 @@ PLAN_CALLS = [
 
 
 def planned(calls=PLAN_CALLS):
-    from tools.tool_gateway.merge import partition_calls
+    from tools.connectors.gateway.merge import partition_calls
 
     return tuple(
         dataclass_replace(
@@ -297,7 +297,7 @@ def _resolve_with_env(**overrides):
     import os
     from unittest.mock import patch
 
-    from tools.tool_gateway.client import _default_endpoint_resolver
+    from tools.connectors.gateway.client import _default_endpoint_resolver
 
     env = {k: v for k, v in os.environ.items() if k not in _GATEWAY_ENV_KEYS}
     env.update(overrides)

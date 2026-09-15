@@ -11,7 +11,7 @@ search behaving exactly as it does today.
 
 Transport leg: :func:`run_remote` sends one gateway execute request for the
 planned entries it is handed and splices the results back by slot.
-``model_tools_connectors`` calls it once per connector entry, after core
+``tools.connectors.dispatch`` calls it once per connector entry, after core
 dispatch has already run scope, hook, approval and middleware policy against
 that entry's composed ``connectors__`` name. Vendor slug restoration and the
 single literal-slug retry live here; partition and envelope assembly live in
@@ -24,10 +24,10 @@ import logging
 from dataclasses import replace as dataclass_replace
 from typing import Any, Callable, Optional, Sequence
 
-from tools.tool_gateway.config import connectors_available
-from tools.tool_gateway.errors import GatewayUnavailable, ToolGatewayError
-from tools.tool_gateway.merge import fill_remote_failure, splice_remote_results
-from tools.tool_gateway.names import parse_connector_name, vendor_slug_candidates
+from tools.connectors.gateway.config import connectors_available
+from tools.connectors.gateway.errors import GatewayUnavailable, ToolGatewayError
+from tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
+from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ __all__ = ["connector_describe", "connector_search_hits", "run_remote"]
 
 
 def _default_client_factory():
-    from tools.tool_gateway.client import ConnectorClient
+    from tools.connectors.gateway.client import ConnectorClient
 
     return ConnectorClient()
 

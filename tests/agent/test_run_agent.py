@@ -2675,8 +2675,8 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         # manage_connections / setup_mcp shim: no GUI callback on this fake agent, so the MCP
         # leg settles `unavailable` without a card; pin the catalog so the run is hermetic.
-        monkeypatch.setattr("tools.connections_tool_mcp._catalog_names", lambda: ["linear"])
-        monkeypatch.setattr("tools.connections_tool_mcp._configured_names", lambda: [])
+        monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
+        monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,

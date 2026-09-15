@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.connections_tool  # registers the tool
-from tools.connections_tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+import tools.connectors.tool  # registers the tool
+from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
 
 
 class FakeClient:
@@ -434,7 +434,7 @@ def _session_tool_names(enabled_toolsets, *, connectors, disabled_toolsets=None)
     from model_tools import _compute_tool_definitions
     from tools.registry import invalidate_check_fn_cache
 
-    with patch("tools.tool_gateway.config.connectors_available",
+    with patch("tools.connectors.gateway.config.connectors_available",
                return_value=connectors):
         invalidate_check_fn_cache()
         try:
@@ -515,7 +515,7 @@ def test_signed_out_session_keeps_the_tool_but_the_managed_leg_refuses(tmp_path,
     for selection in selections:
         assert "manage_connections" in _session_tool_names(selection, connectors=False), selection
 
-    with patch("tools.connections_tool._connectors_available", return_value=False):
+    with patch("tools.connectors.gateway.config.connectors_available", return_value=False):
         out = json.loads(registry.dispatch("manage_connections", {"action": "status"}))
     assert "not available in this session" in out["error"]
 
