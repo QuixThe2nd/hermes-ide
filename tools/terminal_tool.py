@@ -69,6 +69,18 @@ def _redact_terminal_error_text(value: Any) -> str:
 
 
 from tools.registry import tool_error
+from tools.terminal_tool_lifecycle import (
+    _check_disk_usage_warning, _cleanup_inactive_envs, _create_configured_env,
+    _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
+)
+from tools.terminal_tool_config import (
+    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
+    _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
+)
+from tools.terminal_tool_backends import (
+    _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    _record_unavailable_reason, terminal_backend_unavailable_reason,  # noqa: F401 — re-exported
+)
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
@@ -2429,13 +2441,67 @@ def is_persistent_env(task_id: str) -> bool:
     are removed by ``AIAgent.close()`` → ``cleanup_vm`` at session teardown
     and by the idle reaper, not per-turn.
     """
-    env = get_active_env(task_id)
-    if env is None:
-        return False
-    if getattr(env, "_session_scoped", False):
-        return True
-    return bool(getattr(env, "_persistent", False))
+    note: Optional[str] = None
+    approved_run: bool = False
 
+
+def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
+    Raises :class:`_Rejected` when the command may not run (denied, or pending
+    gateway approval)."""
+    if force:
+        return _ApprovalVerdict(approved_run=True)
+    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    if not approval["approved"]:
+        if approval.get("status") == "pending_approval":  # gateway ask mode
+            raise _Rejected(_error_json(
+                "", status="pending_approval",
+                approval_pending=True,
+                command=approval.get("command", command),
+                description=approval.get("description", "command flagged"),
+                pattern_key=approval.get("pattern_key", ""),
+                smart_denied=approval.get("smart_denied", False),
+                allow_permanent=approval.get("allow_permanent", True),
+            ))
+        desc = approval.get("description", "command flagged")
+        fallback_msg = (
+            f"Command denied: {desc}. "
+            "Use the approval prompt to allow it, or rephrase the command."
+        )
+        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+    desc = approval.get("description", "flagged as dangerous")
+    if approval.get("user_approved"):
+        return _ApprovalVerdict(
+            note=f"Command required approval ({desc}) and was approved by the user.",
+            approved_run=True,
+        )
+    if approval.get("smart_approved"):
+        return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+    return _ApprovalVerdict()
+
+
+@dataclass
+class _ExecPlan:
+    """Per-call execution parameters resolved before any environment is touched."""
+    config: Dict[str, Any]
+    env_type: str
+    effective_task_id: str
+    image: str
+    cwd: str
+    host_cwd: Optional[str]
+    effective_timeout: int
+    # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
+    # tracked background process instead of being refused (the requested seconds, for the note).
+    promoted_from_foreground_timeout: Optional[int] = None
+
+
+_PROMOTED_NOTE = (
+    "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
+    "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
+    "Its completion (exit code + output tail) arrives as a notification; poll with "
+    "process(action=\"poll\", session_id=...) if you need it sooner."
+)
 
 
 
@@ -4027,7 +4093,8 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met. The reason for a failure is kept for
+    :func:`terminal_backend_unavailable_reason` (CLI startup notice / doctor)."""
     try:
         config = _get_env_config()
         env_type = config["env_type"]
@@ -4140,6 +4207,7 @@ def check_terminal_requirements() -> bool:
             return False
     except Exception as e:
         logger.error("Terminal requirements check failed: %s", e, exc_info=True)
+        _record_unavailable_reason(f"the requirements check failed: {e}")
         return False
 
 

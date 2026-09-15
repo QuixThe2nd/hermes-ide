@@ -118,7 +118,7 @@ def _mcp_named_server(rid, params):
 
 def _busy_error(rid, session, cmd: str):
     if session.get("running"):
-        return _err(rid, 4009, f"session busy — /interrupt the current turn before /{cmd}")
+        return _err(rid, 4009, busy_message(cmd))
     return None
 
 
@@ -945,7 +945,7 @@ def _(rid, params: dict, session) -> dict:
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
-        return _err(rid, 4009, "session busy — /interrupt the current turn before full rollback.restore")
+        return _err(rid, 4009, busy_message("rollback restore"))
 
     def go(mgr, cwd):
         result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)

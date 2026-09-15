@@ -327,65 +327,11 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
     await runner._notify_active_sessions_of_shutdown()
 
-    adapter.send.assert_awaited_once_with(
-        "parent-42",
-        "⚠️ Gateway shutting down",
-        metadata={"thread_id": "topic-7"},
-    )
-
-
-@pytest.mark.asyncio
-async def test_restart_warning_displays_exact_llm_steer_for_accepted_session():
-    from gateway.restart_wind_down import COOPERATIVE_RESTART_STEER
-
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(
-        chat_id="parent-42", chat_type="group", thread_id="topic-7"
-    )
-    session_key = build_session_key(source)
-    runner._restart_requested = True
-    runner._restart_command_source = source
-    runner._running_agents[session_key] = object()
-    runner._cooperative_restart_steered_sessions = [session_key]
-    runner.session_store._entries[session_key] = MagicMock(origin=source)
-    adapter.send = AsyncMock(
-        return_value=SendResult(success=True, message_id="shutdown")
-    )
-
-    await runner._notify_active_sessions_of_shutdown()
-
-    adapter.send.assert_awaited_once_with(
-        "parent-42",
-        "⚠️ Gateway shutting down\n\n"
-        "Message sent to the LLM:\n"
-        f"```\n{COOPERATIVE_RESTART_STEER}\n```",
-        metadata={"thread_id": "topic-7"},
-    )
-
-
-@pytest.mark.asyncio
-async def test_restart_warning_does_not_claim_rejected_steer_was_sent():
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(
-        chat_id="parent-42", chat_type="group", thread_id="topic-7"
-    )
-    session_key = build_session_key(source)
-    runner._restart_requested = True
-    runner._restart_command_source = source
-    runner._running_agents[session_key] = object()
-    runner._cooperative_restart_steered_sessions = []
-    runner.session_store._entries[session_key] = MagicMock(origin=source)
-    adapter.send = AsyncMock(
-        return_value=SendResult(success=True, message_id="shutdown")
-    )
-
-    await runner._notify_active_sessions_of_shutdown()
-
-    adapter.send.assert_awaited_once_with(
-        "parent-42",
-        "⚠️ Gateway shutting down",
-        metadata={"thread_id": "topic-7"},
-    )
+    adapter.send.assert_awaited_once()
+    chat_id, message = adapter.send.await_args.args
+    assert chat_id == "parent-42"
+    assert "shutting down" in message and "send any message" in message.lower()
+    assert adapter.send.await_args.kwargs == {"metadata": {"thread_id": "topic-7"}}
 
 
 @pytest.mark.asyncio

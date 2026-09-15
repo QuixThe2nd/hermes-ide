@@ -333,29 +333,30 @@ def hygiene_compaction_recovered(
 
 
 def _hygiene_compression_timeout_message(
-    *,
-    total_exhausted: bool,
-    elapsed: float,
-    idle_timeout: float,
-    progress_observed: bool,
-) -> str:
-    """Describe the host timeout that actually ended hygiene compression."""
+    *, total_exhausted: bool, elapsed: float, idle_timeout: float, progress_observed: bool) -> str:
+    """Describe the host timeout that actually ended hygiene compression. Chat users cannot edit
+    model config, so the copy names /compress, /new and `hermes doctor`, never a config key or the
+    raw second counts (those stay in the gateway log)."""
+    lead = (
+        "⚠️ Shortening the conversation history took too long, so I skipped it and kept "
+        "everything as-is. Run /compress to try again or /new to start fresh.")
     if total_exhausted:
-        progress = (
-            " after summary output was observed" if progress_observed else ""
-        )
-        return (
-            "⚠️ Context compression reached its total ceiling after "
-            f"{elapsed:.1f}s{progress}. No messages were dropped — continuing "
-            "without compression. Run /compress to retry or /reset for a clean "
-            "session."
-        )
-    return (
-        f"⚠️ Context compression timed out after {idle_timeout:.1f}s with no "
-        "output from the summary model. No messages were dropped — continuing "
-        "without compression. Run /compress to retry, /reset for a clean "
-        "session, or check your auxiliary.compression model configuration."
-    )
+        return lead
+    return lead + " If this keeps happening, run `hermes doctor` on the host."
+
+
+def _cached_agent_for_hygiene(gateway, session_key: str):
+    """The cached live AIAgent for ``session_key`` (or the pending sentinel / None), read under the cache lock."""
+    cache = getattr(gateway, "_agent_cache", None)
+    if cache is None:
+        return None
+    lock = getattr(gateway, "_agent_cache_lock", None)
+    try:
+        with (lock or suppress()):
+            entry = cache.get(session_key)
+    except Exception:
+        entry = None
+    return entry[0] if isinstance(entry, tuple) and entry else entry
 
 
 async def run_codex_hygiene_compaction(
@@ -911,32 +912,47 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 
 def _format_exec_approval_fallback(
-    command: str,
-    description: str,
-    command_prefix: str,
-    *,
-    allow_permanent: bool = True,
-    allow_session: bool = True,
-    smart_denied: bool = False,
-) -> str:
-    """Render the text fallback from approval capabilities, not platform names."""
+    command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
+    allow_session: bool = True, smart_denied: bool = False) -> str:
+    """Render the text fallback from approval capabilities, not platform names. Same words as
+    the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
+    steps a surface without buttons needs."""
+    from gateway.platforms.base_exec_approval import (
+        EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
-    heading = "⚠️ **Dangerous command requires approval:**"
-    if smart_denied:
-        heading = "⚠️ **Smart DENY — owner override for one operation:**"
+    heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
+               else f"⚠️ **{EA_HEADER_TEXT}**")
 
-    choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
+    choices = [f"Reply `{command_prefix}approve` to run it once"]
     if not smart_denied and allow_session:
-        choices.append(
-            f"`{command_prefix}approve session` to approve this pattern for the session"
-        )
+        choices.append(f"`{command_prefix}approve session` to allow this pattern for the rest of this session")
         if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to approve permanently")
+            choices.append(f"`{command_prefix}approve always` to allow it permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
-        + ", ".join(choices[:-1]) + f", or {choices[-1]}."
-    )
+        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
+        + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
+        + format_approval_deadline_line(approval_timeout_seconds()))
+
+# Ordered: auth beats policy beats rate-limit beats connection; first match wins. Copy names the
+# slash command the chat user can run; raw provider text stays in the gateway log (`hermes logs`).
+_PROVIDER_ERROR_REPLIES = (
+    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
+                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
+    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
+                                  "message, or use /model to switch models."),
+    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
+    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
+                                   "endpoint is not running or is unreachable. Wait a moment and use /retry; "
+                                   "if it persists, run `hermes doctor` on the host."))
+
+
+# Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
+# commands (/compress, /new) — the /compact and /reset aliases are absent from /help.
+_CONTEXT_OVERFLOW_REPLY = (
+    "⚠️ This conversation has grown too long for me to read all at once. "
+    "Use /compress to shorten the history, or /new to start a fresh conversation.")
+
 
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
@@ -958,9 +974,8 @@ def _gateway_provider_error_reply(text: str) -> str:
             "model endpoint is not running or is unreachable."
         )
     return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+        "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
+        "models. Details are in the gateway log (`hermes logs`).")
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -5217,20 +5232,23 @@ def _format_concise_process_notification(
     """
     ok = exit_code in {0, None}
     icon = "✅" if ok else "❌"
-    verb = "finished" if ok else f"failed (exit {exit_code})"
-    parts = [f"{icon} Background task {verb}"]
+    parts = [f"{icon} Background task {'finished' if ok else 'failed'}"]
     short_cmd = _shorten_command_for_display(command)
     if short_cmd:
         parts.append(f"— `{short_cmd}`")
+    details = []
     if isinstance(duration_seconds, (int, float)) and duration_seconds >= 0:
         secs = int(duration_seconds)
         if secs >= 3600:
-            dur = f"{secs // 3600}h {(secs % 3600) // 60}m"
+            details.append(f"{secs // 3600}h {(secs % 3600) // 60}m")
         elif secs >= 60:
-            dur = f"{secs // 60}m {secs % 60}s"
+            details.append(f"{secs // 60}m {secs % 60}s")
         else:
-            dur = f"{secs}s"
-        parts.append(f"({dur})")
+            details.append(f"{secs}s")
+    if not ok:
+        details.append(f"exit {exit_code}")
+    if details:
+        parts.append(f"({', '.join(details)})")
     text = " ".join(parts)
     if not ok and output:
         tail_lines = [ln for ln in output.strip().splitlines() if ln.strip()][-5:]
@@ -5238,7 +5256,9 @@ def _format_concise_process_notification(
         if len(tail) > 500:
             tail = tail[-500:]
         if tail:
-            text += f"\n```\n{tail}\n```"
+            text += f". Last output:\n```\n{tail}\n```"
+    if not ok:
+        text += "\nAsk me to rerun it or show the full log."
     return text
 
 
@@ -5375,15 +5395,13 @@ def _normalize_empty_agent_response(
                 "again in a moment."
             )
         if is_overflow:
-            return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
-            )
+            return _CONTEXT_OVERFLOW_REPLY
+        # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
+        logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
-        )
+            "⚠️ Something went wrong and I couldn't finish this reply. Use /retry to try again, "
+            "or /new to start a fresh conversation. Technical details are in the gateway log "
+            "(`hermes logs`).")
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if agent_result.get("interrupted"):
@@ -5405,8 +5423,24 @@ def _normalize_empty_agent_response(
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             return ""
         if agent_result.get("partial"):
-            err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            # ``error`` mirrors the loop's own final text (curated, e.g. "Response truncated due to
+            # output length limit") and is kept; a raw provider envelope goes to the log instead.
+            err = str(agent_result.get("error") or "processing incomplete")
+            # A loop site code (truncated, context_overflow, ...) already wrote the full
+            # what-happened / what-to-do sentence: deliver it verbatim. Wrapping it would cut it
+            # mid-sentence at 200 chars and append a second, conflicting set of instructions.
+            from agent.turn_failure_copy import SITE_FAILURE_CODES
+            if (str(agent_result.get("failure_reason") or "") in SITE_FAILURE_CODES
+                    and err.strip() and not _looks_like_gateway_provider_error(err)):
+                return err if err.startswith("⚠️") else f"⚠️ {err}"
+            if _looks_like_gateway_provider_error(err):
+                logger.warning("Agent turn ended partially; reply sanitized for chat. Detail: %s", err[:500])
+                reason = ""
+            else:
+                reason = f": {err[:200]}"
+            return (
+                f"⚠️ I had to stop before finishing{reason}. Use /retry to try again, or /compress "
+                "if this conversation has grown very long.")
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
@@ -12476,6 +12510,181 @@ class GatewayRunner(
             f"⏳ Gateway is {self._status_action_gerund()} and is not "
             f"accepting another turn right now."
         )
+
+    # -------- /queue FIFO helpers --------------------------------------
+    # /queue must produce one full agent turn per invocation, in FIFO
+    # order, with no merging.  The adapter's _pending_messages dict is a
+    # single "next-up" slot (shared with photo-burst follow-ups), so we
+    # use it for the head of the queue and an overflow list for the
+    # tail.  Enqueue puts new items in the slot when free, otherwise in
+    # the overflow.  Promotion (called after each run's drain) moves the
+    # next overflow item into the slot so the following recursion picks
+    # it up.  Clearing happens on /new and /reset via
+    # _handle_reset_command.
+
+    @staticmethod
+    def _fifo_message_id(event: Any) -> str:
+        """Dedupe key for queue re-delivery: the inbound platform message id.
+
+        Synthetic events (goal continuations, heartbeats) carry no id and are
+        never deduped — each is a distinct turn by construction. Internal
+        synthetic events are also exempt: watch-notification/completion events
+        inherit the spawning turn's reply-anchor id, so distinct internal
+        events can legitimately share one message id.
+        """
+        if getattr(event, "internal", False):
+            return ""
+        message_id = getattr(event, "message_id", None)
+        return str(message_id).strip() if message_id else ""
+
+    def _find_queued_copy_by_message_id(
+        self, session_key: str, message_id: str, adapter: Any
+    ) -> Optional["MessageEvent"]:
+        """Return the already-queued event with this platform message id, if any."""
+        if not message_id:
+            return None
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if isinstance(pending_slot, dict):
+            slot_event = pending_slot.get(session_key)
+            if (
+                slot_event is not None
+                and self._fifo_message_id(slot_event) == message_id
+            ):
+                return slot_event
+        _q_state = self._peek_session_state(session_key)
+        conversation = getattr(_q_state, "conversation", None) if _q_state else None
+        overflow = getattr(conversation, "queued_events", None) if conversation else None
+        if overflow:
+            for queued_copy in overflow:
+                if self._fifo_message_id(queued_copy) == message_id:
+                    return queued_copy
+        return None
+
+    def _drop_redelivered_fifo_copy(
+        self, session_key: str, message_id: str, queued_copy: "MessageEvent"
+    ) -> None:
+        """Collapse a re-delivered platform message id into its ONE queued turn.
+
+        The incoming copy is dropped (it would run as its own full agent
+        turn — the observed amplification loop) and the surviving queued copy
+        is marked ``redelivered`` so the model can tell it from a fresh
+        message. One log line per drop.
+        """
+        try:
+            queued_copy.redelivered = True
+        except Exception:
+            pass
+        logger.info(
+            "Dropped re-delivered copy of message id %s for session %s — the "
+            "message is already queued; its queued copy is marked as a "
+            "re-delivery (one platform message, one turn)",
+            message_id,
+            session_key,
+        )
+
+    def _purge_redelivered_overflow_copies(
+        self,
+        session_key: str,
+        kept: "MessageEvent",
+        overflow: Optional[List["MessageEvent"]],
+    ) -> int:
+        """Drop overflow copies sharing ``kept``'s message id; mark ``kept``.
+
+        Called when an overflow event is taken out to run (promotion or
+        rescue): every same-id sibling left behind would later run as its own
+        full turn for the SAME platform message. Returns the drop count.
+        """
+        message_id = self._fifo_message_id(kept)
+        if not message_id or not overflow:
+            return 0
+        dropped = 0
+        index = 0
+        while index < len(overflow):
+            if self._fifo_message_id(overflow[index]) == message_id:
+                overflow.pop(index)
+                dropped += 1
+                continue
+            index += 1
+        if dropped:
+            try:
+                kept.redelivered = True
+            except Exception:
+                pass
+            logger.info(
+                "Dropped %d re-delivered cop(y/es) of message id %s for session "
+                "%s at FIFO promotion — one platform message keeps one turn",
+                dropped,
+                message_id,
+                session_key,
+            )
+        return dropped
+
+    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
+        """Append a /queue event to the FIFO chain for a session."""
+        if adapter is None:
+            return
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if pending_slot is None:
+            return
+        # One platform message id, one queued turn: a re-delivered copy
+        # parked here would run as its own turn at promotion time.
+        message_id = self._fifo_message_id(queued_event)
+        if message_id:
+            queued_copy = self._find_queued_copy_by_message_id(
+                session_key, message_id, adapter
+            )
+            if queued_copy is not None:
+                self._drop_redelivered_fifo_copy(session_key, message_id, queued_copy)
+                return
+        if session_key in pending_slot:
+            self._session_state(session_key).conversation.queued_events.append(
+                queued_event
+            )
+        else:
+            pending_slot[session_key] = queued_event
+
+    def _promote_queued_event(
+        self,
+        session_key: str,
+        adapter: Any,
+        pending_event: Optional["MessageEvent"],
+    ) -> Optional["MessageEvent"]:
+        """Promote the next overflow item after the slot was drained.
+
+        Called at the drain site after _dequeue_pending_event consumed
+        (or failed to consume) the slot.  If there's an overflow item:
+          - When pending_event is None (slot was empty), return the
+            overflow head as the new pending_event.
+          - When pending_event already exists (slot was populated by an
+            interrupt follow-up or similar), stage the overflow head in
+            the slot so the NEXT recursion picks it up.
+        Returns the (possibly updated) pending_event for drain to use.
+        """
+        _q_state = self._peek_session_state(session_key)
+        overflow = _q_state.conversation.queued_events if _q_state else None
+        if not overflow:
+            return pending_event
+        next_queued = overflow.pop(0)
+        # Collapse same-id siblings now: each would promote into its own
+        # full turn for the SAME platform message (the observed overflow
+        # amplification loop).
+        self._purge_redelivered_overflow_copies(session_key, next_queued, overflow)
+        if pending_event is None:
+            return next_queued
+        if adapter is not None and hasattr(adapter, "_pending_messages"):
+            adapter._pending_messages[session_key] = next_queued
+        else:
+            # No adapter — push back so we don't silently drop the item.
+            overflow.insert(0, next_queued)
+        return pending_event
+
+    def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
+        """Total pending /queue items for a session — slot + overflow."""
+        _q_state = self._peek_session_state(session_key)
+        depth = len(_q_state.conversation.queued_events) if _q_state else 0
+        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+            depth += 1
+        return depth
 
     def _rescue_orphaned_overflow(
         self, session_key: str, adapter: Any
