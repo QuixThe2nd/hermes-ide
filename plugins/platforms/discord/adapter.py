@@ -465,7 +465,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
+    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -2674,18 +2674,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         seen: set[str] = set()
         candidate_channels = []
         if "*" in channel_ids:
-            from gateway.platforms.helpers import is_discord_channel_obfuscated
-
             for guild in getattr(self._client, "guilds", []) or []:
-                # Skip obfuscated placeholders (bot lacks VIEW_CHANNEL;
-                # Discord dispatches them with name "___hidden___" +
-                # CHANNEL_OBFUSCATED flag as of the Aug 2026 privacy
-                # change). History reads on them always fail.
-                candidate_channels.extend(
-                    ch
-                    for ch in (getattr(guild, "text_channels", []) or [])
-                    if not is_discord_channel_obfuscated(ch)
-                )
+                candidate_channels.extend(getattr(guild, "text_channels", []) or [])
         else:
             for channel_id in sorted(channel_ids):
                 channel = None
@@ -2700,6 +2690,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
                         continue
                 candidate_channels.append(channel)
+        # Obfuscated placeholders (bot lost VIEW_CHANNEL) fail every history read — drop them
+        # from both the wildcard and the explicit-id branch (#90154).
+        candidate_channels = [ch for ch in candidate_channels if not is_discord_channel_obfuscated(ch)]
+
         iterators = [
             self._iter_channel_and_thread_messages(
                 channel, limit=limit, after=after, seen_channels=seen,
