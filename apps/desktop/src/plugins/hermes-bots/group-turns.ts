@@ -101,8 +101,10 @@ interface GroupSessionSnapshot {
   inflight?: boolean
   message_count?: number
   messages?: GroupTurnTranscriptMessage[]
+  /** Still-open server→client requests (`server_requests.open_requests`); the
+   *  member's blocking clarify question lives here as `{ id, method: 'clarify', params }`. */
+  open_requests?: { id: string; method: string; params: Record<string, unknown> }[]
   pending_approval?: GroupPendingApproval
-  pending_clarify?: GroupPendingClarify
   running?: boolean
   session_id?: string
   session_key?: string
@@ -437,13 +439,18 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
  *  `${group}::${memberKey}` (#90694). Returns true while a prompt is
  *  blocking, so the turn poll can extend its deadline — a waiting prompt
  *  must not be eaten by the group-turn timeout. Feature-detected: older
- *  backends without `pending_clarify`/`pending_approval` in the resume
+ *  backends without `open_requests`/`pending_approval` in the resume
  *  payload always sync to "no prompt". Clarify wins when both are somehow
  *  present (approvals resolve inside tool batches; clarify is the outer
  *  blocker). */
 export function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
   const key = `${group}::${groupMemberKey(member)}`
-  const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+  const openClarify = Array.isArray(state?.open_requests)
+    ? state.open_requests.find(entry => entry?.method === 'clarify' && typeof entry.id === 'string' && entry.id)
+    : null
+  const clarify: GroupPendingClarify | null = openClarify
+    ? { ...(openClarify.params as GroupPendingClarify), request_id: openClarify.id }
+    : null
 
   // The `!requestId` bail below is what makes the approval branch reachable,
   // so an approval read there is never the null arm of this ternary — a fact
