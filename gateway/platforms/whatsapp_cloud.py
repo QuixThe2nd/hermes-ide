@@ -86,6 +86,10 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
 }
 
 _INBOUND_MEDIA_KINDS = {"image", "video", "audio", "voice", "document", "sticker"}
+# ``system`` = user_changed_number / user_changed_user_id (BSUID rotation, Aug 2026);
+# ``reaction`` = emoji tap (extension point if emoji-approval flows ever land);
+# ``unsupported``/``unknown`` = payloads the Cloud API cannot render.
+_CONTENTLESS_KINDS = {"system", "reaction", "unsupported", "unknown"}
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _MESSAGE_TYPE_BY_KIND = {
@@ -949,6 +953,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     ) -> Optional[MessageEvent]:
         """Convert a Cloud-API message object into a MessageEvent, or None if gated out."""
         msg_type_str = str(raw_message.get("type") or "text").lower()
+        # Contentless envelopes arrive on the same ``messages`` webhook field and carry no
+        # user utterance; falling through would start a blank agent turn (#90157).
+        if msg_type_str in _CONTENTLESS_KINDS:
+            logger.debug("[whatsapp_cloud] skipping contentless %s envelope (wamid=%s)", msg_type_str, raw_message.get("id"))
+            return None
         # Button taps route to the gateway resolver BEFORE text dispatch — the
         # resolver unblocks the waiting agent, so don't also start a fresh turn.
         if msg_type_str == "interactive" and await self._dispatch_interactive_reply(raw_message, contacts_by_waid):
