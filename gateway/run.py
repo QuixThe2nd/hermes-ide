@@ -23240,6 +23240,19 @@ class GatewayRunner(
                                 "Failed to resume typing after clarify response",
                                 exc_info=True,
                             )
+                        # A typed answer to a native card (numeric pick, or
+                        # text after "Other") never reaches the click handler,
+                        # so the card would keep its buttons forever.
+                        if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                            try:
+                                await _clarify_adapter.retire_clarify_card(
+                                    _pending_clarify.clarify_id,
+                                    f"\u2705 answered: {_pending_clarify.response or _raw_clarify_reply}")
+                            except Exception:
+                                logger.debug(
+                                    "Failed to retire clarify card after typed answer",
+                                    exc_info=True,
+                                )
                     # Acknowledge with empty string so adapters that emit
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
@@ -23261,10 +23274,26 @@ class GatewayRunner(
                     # routing. Release this clarify first: redirect()
                     # degrades to steer() while tools are executing, and
                     # that steer cannot drain until the clarify tool returns.
-                    _clarify_mod.resolve_gateway_clarify(
+                    if _clarify_mod.resolve_gateway_clarify(
                         _pending_clarify.clarify_id,
                         "",
-                    )
+                    ):
+                        # Adapters with a persistent native card (Slack Block
+                        # Kit) retire it now, before the prose is routed, so
+                        # its buttons stop advertising a dead answer path.
+                        _clarify_adapter = self._adapter_for_source(source)
+                        # Class lookup: a MagicMock adapter must not fabricate
+                        # the method.
+                        if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                            try:
+                                await _clarify_adapter.retire_clarify_card(
+                                    _pending_clarify.clarify_id,
+                                    "\u21a9\ufe0f Clarification cancelled \u2014 your message will be handled as a follow-up.")
+                            except Exception:
+                                logger.debug(
+                                    "Failed to retire clarify card after prose cancellation",
+                                    exc_info=True,
+                                )
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
