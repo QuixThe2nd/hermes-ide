@@ -177,6 +177,13 @@ hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
+### Stack dump on demand (`SIGUSR2`)
+
+On Linux and macOS, `kill -USR2 <gateway pid>` appends a dump of every thread's
+stack to `~/.hermes/logs/gateway_faulthandler.log` and the gateway keeps
+running — use it to see what a stalled or misbehaving gateway is doing without
+restarting it.
+
 ### Optional Linux event-loop watchdog
 
 A systemd-managed gateway can opt into process recovery when Python's asyncio
