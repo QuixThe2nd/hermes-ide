@@ -49,7 +49,9 @@ installation.
 child process that genuinely must access the live database. The equivalent
 in-process escape hatch is `@pytest.mark.live_system_guard_bypass`. Do not set
 either bypass in normal Hermes commands, development shells, or application
-configuration: it disables the warning that protects live session history.
+configuration: it disables the guard (a hard `RuntimeError`) that protects live
+session history, and a shell that exports it hands the bypass to every later
+pytest run.
 
 ### Desktop profile isolation and compaction generations
 
@@ -513,10 +515,9 @@ db.delete_session("sess_abc123")
 
 ## Database Location
 
-Default path: `~/.hermes/state.db`
-
-This is derived from `hermes_constants.get_hermes_home()` which resolves to
-`~/.hermes/` by default, or the value of `HERMES_HOME` environment variable.
+Default path: `get_hermes_home() / "state.db"` — `~/.hermes/state.db` for the
+default profile, `~/.hermes/profiles/<name>/state.db` for a named profile, or
+wherever `HERMES_HOME` points (see [Hermes home and profile isolation](#hermes-home-and-profile-isolation)).
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
 (`state.db-shm`) are all created in the same directory.
