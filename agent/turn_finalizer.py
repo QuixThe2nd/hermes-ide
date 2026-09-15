@@ -394,7 +394,8 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
         )
         if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
             _explanation = agent._format_turn_completion_explanation(
-                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None)
+                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
+                db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
             )
             if _explanation:
                 # Replace the bare sentinel; keep a partial fragment and append why.
@@ -430,6 +431,7 @@ def _apply_output_hooks(
         session_id=agent.session_id or "",
         model=agent.model,
         platform=platform,
+        turn_id=turn_id,  # per-turn identity for the hook callback gate
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True

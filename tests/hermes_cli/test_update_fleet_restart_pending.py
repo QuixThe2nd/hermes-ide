@@ -1384,3 +1384,55 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ── Self-heal: marker left behind by a supervisor-level restart (#105417 / #111272) ──
+#
+# `systemctl --user restart hermes-gateway` never runs this module's clear path, and an update
+# whose fleet probe answered empty exits before clearing — so the marker survives a restart
+# that DID bring the fleet to the pulled code, and every later CLI call warns forever. The
+# marker is discharged when (and only when) the fleet provably serves expected_sha.
+
+
+def _patch_marker_sha(monkeypatch, disk_sha):
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+
+def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+@pytest.mark.parametrize(
+    "disk_sha, fleet",
+    [
+        ("e" * 40, [{"profile": "default", "pid": 42, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"}]),
+        ("e" * 40, []),  # probe answered empty: no proof either way
+        ("e" * 40, [{"profile": "default", "pid": 42, "code_sha": None, "code_version": None, "state": "unknown"}]),
+        # checkout advanced past the marker: a newer pull owns a fresh obligation
+        ("f" * 40, [{"profile": "default", "pid": 42, "code_sha": "e" * 40, "code_version": None, "state": "current"}]),
+    ],
+    ids=["stale-row", "empty-probe", "unknown-identity", "checkout-moved"],
+)
+def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_sha, fleet):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: fleet)
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()

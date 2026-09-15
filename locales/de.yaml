@@ -179,7 +179,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
@@ -400,7 +400,7 @@ Re-Syncs laufen automatisch höchstens einmal pro Stunde."
     not_git_repo:            "✗ Kein Git-Repository — Update nicht möglich."
     hermes_cmd_not_found:    "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
     start_failed:            "✗ Update konnte nicht gestartet werden: {error}"
-    starting:                "⚕ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
+    starting:                "☤ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
 
   usage:
     rate_limits:              "⏱️ **Ratenlimits:** {state}"
