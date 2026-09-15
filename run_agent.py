@@ -4254,6 +4254,9 @@ class AIAgent(
         Best-effort: falls back to the raw session id when the session DB
         is unavailable or the lineage walk fails.
         """
+        cached = getattr(self, "_cached_conversation_root", None)
+        if cached:
+            return str(cached)
         sid = getattr(self, "session_id", None)
         if not sid:
             return None
