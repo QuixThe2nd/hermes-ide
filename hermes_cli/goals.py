@@ -1438,13 +1438,20 @@ class GoalManager:
         reason = state.waiting_reason or tgt
         return _decision("active", False, None, "waiting", reason, f"⏳ Goal parked — waiting on {tgt}: {reason}")
 
-    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Dict[str, Any]:
+    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Optional[Dict[str, Any]]:
         """Judge said WAIT: set the barrier and park. The counted turn stands (the judge ran) but no
-        continuation fires; the loop resumes once the barrier clears."""
+        continuation fires; the loop resumes once the barrier clears. ``None`` = the barrier is
+        unobservable here, so the caller continues instead."""
         if wait_directive.get("session_id"):
             tgt = f"session {self.wait_on_session(str(wait_directive['session_id']), reason=reason).waiting_on_session}"
         elif wait_directive.get("pid"):
-            tgt = f"pid {self.wait_on(int(wait_directive['pid']), reason=reason).waiting_on_pid}"
+            pid = int(wait_directive["pid"])
+            if not _pid_alive(pid):
+                # A remote or already-exited pid is a barrier this host can never observe lifting
+                # (#110826): the judge sees the same pid next turn and would re-park forever.
+                logger.info("goal judge: wait_on_pid %s is not alive on this host; continuing", pid)
+                return None
+            tgt = f"pid {self.wait_on(pid, reason=reason).waiting_on_pid}"
         else:
             self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason, on_delegations=active_delegations)
             tgt = f"{wait_directive['seconds']}s"
@@ -1497,7 +1504,9 @@ class GoalManager:
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
 
         if verdict == "wait" and wait_directive:
-            return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+            parked = self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+            if parked is not None:
+                return parked
 
         # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
         # instead of burning turns on an unachievable goal or waving it through as complete.

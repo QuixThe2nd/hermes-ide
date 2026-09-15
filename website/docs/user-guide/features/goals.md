@@ -168,7 +168,7 @@ You don't type anything for this — it's the judge's decision, made from the pr
 
 | Command | What it does |
 |---|---|
-| `/goal wait <pid> [reason]` | Manually park the loop until the process with that PID exits. |
+| `/goal wait <pid> [reason]` | Manually park the loop until the process with that PID exits. The PID must be a live process on the Hermes host; a remote or already-exited PID is rejected (and a judge `wait_on_pid` naming one continues instead of parking). |
 | `/goal unwait` | Clear any wait barrier (judge- or manually-set) and resume immediately. |
 
 The barrier (pid- or time-based) is persisted with the goal in `SessionDB.state_meta`, so it survives `/resume`. `/goal pause`, `/goal resume`, and `/goal clear` all drop it. If the PID is already dead when the barrier is set (or dies while parked), or the time deadline passes, the barrier clears on the next check — a stale barrier can never wedge the loop.

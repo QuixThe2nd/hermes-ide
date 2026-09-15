@@ -541,6 +541,24 @@ class TestJudgeDrivenWait:
         import subprocess, sys
         return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
 
+    def test_judge_wait_on_dead_pid_continues_instead_of_parking(self, hermes_home):
+        """#110826: a judge ``wait_on_pid`` naming a pid this host cannot observe (remote, or
+        already exited) must not park — the barrier would lift and re-park every turn."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-dead-pid", default_max_turns=10)
+        mgr.set("ship the PR")
+        with patch.object(goals, "_pid_alive", return_value=False), patch.object(
+            goals, "judge_goal",
+            return_value=("wait", "remote job still running", False, {"pid": 4242}, False),
+        ):
+            decision = mgr.evaluate_after_turn("Started the job over ssh (pid 4242).")
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert mgr.state.waiting_on_pid is None
+        assert mgr.is_waiting() is False
+
     def test_judge_wait_pid_parks_loop(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager
