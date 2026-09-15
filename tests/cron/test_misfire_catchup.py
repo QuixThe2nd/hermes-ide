@@ -10,6 +10,7 @@ gateway housekeeping, claims and fires those jobs after a grace window.
 import threading
 import time
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -180,9 +181,18 @@ class TestFireOverdueJobs:
 
         estop.engage(reason="ops window")
         try:
-            assert fire_overdue_jobs(provider) == 0
+            with patch.object(
+                provider, "claim_fire", wraps=provider.claim_fire
+            ) as claim, patch(
+                "cron.scheduler_provider.threading.Thread"
+            ) as thread:
+                assert fire_overdue_jobs(provider) == 0
+                # No claim attempted, no worker thread constructed — proves
+                # the ESTOP gate is the actual short-circuit (not a deferred
+                # admission that races the test).
+                claim.assert_not_called()
+                thread.assert_not_called()
             assert provider.fired == []
-            assert not provider.wait_fired(timeout=0.5)
         finally:
             estop.disengage()
 
@@ -206,6 +216,13 @@ class TestFireOverdueJobs:
         assert fire_overdue_jobs(provider) == 0  # paused — no fire
 
         estop.disengage()
-        assert fire_overdue_jobs(provider) == 1
+        with patch.object(
+            provider, "claim_fire", wraps=provider.claim_fire
+        ) as claim:
+            assert fire_overdue_jobs(provider) == 1
+            # Recovery re-enters via the existing claim_fire path —
+            # explicit positive assertion proves the path is exercised,
+            # not just that *something* fired.
+            claim.assert_called_once()
         assert provider.wait_fired()
         assert provider.fired == [job["id"]]
