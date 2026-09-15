@@ -53,6 +53,11 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
+# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
+# Slack click handler shows on a dead entry).
+_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
+
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1335,7 +1340,15 @@ class TurnRunner:
         response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
         # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
         # timeout/cancellation strings start with '[' and must pass through untouched.
-        if not (isinstance(response, str) and response.startswith("[")):
+        if isinstance(response, str) and response.startswith("["):
+            # No answer arrived (timeout, /new, run end): retire the native card so it stops
+            # looking answerable. Adapters without a persistent card have no such method.
+            retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
+            if callable(retire):
+                self._schedule(
+                    retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
+                    "Clarify card retire failed to schedule")
+        else:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
             # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is
             # a no-op outside the reopen-pending native state.

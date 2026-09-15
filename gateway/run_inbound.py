@@ -401,15 +401,17 @@ class GatewayInboundMixin:
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
             if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, ""):
-                # Slack's native clarify prompt is a persistent Block Kit card. Once this
-                # unmatched prose releases the wait, retire that card before routing the prose
-                # normally so its buttons cannot advertise a stale answer path. Other adapters
-                # intentionally have no callback and retain the existing generic behaviour.
+                # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
+                # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
+                # retire_clarify_card runs before its first await, so the agent thread's own expiry
+                # notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
                 _clarify_adapter = self._adapter_for_source(source)
-                _cancel_card = getattr(_clarify_adapter, "cancel_clarify_message", None)
-                if source.platform == Platform.SLACK and callable(_cancel_card):
+                # Class lookup: a MagicMock adapter must not fabricate the method.
+                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
                     try:
-                        await _cancel_card(_pending_clarify.clarify_id)
+                        await _clarify_adapter.retire_clarify_card(
+                            _pending_clarify.clarify_id,
+                            "↩️ Clarification cancelled — your message will be handled as a follow-up.")
                     except Exception:
                         logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None

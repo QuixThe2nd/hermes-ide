@@ -1048,8 +1048,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
-        # clarify_id → (channel_id, message_ts, rendered_question). This lets the inbound
-        # free-prose path retire a native card that will no longer accept a response.
+        # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
+        # card whose clarify ended without a click (timeout, reset, superseding prose).
         self._clarify_messages: Dict[str, Tuple[str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
@@ -5416,12 +5416,13 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, msg_ts, question_text, decision_text, "Clarification", "clarify", sanitize=False
         )
 
-    async def cancel_clarify_message(self, clarify_id: str) -> None:
-        """Retire a Block Kit clarify card released by unmatched free prose.
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Rewrite a still-live clarify card into a terminal, button-less state.
 
-        The generic inbound path intentionally lets that prose continue as a normal follow-up.
-        Slack alone needs to edit its already-posted interactive card so its buttons do not
-        advertise an answer path that the released clarify can no longer accept.
+        The gateway calls this whenever it ends a clarify without a button click — the wait
+        timed out, the session was reset, or unmatched free prose superseded the prompt — so
+        the card stops advertising an answer path the released clarify can no longer accept.
+        Keyed by clarify_id, so a late call cannot touch a newer prompt; no-op once resolved.
         """
         target = self._clarify_messages.pop(clarify_id, None)
         if target is None:
@@ -5429,9 +5430,7 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id, msg_ts, question_text = target
         # A late action handler must be a no-op while the best-effort chat.update is in flight.
         self._clarify_resolved[msg_ts] = True
-        await self._update_clarify_message(
-            channel_id, msg_ts, question_text,
-            "↩️ Clarification cancelled — your message will be handled as a follow-up.")
+        await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
 
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""

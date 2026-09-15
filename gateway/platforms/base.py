@@ -2695,7 +2695,9 @@ class BasePlatformAdapter(ABC):
         ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
         ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
         text-intercept resolves the next message). Default: numbered list +
-        ``mark_awaiting_text``."""
+        ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
+        ``async retire_clarify_card(clarify_id, notice)``; the gateway calls it when the clarify
+        ends without a click (timeout, session reset, superseding free prose)."""
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:

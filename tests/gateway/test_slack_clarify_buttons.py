@@ -153,29 +153,33 @@ class TestSlackSendClarify:
         assert "&amp;" in section_text
 
     @pytest.mark.asyncio
-    async def test_free_prose_cancellation_rewrites_card_without_actions(self):
+    async def test_retire_clarify_card_drops_buttons_and_makes_a_late_click_a_noop(self):
+        """Gateway-driven retirement (timeout / prose / reset) rewrites the card and wins the race
+        against a later button click on the same message."""
+        from tools import clarify_gateway as cm
+
         adapter = _make_adapter()
+        _attach_auth_runner(adapter)
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
         mock_client.chat_update = AsyncMock()
-
+        cm.register("cid-retire", "sk-retire", "Which environment?", ["staging", "production"])
         await adapter.send_clarify(
-            chat_id="C1",
-            question="Which environment?",
-            choices=["staging", "production"],
-            clarify_id="cid-cancel",
-            session_key="sk-cancel",
-        )
+            chat_id="C1", question="Which environment?", choices=["staging", "production"],
+            clarify_id="cid-retire", session_key="sk-retire")
 
-        await adapter.cancel_clarify_message("cid-cancel")
+        await adapter.retire_clarify_card("cid-retire", "⏳ expired")
 
         kwargs = mock_client.chat_update.call_args.kwargs
-        assert kwargs["channel"] == "C1"
-        assert kwargs["ts"] == "1.2"
-        assert "cancelled" in kwargs["text"].lower()
+        assert (kwargs["channel"], kwargs["ts"], kwargs["text"]) == ("C1", "1.2", "⏳ expired")
         assert all(block["type"] != "actions" for block in kwargs["blocks"])
-        assert adapter._clarify_resolved["1.2"] is True
 
+        await adapter._handle_clarify_action(AsyncMock(), {
+            "message": {"ts": "1.2", "blocks": kwargs["blocks"]},
+            "channel": {"id": "C1"}, "user": {"name": "norbert", "id": "U_N"},
+        }, {"action_id": "hermes_clarify_choice_0", "value": "cid-retire|0"})
+        assert mock_client.chat_update.await_count == 1
+        assert not cm._entries["cid-retire"].event.is_set()
 
 # ===========================================================================
 # _handle_clarify_action — choice click resolves (b)
