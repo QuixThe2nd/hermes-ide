@@ -37,6 +37,7 @@ class ProfileGateway:
     home: Path
     pid: Optional[int] = None
     service: Optional[tuple[str, bool]] = None  # ("systemd", system) | ("launchd", False)
+    run_as_user: Optional[str] = None  # User= recorded by a system-scope systemd unit
     uid: Optional[int] = None  # owner of the gateway process/unit; None = unknown (never "different")
     runtime_home: Optional[Path] = None  # HERMES_HOME the installed unit pins, when it differs from ``home``
 
@@ -58,6 +59,7 @@ class ProfileGateway:
         return {
             "profile": self.name, "home": str(self.home), "pid": self.pid,
             "service": None if self.service is None else {"kind": self.service[0], "system": self.service[1]},
+            "run_as_user": self.run_as_user,
             "uid": self.uid, "runtime_home": None if self.runtime_home is None else str(self.runtime_home),
         }
 
@@ -97,6 +99,12 @@ class MigrationPlan:
         if self.default.service is not None:
             return self.default.service
         return next((p.service for p in self.secondaries if p.service is not None), None)
+
+    def target_run_as_user(self) -> Optional[str]:
+        """Preserve the system unit identity that the default unit replaces."""
+        if self.default.run_as_user:
+            return self.default.run_as_user
+        return next((p.run_as_user for p in self.secondaries if p.run_as_user), None)
 
     def to_dict(self) -> dict:
         return {
@@ -183,7 +191,16 @@ def _installed_service(home: Path) -> Optional[tuple[str, bool]]:
     return None
 
 
-def _service_op(kind: str, system: bool, verb: str, home: Path) -> None:
+def _systemd_service_user(home: Path, service: Optional[tuple[str, bool]]) -> Optional[str]:
+    """Read ``User=`` before migration removes a system-scope unit."""
+    if service != ("systemd", True):
+        return None
+    from hermes_cli import gateway as gw
+    with _home_env(home):
+        return gw._read_systemd_user_from_unit(gw.get_systemd_unit_path(system=True))
+
+
+def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: Optional[str] = None) -> None:
     """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` on ``home``'s service."""
     from hermes_cli import gateway as gw
     with _home_env(home):
@@ -191,7 +208,7 @@ def _service_op(kind: str, system: bool, verb: str, home: Path) -> None:
             if kind == "launchd":
                 gw.launchd_install()
             else:
-                gw.systemd_install(system=system, non_interactive=True)
+                gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
             return
         gw._service_call(kind, verb, system)
 
@@ -401,7 +418,8 @@ def build_migration_plan() -> MigrationPlan:
     for name, home in _profile_homes():
         pid, service = _live_gateway_pid(home), _installed_service(home)
         uid, runtime_home = _gateway_identity(home, pid, service)
-        profiles.append(ProfileGateway(name=name, home=home, pid=pid, service=service, uid=uid,
+        profiles.append(ProfileGateway(name=name, home=home, pid=pid, service=service,
+                                       run_as_user=_systemd_service_user(home, service), uid=uid,
                                        runtime_home=None if runtime_home == home else runtime_home))
     plan = MigrationPlan(
         default_home=default_home, profiles=profiles,
@@ -587,7 +605,13 @@ def _wait_for_served(default_home: Path, expected: set[str], timeout: float) -> 
     return served
 
 
-def _restart_default(plan_default: ProfileGateway, target: Optional[tuple[str, bool]], default_home: Path) -> str:
+def _restart_default(
+    plan_default: ProfileGateway,
+    target: Optional[tuple[str, bool]],
+    default_home: Path,
+    *,
+    run_as_user: Optional[str] = None,
+) -> str:
     """Bring the default gateway up on the new flag value; returns a one-line description."""
     if plan_default.service is not None:
         kind, system = plan_default.service
@@ -595,7 +619,7 @@ def _restart_default(plan_default: ProfileGateway, target: Optional[tuple[str, b
         return f"restarted the default gateway via {kind}"
     if target is not None:
         kind, system = target
-        _service_op(kind, system, "install", default_home)
+        _service_op(kind, system, "install", default_home, run_as_user=run_as_user)
         _service_op(kind, system, "start", default_home)
         return f"installed and started the default gateway via {kind}"
     verb = "restarted" if plan_default.pid is not None else "started"
@@ -635,7 +659,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
             print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
     _write_multiplex_flag(plan.default_home, True)
     print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
-    print(f"  ✓ {_restart_default(plan.default, plan.target_service_kind(), plan.default_home)}")
+    print(f"  ✓ {_restart_default(plan.default, plan.target_service_kind(), plan.default_home, run_as_user=plan.target_run_as_user())}")
 
     expected = {p.name for p in plan.profiles}
     served = _wait_for_served(plan.default_home, expected, served_wait)
@@ -694,7 +718,9 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
             service = _secondary_service(rec)
             if service is not None:
                 kind, system = service
-                _service_op(kind, system, "install", home)
+                run_as_user = rec.get("run_as_user")
+                _service_op(kind, system, "install", home,
+                            run_as_user=run_as_user if isinstance(run_as_user, str) else None)
                 _service_op(kind, system, "start", home)
                 print(f"  ✓ {name}: reinstalled and started its {kind} service")
             elif rec.get("pid"):

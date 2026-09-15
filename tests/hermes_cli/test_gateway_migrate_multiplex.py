@@ -42,7 +42,7 @@ def fleet(tmp_path, monkeypatch):
         refused_at_start={},
     )
 
-    def _service_op(kind, system, verb, home):
+    def _service_op(kind, system, verb, home, *, run_as_user=None):
         name = _name(home)
         state.ops.append((name, verb))
         if verb == "start" and name != "default":
@@ -148,15 +148,45 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
 
 
+def test_migration_preserves_root_system_service_user_for_default_install(fleet, monkeypatch):
+    """A root-owned secondary system unit must be replaced with an explicit root unit."""
+    fleet.services["coder"] = ("systemd", True)
+    monkeypatch.setattr(
+        gm,
+        "_systemd_service_user",
+        lambda home, service: "root" if _name(home) == "coder" and service == ("systemd", True) else None,
+    )
+    plan = gm.build_migration_plan()
+    root_secondary = next(p for p in plan.standalone_secondaries if p.name == "coder")
+    assert root_secondary.run_as_user == "root"
+    installs = []
+
+    def _service_op(kind, system, verb, home, *, run_as_user=None):
+        if _name(home) == "default" and verb == "install":
+            installs.append((kind, system, run_as_user))
+        fleet.services.pop(_name(home), None) if verb == "uninstall" else None
+        if verb == "install":
+            fleet.services[_name(home)] = (kind, system)
+        if verb in ("start", "restart") and _name(home) == "default":
+            (fleet.root / "gateway_state.json").write_text(json.dumps({
+                "served_profiles": ["default", "coder", "ops"]}))
+
+    monkeypatch.setattr(gm, "_service_op", _service_op)
+    monkeypatch.setattr(gm, "_wait_for_served", lambda *args: ["default", "coder", "ops"])
+
+    assert gm.apply_migration(plan, served_wait=0.1) is True
+    assert installs == [("systemd", True, "root")]
+
+
 def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifest(fleet, monkeypatch):
     assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
     fleet.ops.clear()
     real_op = gm._service_op
 
-    def _flaky(kind, system, verb, home):
+    def _flaky(kind, system, verb, home, *, run_as_user=None):
         if verb == "start" and _name(home) == "coder":
             raise RuntimeError("systemctl start failed")
-        real_op(kind, system, verb, home)
+        real_op(kind, system, verb, home, run_as_user=run_as_user)
 
     monkeypatch.setattr(gm, "_service_op", _flaky)
     assert gm.rollback_migration(fleet.root) is False
