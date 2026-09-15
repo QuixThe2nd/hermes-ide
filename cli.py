@@ -2952,6 +2952,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._prompt_stash = _PromptStash()
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        # skills.auto_load rendered in the preload thread; None until joined. Handed to every
+        # agent this CLI builds so the prompt bytes never depend on when the agent was created.
+        self._auto_load_skills_result: Optional[tuple] = None
         # Background --skills preload, joined by finalize_preloaded_skills before any agent is built.
         self._preload_skills_thread: Optional[threading.Thread] = None
         self._preload_skills_result: Optional[tuple] = None
@@ -3100,6 +3103,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         err = getattr(self, "_preload_skills_error", None)
         if err is not None:
             raise err
+        auto_result = getattr(self, "_auto_load_skills_result", None)
+        if auto_result and auto_result[2]:
+            logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(auto_result[2]))
+        # auto_load names first, then explicit -s names that were not already pinned.
+        self.preloaded_skills = list(auto_result[1]) if auto_result else []
         result = getattr(self, "_preload_skills_result", None)
         if not result:
             return
@@ -3119,7 +3127,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
-            self.preloaded_skills = loaded_skills
+        self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]
 
     def _show_tool_availability_warnings(self):
         """Warn about tools disabled by missing API keys (not system deps)."""
@@ -4357,18 +4365,29 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             sys.exit(1)
         raise
 
-    if parsed_skills:
+    # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
+    # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the
+    # session id is real for ${HERMES_SESSION_ID} and -s can dedupe against it.
+    from agent.skill_commands import build_auto_load_prompt, resolve_auto_load_skills
+    auto_load_names = [] if getattr(cli, "ignore_rules", ignore_rules) else resolve_auto_load_skills(CLI_CONFIG)
+    if not auto_load_names:
+        cli._auto_load_skills_result = ("", [], [])
+    if parsed_skills or auto_load_names:
         # Load the skill payloads in the background: skill_view walks the full skills
         # tree per skill (~0.5s for a large library) and the result is only consumed
         # at agent init, not by the banner. finalize_preloaded_skills() joins the
         # thread before any consumer reads cli.system_prompt.
         def _load_preloaded_skills() -> None:
             try:
-                cli._preload_skills_result = build_preloaded_skills_prompt(parsed_skills, task_id=cli.session_id)
+                if auto_load_names:
+                    cli._auto_load_skills_result = build_auto_load_prompt(task_id=cli.session_id, user_config=CLI_CONFIG)
+                if parsed_skills:
+                    cli._preload_skills_result = build_preloaded_skills_prompt(
+                        parsed_skills, task_id=cli.session_id, excluded_loaded_names=set(cli._auto_load_skills_result[1]))
             except Exception as exc:  # surfaced by finalize
                 cli._preload_skills_error = exc
 
-        cli._preload_skills_requested = parsed_skills
+        cli._preload_skills_requested = [*auto_load_names, *(s for s in parsed_skills if s not in auto_load_names)]
         cli._preload_skills_thread = threading.Thread(target=_load_preloaded_skills, name="skills-preload", daemon=True)
         cli._preload_skills_thread.start()
     return cli
