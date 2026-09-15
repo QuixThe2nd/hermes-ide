@@ -167,7 +167,7 @@ function partPaintWeight(part: unknown, measure: (parts: readonly unknown[]) => 
     return 0
   }
 
-  if (!isCardTool(toolName, part.args)) {
+  if (!isCardTool(toolName)) {
     return COLLAPSED_ROW_WEIGHT
   }
 

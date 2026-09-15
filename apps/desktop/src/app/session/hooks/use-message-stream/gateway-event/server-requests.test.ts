@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $connectionRequests } from '@/store/connection-request'
-import { resetServerRequestsForTests } from '@/store/server-requests'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest } from './server-requests'
@@ -24,26 +22,22 @@ function deliver(method: string, params: Record<string, unknown>, activeSessionI
 }
 
 describe('connection request routing', () => {
-  afterEach(() => {
-    $connectionRequests.set({})
-    resetServerRequestsForTests()
-  })
+  it('does not route connection operations through the server-request rail', () => {
+    const { handled, respond } = deliver(
+      'connection',
+      {
+        deadline_at: 1_800_000_000,
+        op_id: 'op-1',
+        session_id: 'session-a',
+        targets: [{ action: 'install', kind: 'mcp', name: 'linear' }],
+        timeout_seconds: 60,
+        tool_call_id: 'call-1'
+      },
+      'session-a'
+    )
 
-  it('parks a connection request and replaces a replayed request with the same id', () => {
-    const params = {
-      deadline_at: 1_800_000_000,
-      op_id: 'op-1',
-      reason: 'Install Linear',
-      session_id: 'session-a',
-      targets: [{ action: 'install', kind: 'mcp', name: 'linear' }],
-      timeout_seconds: 60
-    }
-
-    expect(deliver('connection', params, 'session-a').handled).toBe(true)
-    expect($connectionRequests.get()['session-a']).toMatchObject({ opId: 'op-1', requestId: 'srq-1' })
-
-    expect(deliver('connection', { ...params, op_id: 'op-2' }, 'session-a').handled).toBe(true)
-    expect($connectionRequests.get()['session-a']?.opId).toBe('op-2')
+    expect(handled).toBe(false)
+    expect(respond).not.toHaveBeenCalled()
   })
 })
 

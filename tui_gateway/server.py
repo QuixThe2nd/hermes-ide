@@ -696,6 +696,16 @@ def _open_requests(sid: str) -> list[dict]:
     return []
 
 
+def _pending_connection_request_payload(sid: str) -> dict | None:
+    """The open connection operation on *sid* as its ``connection.request`` payload, so a client
+    that missed the event (or restarted) restores the card with the server's deadline."""
+    from tools.connectors import live
+
+    session = _sessions.get(sid)
+    operation = live.current(str(session.get("session_key") or "")) if session else None
+    return operation.request_payload() if operation is not None else None
+
+
 def _pending_approval_request_payload(session_key: str) -> dict | None:
     """Read the oldest unresolved approval in a session, if there is one."""
     try:
@@ -1312,16 +1322,6 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     value = (result or {}).get("value", "")
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
-
-def _connection_request(sid: str, payload: dict) -> str:
-    """The ``manage_connections`` approval card: one ``connection`` server request per operation.
-    The renderer answers with ``{settled_by, targets}``; the tool receives it as JSON text (``''``
-    when the renderer never answered: deadline, cancel, or a client without a card). The wait is the
-    operation's own deadline, carried in the payload."""
-    from tui_gateway import server_requests
-    timeout = float(payload.get("timeout_seconds") or 120)
-    result = server_requests.send("connection", sid, params=payload, timeout=timeout)
-    return json.dumps(result, ensure_ascii=False) if result else ""
 
 
 def _clarify_timeout_seconds() -> float | None:
@@ -2905,7 +2905,8 @@ def _live_session_payload(
     }
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
-                       ("open_requests", _open_requests(sid))):
+                       ("open_requests", _open_requests(sid)),
+                       ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
     return _attach_todo_state(payload, session)

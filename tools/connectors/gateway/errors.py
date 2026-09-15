@@ -1,17 +1,6 @@
-"""Typed errors for the connector tool gateway, plus THE envelope parser.
+"""Gateway HTTP errors and envelope parsing.
 
-House idiom: one ``RuntimeError`` base with a small set of subclasses, one
-per condition a caller actually branches on (``microsoft_graph_auth.py`` /
-``image_source.py`` precedent). HTTP-level failures use the gateway's nested
-error envelope ``{"error": {"code", "message", ...}, "requestId"}`` and are
-parsed in exactly one place: :func:`parse_gateway_error`.
-
-Per-tool errors inside a 200 execute envelope are NOT exceptions — they are
-result entries, rendered by ``merge.py`` (CONNECTION_REQUIRED payloads via
-:func:`render_connection_required`, the single producer of the connect-link
-dict shown to the model; the link is deliberately not redacted).
-
-stdlib-only: this module must not import pydantic or any sibling module.
+Per-tool execute failures are result entries, not exceptions; connection links are intentionally unredacted for the model to relay.
 """
 
 from __future__ import annotations
@@ -29,12 +18,7 @@ __all__ = [
 
 
 class ToolGatewayError(RuntimeError):
-    """A connector gateway request failed at the HTTP level.
-
-    ``retryable`` encodes the retry policy decision (at most one retry, same
-    idempotency key, transport failures and 5xx only) so the client never
-    re-derives it from the status code.
-    """
+    """HTTP-level gateway failure; ``retryable`` is decided by the envelope parser."""
 
     def __init__(
         self,
@@ -53,31 +37,19 @@ class ToolGatewayError(RuntimeError):
 
 
 class GatewayAuthError(ToolGatewayError):
-    """401/403 — the portal token is missing, expired, or not entitled."""
+    """Authentication or entitlement failure."""
 
 
 class GatewayUnavailable(ToolGatewayError):
-    """404 from any connector route — connectors are dark for this principal.
-
-    This is the silent-degradation signal: callers fall back to local-only
-    behavior and the model never sees a connector error.
-    """
+    """404 signals callers to degrade silently to local-only behavior."""
 
 
 class IdempotencyConflict(ToolGatewayError):
-    """409 — the idempotency key was reused with a different body.
-
-    Always a client bug; never retried.
-    """
+    """Never retry a reused idempotency key with a different body."""
 
 
 def parse_gateway_error(status: int, body: Any) -> ToolGatewayError:
-    """Parse an HTTP-level gateway failure into the right exception.
-
-    The one place that understands the nested error envelope. Total: any
-    body shape (dict, text, ``None``) produces a usable exception rather
-    than raising.
-    """
+    """Parse every gateway error envelope without raising on a malformed body."""
     code = f"HTTP_{status}"
     message = ""
     request_id = None
@@ -114,15 +86,10 @@ def render_connection_required(
     message: Optional[str] = None,
     connect_url: Optional[str] = None,
     hint: Optional[str] = None,
+    card: bool = False,
 ) -> dict[str, Any]:
-    """Render the model-facing CONNECTION_REQUIRED payload.
-
-    The single producer of this dict, shared by the execute merge and the
-    connections tool so the model always sees one shape. The connect link is
-    passed through un-redacted — the model is allowed to show it to the user.
-    Wording beyond a fallback message is the gateway's job; this function
-    does not invent instructions.
-    """
+    """Single shared CONNECTION_REQUIRED shape. With a card the link stays on the panel and the
+    model is told a connect card is available; without one the model relays the link."""
     payload: dict[str, Any] = {
         "code": "CONNECTION_REQUIRED",
         "message": message
@@ -134,7 +101,9 @@ def render_connection_required(
     }
     if connector:
         payload["connector"] = connector
-    if connect_url:
+    if card:
+        payload["connect_card_available"] = True
+    elif connect_url:
         payload["connect_url"] = connect_url
     if hint:
         payload["hint"] = hint

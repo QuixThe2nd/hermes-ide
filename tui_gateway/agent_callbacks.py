@@ -113,10 +113,9 @@ def _agent_cbs(sid: str) -> dict:
         "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
-        # manage_connections approval card (desktop GUI): one ``connection`` server request per
-        # operation; the renderer answers with the per-target outcomes. Waits the operation's own
-        # deadline, which the payload carries.
-        "connection_callback": lambda payload: _connection_request(sid, dict(payload)),
+        # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
+        # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
+        "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 

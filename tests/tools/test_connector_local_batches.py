@@ -1,6 +1,7 @@
 """Local deferred tools retain the live agent path; batches must not bypass it."""
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +37,15 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
     from hermes_state import SessionDB
+    from tools.connectors import live
+    from tools.connectors.contract import SettleReason
+    from tools.connectors.mcp import apply_answer
     from tools.todo_tool import TodoStore
+
+    from gateway.session_context import reset_session_vars, set_session_vars
+
+    # A desktop session: the MCP card exists only there.
+    set_session_vars(source="desktop", session_key="current-session", session_id="current-session")
 
     db = SessionDB(tmp_path / "recall.db")
     db.create_session("past-session", source="cli")
@@ -44,7 +53,16 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     callbacks = []
     def connection(payload):
         callbacks.append(payload)
-        return json.dumps({"targets": [{"name": t["name"], "status": "declined"} for t in payload["targets"]]})
+
+        def respond():
+            operation = live.get("current-session", payload["op_id"])
+            if operation is not None:
+                apply_answer(operation, json.dumps(
+                    {"targets": [{"name": t["name"], "status": "declined"} for t in payload["targets"]]}))
+                operation.settle(SettleReason.all_resolved)
+
+        threading.Timer(0.02, respond).start()
+        return None
 
     agent = SimpleNamespace(
         enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],
@@ -55,7 +73,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         {"name": "session_search", "arguments": {"session_id": "past-session"}},
         {"name": "todo_list", "arguments": {"todos": [{"id": "a", "content": "live-store-proof", "status": "pending"}]}},
         {"name": "manage_connections", "arguments": {
-            "action": "install", "connectors": [{"name": "linear", "mcp": True}], "reason": "live-callback-proof"}},
+            "action": "install", "connectors": [{"name": "linear", "mcp": True}]}},
     ]
     results = []
     try:
@@ -73,7 +91,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         assert agent._todo_store.read()[0]["content"] == "live-store-proof"
         assert results[2]["targets"][0] == {
             "name": "linear", "kind": "mcp", "action": "install", "state": "skipped"}
-        assert [(c["reason"], [t["name"] for t in c["targets"]]) for c in callbacks] == [
-            ("live-callback-proof", ["linear"])]
+        assert [(c["tool_call_id"], [t["name"] for t in c["targets"]]) for c in callbacks] == [("call", ["linear"])]
     finally:
         db.close()
+        reset_session_vars()

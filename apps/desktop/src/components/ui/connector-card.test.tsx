@@ -94,9 +94,17 @@ describe('while it is working', () => {
   it('holds its own action but never the way out', () => {
     // While a connect is in flight, decline is the escape from a stuck
     // sign-in tab or a hung install.
-    renderCard({ phase: 'Installing…' })
+    renderCard({ busy: true, phase: 'Installing…' })
 
+    const [action] = screen.getAllByRole('button')
+    expect(action.hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: 'Not now' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('keeps Connect clickable under a phase label alone, so a waiting row can reopen its link', () => {
+    renderCard({ phase: 'Finish connecting in your browser…' })
+
+    expect(screen.getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(false)
   })
 
   it('holds its action while a sibling is mid-flight, so two sign-in tabs never race for focus', () => {

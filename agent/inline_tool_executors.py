@@ -156,7 +156,7 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     from tools.connectors.gateway import config as gateway_config
 
     return manage_connections(
-        args, session_id=getattr(agent, "session_id", None),
+        args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
         connection_callback=getattr(agent, "connection_callback", None),
         connectors_available=gateway_config.connectors_available,
     )
@@ -168,7 +168,6 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _manage_connections(agent, {
         "action": args.get("action", "install"),
         "connectors": [{"name": args.get("server", ""), "mcp": True}],
-        "reason": args.get("reason", ""),
     }, ctx)
 
 

@@ -72,7 +72,6 @@ export interface Translations {
     opening: string
     waiting: string
     timeout: string
-    keepWaiting: string
     refresh: string
     statusError: string
     connectError: string

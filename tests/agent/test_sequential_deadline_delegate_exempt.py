@@ -9,7 +9,7 @@ def test_delegate_task_is_exempt_from_the_sequential_deadline():
 
 
 def test_manage_connections_owns_its_bounded_wait():
-    # The connection operation's deadline is server-owned (connections.wait_timeout_seconds);
+    # The connection operation's deadline is server-owned (a constant in tools/connectors/operation.py);
     # the generic guard would report tool_timeout while the approval card is still live.
     assert "manage_connections" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
 

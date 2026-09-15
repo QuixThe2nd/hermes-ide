@@ -7,17 +7,21 @@ Contracts:
 - the GUI callback round-trip: renderer answer folds into the operation, settles once
 - catalog validation: install is catalog-only, enable/authorize need a configured server
 - the replay shim keeps an old ``setup_mcp`` call dispatching
-- deadline ownership: config key + sequential-deadline exemption
+- deadline ownership: fixed operation deadline + sequential-deadline exemption
 """
 
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import tools.connectors.tool  # registers the tool
+from tools.connectors.contract import SettleReason, TargetState
+from tools.connectors import live
 from tools.connectors import operation as op
+from tools.connectors.mcp import apply_answer
 from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
 from tools.registry import registry
 
@@ -26,9 +30,17 @@ CONFIGURED = {"paper": {"command": "paper-mcp"}, "linear": {"url": "https://mcp.
 
 
 @pytest.fixture(autouse=True)
+def _clean_live():
+    live.reset_for_tests()
+    yield
+    live.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _catalog():
     with patch("tools.connectors.mcp._catalog_names", return_value=CATALOG), \
-         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)):
+         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
+         patch("tools.connectors.mcp.session_platform", return_value="desktop"):
         yield
 
 
@@ -57,9 +69,19 @@ def _linear(**kw):
 def test_mcp_targets_without_a_callback_settle_unavailable_with_the_terminal_hint():
     out = json.loads(manage_connections({"action": "install", "connectors": [_linear()]}))
     assert out["status"] == "unavailable"
-    assert out["settled_by"] == op.SETTLED_UNAVAILABLE
+
+
+def test_mcp_targets_off_the_desktop_settle_unavailable_even_with_a_callback():
+    """The Ink TUI has the gateway callback attached but no card; the surface decides, never the callback."""
+    callback = _answering(None)
+    with patch("tools.connectors.mcp.session_platform", return_value="tui"), \
+         patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 5):
+        out = _mcp({"action": "install", "connectors": [_linear()]}, callback)
+    assert callback.seen == []
+    assert out["status"] == "unavailable"
+    assert out["settled_by"] == SettleReason.unavailable.value
     (target,) = out["targets"]
-    assert target["state"] == op.UNAVAILABLE
+    assert target["state"] == TargetState.unavailable.value
     assert target["hint"] == "hermes mcp install linear / hermes mcp login linear"
     assert "error" not in out
 
@@ -81,12 +103,13 @@ def test_a_managed_action_never_accepts_mcp_targets_and_vice_versa():
     assert "must carry" in out["error"]
 
 
-def test_managed_leg_is_byte_for_byte_unchanged_by_the_fold():
+def test_a_managed_call_off_desktop_returns_a_link_per_target():
     client = FakeClient()
     out = json.loads(manage_connections(
-        {"action": "connect", "connectors": ["gmail", {"name": "gmail"}]}, client_factory=lambda: client))
+        {"action": "connect", "connectors": ["gmail"]}, client_factory=lambda: client))
     assert client.calls == [("connections", ("gmail",), False)]
-    assert out["results"][0]["connect_url"] == "https://x/gmail"
+    assert out["targets"][0]["connect_url"] == "https://x/gmail"
+    assert out["status"] == "initiated"
 
 
 def test_unknown_target_fields_are_rejected():
@@ -113,47 +136,66 @@ def test_enable_and_authorize_need_a_configured_server():
 
 
 # ---------------------------------------------------------------------------
-# the GUI round-trip
+# the GUI round-trip: the card answers through connection.respond, the op settles
 # ---------------------------------------------------------------------------
 
 
-def test_callback_answer_folds_into_the_operation_and_settles_once():
+def _answering(answer, *, session_id="s1", delay=0.02):
+    """A card that emits (callback returns None) and answers the live operation a moment later,
+    the way ``connection.respond`` does from the renderer."""
     seen = []
 
     def callback(payload):
         seen.append(payload)
-        return json.dumps({"settled_by": "all_resolved", "targets": [
-            {"name": "linear", "status": "installed", "tools": ["a", "b"]},
-            {"name": "figma", "status": "declined"},
-        ]})
 
-    out = json.loads(manage_connections(
-        {"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}], "reason": "tickets"},
-        connection_callback=callback, wait_seconds=30))
-    (payload,) = seen
-    assert payload["reason"] == "tickets"
+        def respond():
+            operation = live.get(session_id, payload["op_id"])
+            if operation is not None:
+                apply_answer(operation, answer)
+                if not operation.settled and answer:
+                    operation.settle(SettleReason.all_resolved if operation.all_resolved else SettleReason.continue_)
+
+        if answer is not None:
+            threading.Timer(delay, respond).start()
+        return None
+
+    callback.seen = seen
+    return callback
+
+
+def _mcp(args, callback, **kw):
+    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+        return json.loads(manage_connections(args, connection_callback=callback, session_id="s1", **kw))
+
+
+def test_callback_answer_folds_into_the_operation_and_settles_once():
+    callback = _answering(json.dumps({"settled_by": "all_resolved", "targets": [
+        {"name": "linear", "status": "installed", "tools": ["a", "b"]},
+        {"name": "figma", "status": "declined"},
+    ]}))
+    out = _mcp({"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}]}, callback)
+    (payload,) = callback.seen
+    assert "reason" not in payload
     assert [t["name"] for t in payload["targets"]] == ["linear", "figma"]
-    assert payload["deadline_at"] == pytest.approx(payload["deadline_at"])  # server-owned, present
-    assert payload["timeout_seconds"] == 30
-    assert out["status"] == "settled" and out["settled_by"] == "all_resolved"
+    assert payload["timeout_seconds"] == op.OPERATION_DEADLINE_SECONDS
+    assert out["status"] == "settled" and out["settled_by"] == SettleReason.all_resolved.value
     by_name = {t["name"]: t for t in out["targets"]}
-    assert by_name["linear"]["state"] == op.CONNECTED and by_name["linear"]["tools"] == ["a", "b"]
-    assert by_name["figma"]["state"] == op.SKIPPED
+    assert by_name["linear"]["state"] == TargetState.connected.value and by_name["linear"]["tools"] == ["a", "b"]
+    assert by_name["figma"]["state"] == TargetState.skipped.value
 
 
 def test_no_answer_settles_by_deadline_and_marks_targets_not_connected():
-    out = json.loads(manage_connections(
-        {"action": "install", "connectors": [_linear()]}, connection_callback=lambda payload: "", wait_seconds=5))
-    assert out["settled_by"] == op.SETTLED_DEADLINE
-    assert out["targets"][0]["state"] == op.NOT_CONNECTED
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+        out = _mcp({"action": "install", "connectors": [_linear()]}, _answering(None))
+    assert out["settled_by"] == SettleReason.deadline.value
+    assert out["targets"][0]["state"] == TargetState.not_connected.value
     assert "error" not in out
 
 
 def test_mcp_secrets_never_reach_the_model():
     # A renderer that echoes a credential field: only the allowed keys survive.
     answer = json.dumps({"targets": [{"name": "linear", "status": "installed", "api_key": "sk-secret", "env": {"K": "v"}}]})
-    out = json.loads(manage_connections(
-        {"action": "install", "connectors": [_linear()]}, connection_callback=lambda payload: answer, wait_seconds=5))
+    out = _mcp({"action": "install", "connectors": [_linear()]}, _answering(answer))
     assert "sk-secret" not in json.dumps(out)
 
 
@@ -169,32 +211,25 @@ def _agent(callback):
 def test_inline_executor_hands_the_agent_callback_to_the_tool():
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
-    calls = []
-
-    def callback(payload):
-        calls.append(payload)
-        return json.dumps({"targets": [{"name": "linear", "status": "installed"}]})
-
-    out = json.loads(INLINE_TOOL_EXECUTORS["manage_connections"](
-        _agent(callback), {"action": "install", "connectors": [_linear()]}, InlineToolContext("task")))
-    assert len(calls) == 1
-    assert out["targets"][0]["state"] == op.CONNECTED
+    callback = _answering(json.dumps({"targets": [{"name": "linear", "status": "installed"}]}))
+    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+        out = json.loads(INLINE_TOOL_EXECUTORS["manage_connections"](
+            _agent(callback), {"action": "install", "connectors": [_linear()]}, InlineToolContext("task")))
+    assert len(callback.seen) == 1
+    assert out["targets"][0]["state"] == TargetState.connected.value
 
 
 def test_setup_mcp_replay_shim_translates_to_an_mcp_target():
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
-    calls = []
-
-    def callback(payload):
-        calls.append(payload)
-        return json.dumps({"targets": [{"name": "linear", "status": "declined"}]})
-
-    out = json.loads(INLINE_TOOL_EXECUTORS["setup_mcp"](
-        _agent(callback), {"server": "linear", "action": "install", "reason": "old convo"}, InlineToolContext("task")))
-    assert calls[0]["targets"] == [{"name": "linear", "kind": "mcp", "action": "install"}]
-    assert calls[0]["reason"] == "old convo"
-    assert out["targets"][0]["state"] == op.SKIPPED
+    callback = _answering(json.dumps({"targets": [{"name": "linear", "status": "declined"}]}))
+    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+        out = json.loads(INLINE_TOOL_EXECUTORS["setup_mcp"](
+            _agent(callback), {"server": "linear", "action": "install", "reason": "old convo"}, InlineToolContext("task", tool_call_id="call-9")))
+    (target,) = callback.seen[0]["targets"]
+    assert (target["name"], target["kind"], target["action"], target["state"]) == ("linear", "mcp", "install", "pending")
+    assert callback.seen[0]["tool_call_id"] == "call-9"
+    assert out["targets"][0]["state"] == TargetState.skipped.value
 
 
 def test_setup_mcp_is_gone_from_every_advertised_toolset():
@@ -217,22 +252,12 @@ def test_the_bounded_wait_owns_the_deadline_not_the_sequential_guard():
     assert "manage_connections" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
 
 
-def test_default_wait_comes_from_the_config_key(monkeypatch):
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "3")
-    seen = {}
-    with patch("tools.connectors.mcp.resolve_wait_timeout", return_value=77.0):
-        manage_connections({"action": "install", "connectors": [_linear()]},
-                           connection_callback=lambda p: seen.update(p) or "")
-    assert seen["timeout_seconds"] == 77.0
-
-
 def test_settle_reason_comes_from_target_state_not_the_renderer():
     # The renderer answered one of two targets and claimed all_resolved; the operation is not resolved.
     answer = json.dumps({"settled_by": "all_resolved", "targets": [{"name": "linear", "status": "declined"}]})
-    out = json.loads(manage_connections(
-        {"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}]},
-        connection_callback=lambda payload: answer, wait_seconds=5))
-    assert out["settled_by"] == op.SETTLED_CONTINUE
+    out = _mcp({"action": "install", "connectors": [_linear(), {"name": "figma", "mcp": True}]}, _answering(answer))
+    assert out["settled_by"] == SettleReason.continue_.value
     by_name = {t["name"]: t for t in out["targets"]}
-    assert by_name["linear"]["state"] == op.SKIPPED
-    assert by_name["figma"]["state"] == op.NOT_CONNECTED and by_name["figma"]["detail"] == op.SETTLED_CONTINUE
+    assert by_name["linear"]["state"] == TargetState.skipped.value
+    assert by_name["figma"]["state"] == TargetState.not_connected.value
+    assert "detail" not in by_name["figma"]

@@ -1,28 +1,6 @@
-"""Pure partition / splice / render for mixed tool_call batches.
+"""Pure partitioning, result splicing, and rendering for mixed tool-call batches.
 
-One ``tool_call`` invocation may mix local deferred tools and
-``connectors__<connector>__<tool>`` entries. This module owns the pure logic
-around that: partitioning the original ``calls[]`` array, splicing remote
-execute results back into place, and rendering the caller-facing result
-entries.
-
-Contract:
-
-- PURE — no I/O, no imports above the stdlib + sibling leaf modules, and no
-  exceptions on any input shape. Malformed input becomes per-entry errors.
-- Position in the ORIGINAL ``calls[]`` array is the only correlation key.
-  The wire ``index`` field is never read (execute is 0-based, search is
-  1-based; trusting either is a known trap).
-- A short or over-long remote response never raises: missing slots are
-  filled with ``PROVIDER_ERROR`` entries, surplus entries are dropped.
-- Counts are recomputed over the merged array — the gateway's counts cover
-  only its slice.
-
-Caller-facing entry shape (mirrors the gateway's per-tool result discipline;
-exactly one of ``response`` / ``error`` per entry):
-
-    {"index": <position>, "name": <original name>, "response": <data>}
-    {"index": <position>, "name": <original name>, "error": {code, message, ...}}
+Correlate all remote results by original call position, never wire ``index``.
 """
 
 from __future__ import annotations
@@ -30,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
+from tools.connectors.gateway.config import session_platform
 from tools.connectors.gateway.errors import render_connection_required
 from tools.connectors.gateway.names import parse_connector_name
 
@@ -46,7 +25,6 @@ __all__ = [
 
 @dataclass(frozen=True)
 class PlannedCall:
-    """A connector-bound entry, pinned to its position in the original array."""
 
     position: int
     name: str
@@ -57,26 +35,15 @@ class PlannedCall:
 
 @dataclass(frozen=True)
 class Partition:
-    """The original ``calls[]`` split by destination, positions preserved."""
 
-    # (position, call) for entries hermes dispatches locally.
     local: tuple[tuple[int, Mapping[str, Any]], ...]
-    # Connector-bound entries, original order preserved: remote[i] becomes
-    # the gateway request's tools[i], which is also how responses correlate.
+    # Gateway request and response slots preserve this order.
     remote: tuple[PlannedCall, ...]
-    # Pre-rendered error entries for entries that route nowhere
-    # (malformed connector names). Siblings still run.
     errors: tuple[dict[str, Any], ...]
 
 
 def partition_calls(calls: Sequence[Any]) -> Partition:
-    """Split a ``calls[]`` array by destination. Total on any input.
-
-    An entry routes to the gateway when its name parses as a connector
-    name. A name that claims the ``connectors__`` prefix but does not parse
-    becomes that entry's error; everything else is local. A top-level value
-    that is not a sequence partitions as empty.
-    """
+    """Treat malformed input as per-entry errors so sibling calls still run."""
     local: list[tuple[int, Mapping[str, Any]]] = []
     remote: list[PlannedCall] = []
     errors: list[dict[str, Any]] = []
@@ -113,13 +80,7 @@ def partition_calls(calls: Sequence[Any]) -> Partition:
 
 
 def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict[str, Any]:
-    """Render one gateway result (plain dict) into the caller-facing entry.
-
-    ``remote`` is the client-layer dict for this slot: ``{"data": ...,
-    "error": None | {code, message, connector, connect_url, hint}}``.
-    CONNECTION_REQUIRED goes through the shared single-shape producer so the
-    connect link renders identically everywhere.
-    """
+    """Use the shared CONNECTION_REQUIRED shape so links render consistently."""
     error = remote.get("error") if isinstance(remote, Mapping) else None
     if not isinstance(error, Mapping):
         data = remote.get("data") if isinstance(remote, Mapping) else None
@@ -133,6 +94,7 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
             message=message,
             connect_url=_opt_str(error.get("connect_url")),
             hint=_opt_str(error.get("hint")),
+            card=session_platform() == "desktop",
         )
     else:
         payload = {"code": code, "message": message}
@@ -149,14 +111,7 @@ def splice_remote_results(
     planned: Sequence[PlannedCall],
     remote_results: Optional[Sequence[Any]],
 ) -> list[dict[str, Any]]:
-    """Map gateway results back onto planned positions, by array slot only.
-
-    ``remote_results[i]`` corresponds to ``planned[i]`` — the request was
-    built from ``planned`` in order. Missing slots (short response, or no
-    response at all) fill with ``PROVIDER_ERROR``; surplus slots have
-    nothing to correlate to and are dropped. A top-level value that is not
-    a sequence counts as no response at all.
-    """
+    """Correlate results by request slot; missing slots become per-entry errors."""
     results = _as_sequence(remote_results)
     entries: list[dict[str, Any]] = []
     for slot, plan in enumerate(_as_sequence(planned)):
@@ -180,11 +135,6 @@ def fill_remote_failure(
     *,
     code: str = "PROVIDER_ERROR",
 ) -> list[dict[str, Any]]:
-    """Render the same error into every planned slot.
-
-    For request-level failures (the HTTP envelope path): every connector
-    entry in the batch gets the error, local siblings are untouched.
-    """
     return [
         _error_entry(plan.position, plan.name, code=code, message=message)
         for plan in planned
@@ -195,13 +145,7 @@ def assemble_results(
     total: int,
     *entry_groups: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Merge rendered entries back into original order and recompute counts.
-
-    ``entry_groups`` are any number of entry lists (local, remote, partition
-    errors), each entry carrying its original position in ``index``. Slots
-    nothing claimed — a bug upstream, but this function is total — fill with
-    ``PROVIDER_ERROR``; duplicate claims keep the first and drop the rest.
-    """
+    """Preserve call order and fill unclaimed slots with per-entry errors."""
     try:
         slot_count = max(0, int(total))
     except (TypeError, ValueError):
@@ -242,11 +186,7 @@ def _error_entry(position: int, name: str, *, code: str, message: str) -> dict[s
 
 
 def _as_sequence(value: Any) -> Sequence[Any]:
-    """Normalize a top-level input to a sequence; garbage becomes empty.
-
-    str/bytes are excluded — iterating a stray string as a calls array
-    would fabricate one entry per character.
-    """
+    """Reject strings so malformed calls do not become character entries."""
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return value
     return ()

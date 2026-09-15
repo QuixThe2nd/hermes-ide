@@ -1,15 +1,11 @@
-import type { ServerRequestMap } from '@hermes/shared'
-
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
-import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
-import { normalizeConnectionRequest, setConnectionRequest } from '@/store/connection-request'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -43,11 +39,6 @@ const loadPreviewEngine = () => {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
-
-/** The params of a request whose method the handler table already matched: the backend validated
- *  them against `ServerRequestMap[M]['params']` before sending, so the method name is the contract. */
-const paramsOf = <M extends keyof ServerRequestMap>(request: ScopedServerRequest, _method: M) =>
-  request.params as unknown as ServerRequestMap[M]['params']
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
 const answerValue = (request: ScopedServerRequest, result: unknown) =>
@@ -265,27 +256,6 @@ const vaultUnlockPrompt: Handler = ctx => {
   notifyInput(ctx, translateNow('prompts.vaultUnlockTitle', displayName))
 }
 
-const connection: Handler = ctx => {
-  const { deps, request, sessionId } = ctx
-  const entry = normalizeConnectionRequest(paramsOf(request, 'connection'), request.id, sessionId || null)
-
-  if (!entry) {
-    request.respond({ settled_by: 'all_resolved', targets: [] })
-
-    return
-  }
-
-  rememberServerRequest(request)
-  setConnectionRequest(entry)
-
-  if (sessionId) {
-    deps.upsertToolCall(sessionId, connectionRequestToolPayload(entry), 'running')
-  }
-
-  markNeedsInput(ctx)
-  notifyInput(ctx, entry.reason || entry.targets.map(target => target.name).join(', '))
-}
-
 // ── Desktop-surface bridges (answered immediately, no card) ─────────────────
 
 const terminalRead: Handler = ({ request }) => {
@@ -401,7 +371,6 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
-  connection,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,

@@ -1,79 +1,92 @@
-"""Connection operation: exactly-once settlement, server-owned deadline, config-bounded wait."""
+"""Connection operation: transitions checked against the contract, exactly-once settlement,
+server-owned deadline as a constant, wake on every change."""
 
 import pytest
 
+from tools.connectors import contract as c
 from tools.connectors import operation as op
 
 
-def _two_targets():
-    return [op.Target("linear", "mcp", "install"), op.Target("figma", "mcp", "install")]
+def _two(kind="connector"):
+    return [op.Target("gmail", kind, "connect"), op.Target("notion", kind, "connect")]
 
 
-def test_settle_is_exactly_once_and_freezes_the_result():
-    operation = op.ConnectionOperation(_two_targets(), wait_seconds=30)
-    operation.record_target("linear", op.CONNECTED)
-    assert operation.settle(op.SETTLED_CONTINUE) is True
+def test_deadline_is_a_constant_not_a_config_key():
+    operation = op.ConnectionOperation(_two())
+    assert operation.deadline_at == pytest.approx(operation.created_at + op.OPERATION_DEADLINE_SECONDS)
+    assert op.OPERATION_DEADLINE_SECONDS == 300
+    assert not hasattr(op, "resolve_wait_timeout")
+
+
+def test_transition_enforces_the_contract_and_names_the_actor():
+    operation = op.ConnectionOperation(_two())
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)
+    with pytest.raises(op.IllegalTransition):
+        operation.transition("gmail", c.TargetState.connected, c.Actor.user)  # a card cannot claim connected
+    with pytest.raises(op.IllegalTransition):
+        operation.transition("gmail", c.TargetState.pending, c.Actor.backend_watcher)  # no edge back
+    operation.transition("gmail", c.TargetState.connected, c.Actor.backend_watcher)
+    assert operation.target("gmail").state == c.TargetState.connected
+
+
+def test_transition_returns_the_change_and_wakes_the_waiter():
+    operation = op.ConnectionOperation(_two())
+    assert not operation.wake.is_set()
+    change = operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher, detail="link minted")
+    assert change == {"target": "gmail", "from": "pending", "to": "initiated", "actor": "backend_watcher", "detail": "link minted"}
+    assert operation.wake.is_set()
+
+
+def test_same_state_transition_is_a_no_op_not_an_error():
+    operation = op.ConnectionOperation(_two())
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)
+    operation.wake.clear()
+    assert operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher) is None
+    assert not operation.wake.is_set()
+
+
+def test_settle_is_exactly_once_and_stamps_not_connected():
+    operation = op.ConnectionOperation(_two())
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)
+    operation.transition("gmail", c.TargetState.connected, c.Actor.backend_watcher)
+    assert operation.settle(c.SettleReason.continue_) is True
     frozen = operation.result()
-    # Later events update current state only, never the settled result.
-    assert operation.settle(op.SETTLED_DEADLINE) is False
-    operation.record_target("figma", op.CONNECTED)
-    assert operation.settled_by == op.SETTLED_CONTINUE
+    assert operation.settle(c.SettleReason.deadline) is False
     assert operation.result() == frozen
-    assert operation.target("figma").state == op.CONNECTED  # live state did move
+    by = {t["name"]: t for t in frozen["targets"]}
+    assert by["gmail"]["state"] == "connected"
+    # The settle reason is on the operation, never copied into a row's detail (the card showed it as red text).
+    assert by["notion"]["state"] == "not_connected" and "detail" not in by["notion"]
 
 
-def test_unresolved_targets_are_marked_not_connected_at_settlement():
-    operation = op.ConnectionOperation(_two_targets(), wait_seconds=30)
-    operation.record_target("linear", op.CONNECTED)
-    operation.settle(op.SETTLED_DEADLINE)
-    states = {t["name"]: t for t in operation.result()["targets"]}
-    assert states["linear"]["state"] == op.CONNECTED
-    assert states["figma"]["state"] == op.NOT_CONNECTED
-    assert states["figma"]["detail"] == op.SETTLED_DEADLINE
-
-
-def test_all_resolved_means_connected_or_explicitly_skipped():
-    operation = op.ConnectionOperation(_two_targets(), wait_seconds=30)
-    operation.record_target("linear", op.CONNECTED)
-    operation.record_target("figma", op.FAILED, "oauth denied")
-    # A recoverable failure keeps the operation open.
-    assert operation.settle_if_all_resolved() is False
-    operation.record_target("figma", op.SKIPPED)
+def test_all_resolved_settles_on_connected_or_skipped_only():
+    operation = op.ConnectionOperation(_two())
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)
+    operation.transition("gmail", c.TargetState.failed, c.Actor.backend_watcher, detail="oauth denied")
+    operation.transition("notion", c.TargetState.skipped, c.Actor.user)
+    assert operation.settle_if_all_resolved() is False  # failed keeps the op open
+    operation.transition("gmail", c.TargetState.skipped, c.Actor.user)
     assert operation.settle_if_all_resolved() is True
-    assert operation.settled_by == op.SETTLED_ALL_RESOLVED
+    assert operation.settled_by == c.SettleReason.all_resolved
 
 
-def test_deadline_is_set_at_creation_and_never_recomputed():
-    operation = op.ConnectionOperation(_two_targets(), wait_seconds=42)
-    first = operation.deadline_at
-    assert first == pytest.approx(operation.created_at + 42)
-    operation.record_target("linear", op.CONNECTED)
+def test_target_keeps_the_link_and_the_mint_detail_across_transitions():
+    operation = op.ConnectionOperation(_two())
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher,
+                         connect_url="https://link/gmail", detail="")
+    operation.transition("gmail", c.TargetState.failed, c.Actor.backend_watcher, detail="vendor said no")
+    snap = operation.target("gmail").snapshot()
+    assert snap["connect_url"] == "https://link/gmail"
+    assert snap["detail"] == "vendor said no"
+
+
+def test_request_payload_carries_the_live_target_snapshot():
+    operation = op.ConnectionOperation([op.Target("gmail", "connector", "reconnect")], tool_call_id="call-1")
+    operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher, connect_url="https://l/gmail")
     payload = operation.request_payload()
-    assert payload["deadline_at"] == first
-    assert payload["op_id"] == operation.op_id
-    assert [t["name"] for t in payload["targets"]] == ["linear", "figma"]
-
-
-def test_record_target_rejects_unknown_names():
-    operation = op.ConnectionOperation(_two_targets())
-    assert operation.record_target("github", op.CONNECTED) is False
-
-
-@pytest.mark.parametrize(
-    ("config", "expected"),
-    [
-        ({}, op.WAIT_TIMEOUT_DEFAULT_SECONDS),
-        ({"connections": {"wait_timeout_seconds": 600}}, 600.0),
-        ({"connections": {"wait_timeout_seconds": 1}}, op.WAIT_TIMEOUT_FLOOR_SECONDS),
-        ({"connections": {"wait_timeout_seconds": "nope"}}, op.WAIT_TIMEOUT_DEFAULT_SECONDS),
-        ({"connections": {"wait_timeout_seconds": True}}, op.WAIT_TIMEOUT_DEFAULT_SECONDS),
-    ],
-)
-def test_wait_timeout_reads_only_its_own_key_with_a_floor_and_no_ceiling(config, expected):
-    assert op.resolve_wait_timeout(config) == expected
-
-
-def test_legacy_timeouts_never_proxy_for_the_wait(monkeypatch):
-    # The batch guard env var and the clarify timeout are separate budgets.
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "7")
-    assert op.resolve_wait_timeout({"agent": {"clarify_timeout": 9}}) == op.WAIT_TIMEOUT_DEFAULT_SECONDS
+    (target,) = payload["targets"]
+    assert target == {"name": "gmail", "kind": "connector", "action": "reconnect", "state": "initiated",
+                      "connect_url": "https://l/gmail"}
+    # The model's own id keys the card to its tool row; a later op for the same apps gets a new one.
+    assert payload["tool_call_id"] == "call-1"
+    assert "reason" not in payload

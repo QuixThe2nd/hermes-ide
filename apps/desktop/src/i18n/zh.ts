@@ -18,7 +18,6 @@ export const zh = defineLocale({
     opening: '正在打开登录…',
     waiting: '请在浏览器中完成连接…',
     timeout: '仍在等待授权。',
-    keepWaiting: '继续等待',
     refresh: '刷新状态',
     statusError: '无法检查连接，请刷新重试。',
     connectError: '无法开始授权，请重试。',

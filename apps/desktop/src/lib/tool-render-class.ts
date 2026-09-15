@@ -8,11 +8,6 @@
  * rather than inside either one.
  */
 
-import type { ToolCallMessagePart } from '@assistant-ui/react'
-
-import { mcpTargets } from '@/lib/connector-tools'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
-
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
 /** Renders a diff — the deliverable of the turn, and the one card whose cost scales. */
@@ -29,8 +24,7 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
-//   - `manage_connections` is a consent card (MCP always, managed under the onboarding
-//     gate). Folding it into a "Using 2 tools" summary hides the buttons.
+//   - `manage_connections` is a consent card; its controls must stay visible.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -45,12 +39,12 @@ const CARD_TOOL_NAMES = new Set([
 // Name the run splitter uses for a manage_connections part it has classified as a card.
 export const CONNECTION_CARD_KEY = 'manage_connections:card'
 
-export function isCardTool(toolName: string, args?: ToolCallMessagePart['result']): boolean {
+export function isCardTool(toolName: string): boolean {
   return (
     CARD_TOOL_NAMES.has(toolName) ||
     toolName === CONNECTION_CARD_KEY ||
     isFileEditTool(toolName) ||
-    (toolName === 'manage_connections' && (isOnboardingEnabled() || mcpTargets(toolName, args).length > 0))
+    toolName === 'manage_connections'
   )
 }
 

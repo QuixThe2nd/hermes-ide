@@ -1,4 +1,4 @@
-"""Connector calls re-enter the normal dispatcher under their composed names."""
+"""Route connector calls through the normal dispatch policy pipeline."""
 
 import json
 from dataclasses import asdict
@@ -9,11 +9,6 @@ from tools.connectors.gateway.merge import assemble_results, fill_remote_failure
 
 
 def dispatch_connector_call(name, arguments, tool_call_id):
-    """Transport leg only; the caller owns the normal tool policy pipeline.
-
-    Execution middleware wraps the actual I/O, so connector entries execute
-    individually rather than queuing side effects after a policy callback returns.
-    """
     from tools.connectors.gateway.bridge import run_remote
 
     partition = partition_calls([{"name": name, "arguments": arguments}])
@@ -37,14 +32,12 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
     entries = list(partition.errors)
     for offset, plan in enumerate(partition.remote):
         if is_interrupted():
-            # The executor only checks for /stop between tools, and this whole batch
-            # is one tool to it: unstarted entries stay unsent, or a stop landing on
-            # entry 1 of 20 would still fire 19 remote side effects.
+            # Check before every entry so /stop prevents unstarted remote side effects.
             entries.extend(fill_remote_failure(
                 partition.remote[offset:], "Stopped by the user before this call was made.",
                 code="INTERRUPTED"))
             break
-        # Wrapper-level skip flags describe only the wrapper, never its entries.
+        # Each entry must run its own policy and middleware.
         payload = handle_function_call(
             plan.name, plan.arguments, **asdict(ids), user_task=user_task,
             enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),

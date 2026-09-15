@@ -857,7 +857,7 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
 # spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
 # one run).
-# ``manage_connections`` waits on connections.wait_timeout_seconds; the generic deadline
+# ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
 # would return tool_timeout while its approval card is still open.
 _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
 

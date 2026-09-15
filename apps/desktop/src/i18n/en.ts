@@ -24,7 +24,6 @@ export const en: Translations = {
     opening: 'Opening sign-in…',
     waiting: 'Finish connecting in your browser…',
     timeout: 'Still waiting for authorization.',
-    keepWaiting: 'Keep waiting',
     refresh: 'Refresh status',
     statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',

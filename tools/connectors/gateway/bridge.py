@@ -1,21 +1,6 @@
-"""The one module core code imports for connector dispatch.
+"""Core boundary for connector search, descriptions, and remote execution.
 
-Two legs, both TOTAL: each entry point catches its own exceptions and returns
-a structured value, because the bridge branch in core dispatch bypasses the
-registry's catch-wrap. An exception escaping this module is a bug.
-
-Availability leg: :func:`connector_search_hits` and :func:`connector_describe`
-feed tool_search and tool_describe. Silent degradation (D32): every failure
-returns ``{}``. Signed out, config off, or a dark gateway must leave local
-search behaving exactly as it does today.
-
-Transport leg: :func:`run_remote` sends one gateway execute request for the
-planned entries it is handed and splices the results back by slot.
-``tools.connectors.dispatch`` calls it once per connector entry, after core
-dispatch has already run scope, hook, approval and middleware policy against
-that entry's composed ``connectors__`` name. Vendor slug restoration and the
-single literal-slug retry live here; partition and envelope assembly live in
-``merge.py``.
+Search and description failures degrade to no remote results; exceptions cannot escape this bridge because core dispatch bypasses registry error wrapping.
 """
 
 from __future__ import annotations
@@ -46,11 +31,7 @@ def connector_search_hits(
     availability: Optional[Callable[[], bool]] = None,
     client_factory: Optional[Callable[[], Any]] = None,
 ) -> dict[str, Any]:
-    """Remote hits for tool_search, or ``{}`` on EVERY failure path (D32).
-
-    A connector problem must never change local search behavior: the caller
-    treats ``{}`` as "no remote results" and proceeds exactly as today.
-    """
+    """Return no hits on failure so local search behavior is unchanged."""
     try:
         available = (availability or connectors_available)()
         if not available or not queries:
@@ -58,7 +39,6 @@ def connector_search_hits(
         client = (client_factory or _default_client_factory)()
         return client.search(list(queries)) or {}
     except GatewayUnavailable:
-        # Connectors dark for this principal — the expected quiet path.
         logger.debug("Connector search skipped: gateway dark")
         return {}
     except Exception as exc:
@@ -72,25 +52,12 @@ def connector_describe(
     availability: Optional[Callable[[], bool]] = None,
     client_factory: Optional[Callable[[], Any]] = None,
 ) -> dict[str, Any]:
-    """Schemas for ``connectors__*`` names, or ``{}`` on EVERY failure path (D32).
-
-    Returns ``{"tools": {<composed name>: {"description", "parameters"}}}``
-    keyed by the ORIGINAL composed names. Names the gateway does not resolve
-    are simply absent — the caller's not_found handling covers them. The
-    gateway's schemas route takes bare vendor slugs, so every deterministic
-    recovery candidate is requested; mapping back to the ``connectors__``
-    name uses the caller's own parse, never the response.
-    """
+    """Return no schemas on failure so local descriptions are unchanged."""
     try:
         available = (availability or connectors_available)()
         if not available:
             return {}
-        # Candidate sets from different names can nominate the SAME vendor
-        # slug (one name's literal is another's prefixed primary), so the
-        # slug->name mapping cannot be global. Resolution is per name: each
-        # name takes the schema of its own best-ranked candidate that the
-        # gateway resolved. First occurrence wins only for a DUPLICATED
-        # composed name.
+        # Resolve each name independently: candidates can overlap across composed names.
         wanted: dict[str, tuple[str, ...]] = {}
         request_slugs: list[str] = []
         for name in names:
@@ -141,17 +108,13 @@ def run_remote(
     except Exception:
         available = False
     if not available:
-        # The model addressed connector names while connectors are off/dark —
-        # per-entry unknown-tool errors, exactly like any unknown tool name.
         return fill_remote_failure(
             planned,
             "Unknown tool: connectors are not available in this session.",
             code="TOOL_NOT_FOUND",
         )
 
-    # Composition cuts only the conventional toolkit prefix. Restore that
-    # exact prefix before crossing the wire; literal recovery below covers
-    # the convention's exceptions without probing entries that succeeded.
+    # Try the conventional prefix first; only confirmed misses get a literal retry.
     wire_planned = [
         dataclass_replace(
             plan,
@@ -198,8 +161,7 @@ def run_remote(
     if not fallback_planned:
         return entries
 
-    # One literal pass only: retry confirmed misses together, then splice
-    # those slots alone so successful and non-not-found siblings stay fixed.
+    # Retry confirmed misses once without disturbing successful sibling slots.
     try:
         fallback_results = client.execute(fallback_planned)
         fallback_entries = splice_remote_results(fallback_planned, fallback_results)

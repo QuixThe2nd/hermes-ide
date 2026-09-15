@@ -878,18 +878,6 @@ The MCP threshold is always capped at the (possibly context-scaled) generic per-
 
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 
-## Connections
-
-```yaml
-connections:
-  wait_timeout_seconds: 120   # floor 5, no ceiling
-```
-
-How long one `manage_connections` call may stay open: the managed-connector
-`wait`, or the approval card for a local MCP install / enable / authorize on the
-desktop. The backend fixes the deadline when the call starts; reopening the chat
-or restarting the desktop never extends it.
-
 ## Global Toolset Disable
 
 To suppress specific toolsets across the CLI and every gateway platform in one
