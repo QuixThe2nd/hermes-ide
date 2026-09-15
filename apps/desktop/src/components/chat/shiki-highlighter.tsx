@@ -23,15 +23,12 @@ export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-c
  * tinted slab of the reply; copy is a hover-reveal control in the corner.
  *
  * That control is inset 16px rather than hugging the corner: the card's
- * scroller spans its full width, so the card's right edge IS the scrollbar's
- * lane, and `.scrollbar-overlay` on that scroller hands the lane back to the
- * platform (~15px macOS classic with a mouse attached, ~17px Windows) rather
- * than the app's themed 4px gutter. The old 6px inset sat on the bar it
- * floats over, at the height the thumb occupies when scrolled to the top.
- * 16px clears macOS's ~15px lane with the control's outer box and puts the
- * 12px icon 20px out (via `px-1`), clearing Windows's ~17px lane. Same
- * treatment as the tool-block copy button (tool/fallback.tsx), which floats
- * over the same kind of scroller.
+ * scroller (`ExpandableBlock` / `CodeCardBody`) spans its full width and
+ * carries `.scrollbar-overlay`, which hands the card's right edge back to the
+ * platform's scrollbar lane (~15px macOS classic with a mouse attached, ~17px
+ * Windows) rather than the app's themed 4px gutter. A 6px inset sat on the
+ * bar it floats over. 16px clears macOS's lane with the control's outer box
+ * and puts the 12px icon (same size as the log-tail copy control) 20px out.
  *
  * The heavy lifting lives in the lazy `shiki-block` chunk (full bundle so all
  * `bundledLanguages` work; theme switches follow the document `color-scheme`
