@@ -839,14 +839,10 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
-    # Every dispatch owns a durable row for THIS session before the turn writes anything. The
-    # prompt.submit handler persists it; the recovery dispatches that call straight in here (the
-    # crash auto-continue, the queued-prompt drain, the compute-host fallback) did not, so a turn whose
-    # row never landed — create deferred/failed under the SQLite lock, a record whose session_key had
-    # not been stamped yet — was materialized by the token-accounting guard instead: an anonymous
-    # source='unknown' session holding an assistant-first fragment, which the real creator's later
-    # upsert can never repair (the row insert keeps the first writer's source) and which the orphan
-    # sweep skips. Binding the row here keeps the recovery inside the ORIGINAL session (#111999).
+    # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
+    # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
+    # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
+    # the token-accounting guard as an anonymous session (#111999).
     if _ensure_session_db_row(session) is False:
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
