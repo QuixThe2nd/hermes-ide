@@ -14818,8 +14818,6 @@ function createWindow() {
   // copies; here we refuse to load one into the PRIMARY window and put the
   // visible repair page in it instead. The Reload button re-attempts the
   // bundle in case the file lock cleared since boot.
-  // One resolution, not two: resolveRendererIndexWithMissing already computed
-  // this copy's missing list while choosing it.
   const resolvedRenderer = DEV_SERVER ? null : resolveRendererIndexWithMissing()
   const rendererIndex = resolvedRenderer?.index ?? null
   const tornAssets = resolvedRenderer?.missing ?? []
