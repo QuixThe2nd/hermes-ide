@@ -10,6 +10,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
+from agent.proxy_bypass import should_bypass_proxy
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
@@ -49,17 +50,16 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
     parked. Rebuild httpx's own behaviour as explicit ``mounts`` — same source order (environment
     first, then the OS proxy), ``NO_PROXY`` / platform bypass list respected, ``socks://``
     normalized, and TLS settings identical to the transport they accompany.
+
+    NO_PROXY goes through ``agent.proxy_bypass.should_bypass_proxy`` — the one matcher the LLM
+    transport and the gateway adapters use (CIDR ranges and ``*.host`` forms the stdlib check
+    does not understand) — plus ``urllib.request.proxy_bypass`` for the OS bypass list
+    (Windows ``ProxyOverride`` / macOS exceptions).
     """
     host = urllib.parse.urlsplit(url).hostname or ""
-    if not host:
+    if not host or should_bypass_proxy(url) or urllib.request.proxy_bypass(host):
         return None
-    try:
-        if urllib.request.proxy_bypass(host):  # NO_PROXY / ProxyOverride: this host goes direct
-            return None
-        proxies = urllib.request.getproxies() or {}
-    except Exception:  # a proxy-lookup failure must not block the (direct) connection
-        logger.debug("MCP server '%s': proxy lookup failed", server_name, exc_info=True)
-        return None
+    proxies = urllib.request.getproxies()
     mounts: dict = {}
     for scheme in ("http", "https"):
         proxy_url = normalize_proxy_url(proxies.get(scheme) or proxies.get("all"))

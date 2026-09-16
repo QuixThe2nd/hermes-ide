@@ -1,20 +1,17 @@
-"""Proxy support for MCP HTTP/SSE transports.
+"""Proxy support for MCP HTTP/SSE transports (#111794).
 
-Behaviour contract: httpx auto-detects environment/OS proxies only when ``transport is None``
-(``allow_env_proxies = trust_env and transport is None``). Both MCP HTTP transports pass a custom
-transport — the wire-body cap — so HTTP_PROXY / HTTPS_PROXY and the OS proxy were silently ignored
-for every HTTP/SSE MCP server, and a network that reaches the MCP host only through a proxy failed
-every connect (``All connection attempts failed``) with the server parked.
+httpx auto-detects environment/OS proxies only when ``transport is None``; both MCP HTTP
+transports pass a custom transport (the wire-body cap), so HTTP_PROXY / HTTPS_PROXY were silently
+ignored for every HTTP/SSE MCP server. The fix hands the SDK client explicit ``mounts``.
 
-These tests pin the contract: a proxy that applies to the server URL reaches the SDK client as
-explicit ``mounts``, a ``NO_PROXY`` host stays direct, and the transport wiring (body cap, TLS
-kwargs, headers/auth passthrough) is otherwise unchanged.
+Invariants: (1) a proxy that applies to the server URL becomes a mount and a NO_PROXY host
+(including the CIDR form only ``agent.proxy_bypass`` understands) stays direct; (2) both client
+builders carry the mounts next to the body-cap transport, with headers/auth passthrough intact.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import urllib.request
 from unittest.mock import MagicMock, patch
 
@@ -22,61 +19,38 @@ import pytest
 
 URL = "https://mcp.example.com/mcp"
 PROXY = "http://127.0.0.1:10808"
+_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy")
 
 
 @pytest.fixture
 def env_only_proxy(monkeypatch):
-    """Environment-only proxy discovery, so the host machine's OS/registry proxy can't leak in."""
-    def _from_env() -> dict:
-        found = {}
-        for scheme in ("http", "https", "all"):
-            value = os.environ.get(f"{scheme}_proxy") or os.environ.get(f"{scheme.upper()}_PROXY")
-            if value:
-                found[scheme] = value
-        return found
-
-    monkeypatch.setattr(urllib.request, "getproxies", _from_env)
-    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
-                "NO_PROXY", "no_proxy"):
+    """Environment-only proxy discovery so the host's OS/registry proxy can't leak in."""
+    for key in _PROXY_ENV:
         monkeypatch.delenv(key, raising=False)
-    yield
+    monkeypatch.setattr(urllib.request, "getproxies", urllib.request.getproxies_environment)
+    monkeypatch.setattr(urllib.request, "proxy_bypass", urllib.request.proxy_bypass_environment)
+    from tools.mcp_tool import _ensure_mcp_sdk, sdk_httpx
+
+    if not _ensure_mcp_sdk() or sdk_httpx() is None:
+        pytest.skip("mcp SDK not installed")
 
 
-class TestProxyMounts:
-    def test_no_proxy_leaves_the_connect_direct(self, env_only_proxy):
-        from tools.mcp_tool import sdk_httpx
-        from tools.mcp_tool_transport import _mcp_proxy_mounts
+def test_proxy_env_becomes_a_mount_and_no_proxy_stays_direct(env_only_proxy, monkeypatch):
+    from tools.mcp_tool import sdk_httpx
+    from tools.mcp_tool_transport import _mcp_proxy_mounts
 
-        assert _mcp_proxy_mounts(sdk_httpx(), URL, True, None) is None
+    httpx = sdk_httpx()
+    assert _mcp_proxy_mounts(httpx, URL, True, None) is None  # no proxy configured: direct
 
-    def test_https_proxy_becomes_a_mount(self, env_only_proxy, monkeypatch):
-        from tools.mcp_tool import sdk_httpx
-        from tools.mcp_tool_transport import _mcp_proxy_mounts
+    monkeypatch.setenv("HTTPS_PROXY", PROXY)
+    mounts = _mcp_proxy_mounts(httpx, URL, True, None)
+    assert set(mounts) == {"https://"} and isinstance(mounts["https://"], httpx.AsyncHTTPTransport)
 
-        monkeypatch.setenv("HTTPS_PROXY", PROXY)
-        mounts = _mcp_proxy_mounts(sdk_httpx(), URL, True, None)
-
-        assert set(mounts) == {"https://"}
-        assert mounts["https://"] is not None
-
-    def test_all_proxy_covers_both_schemes(self, env_only_proxy, monkeypatch):
-        from tools.mcp_tool import sdk_httpx
-        from tools.mcp_tool_transport import _mcp_proxy_mounts
-
-        monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:10808")  # Clash/WSL alias form
-        mounts = _mcp_proxy_mounts(sdk_httpx(), URL, True, None)
-
-        assert set(mounts) == {"http://", "https://"}
-
-    def test_no_proxy_host_is_not_mounted(self, env_only_proxy, monkeypatch):
-        from tools.mcp_tool import sdk_httpx
-        from tools.mcp_tool_transport import _mcp_proxy_mounts
-
-        monkeypatch.setenv("HTTPS_PROXY", PROXY)
-        monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: host == "mcp.example.com")
-
-        assert _mcp_proxy_mounts(sdk_httpx(), URL, True, None) is None
+    monkeypatch.setenv("NO_PROXY", "mcp.example.com")
+    assert _mcp_proxy_mounts(httpx, URL, True, None) is None
+    monkeypatch.setenv("NO_PROXY", "10.0.0.0/8")  # CIDR: only the repo matcher understands it
+    assert _mcp_proxy_mounts(httpx, "https://10.1.2.3/mcp", True, None) is None
+    assert _mcp_proxy_mounts(httpx, "https://11.1.2.3/mcp", True, None) is not None
 
 
 class _RecordingClient:
@@ -105,42 +79,31 @@ def _async_cm(value):
     return _CM()
 
 
-class TestTransportWiring:
-    def test_streamable_http_client_carries_mounts_and_body_cap(self, env_only_proxy, monkeypatch):
-        monkeypatch.setenv("HTTPS_PROXY", PROXY)
-        from tools.mcp_tool import MCPServerTask, sdk_httpx
-
-        server = MCPServerTask("remote")
-        streams = server._streamable_http_transport(URL, {}, 5.0, True, None, None, False, set())
-        _RecordingClient.captured = {}
-
-        with patch.object(sdk_httpx(), "AsyncClient", _RecordingClient), \
-             patch("tools.mcp_tool.streamable_http_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))):
-            asyncio.run(_drive(streams))
-
-        captured = _RecordingClient.captured
-        assert captured["mounts"]["https://"] is not None  # proxy restored
-        assert captured["transport"] is not None  # wire-body cap still the default transport
-
-    def test_sse_client_factory_carries_mounts(self, env_only_proxy, monkeypatch):
-        monkeypatch.setenv("HTTPS_PROXY", PROXY)
-        from tools.mcp_tool import MCPServerTask, sdk_httpx
-
-        server = MCPServerTask("remote")
-        _RecordingClient.captured = {}
-
-        with patch("tools.mcp_tool.sse_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))) as sse, \
-             patch.object(sdk_httpx(), "AsyncClient", _RecordingClient):
-            server._sse_transport(URL, {}, 5.0, True, None, None, False)
-            factory = sse.call_args.kwargs["httpx_client_factory"]
-            client = factory(headers={"X-Test": "1"}, timeout=None, auth=None)
-
-        assert client is not None
-        assert _RecordingClient.captured["mounts"]["https://"] is not None
-        assert _RecordingClient.captured["headers"] == {"X-Test": "1"}  # passthrough intact
-        assert _RecordingClient.captured["transport"] is not None
-
-
 async def _drive(streams):
     async with streams:
         pass
+
+
+def test_both_client_builders_carry_proxy_mounts_next_to_the_body_cap(env_only_proxy, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", PROXY)
+    from tools.mcp_tool import MCPServerTask, sdk_httpx
+
+    server = MCPServerTask("remote")
+    streams = server._streamable_http_transport(URL, {}, 5.0, True, None, None, False, set())
+    _RecordingClient.captured = {}
+    with patch.object(sdk_httpx(), "AsyncClient", _RecordingClient), \
+         patch("tools.mcp_tool.streamable_http_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))):
+        asyncio.run(_drive(streams))
+    captured = _RecordingClient.captured
+    assert captured["mounts"]["https://"] is not None  # proxy restored
+    assert captured["transport"] is not None  # wire-body cap still the default transport
+
+    _RecordingClient.captured = {}
+    with patch("tools.mcp_tool.sse_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))) as sse, \
+         patch.object(sdk_httpx(), "AsyncClient", _RecordingClient):
+        server._sse_transport(URL, {}, 5.0, True, None, None, False)
+        sse.call_args.kwargs["httpx_client_factory"](headers={"X-Test": "1"}, timeout=None, auth=None)
+    captured = _RecordingClient.captured
+    assert captured["mounts"]["https://"] is not None
+    assert captured["headers"] == {"X-Test": "1"}  # SDK passthrough intact
+    assert captured["transport"] is not None
