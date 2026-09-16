@@ -50,7 +50,9 @@ Tooltip, the screen-reader table, and aria-labels follow the active mode.
 
 ## Drill-down
 
-Per-chat rows (sortable by requests/input/output/cached/total), per-harness rows, donut slices and legend entries all set their filter on click; active filters show as removable chips, with a clear-all button. The per-chat table reads `Unknown` for rows with no recorded identity — the honest state of ledgers written before chat attribution, which the dashboard reads as-is (it never migrates anything).
+The compact toolbar keeps the time range, searchable chat picker, and **Filters** button above the metrics. Typing searches chat choices; selecting a result applies the chat filter. The selected chat remains visible and has its own clear button. **Filters** opens a drawer for harness, provider, model, chat type, route, and outcome. Changes apply immediately; **Done** closes the drawer. Active drawer filters appear as removable chips, and clear-all removes constraints while preserving the time range.
+
+Per-chat rows (sortable by requests/input/output/cached/total), per-harness rows, donut slices and legend entries all set their filter on click, or with Enter/Space once focused. The per-chat table reads `Unknown` for rows with no recorded identity, the honest state of ledgers written before chat attribution, which the dashboard reads as-is (it never migrates anything).
 
 ## Provider branding
 

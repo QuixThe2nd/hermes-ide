@@ -1381,6 +1381,11 @@ _FACET_SELECTS = (
     ("outcome", "f-outcome", "All outcomes"),
 )
 
+# The drawer facets: the keys the advanced-filters badge counts and the only
+# ones that render chips.  range is the window (not a constraint) and chat is
+# visible and clearable in the toolbar picker, so neither needs either.
+_ADVANCED_FILTER_KEYS = tuple(key for key, _, _ in _FACET_SELECTS)
+
 
 def _facet_option(value: str, requests: Any, tokens: Any, selected: bool, label: str = "") -> str:
     sel = " selected" if selected else ""
@@ -1389,9 +1394,12 @@ def _facet_option(value: str, requests: Any, tokens: Any, selected: bool, label:
 
 
 def render_filter_bar(snapshot: dict[str, Any]) -> str:
-    """The shared filter state as controls: range preset, one select per
-    exact-match facet (options carry their cross-filtered counts), a
-    searchable chat picker, and one removable chip per active filter."""
+    """The shared filter state as controls: a slim toolbar (time-range preset,
+    one unified searchable chat picker, an advanced-filters button whose badge
+    counts the drawer facets) plus a right-hand ``<dialog>`` holding the six
+    exact-match facet selects and one removable chip per active facet.  The
+    ``f-*`` selects stay the single owners of filter state — only where they
+    are mounted changes."""
     filters = (snapshot.get("filters") or {}).get("values") or {}
     facets = snapshot.get("facets") or {}
     range_key = (snapshot.get("range") or {}).get("key") or "24h"
@@ -1431,10 +1439,12 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
             f'<select id="{select_id}" data-key="{key}">{"".join(options)}</select></label>'
         )
 
-    # searchable chat picker: the select lists "<display> (<key>)"; the
-    # search input filters the options client-side
+    # unified chat picker: the select still owns the chat filter and lists
+    # "<display> · counts" options (data-label/data-meta let the combobox
+    # split them again); the input and its listbox are only a view of it, so
+    # typing narrows the choices without ever moving the filter
     selected_chat = filters.get("chat") or ""
-    chat_options = ['<option value="">All chats</option>']
+    chat_options = ['<option value="" data-label="All chats">All chats</option>']
     seen_chat = set()
     for opt in (facets.get("chat") or {}).get("options") or []:
         key = str(opt.get("key") or "")
@@ -1443,21 +1453,39 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
         count = f"{fmt_compact(opt.get('total_tokens') or 0)} tok · {fmt_int(opt.get('requests') or 0)} req"
         sel = " selected" if key == selected_chat else ""
         chat_options.append(
-            f'<option value="{esc(key)}"{sel}>{esc(display)} · {esc(count)}</option>'
+            f'<option value="{esc(key)}"{sel} data-label="{esc(display)}"'
+            f' data-meta="{esc(count)}">{esc(display)} · {esc(count)}</option>'
         )
     if selected_chat and selected_chat not in seen_chat:
         chat_options.insert(
-            1, f'<option value="{esc(selected_chat)}" selected>{esc(selected_chat)}</option>'
+            1, f'<option value="{esc(selected_chat)}" selected'
+               f' data-label="{esc(selected_chat)}">{esc(selected_chat)}</option>'
         )
     chat_picker = (
-        '<label class="f chatpick"><span>Chats</span>'
-        '<input type="search" id="f-chat-search" placeholder="search chats&hellip;"'
-        ' autocomplete="off" spellcheck="false" aria-label="Search chats">'
-        f'<select id="f-chat" data-key="chat">{"".join(chat_options)}</select></label>'
+        '<div class="chatpick" id="chatpick">'
+        '<svg class="cp-glyph" viewBox="0 0 16 16" aria-hidden="true" fill="none"'
+        ' stroke="currentColor" stroke-width="1.5" stroke-linecap="round">'
+        '<circle cx="7" cy="7" r="4.2"></circle><path d="M10.2 10.2 13.4 13.4"></path></svg>'
+        '<input type="text" class="cp-input" id="f-chat-search" role="combobox"'
+        ' aria-label="Filter by chat" aria-haspopup="listbox" aria-expanded="false"'
+        ' aria-controls="chat-listbox" aria-autocomplete="list"'
+        ' placeholder="All chats &mdash; search&hellip;"'
+        ' autocomplete="off" spellcheck="false">'
+        '<button type="button" class="cp-clear" id="f-chat-clear" hidden'
+        ' aria-label="Clear the chat filter">&#10005;</button>'
+        '<select id="f-chat" data-key="chat" class="sr-only" tabindex="-1"'
+        f' aria-hidden="true">{"".join(chat_options)}</select>'
+        '<ul class="cp-list" id="chat-listbox" role="listbox" aria-label="Chats" hidden></ul>'
+        '</div>'
     )
 
+    # chat needs no chip: the picker itself shows and clears it.  range is the
+    # window, not a constraint, so it never chips either.
     chips = []
-    for key, value in filters.items():
+    for key in _ADVANCED_FILTER_KEYS:
+        value = filters.get(key)
+        if not value:
+            continue
         chips.append(
             f'<button type="button" class="fchip" data-key="{esc(key)}"'
             f' title="Clear the {esc(key)} filter">'
@@ -1465,22 +1493,46 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
             '<span class="fx" aria-hidden="true">✕</span></button>'
         )
     active = len(chips)
+    any_filter = any(filters.get(key) for key in FILTER_KEYS)
     return (
         '<section class="card filters" aria-label="Filters" id="filters">'
-        '<div class="card-head"><h2>Filters</h2><div class="card-meta">'
-        f'<span class="win" id="filter-count">{"" if active else "no filters active"}'
-        f'{active if active else ""}{" active" if active else ""}</span>'
-        f'<button type="button" class="fbtn" id="filter-clear"{" hidden" if not active else ""}>clear all</button>'
-        '</div></div>'
-        '<div class="filter-grid">'
-        f'<label class="f"><span>Range</span><select id="f-range">{range_options}</select></label>'
-        + "".join(selects[:2])
-        + "".join(selects[2:4])
+        '<div class="ftoolbar">'
+        '<label class="frange"><span class="sr-only">Range</span>'
+        f'<select id="f-range">{range_options}</select></label>'
         + chat_picker
-        + "".join(selects[4:])
-        + '</div><div class="chips" id="filter-chips">'
+        + '<button type="button" class="fadv" id="filters-open"'
+        ' aria-haspopup="dialog" aria-controls="filter-drawer" aria-expanded="false">'
+        '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true">'
+        '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">'
+        '<path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"></path></g>'
+        '<g fill="currentColor"><circle cx="10.2" cy="4.5" r="1.8"></circle>'
+        '<circle cx="5.6" cy="8" r="1.8"></circle><circle cx="11" cy="11.5" r="1.8"></circle></g>'
+        '</svg>Filters'
+        f'<span class="fbadge" id="filter-count"{" hidden" if not active else ""}>{active}</span>'
+        '</button></div>'
+        f'<div class="chips" id="filter-chips"{" hidden" if not active else ""}>'
         + "".join(chips)
         + '</div></section>'
+        + render_filter_drawer(selects, any_filter)
+    )
+
+
+def render_filter_drawer(selects: list[str], any_filter: bool) -> str:
+    """The six exact-match facet selects inside a native modal ``<dialog>``.
+    A closed dialog renders nothing, so the collapsed filter region is just
+    the toolbar; ``showModal()`` supplies the backdrop, Escape and focus
+    containment."""
+    return (
+        '<dialog class="fdrawer" id="filter-drawer" aria-labelledby="fd-title">'
+        '<div class="fd-head"><h2 id="fd-title">Advanced filters</h2>'
+        '<button type="button" class="fd-x" id="filter-drawer-close"'
+        ' aria-label="Close advanced filters">&#10005;</button></div>'
+        '<div class="fd-body">' + "".join(selects) + '</div>'
+        '<div class="fd-foot">'
+        f'<button type="button" class="fbtn" id="filter-clear"{" hidden" if not any_filter else ""}>'
+        'clear all</button>'
+        '<button type="button" class="fdone" id="filter-drawer-done">Done</button>'
+        '</div></dialog>'
     )
 
 
@@ -1698,11 +1750,16 @@ def chart_data_table(buckets: list[dict[str, Any]]) -> str:
             f"<td>{cell}</td>"
             "</tr>"
         )
+    # the sr-only clip has to come from a block wrapper: a display:table box
+    # holds its min-content width no matter what .sr-only says (overflow does
+    # not apply to table boxes), and that leftover width would otherwise widen
+    # the page's own scrollable area — visible as horizontal page overflow on
+    # a phone, where the per-model rows are far wider than the viewport
     return (
-        '<table class="sr-only"><caption>Tokens per time bucket (Australia/Sydney)</caption>'
+        '<div class="sr-only"><table><caption>Tokens per time bucket (Australia/Sydney)</caption>'
         '<thead><tr><th scope="col">Hour</th><th scope="col">Requests</th><th scope="col">Tokens</th>'
         '<th scope="col" id="chart-table-series-head">Per-harness tokens (per model)</th></tr></thead>'
-        f'<tbody id="chart-table-body">{"".join(rows)}</tbody></table>'
+        f'<tbody id="chart-table-body">{"".join(rows)}</tbody></table></div>'
     )
 
 
@@ -1992,23 +2049,94 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 .tone-crit { background: var(--bad); }
 .tone-none { background: #66738a; }
 
-/* filter bar — one shared state, every control reuses the page tokens */
-.filters { margin-bottom: 12px; }
-.filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 10px 12px; }
-.f { display: grid; gap: 4px; min-width: 0; }
-.f > span { color: var(--muted); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
-.f select, .f input[type="search"] {
-  width: 100%; background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px;
+/* filter bar — one shared state, every control reuses the page tokens.
+   A slim toolbar carries the time range, the unified chat picker and the
+   advanced-filters button; the six exact-match facets live in a right-hand
+   <dialog> drawer.  The f-* selects stay the single owners of filter state —
+   these rules only decide where they are mounted and how they read. */
+.filters { margin-bottom: 12px; padding: 10px 12px; }
+.ftoolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.frange { flex: none; min-width: 0; }
+.frange select {
+  height: 40px; min-width: 122px; cursor: pointer;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0 9px;
+  font: inherit; font-size: 0.8rem; font-weight: 550;
+}
+.frange select:hover { border-color: var(--border-strong); }
+.frange select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+
+/* unified chat picker: the hidden #f-chat still owns the value, the
+   combobox is only its visible face — typing narrows, it never filters */
+.chatpick { position: relative; display: flex; align-items: center; flex: 1 1 250px; min-width: 176px; max-width: 520px; }
+.cp-glyph { position: absolute; left: 11px; width: 14px; height: 14px; color: var(--muted); pointer-events: none; }
+.cp-input {
+  width: 100%; height: 40px; min-width: 0;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0 30px 0 32px;
   font: inherit; font-size: 0.8rem;
 }
-.f select:focus-visible, .f input[type="search"]:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
-.chatpick { grid-row: span 2; }
-.chatpick select { margin-top: 2px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.chips:empty { margin-top: 0; }
+.cp-input::placeholder { color: var(--muted); }
+.cp-input:hover { border-color: var(--border-strong); }
+.cp-input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.chatpick.has-value .cp-input { border-color: rgba(57, 135, 229, 0.5); }
+.chatpick.has-value .cp-glyph { color: var(--accent-bright); }
+.cp-clear {
+  position: absolute; right: 5px; display: grid; place-items: center;
+  width: 28px; height: 28px; padding: 0; cursor: pointer;
+  background: transparent; border: 0; border-radius: 50%;
+  color: var(--muted); font-size: 0.82rem; line-height: 1;
+}
+.cp-clear:hover { color: var(--text); background: var(--grid); }
+.cp-clear:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.cp-list {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40;
+  margin: 0; padding: 5px; list-style: none; max-height: min(54vh, 400px); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+}
+.cp-opt { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
+.cp-opt:hover { background: rgba(255, 255, 255, 0.04); }
+.cp-opt .cp-name {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 0.8rem; color: var(--text-2);
+}
+.cp-opt .cp-meta {
+  flex: none; color: var(--muted); font-family: var(--mono);
+  font-size: 0.68rem; font-variant-numeric: tabular-nums;
+}
+.cp-opt.is-active { background: rgba(57, 135, 229, 0.2); }
+.cp-opt.is-active .cp-name { color: var(--text); }
+.cp-opt[aria-selected="true"] { background: rgba(57, 135, 229, 0.14); }
+.cp-opt[aria-selected="true"] .cp-name { color: var(--text); font-weight: 600; }
+.cp-opt[aria-selected="true"]::after { content: "✓"; flex: none; color: var(--accent-bright); font-size: 0.78rem; }
+.cp-all .cp-name { color: var(--muted); font-style: italic; }
+.cp-empty { padding: 10px 9px; color: var(--muted); font-size: 0.78rem; }
+
+/* the badge counts only the six drawer facets, so "Filters" never claims a
+   chat-only or range-only narrowing */
+.fadv {
+  appearance: none; cursor: pointer; flex: none; margin-left: auto;
+  display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 13px;
+  background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--border); border-radius: 8px;
+  font: inherit; font-size: 0.8rem; font-weight: 550; white-space: nowrap;
+}
+.fadv:hover { color: var(--text); border-color: var(--border-strong); }
+.fadv[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
+.fadv:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.fadv .ico { flex: none; width: 15px; height: 15px; }
+.fbadge {
+  display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px;
+  background: var(--accent); color: #fff; border-radius: 999px;
+  font-size: 0.7rem; font-weight: 650; font-variant-numeric: tabular-nums;
+}
+
+/* only the six drawer facets need chips — a chat filter is visible and
+   clearable in the picker itself; one scrollable row, hidden when empty */
+.chips { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
 .fchip {
-  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer; flex: none; white-space: nowrap;
   background: rgba(57, 135, 229, 0.14); color: var(--text-2);
   border: 1px solid rgba(57, 135, 229, 0.4); border-radius: 999px;
   padding: 3px 10px; font: inherit; font-size: 0.76rem; max-width: 100%;
@@ -2024,6 +2152,64 @@ tr.row-crit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
 }
 .fbtn:hover { color: var(--text-2); border-color: var(--border-strong); }
 .fbtn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+
+/* advanced-facet drawer: a native modal <dialog>, so Escape, the backdrop
+   and focus containment come from the platform.  Only [open] sets display —
+   an author display on a closed dialog would defeat the UA's display:none. */
+.fdrawer {
+  width: min(380px, 100vw); height: 100vh; height: 100dvh;
+  max-width: none; max-height: none; margin: 0 0 0 auto; padding: 0;
+  border: 1px solid var(--border-strong); border-right: 0; border-radius: 14px 0 0 14px;
+  background: var(--surface); color: var(--text);
+}
+.fdrawer[open] { display: flex; flex-direction: column; }
+.fdrawer::backdrop { background: rgba(4, 6, 10, 0.62); }
+.fd-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 16px; border-bottom: 1px solid var(--border);
+}
+.fd-head h2 { margin: 0; font-size: 0.92rem; font-weight: 600; }
+.fd-x {
+  appearance: none; cursor: pointer; display: grid; place-items: center;
+  width: 32px; height: 32px; padding: 0; background: transparent; border: 0;
+  border-radius: 8px; color: var(--muted); font-size: 0.95rem; line-height: 1;
+}
+.fd-x:hover { color: var(--text); background: var(--surface-2); }
+.fd-x:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.fd-body { flex: 1 1 auto; display: grid; gap: 14px; align-content: start; padding: 16px; overflow-y: auto; }
+.fd-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 16px; border-top: 1px solid var(--border);
+}
+.fdone {
+  appearance: none; cursor: pointer; height: 38px; padding: 0 20px;
+  background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+  font: inherit; font-size: 0.82rem; font-weight: 600;
+}
+.fdone:hover { background: var(--accent-bright); }
+.fdone:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-bright); }
+.fdrawer .f { display: grid; gap: 5px; min-width: 0; }
+.fdrawer .f > span {
+  color: var(--muted); font-size: 0.68rem; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.fdrawer .f select {
+  width: 100%; height: 40px; cursor: pointer;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0 9px;
+  font: inherit; font-size: 0.8rem;
+}
+.fdrawer .f select:hover { border-color: var(--border-strong); }
+.fdrawer .f select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .fdrawer { transition: opacity 140ms ease, transform 190ms cubic-bezier(0.2, 0.7, 0.3, 1); }
+  @starting-style { .fdrawer[open] { opacity: 0; transform: translateX(20px); } }
+  .fdrawer::backdrop { transition: opacity 150ms ease; }
+  @starting-style { .fdrawer[open]::backdrop { opacity: 0; } }
+  .cp-list { transition: opacity 110ms ease, transform 110ms ease; }
+  @starting-style { .cp-list:not([hidden]) { opacity: 0; transform: translateY(-4px); } }
+}
 
 /* per-chat table: drill-down rows + sortable numeric columns */
 .crow { cursor: pointer; }
@@ -2056,6 +2242,10 @@ footer { margin-top: 20px; color: var(--muted); font-size: 0.75rem; }
   h1 { font-size: 1.12rem; }
   .stat .value { font-size: 1.5rem; }
   .card { padding: 13px 14px; }
+  .filters { padding: 10px; }
+  /* range + Filters share the first row, the chat picker takes the second */
+  .chatpick { order: 3; flex: 1 1 100%; max-width: none; }
+  .fdrawer { width: 100vw; margin: 0; border-radius: 0; }
   th, td { padding: 6px 8px; }
 }
 """
@@ -2226,27 +2416,42 @@ JS = r"""
     onFilterChange();
   }
 
+  /* the six drawer facets.  range is the window rather than a constraint and
+     chat is shown (and clearable) by the toolbar picker, so neither counts
+     toward the Filters badge nor renders a chip. */
+  var ADVANCED_KEYS = ['harness', 'provider', 'model', 'type', 'route', 'outcome'];
+
+  function hasAnyFilter(state) {
+    for (var i = 0; i < FILTER_KEYS.length; i++) if (state[FILTER_KEYS[i]]) return true;
+    return false;
+  }
+
   function renderChips() {
-    var box = $('filter-chips');
-    if (!box) return;
     var state = currentState();
-    box.textContent = '';
-    var active = 0;
-    FILTER_KEYS.forEach(function (k) {
-      if (!state[k]) return;
-      active++;
-      var chip = el('button', 'fchip');
-      chip.type = 'button';
-      chip.title = 'Clear the ' + k + ' filter';
-      chip.appendChild(el('span', 'fk', k));
-      chip.appendChild(document.createTextNode(' ' + state[k] + ' '));
-      chip.appendChild(el('span', 'fx', '✕'));
-      chip.addEventListener('click', function () { setFilter(k, ''); });
-      box.appendChild(chip);
-    });
-    setText('filter-count', active ? String(active) + ' active' : 'no filters active');
+    var advanced = 0;
+    ADVANCED_KEYS.forEach(function (k) { if (state[k]) advanced++; });
+    var box = $('filter-chips');
+    if (box) {
+      box.textContent = '';
+      ADVANCED_KEYS.forEach(function (k) {
+        if (!state[k]) return;
+        var chip = el('button', 'fchip');
+        chip.type = 'button';
+        chip.dataset.key = k;   /* same shape the server-rendered chips carry */
+        chip.title = 'Clear the ' + k + ' filter';
+        chip.appendChild(el('span', 'fk', k));
+        chip.appendChild(document.createTextNode(' ' + state[k] + ' '));
+        chip.appendChild(el('span', 'fx', '✕'));
+        chip.addEventListener('click', function () { setFilter(k, ''); });
+        box.appendChild(chip);
+      });
+      box.hidden = advanced === 0;
+    }
+    var badge = $('filter-count');
+    if (badge) { badge.textContent = String(advanced); badge.hidden = advanced === 0; }
     var clear = $('filter-clear');
-    if (clear) clear.hidden = !active;
+    if (clear) clear.hidden = !hasAnyFilter(state);
+    syncAdvancedButton();
   }
 
   /* facet option lists are cross-filtered on the server; here they are
@@ -2260,10 +2465,12 @@ JS = r"""
     sel.appendChild(new Option(allLabel, ''));
     var seen = {};
     (facet && facet.options ? facet.options : []).forEach(function (o) {
-      var value, label;
+      var value, label, display, meta;
       if (key === 'chat') {
         value = String(o.key || '');
-        label = (o.display || value) + ' · ' + fmtCompact(o.total_tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+        display = String(o.display || value);
+        meta = fmtCompact(o.total_tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+        label = display + ' · ' + meta;
       } else if (key === 'harness') {
         /* label shows the Hermes family as 'Hermes IDE [· profile]'; the
            option VALUE stays the raw caller — it is the filter key */
@@ -2275,22 +2482,234 @@ JS = r"""
       }
       if (!value || hasOwn(seen, value)) return;
       seen[value] = true;
-      sel.appendChild(new Option(label, value));
+      var opt = new Option(label, value);
+      /* the chat picker splits "<display> · <counts>" back into name + meta */
+      if (key === 'chat') {
+        opt.setAttribute('data-label', display);
+        opt.setAttribute('data-meta', meta);
+      }
+      sel.appendChild(opt);
     });
     if (current && !hasOwn(seen, current)) sel.appendChild(new Option(current, current));
     sel.value = current;
     if (key === 'chat') applyChatSearch();
   }
 
-  function applyChatSearch() {
-    var input = $('f-chat-search'), sel = $('f-chat');
-    if (!input || !sel) return;
-    var q = input.value.trim().toLowerCase();
-    for (var i = 0; i < sel.options.length; i++) {
-      var opt = sel.options[i];
-      opt.hidden = !!(q && opt.value &&
-        opt.text.toLowerCase().indexOf(q) < 0 && opt.value.toLowerCase().indexOf(q) < 0);
+  /* ---- unified chat picker ----
+     #f-chat is still the one owner of the chat filter; the combobox input and
+     its listbox are a view of it.  Typing narrows the visible options and
+     never touches the filter or the URL — only committing (click or Enter)
+     goes through setFilter(), exactly like a facet select.  chatQuery holds
+     the search while the list is open, so the input can keep showing the
+     committed chat's name once it is closed. */
+  var chatQuery = '';
+  var chatListOpen = false;
+  var chatActive = -1;
+  var chatValues = [];  /* value of each rendered .cp-opt, in DOM order */
+
+  function chatOptionData(opt) {
+    return {
+      value: opt.value,
+      label: opt.getAttribute('data-label') || opt.text,
+      meta: opt.getAttribute('data-meta') || ''
+    };
+  }
+
+  function chatSelectedLabel(value) {
+    var sel = $('f-chat');
+    if (sel) {
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === value) return chatOptionData(sel.options[i]).label;
+      }
     }
+    return value;
+  }
+
+  /* Keep the picker's visible face in step with #f-chat.  The committed name
+     is only written while the user is not mid-search, so a facet refresh that
+     lands while they type can neither move their focus nor their text. */
+  function syncChatPicker() {
+    var input = $('f-chat-search'), sel = $('f-chat'), pick = $('chatpick');
+    if (!input || !sel) return;
+    var value = sel.value;
+    if (pick) pick.classList.toggle('has-value', !!value);
+    var clearBtn = $('f-chat-clear');
+    if (clearBtn) clearBtn.hidden = !value;
+    input.placeholder = value ? 'Search to change…' : 'All chats — search…';
+    var typing = chatListOpen && document.activeElement === input;
+    if (!typing) input.value = value ? chatSelectedLabel(value) : '';
+  }
+
+  function chatMatches(d, q) {
+    if (!q) return true;
+    return d.label.toLowerCase().indexOf(q) >= 0 || d.value.toLowerCase().indexOf(q) >= 0;
+  }
+
+  function renderChatList() {
+    var list = $('chat-listbox'), sel = $('f-chat');
+    if (!list || !sel) return;
+    var q = chatQuery.trim().toLowerCase();
+    var selected = sel.value;
+    list.textContent = '';
+    chatValues = [];
+    for (var i = 0; i < sel.options.length; i++) {
+      var d = chatOptionData(sel.options[i]);
+      if (!chatMatches(d, q)) continue;
+      var li = el('li', 'cp-opt' + (d.value ? '' : ' cp-all'));
+      li.id = 'chat-opt-' + i;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', d.value && d.value === selected ? 'true' : 'false');
+      li.appendChild(el('span', 'cp-name', d.label));
+      if (d.meta) li.appendChild(el('span', 'cp-meta', d.meta));
+      li.addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+      li.addEventListener('click', function (value) {
+        return function () { commitChat(value); };
+      }(d.value));
+      list.appendChild(li);
+      chatValues.push(d.value);
+    }
+    if (!chatValues.length) {
+      list.appendChild(el('li', 'cp-empty',
+        q ? 'No chats match “' + chatQuery.trim() + '”' : 'No chats in this window'));
+    }
+  }
+
+  function chatItems() {
+    var list = $('chat-listbox');
+    return list ? list.querySelectorAll('.cp-opt') : [];
+  }
+
+  function setActiveChat(idx, scroll) {
+    var input = $('f-chat-search');
+    var items = chatItems();
+    if (!input) return;
+    if (!items.length) {
+      chatActive = -1;
+      input.removeAttribute('aria-activedescendant');
+      return;
+    }
+    if (idx < 0) idx = items.length - 1;
+    if (idx >= items.length) idx = 0;
+    chatActive = idx;
+    for (var i = 0; i < items.length; i++) {
+      items[i].classList.toggle('is-active', i === idx);
+    }
+    input.setAttribute('aria-activedescendant', items[idx].id);
+    if (scroll !== false && items[idx].scrollIntoView) items[idx].scrollIntoView({ block: 'nearest' });
+  }
+
+  function openChatList() {
+    var list = $('chat-listbox'), input = $('f-chat-search'), sel = $('f-chat');
+    if (!list || !input || !sel || chatListOpen) return;
+    chatListOpen = true;
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    renderChatList();
+    /* land on the committed chat, or the top of the list when there is none */
+    var start = 0;
+    var current = sel.value;
+    for (var i = 0; i < chatValues.length; i++) {
+      if (chatValues[i] && chatValues[i] === current) { start = i; break; }
+    }
+    setActiveChat(start, false);
+  }
+
+  function closeChatList(revert) {
+    var list = $('chat-listbox'), input = $('f-chat-search');
+    if (!chatListOpen) return;
+    chatListOpen = false;
+    chatQuery = '';
+    chatActive = -1;
+    if (list) list.hidden = true;
+    if (input) {
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    }
+    /* dropping the search without committing puts the committed name back */
+    if (revert !== false) syncChatPicker();
+  }
+
+  function commitChat(value) {
+    closeChatList(false);
+    setFilter('chat', value);
+    syncChatPicker();
+    var input = $('f-chat-search');
+    if (input) input.focus();
+  }
+
+  function chatKeydown(ev) {
+    var input = $('f-chat-search');
+    if (!input || input !== ev.target) return;
+    switch (ev.key) {
+      case 'ArrowDown':
+        ev.preventDefault();
+        if (chatListOpen) setActiveChat(chatActive + 1);
+        else openChatList();
+        break;
+      case 'ArrowUp':
+        ev.preventDefault();
+        if (chatListOpen) setActiveChat(chatActive - 1);
+        else openChatList();
+        break;
+      case 'Home':
+        if (chatListOpen) { ev.preventDefault(); setActiveChat(0); }
+        break;
+      case 'End':
+        /* setActiveChat wraps, so End has to name the last index itself —
+           passing the length would wrap straight back to the first option */
+        if (chatListOpen) { ev.preventDefault(); setActiveChat(chatValues.length - 1); }
+        break;
+      case 'Enter':
+        if (chatListOpen && chatValues.length) {
+          ev.preventDefault();
+          commitChat(chatValues[chatActive < 0 ? 0 : chatActive]);
+        }
+        break;
+      case 'Escape':
+        /* the picker's Escape belongs to the picker, never to the drawer */
+        if (chatListOpen) { ev.preventDefault(); ev.stopPropagation(); closeChatList(); }
+        break;
+      case 'Tab':
+        if (chatListOpen) closeChatList();
+        break;
+    }
+  }
+
+  /* Rebuild the listbox view from #f-chat and re-apply the open search.  This
+     runs on every facet refresh, so it must stay read-only about the user's
+     typing: the query, the focus and the open state all survive a poll. */
+  function applyChatSearch() {
+    syncChatPicker();
+    if (!chatListOpen) return;
+    renderChatList();
+    var input = $('f-chat-search');
+    if (input && document.activeElement === input) {
+      /* a refresh may have dropped rows; keep the highlight if it survived */
+      setActiveChat(chatActive >= 0 && chatActive < chatValues.length ? chatActive : 0, false);
+    }
+  }
+
+  /* ---- advanced-facet drawer ----
+     A native modal <dialog>: showModal() provides the backdrop, Escape and
+     focus containment, so the wiring here is only open/close and focus
+     return.  Applying a filter is still the select's own change event, so
+     "Done" is nothing more than a close button. */
+  function syncAdvancedButton() {
+    var btn = $('filters-open'), d = $('filter-drawer');
+    if (btn && d) btn.setAttribute('aria-expanded', d.open ? 'true' : 'false');
+  }
+
+  function openDrawer() {
+    var d = $('filter-drawer');
+    if (!d || d.open) return;
+    closeChatList();
+    d.showModal();
+    syncAdvancedButton();
+  }
+
+  function closeDrawer() {
+    var d = $('filter-drawer');
+    if (d && d.open) d.close();
   }
 
   function wireFilters() {
@@ -2300,8 +2719,55 @@ JS = r"""
       var sel = $('f-' + k);
       if (sel) sel.addEventListener('change', onFilterChange);
     });
-    var search = $('f-chat-search');
-    if (search) search.addEventListener('input', applyChatSearch);
+
+    var pick = $('chatpick'), search = $('f-chat-search');
+    if (search) {
+      search.addEventListener('focus', function () {
+        chatQuery = '';
+        if (chatListOpen) renderChatList(); else openChatList();
+        if (search.value) search.select();
+      });
+      search.addEventListener('input', function () {
+        chatQuery = search.value;
+        if (chatListOpen) { renderChatList(); setActiveChat(0, false); }
+        else openChatList();
+      });
+      search.addEventListener('keydown', chatKeydown);
+    }
+    if (pick) {
+      document.addEventListener('pointerdown', function (ev) {
+        if (chatListOpen && !pick.contains(ev.target)) closeChatList();
+      }, true);
+    }
+    var chatClear = $('f-chat-clear');
+    if (chatClear) chatClear.addEventListener('click', function () {
+      closeChatList(false);
+      setFilter('chat', '');
+      syncChatPicker();
+      if (search) search.focus();
+    });
+
+    var drawer = $('filter-drawer');
+    if (drawer) {
+      var openBtn = $('filters-open');
+      if (openBtn) openBtn.addEventListener('click', openDrawer);
+      var x = $('filter-drawer-close');
+      if (x) x.addEventListener('click', closeDrawer);
+      var done = $('filter-drawer-done');
+      if (done) done.addEventListener('click', closeDrawer);
+      drawer.addEventListener('click', function (ev) {
+        if (ev.target === drawer) closeDrawer();  /* the backdrop */
+      });
+      drawer.addEventListener('cancel', function (ev) {
+        /* Escape closes the open chat list first, the drawer on a second press */
+        if (chatListOpen) ev.preventDefault();
+      });
+      drawer.addEventListener('close', function () {
+        syncAdvancedButton();
+        if (openBtn) openBtn.focus();
+      });
+    }
+
     var clear = $('filter-clear');
     if (clear) clear.addEventListener('click', function () {
       FILTER_KEYS.forEach(function (k) {
@@ -2321,12 +2787,23 @@ JS = r"""
     $('chat-body').addEventListener('click', drillHandler('chat', 'data-chat'));
     $('harness-body').addEventListener('click', drillHandler('harness', 'data-harness'));
     $('model-legend').addEventListener('click', drillHandler('model', 'data-model'));
+    /* the drill-down rows are focusable (tabindex=0), so the keyboard needs
+       the same activation the click gives the pointer */
+    $('chat-body').addEventListener('keydown', drillHandler('chat', 'data-chat'));
+    $('harness-body').addEventListener('keydown', drillHandler('harness', 'data-harness'));
+    $('model-legend').addEventListener('keydown', drillHandler('model', 'data-model'));
   }
 
   function drillHandler(key, attr) {
     return function (ev) {
       var row = ev.target.closest('tr[' + attr + '],li[' + attr + ']');
       if (!row) return;
+      if (ev.type === 'keydown') {
+        /* only the two activation keys; anything else (arrows, Tab) keeps its
+           own meaning, and Space must not scroll the page mid-activation */
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+      }
       var value = row.getAttribute(attr);
       if (value) setFilter(key, value);
     };
