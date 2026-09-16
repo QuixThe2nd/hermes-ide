@@ -495,9 +495,6 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
-    # An empty SSE keepalive frame: the retry it triggers is issued non-streaming
-    # (``_maybe_disable_streaming``), so the turn can still complete — never a format error.
-    PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE: _V_UNKNOWN,
 }
 
 # Generic ``invalid_request_error`` is deliberately NOT a 400 validation

@@ -262,17 +262,11 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
 
 
 def _is_provider_stream_empty_frame_error(exc: BaseException) -> bool:
-    """True for a contentless SSE frame: either the translated ``ProviderStreamError`` carrying
-    the empty-frame code, or the SDK's raw ``JSONDecodeError`` with an empty ``doc`` (belt for
-    iteration sites that surface it without translation — ``json.loads`` only ever sees an
-    empty document when the frame carried no payload). A malformed payload is neither: its
-    ``doc`` holds the offending text. Re-streaming cannot help either way — a degraded gateway
-    answers every stream that way — so the caller must change channel."""
+    """True for the translated contentless-SSE-frame error. Re-streaming cannot help
+    (a degraded gateway answers every stream that way), so the caller must change channel."""
     body = getattr(exc, "body", None)
     error_obj = body.get("error") if isinstance(body, dict) else None
-    if isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE:
-        return True
-    return isinstance(exc, json.JSONDecodeError) and not str(getattr(exc, "doc", "") or "").strip()
+    return isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
 
 
 def _iter_provider_stream_chunks(stream, *, response: Any = None):
