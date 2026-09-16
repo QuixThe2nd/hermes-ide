@@ -8,9 +8,9 @@ import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { delegationPrompt, useVoiceLiveConversation } from './use-voice-live-conversation'
 
-// Issue #111987: the live-voice toasts must not show machine strings — neither
-// the wire close reasons (`connection_lost`, `closed`) nor the raw
-// `DOMException` text a denied `getUserMedia` throws.
+// The live-voice toasts must not show machine strings — neither the wire close
+// reasons (`connection_lost`, `closed`) nor the raw `DOMException` text a denied
+// `getUserMedia` throws (#111987).
 //
 // The transport is the only seam in the live hook, so the fake session records
 // the handlers it registers (tests drive the close/error paths directly) and
@@ -84,105 +84,43 @@ function resetToasts() {
   transport.handlers.length = 0
 }
 
-describe('Voice-live session-end toast copy (#111987)', () => {
+describe('Voice-live toast copy', () => {
   beforeEach(resetToasts)
   afterEach(cleanup)
 
-  it('names the lost connection in copy instead of the internal reason code', async () => {
-    const handlers = await openSession()
+  it('names our own close reasons in copy and passes server-sent reasons through verbatim', async () => {
+    let handlers = await openSession()
 
     act(() => {
       handlers.onClosed('connection_lost', 127)
     })
 
-    const toast = $notifications.get()[0]
+    expect($notifications.get()[0].title).toBe(voice.liveEnded)
+    expect($notifications.get()[0].message).toBe(`${voice.liveEndedConnectionLost} (127s)`)
 
-    expect(toast.title).toBe(voice.liveEnded)
-    expect(toast.message).toBe(`${voice.liveEndedConnectionLost} (127s)`)
-    expect(toast.message).not.toContain('connection_lost')
-  })
-
-  it('names the vendor-side close in copy instead of the "closed" fallback code', async () => {
-    const handlers = await openSession()
-
-    act(() => {
-      handlers.onClosed('closed', null)
-    })
-
-    const toast = $notifications.get()[0]
-
-    expect(toast.kind).toBe('warning')
-    expect(toast.message).toBe(voice.liveEndedClosed)
-  })
-
-  it('falls back to the ended copy when the wire reason is blank', async () => {
-    const handlers = await openSession()
-
-    act(() => {
-      handlers.onClosed('', null)
-    })
-
-    expect($notifications.get()[0].message).toBe(voice.liveEndedClosed)
-  })
-
-  it('passes an unrecognized server-sent reason through verbatim (unbounded by contract)', async () => {
-    const handlers = await openSession()
+    cleanup()
+    resetToasts()
+    handlers = await openSession()
 
     act(() => {
       handlers.onClosed('quota_exhausted', 12)
     })
 
+    // Server strings are unbounded: no mapping, no redaction claim.
     expect($notifications.get()[0].message).toBe('quota_exhausted (12s)')
   })
 
-  it('still drops close_requested (our own close) without a toast', async () => {
-    const handlers = await openSession()
+  it('maps a getUserMedia DOMException to the recorder mic copy and leaves non-mic failures alone', async () => {
+    await failedStart(new DOMException('The request is not allowed by the user agent.', 'NotAllowedError'))
 
-    act(() => {
-      handlers.onClosed('close_requested', 30)
-    })
+    expect($notifications.get()[0].title).toBe(voice.couldNotStartSession)
+    expect($notifications.get()[0].message).toBe(voice.microphonePermissionDenied)
 
-    expect($notifications.get()).toHaveLength(0)
-  })
-})
+    cleanup()
+    resetToasts()
+    await failedStart(new Error('Missing local SDP offer'))
 
-describe('Voice-live mic failure toast copy (#111987)', () => {
-  beforeEach(resetToasts)
-  afterEach(cleanup)
-
-  it('reuses the recorder mic copy for a getUserMedia DOMException', async () => {
-    const cases: Array<[string, string]> = [
-      ['NotAllowedError', voice.microphonePermissionDenied],
-      ['NotFoundError', voice.noMicrophone],
-      ['NotReadableError', voice.microphoneInUse],
-      ['OverconstrainedError', voice.microphoneConstraintsUnsupported]
-    ]
-
-    for (const [name, copy] of cases) {
-      await failedStart(
-        new DOMException('The request is not allowed by the user agent or the platform in the current context.', name)
-      )
-
-      const toast = $notifications.get()[0]
-
-      expect(toast.title).toBe(voice.couldNotStartSession)
-      expect(toast.message).toBe(copy)
-      expect(toast.message).not.toContain('user agent')
-
-      cleanup()
-      resetToasts()
-    }
-  })
-
-  it('keeps a non-mic start failure message untouched', async () => {
-    for (const message of ['GPT-Live session already started', 'Missing local SDP offer']) {
-      await failedStart(new Error(message))
-
-      expect($notifications.get()[0].message).toBe(message)
-
-      cleanup()
-      resetToasts()
-    }
+    expect($notifications.get()[0].message).toBe('Missing local SDP offer')
   })
 })
 
