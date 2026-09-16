@@ -2581,16 +2581,34 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class LiveClaimError(ValueError):
+    """``complete_task`` refused: the task is ``running`` under a live claim and
+    the caller neither owns its run (``expected_run_id``) nor passed ``force``.
+    Completing anyway would close the worker's run row underneath a process
+    that is still executing. A ``ValueError`` so tool error handlers treat it
+    as recoverable."""
+
+    def __init__(self, task_id: str):
+        super().__init__(
+            f"{task_id} is running under a live worker claim; pass expected_run_id "
+            "(worker ownership) or force=True (explicit operator override) instead "
+            "of closing the live run"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
-    approval; with no active run the handoff fields survive via
+    approval. A ``running`` task under a live claim is only completed with
+    proof of ownership (``expected_run_id``) or ``force=True`` (explicit
+    operator override) — otherwise :class:`LiveClaimError`, the same fence
+    :func:`request_review` applies. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
@@ -2617,7 +2635,17 @@ def complete_task(
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
-        prior_status = _task_status(conn, task_id)
+        trow = conn.execute("SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        prior_status = trow["status"] if trow else None
+        # Refuse to close a live worker's run without proof of ownership
+        # (expected_run_id) or an explicit human override (force=True).
+        if (
+            expected_run_id is None
+            and not force
+            and prior_status == "running"
+            and trow["claim_lock"] is not None
+        ):
+            raise LiveClaimError(task_id)
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
