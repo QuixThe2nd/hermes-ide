@@ -815,6 +815,8 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
+    ("worker_started_at", "worker_started_at INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -827,6 +829,12 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+)
+
+_TASK_RUN_COLUMNS = (
+    # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
+    # terminal-worker reaper; NULL = legacy row, never signalled).
+    ("worker_started_at", "worker_started_at INTEGER"),
 )
 
 
@@ -900,6 +908,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        run_cols = _column_names(conn, "task_runs")
+        for name, ddl in _TASK_RUN_COLUMNS:
+            if name not in run_cols:
+                _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
     # One-shot event-kind rename: old names still worked but were awkward on
@@ -999,7 +1011,7 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
@@ -1141,6 +1153,17 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             if not _is_busy_error(exc) or attempt == _BUSY_MAX_RETRIES:
                 raise
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
+
+
+def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
+    """Filesystem path of *conn*'s main database (None for in-memory / unreadable)."""
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list") or ():
+            if name == "main":
+                return file or None
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    return None
 
 
 @contextlib.contextmanager

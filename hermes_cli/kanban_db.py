@@ -233,7 +233,7 @@ def notify_task_updated(
 
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
-    "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
+    "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
@@ -894,6 +894,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    -- Start-time fingerprint of worker_pid (gateway.status.get_process_start_time) recorded at
+    -- spawn: liveness and kills require pid AND fingerprint to agree, so a PID recycled after a
+    -- reboot is never read as our worker or signalled. NULL = legacy row (pre-fingerprint spawn).
+    worker_started_at    INTEGER,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -1000,6 +1004,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    -- Spawn-time start fingerprint of worker_pid (see tasks.worker_started_at). Retained with
+    -- worker_pid after the run ends so a worker that outlives its terminal transition can
+    -- still be found and reaped; NULL = legacy row, never signalled.
+    worker_started_at   INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -1909,7 +1917,12 @@ def _end_run(
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
-    ``current_run_id``; None when no run was active (never-claimed task)."""
+    ``current_run_id``; None when no run was active (never-claimed task).
+
+    ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
+    row: they are the only evidence left of the OS process once the task row
+    is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
+    to end a worker that survived its own terminal transition."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
@@ -1923,9 +1936,7 @@ def _end_run(
                error         = ?,
                metadata      = ?,
                ended_at      = ?,
-               claim_lock    = NULL,
-               claim_expires = NULL,
-               worker_pid    = NULL
+               claim_expires = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -1962,31 +1973,46 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+# Distinguishes "caller named the acting profile" (which may legitimately be
+# None for an unassigned card) from "read the card's current assignee".
+_UNSET: Any = object()
+
+
 def _end_or_synthesize_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, status: str,
     summary: Optional[str] = None, metadata: Optional[dict] = None, synthesize: bool,
+    profile: Any = _UNSET,
 ) -> Optional[int]:
     """:func:`_end_run`; when no run was active and ``synthesize`` holds, record a
-    zero-duration run instead so the handoff fields survive in attempt history."""
+    zero-duration run instead so the handoff fields survive in attempt history.
+    ``profile`` overrides the profile read off the task row for the synthesized
+    run — transitions that reassign the task (e.g. review handoff) pass the
+    acting profile captured before the rewrite."""
     run_id = _end_run(conn, task_id, outcome=outcome, status=status, summary=summary, metadata=metadata)
     if run_id is None and synthesize:
-        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata)
+        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata, profile=profile)
     return run_id
 
 
 def _synthesize_ended_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None,
+    profile: Any = _UNSET,
 ) -> int:
     """Zero-duration closed run for a terminal transition on a never-claimed
     task, so the handoff fields aren't silently dropped (``_end_run`` is a
     no-op then). ``started_at == ended_at`` keeps elapsed stats honest. Does
-    NOT touch the tasks row."""
+    NOT touch the tasks row.
+
+    ``profile`` overrides the profile read off the task row: transitions that
+    reassign the task (e.g. review handoff) pass the acting profile captured
+    before the rewrite, so the run names the actor, not the new assignee."""
     now = int(time.time())
     trow = conn.execute(
         "SELECT assignee, current_step_key FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
-    profile = trow["assignee"] if trow else None
+    if profile is _UNSET:
+        profile = trow["assignee"] if trow else None
     step_key = trow["current_step_key"] if trow else None
     cur = conn.execute(
         """
@@ -2358,7 +2384,7 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = _host_prefix()
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
@@ -2370,12 +2396,14 @@ def release_stale_claims(
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]) and not heartbeat_stale:
+        started_at = _row_get(row, "worker_started_at")
+        if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
+                and not heartbeat_stale):
             _extend_live_stale_claim(conn, row, now)
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2478,7 +2506,7 @@ def reclaim_task(
     """Operator reclaim regardless of TTL: release the claim, restore the source
     phase, reset the failure counter. False when not running."""
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
         return False
@@ -2486,7 +2514,8 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(row["worker_pid"], prev_lock, signal_fn=signal_fn)
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
@@ -3219,6 +3248,7 @@ def request_review(
             run_id = _end_or_synthesize_run(
                 conn, task_id, outcome="review_requested", status="review",
                 summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+                profile=implementer,
             )
             payload: dict = {
                 "summary": _first_line(summary, 400) or None,
@@ -3502,12 +3532,12 @@ def invalidate_descendants_for_parent_reopen(
     action), the opposite of :func:`reopen_review_task`.
 
     Returns ``{"invalidated": [{id, prior_status, new_status, resume_status}],
-    "terminations": [(worker_pid, claim_lock)]}``.
+    "terminations": [(worker_pid, claim_lock, worker_started_at)]}``.
     """
     caller_owns_txn = bool(conn.in_transaction)
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -3518,7 +3548,7 @@ def invalidate_descendants_for_parent_reopen(
                 FROM task_links l
                 JOIN descendants d ON d.id = l.parent_id
             )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock, t.worker_started_at
             FROM descendants d
             JOIN tasks t ON t.id = d.id
             ORDER BY t.id
@@ -3535,7 +3565,7 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = "review"
             elif previous_status == "running":
                 resume_status = _retry_status_for_run(conn, row["id"], row["current_run_id"])
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append((row["worker_pid"], row["claim_lock"], row["worker_started_at"]))
                 run_id = _end_run(
                     conn, row["id"], outcome="reclaimed", status="todo",
                     summary=f"ancestor {task_id} reopened",
@@ -3575,8 +3605,8 @@ def invalidate_descendants_for_parent_reopen(
     if not caller_owns_txn:
         # Standalone: committed above, audit trail durable, safe to kill now.
         # Composed calls leave this to the caller post-commit.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
+        for pid, claim_lock, started_at in terminations:
+            _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     return {"invalidated": invalidated, "terminations": terminations}
 
 
@@ -3653,13 +3683,13 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     """
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row:
             return False
         was_running = row["status"] == "running"
-        prev_pid, prev_lock = row["worker_pid"], row["claim_lock"]
+        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -3674,7 +3704,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn)
+        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
@@ -4222,6 +4252,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _pid_alive,
     _record_task_failure,
     _terminate_reclaimed_worker,
+    _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
