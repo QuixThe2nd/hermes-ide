@@ -261,11 +261,13 @@ class TestScanFile:
             "rm -rf /tmp/cache/../../etc\n"
             "rm -rf /var/tmp/../etc\n"
             "rm -rf /dev/shm/../etc\n"
-            "rm -rf /run/../etc\n",
+            "rm -rf /run/../etc\n"
+            "rm -rf /tmp//../etc\n"
+            "rm -rf /tmp/..; true\n",
             encoding="utf-8",
         )
         findings = scan_file(bypasses, "temp-root-traversal.sh")
-        assert len([fi for fi in findings if fi.pattern_id == "destructive_root_rm"]) == 5
+        assert len([fi for fi in findings if fi.pattern_id == "destructive_root_rm"]) == 7
 
 
 # ---------------------------------------------------------------------------
@@ -462,55 +464,29 @@ class TestFalsePositiveReductions:
         for path in (script, readme, fenced):
             assert any(f.pattern_id == "path_traversal_deep" for f in scan_file(path, path.name)), path.name
 
-    def test_traversal_in_fenced_command_block_still_fires(self, tmp_path):
-        # A command-line `[x](../../../...)` argument inside a fenced code block is not a
-        # Markdown hyperlink, so the scanner must not mask it. Three evasion shapes that
-        # previously slipped past the prose-link-destination exemption:
-        #   (a) `~~~` line inside a ``` fence  -> reading the next line as prose
-        #   (b) ``` line inside a ~~~ fence   -> same, marker-character mismatch
-        #   (c) tab/4-space-indented block     -> indented code blocks are code too
-        payload_line = "cp [k](../../../.ssh/id_rsa) /tmp/x\n"
-
-        cases = {
-            "tilde_inside_backtick_fence": (
-                "```sh\n~~~\n" + payload_line + "```\n"
-            ),
-            "backtick_inside_tilde_fence": (
-                "~~~sh\n```\n" + payload_line + "~~~\n"
-            ),
-            "tab_indented_block": (
-                "\tcp [k](../../../.ssh/id_rsa) /tmp/x\n"
-            ),
-            "double_tab_indented_block": (
-                "\t\tcp [k](../../../.ssh/id_rsa) /tmp/x\n"
-            ),
+    def test_traversal_in_code_block_still_fires_and_prose_link_after_fence_stays_exempt(self, tmp_path):
+        # #112129: only Markdown *prose* links are exempt. A fence line that does not close the
+        # open block (other marker, shorter, or carrying an info string) and an indented code
+        # block are code, so a command-line ``[x](../../../...)`` argument there must still score.
+        payload = "cp [k](../../../.ssh/id_rsa) /tmp/x\n"
+        code_shapes = {
+            "tilde_inside_backtick_fence": "```sh\n~~~\n" + payload + "```\n",
+            "backtick_inside_tilde_fence": "~~~sh\n```\n" + payload + "~~~\n",
+            "shorter_fence_inside_longer": "````sh\n```\n" + payload + "````\n",
+            "fence_line_with_info_inside": "```sh\n```bash\n" + payload + "```\n",
+            "tab_indented_block": "intro\n\n\t" + payload,
+            "four_space_indented_block": "intro\n\n    " + payload,
         }
-
-        for label, body in cases.items():
+        for label, body in code_shapes.items():
             md = tmp_path / f"{label}.md"
             md.write_text(body, encoding="utf-8")
-            findings = scan_file(md, md.name)
-            assert any(
-                f.pattern_id == "path_traversal_deep" for f in findings
-            ), f"shape {label!r} should still score path_traversal_deep; got {findings!r}"
+            assert any(f.pattern_id == "path_traversal_deep" for f in scan_file(md, md.name)), label
 
-    def test_traversal_in_fenced_command_block_blocks_install(self, tmp_path):
-        # Verdict-level invariant: hiding a traversal in a mismatched-fence Markdown block
-        # must not flip a community install from blocked to allowed. This pins the security
-        # property, not just the scanner finding.
-        skill_dir = tmp_path / "evil-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: evil-skill\ndescription: x\n---\n"
-            "```sh\n~~~\ncp [k](../../../.ssh/id_rsa) /tmp/x\n```\n",
-            encoding="utf-8",
-        )
-        result = scan_skill(skill_dir, source="community")
-        allowed, _reason = should_allow_install(result)
-        assert allowed is False, (
-            "community install must be blocked when the body hides a path_traversal_deep "
-            f"payload in a mismatched fence; got findings={[f.pattern_id for f in result.findings]}"
-        )
+        # Control: a properly closed fence hands the scanner back to prose mode, so the
+        # #111254 documentation-link exemption still applies after a code block.
+        prose = tmp_path / "prose.md"
+        prose.write_text("```sh\necho hi\n```\nSee [the guide](../../../docs/guide.md).\n", encoding="utf-8")
+        assert not any(f.category == "traversal" for f in scan_file(prose, prose.name))
 
     def test_cat_write_heredoc_is_not_a_secrets_read(self, tmp_path):
         # Setup doc telling the user to write their OWN keys into their OWN

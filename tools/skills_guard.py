@@ -201,7 +201,7 @@ THREAT_PATTERNS = [
     # so it remains destructive along with every other path rooted at "/".
     (r'rm\s+-rf\s+/(?:'
      r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
-     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]+/)*\.\.(?=/|\s|$))',
+     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
@@ -518,48 +518,33 @@ def _mask_markdown_link_destinations(line: str) -> str:
     return "".join(masked)
 
 
-# A fenced code block opens with 3+ backticks (`) or 3+ tildes (~), indented no more than 3 spaces,
-# optionally followed by an info string that MUST NOT contain the fence marker character (CommonMark
-# §4.5). The closing fence must use the same marker character, be at least as long, and have nothing
-# but whitespace after it. A tab or 4-space-indented line is code whether fenced or not.
-_FENCE_LINE = re.compile(
-    r"^(?P<indent>[ ]{0,3})(?P<marker>[`~]{3,})(?P<info>[^`\n]*)$"
-)
+# A fenced code block opens with 3+ backticks or 3+ tildes indented at most 3 spaces (CommonMark
+# §4.5); a backtick fence's info string may not contain a backtick. It closes only on a line whose
+# fence uses the same marker, is at least as long, and carries nothing else — so a ``~~~`` line
+# inside a backtick fence, a shorter fence, or a fence line with an info string is all content.
+_FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 
 
 def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
-    """Mask link destinations only in Markdown prose. Inside a fenced code block a ``[x](../..)`` is
-    an argument to whatever command surrounds it, not a hyperlink, so those lines scan verbatim.
-
-    Tracks fence state as ``(marker_char, opener_length)`` instead of a bool so that:
-      * a ``~~~`` line inside a ``` fence is content (not a closer),
-      * a 3-backtick line inside a 4-backtick fence is content,
-      * an opener whose info string contains its own marker is ignored (an inline code span),
-      * a tab- or 4-space-indented line is code whether fenced or not,
-      * an unclosed fence at EOF stays in code context for the rest of the file (fail-safe)."""
+    """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
+    ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
+    scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
+    mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
+    code to EOF (fail-safe)."""
     out: List[str] = []
-    open_marker = None  # str | None — fence opener's marker character, None when no fence is open
-    open_length = 0     # int — fence opener length; a closer must be at least this many chars
+    fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
-        stripped = line.lstrip(" ")
-        # CommonMark §4.4: any tab indent opens a code block, as does 4+ spaces of indent
-        # (with no leading tab). A line with leading tabs and additional spaces is still code.
-        is_indented_code = line.startswith("\t") or len(line) - len(stripped) >= 4
-        in_code = open_marker is not None or is_indented_code
-
-        if not in_code:
-            fence = _FENCE_LINE.match(line)
-            if fence is not None:
-                marker = fence.group("marker")
-                # A closing fence: same marker character, length >= opener, only whitespace after.
-                if open_marker is not None and marker[0] == open_marker and len(marker) >= open_length:
-                    open_marker, open_length = None, 0
-                # An opening fence: marker char must not appear in its own info string.
-                elif marker[0] not in fence.group("info"):
-                    open_marker, open_length = marker[0], len(marker)
-
-        out.append(line if (open_marker is not None or is_indented_code)
-                   else _mask_markdown_link_destinations(line))
+        match = _FENCE_LINE.match(line)
+        if fence is not None:
+            if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
+                    and not match["info"].strip()):
+                fence = None
+            code = True
+        else:
+            if match and not (match["marker"][0] == "`" and "`" in match["info"]):
+                fence = (match["marker"][0], len(match["marker"]))
+            code = fence is not None or line.startswith(("\t", "    "))  # indented code block (§4.4)
+        out.append(line if code else _mask_markdown_link_destinations(line))
     return out
 
 
