@@ -6158,12 +6158,18 @@ def _merge_aux_extra_body(
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
+            # This fallback uses the OpenAI-compatible chat-completions wire. Hermes'
+            # internal ``ultra`` tier is not accepted there, including for MoA slots.
+            # Fork: route through the model-aware clamp first, then enforce the
+            # wire effort set on the final value.
             from agent.transports.chat_completions import (
                 _reasoning_config_for_model as _clamp_aux_reasoning,
             )
 
             clamped = _clamp_aux_reasoning(model or "", reasoning_config) or {}
             effort = clamped.get("effort") or reasoning_config.get("effort") or "medium"
+            from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+            effort = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
     # Portal product tags + sticky session_id. The provider profile usually
     # supplies both; this fallback covers profile-load failures and alias
