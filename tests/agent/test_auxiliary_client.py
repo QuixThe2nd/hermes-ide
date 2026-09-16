@@ -2519,6 +2519,31 @@ class TestAuxiliaryTaskExtraBody:
 
         assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
 
+    def test_profile_projection_receives_wire_clamped_effort(self, monkeypatch):
+        """Profiles clamp only against their own narrower sets (or a catalog that may be cold), so
+        ``ultra`` must already be a wire level when the projection sees it — the MoA aggregator on
+        an OpenRouter/Nous slot 400'd otherwise (#112010)."""
+        import agent.auxiliary_client as aux
+
+        seen = {}
+        real = aux._project_provider_profile
+
+        def spy(provider, provider_norm, model, effective_base, reasoning_config):
+            seen["config"] = reasoning_config
+            return real(provider, provider_norm, model, effective_base, reasoning_config)
+
+        monkeypatch.setattr(aux, "_project_provider_profile", spy)
+        kwargs = aux._build_call_kwargs(
+            provider="openrouter",
+            model="deepseek/deepseek-v4.1-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            task="moa_aggregator",
+        )
+
+        assert seen["config"] == {"enabled": True, "effort": "max"}
+        assert "ultra" not in json.dumps(kwargs.get("extra_body")) and kwargs.get("reasoning_effort") != "ultra"
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"
