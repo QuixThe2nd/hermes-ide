@@ -104,7 +104,8 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
 - **E2E validation, not just green unit mocks.** For anything touching
   resolution chains, config propagation, security boundaries, remote
   backends, or file/network I/O, exercise the real path with real imports
-  against a temp `HERMES_HOME`. Mocks hide integration bugs.
+  against a temp `HERMES_HOME` — two of them (A→B→A) when the
+  change touches profile scope. Mocks hide integration bugs.
 - **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict
   message role alternation (never two same-role messages in a row; never a
   synthetic user message injected mid-loop), and a system prompt that is
@@ -1439,6 +1440,19 @@ automatically scope to the active profile.
      when touching any of them, make sure the fail-closed semantics are present;
      do not reintroduce the `except _UnscopedSecretError: val = os.getenv(...)`
      fallback-after-miss shape.
+8. **One process may serve many profiles; code that runs outside a turn binds the owning
+   profile scope explicitly.** A profile = home + secret scope + terminal scope, bound by
+   `gateway/run.py::_profile_runtime_scope` (turn), `tui_gateway/server.py::@_profile_scoped` +
+   `model_switch.py::_session_profile_runtime_scope` (RPC, teardown), `cron/scheduler_provider.py::
+   _profile_cron_scope` (ticker), `gateway/run_agent_cache.py::_run_release_in_profile_scope`
+   (eviction). `os.environ`, module globals and import-time values hold the *launch* profile's, so
+   an unbound read is a silent default-profile leak, never an error: home/config/`.env`-derived
+   module constants are a bug class — key slots by `hermes_home_key()` or resolve at call time.
+   Needs a binding: boot probes (`check_fn`, MCP discovery, hooks), session end/eviction, tickers,
+   deferred callbacks, RPC methods, config readers, thread hops (`spawn_context_thread`), child
+   spawns (`served_profile_child_env`, never `os.environ.copy()`). Fail-closed reads exist only after
+   `set_multiplex_active(True)`. Prove live with two homes (A→B→A) under multiplex, not one temp
+   `HERMES_HOME`. Advisory lint: `scripts/check_profile_scope_patterns.py`.
 
 
 ## Code Shape Rules (all languages)
