@@ -74,9 +74,13 @@ describe('capability helpers are connection-scoped', () => {
     expect(last().connectionId).toBe('gw-tailscale')
   })
 
-  it('marks an explicitly scoped Settings config read as foreground', () => {
+  it('marks an explicitly scoped Settings / Capabilities read as foreground (#111651)', () => {
+    // A scope-selector pick is a visible user action: its cold dial must take
+    // the pool's reserved foreground slot instead of queueing behind hydration.
     getHermesConfigRecord('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
 
+    void getSkills('coder')
     expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
   })
 
