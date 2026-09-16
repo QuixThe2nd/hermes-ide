@@ -3391,68 +3391,39 @@ class TelegramAdapter(BasePlatformAdapter):
                     return _flood_cap_result(wait)
                 raise
 
-    def _typing_retrigger_state(self) -> tuple[Dict[str, "asyncio.Task"], Dict[str, float], float]:
-        """Re-arm bookkeeping, materialised on demand — tests build adapters via ``object.__new__()``
-        (no ``__init__``), so these attributes are not guaranteed to exist."""
-        tasks = getattr(self, "_telegram_typing_retrigger_tasks", None)
-        if not isinstance(tasks, dict):
-            tasks = self._telegram_typing_retrigger_tasks = {}
-        sent_at = getattr(self, "_telegram_typing_retrigger_at", None)
-        if not isinstance(sent_at, dict):
-            sent_at = self._telegram_typing_retrigger_at = {}
-        try:
-            interval = float(getattr(self, "_telegram_typing_retrigger_interval", 2.0))
-        except (TypeError, ValueError):
-            interval = 2.0
-        return tasks, sent_at, interval
-
-    def _clear_typing_retrigger(self, chat_id: str, finished: "asyncio.Task") -> None:
-        """Drop the in-flight slot, but only if it is still this task's (a newer one may own it)."""
-        tasks = getattr(self, "_telegram_typing_retrigger_tasks", None)
-        if isinstance(tasks, dict) and tasks.get(chat_id) is finished:
-            tasks.pop(chat_id, None)
-
-    async def _send_typing_quietly(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
-        """Best-effort typing send; ``send_typing`` already logs and backs off on its own failures."""
-        with contextlib.suppress(Exception):
-            await self.send_typing(chat_id, metadata=metadata)
-
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
         """Re-arm typing after an intermediate send (Telegram clears it when a message lands). Skipped on
         the FINAL reply (``metadata["notify"]``): the refresh loop is gone and no API cancels the bubble.
 
-        Scheduled rather than awaited. ``sendChatAction`` is a fire-and-forget UI hint whose result nobody
-        reads, but awaiting it here ran its TLS round-trip on the same event loop as the ``getUpdates``
-        long-polls. Streaming re-arms after *every* intermediate send, so with several agents streaming at
-        once the loop stayed pinned, the polls were never serviced, and they decayed into CLOSE-WAIT while
-        the adapter still reported ``connected`` (#111727). One in-flight re-arm per chat, at most one per
-        ``typing_retrigger_min_interval_seconds``."""
-        if (metadata or {}).get("notify"):
+        Scheduled, never awaited: ``sendChatAction`` is a fire-and-forget UI hint, and awaiting its TLS
+        round-trip on the send path after *every* streamed chunk pinned the event loop the ``getUpdates``
+        long-polls live on until they rotted into CLOSE-WAIT while the adapter still reported connected
+        (#111727). ``_keep_typing`` already refreshes every 2s, so one in-flight re-arm per chat, at most
+        one per ``typing_retrigger_min_interval_seconds``, covers the gap a landed message leaves."""
+        if (metadata or {}).get("notify") or not getattr(getattr(self, "config", None), "typing_indicator", True):
             return
-        # Only _keep_typing consulted this, so the documented `typing_indicator: false` workaround still
-        # paid for a sendChatAction on every intermediate send.
-        if not getattr(getattr(self, "config", None), "typing_indicator", True):
-            return
-        chat_key = str(chat_id)
-        tasks, sent_at, min_interval = self._typing_retrigger_state()
-        in_flight = tasks.get(chat_key)
+        # __dict__.setdefault: tests build adapters via object.__new__() (no __init__).
+        tasks: Dict[str, asyncio.Task] = self.__dict__.setdefault("_telegram_typing_retrigger_tasks", {})
+        sent_at: Dict[str, float] = self.__dict__.setdefault("_telegram_typing_retrigger_at", {})
+        key = str(chat_id)
+        in_flight = tasks.get(key)
         if in_flight is not None and not in_flight.done():
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
+        loop = asyncio.get_running_loop()
         now = loop.time()
-        if min_interval > 0:
-            previous = sent_at.get(chat_key)
-            # Stamped at scheduling time, not completion: a burst of chunks must not all pass the
-            # check while the first round-trip is still open.
-            if previous is not None and (now - previous) < min_interval:
-                return
-        sent_at[chat_key] = now
-        task = loop.create_task(self._send_typing_quietly(chat_id, metadata))
-        tasks[chat_key] = task
-        task.add_done_callback(lambda finished, key=chat_key: self._clear_typing_retrigger(key, finished))
+        # Stamped at scheduling time, not completion, so a burst of chunks cannot all pass while the
+        # first round-trip is still open.
+        if now - sent_at.get(key, float("-inf")) < getattr(self, "_telegram_typing_retrigger_interval", 2.0):
+            return
+        sent_at[key] = now
+
+        async def _quiet() -> None:
+            with contextlib.suppress(Exception):
+                await self.send_typing(chat_id, metadata=metadata)
+
+        task = loop.create_task(_quiet())
+        tasks[key] = task
+        task.add_done_callback(lambda done: tasks.get(key) is done and tasks.pop(key, None))
         # Shutdown cancels _background_tasks, so a detached re-arm cannot outlive the adapter.
         tracked = getattr(self, "_background_tasks", None)
         if isinstance(tracked, set):
