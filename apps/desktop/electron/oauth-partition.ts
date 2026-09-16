@@ -42,8 +42,15 @@ export const LEGACY_OAUTH_PARTITION = 'persist:hermes-remote-oauth'
 // jar seeded into it reads back zero cookies, `cookies.set()` never reaches
 // disk, and every cookie-authenticated request 401s as `no_cookie`). A jar
 // the app cannot see means the dial always looks signed-out and the user is
-// asked to sign in again on every connect. Keep this path component to
-// [A-Za-z0-9._-] — never a character Electron has to escape.
+// asked to sign in again on every connect. The whole path component (prefix
+// AND the sanitized id below) must stay within the characters Electron never
+// percent-escapes — the invariant test pins "no ':' and no '%'".
+//
+// The name used to be `${LEGACY_OAUTH_PARTITION}:conn:<id>` (#92183). That
+// jar never worked on Windows; on macOS/Linux a non-primary remote signed in
+// under the old name is re-prompted ONCE after this change (the old
+// `Partitions/hermes-remote-oauth%3Aconn%3A<id>` folder is left on disk,
+// inert). One name on every platform beats a per-OS partition scheme.
 const CONNECTION_PARTITION_PREFIX = `${LEGACY_OAUTH_PARTITION}-conn-`
 
 export interface PartitionRegistrySnapshot {
