@@ -1456,13 +1456,14 @@ class TestCloneAllExcludesRuntimeTrees:
         nested = ignore(str(default_home / "skills" / "greet"), ["models", "SKILL.md"])
 
         assert set(at_root) == set(self.RUNTIME_TREES)
-        assert nested == []
+        assert not nested
 
         # Gated on the default profile: a named profile that really has a
         # models/ dir of its own must not have it dropped when used as source.
         source = create_profile("source", no_alias=True)
-        (source / "models").mkdir()
-        assert _clone_all_copytree_ignore(source)(str(source), ["models", "runtimes", "node", "SOUL.md"]) == []
+        for tree in self.RUNTIME_TREES:
+            (source / tree).mkdir()
+        assert not _clone_all_copytree_ignore(source)(str(source), [*self.RUNTIME_TREES, "SOUL.md"])
 
     def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):
         default_home = profile_env / ".hermes"
