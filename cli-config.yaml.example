@@ -113,8 +113,9 @@ model:
   #
   # ollama_num_ctx: Ollama only — the num_ctx sent on every chat request.
   #   Hermes auto-detects the model's window and sends it (Ollama otherwise
-  #   defaults to 2048); set this to cap VRAM use. context_length, if set,
-  #   caps it further.
+  #   defaults to 2048); context_length, if set, caps the detected value.
+  #   An explicit ollama_num_ctx is sent as-is (never capped) — set it to
+  #   pin VRAM use.
   #
   # ollama_num_ctx: 32768
   #
