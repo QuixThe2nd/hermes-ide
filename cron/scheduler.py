@@ -1981,10 +1981,10 @@ def _prepare_job_prompt(
             return (True, silent_doc, SILENT_MARKER, None), None
 
     try:
-        build_kwargs = {"prerun_script": prerun_script, "extra_prompt": extra_prompt}
-        if monitor_context:
-            build_kwargs["runtime_data_prompt"] = monitor_context
-        prompt = _build_job_prompt(job, **build_kwargs)
+        prompt = _build_job_prompt(
+            job, prerun_script=prerun_script, extra_prompt=extra_prompt,
+            runtime_data_prompt=monitor_context,
+        )
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.
         logger.warning(

@@ -294,7 +294,7 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
 
 
 def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
-    """Runtime monitor data with a WhatsApp-style bidi marker must not block the job."""
+    """Runtime monitor data with a WhatsApp-style bidi marker must not block the job (#111523)."""
     from cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "printf 'Alice\\342\\200\\252 Work\\n'\n")

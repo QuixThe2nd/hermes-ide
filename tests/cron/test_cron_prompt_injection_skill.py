@@ -395,17 +395,9 @@ class TestScriptOutputNotStrictScanned:
 
 
 class TestMonitorOutputIsRuntimeData:
-    """Monitor context is runtime data, not part of the stored user prompt."""
-
-    def test_bidi_monitor_output_is_sanitized_not_blocked(self, cron_env):
-        _, scheduler = cron_env
-        prompt = scheduler._build_job_prompt(
-            {"id": "job-monitor", "name": "WhatsApp", "prompt": "Summarize changes."},
-            runtime_data_prompt="## Monitor Baseline\n\nWhatsApp: Alice\u202a Work",
-        )
-        assert prompt is not None
-        assert "\u202a" not in prompt
-        assert "WhatsApp: Alice Work" in prompt
+    """Monitor context is runtime data, not part of the stored user prompt (#111523).
+    The positive case (bidi data sanitized, job runs) lives in tests/cron/test_monitor_kind.py
+    through the real run_job path; this pins the control: the operator's own prompt stays strict."""
 
     def test_stored_user_prompt_remains_strict_with_monitor_data(self, cron_env):
         _, scheduler = cron_env
