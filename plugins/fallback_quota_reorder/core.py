@@ -753,6 +753,33 @@ def _parse_pinned_primary(config: Mapping[str, Any]) -> Optional[PrimarySlot]:
     return PrimarySlot(provider=provider, model=model)
 
 
+# A pin promotion swaps only model.provider/model.default; any nonempty
+# endpoint/key/mode override on either side is dropped or misrouted.
+PIN_PROMOTION_OVERRIDE_FIELDS = (
+    "base_url",
+    "inference_base_url",
+    "api_key",
+    "api",
+    "key_env",
+    "api_key_env",
+    "api_mode",
+)
+
+
+def _reject_pin_promotion_overrides(mapping: Any, label: str, pin: PrimarySlot) -> None:
+    fields = [
+        field for field in PIN_PROMOTION_OVERRIDE_FIELDS
+        if isinstance(mapping, Mapping) and str(mapping.get(field) or "").strip()
+    ]
+    if fields:
+        raise FallbackQuotaReorderError(
+            f"pinned primary {pin.provider}/{pin.model}: the {label} sets "
+            f"routing/credential field(s) {', '.join(fields)} that a "
+            "provider/model-only swap would drop or misroute; configure the "
+            "pinned route as primary directly, then pin it"
+        )
+
+
 def compute_primary_slot(
     config: Mapping[str, Any],
     desired_entries: Sequence[Mapping[str, Any]],
@@ -791,8 +818,18 @@ def compute_primary_slot(
         current = current_primary(config)
         if current is not None and _slots_match(current, pin):
             return None
+        if current is None:
+            raise FallbackQuotaReorderError(
+                "pinned primary requires a usable current primary (both "
+                "model.provider and model.default set) to rotate out; "
+                "configure the pinned route as primary directly, then pin it"
+            )
         for entry in desired_entries:
             if _entry_matches_slot(entry, pin):
+                _reject_pin_promotion_overrides(
+                    config.get("model"), "current model mapping", pin
+                )
+                _reject_pin_promotion_overrides(entry, "selected fallback entry", pin)
                 return PrimarySlot(
                     provider=str(entry.get("provider") or "").strip(),
                     model=str(entry.get("model") or "").strip(),

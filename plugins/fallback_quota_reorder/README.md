@@ -53,6 +53,8 @@ fallback_quota_reorder:
     model: example/model
 ```
 
+**Promotion limits (fail-closed).** A pin can only *promote* a chain entry when a usable current primary exists — `model.provider` and `model.default` both set. Without one there is no route to rotate back into the chain, so the run fails with an error instead of leaving the pinned route duplicated as both primary and fallback. Promotion also fails when either side of the swap carries routing/credential overrides — `base_url`, `inference_base_url`, `api_key`, `api`, `key_env`, `api_key_env`, or `api_mode` set on the current `model` mapping or on the selected fallback entry — because the swap writes only `model.provider`/`model.default`: the entry's endpoint/key fields would be silently dropped, and the current mapping's would be inherited by the wrong route. Errors name the offending fields, never their values. Routes that need those fields can still be pinned: configure the route directly as the primary, then pin it. A pin that already matches the current primary is simply retained, with its metadata untouched.
+
 `--dry-run` prints the pending swap:
 
 ```text
