@@ -749,7 +749,7 @@ async def _deliver_notice(runner: Any, source: Any, message: str) -> None:
     if adapter is None:
         logger.warning("Restart source notice (no requester route): %s", message)
         return
-    metadata: dict = {}
+    metadata: dict = {"_interim_send": True}
     thread_id = str(getattr(source, "thread_id", "") or "").strip()
     if thread_id:
         metadata["thread_id"] = thread_id
