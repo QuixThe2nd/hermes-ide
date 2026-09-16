@@ -2332,7 +2332,7 @@ DEFAULT_CONFIG = {
     "auto_update": {
         "enabled": True,
         "idle_minutes": 8,
-        "schedule": "*-*-* *:00,30:00",
+        "schedule": "*-*-* 00,06,12,18:00:00",
         "randomized_delay_sec": 0,
         "accuracy_sec": "1s",
         "notify_on_success": "",
@@ -2353,8 +2353,9 @@ DEFAULT_CONFIG = {
         # (wrong-path wipe) safety net.
         "pre_update_backup": "quick",
         # Full backup zips to retain (older pruned after each success; floored to 1 so the newest is
-        # always kept). The quick snapshot always keeps exactly 1.
-        "backup_keep": 5,
+        # always kept). The quick snapshot keeps the newest 3 plus any older snapshot still holding
+        # the only usable copy of a database the newer ones failed to capture.
+        "backup_keep": 3,
         # Uncommitted source-tree changes during NON-interactive updates (desktop, gateway — no TTY;
         # interactive updates always stash and ask). stash = stash, pull, restore on top (conflicts
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset
