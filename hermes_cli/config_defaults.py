@@ -1655,6 +1655,9 @@ DEFAULT_CONFIG = {
             # Experimental rich draft previews while streaming DMs; off because Telegram
             # Desktop/macOS can overlay draft frames until the chat redraws.
             "rich_drafts": False,
+            # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
+            # set True on an unaffected client to get native rich tables for CJK.
+            "allow_cjk_rich_messages": False,
         },
     },
 
@@ -2126,6 +2129,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Allow all users without allowlists (security opt-in).
+        "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
         "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that

@@ -1200,7 +1200,7 @@ Subcommands:
 |------------|-------------|
 | `show` | Show current config values. |
 | `edit` | Open `config.yaml` in your editor. |
-| `get <key> [--json]` | Print a single config value by dotted key (e.g. `hermes config get model.default`). `--json` emits machine-readable output. |
+| `get <key> [--json] [--raw]` | Print a single config value by dotted key (e.g. `hermes config get model.default`). `--json` emits machine-readable output. Credential-shaped values (`api_key`, `*_TOKEN`, `*_SECRET`, `password`, …) are masked (`sk-o...7890`) because the agent runs this from sessions whose transcripts persist; `--raw` prints the real value (or set `security.redact_secrets: false`). |
 | `set <key> <value>` | Set a config value. |
 | `unset <key>` | Remove a config key, reverting it to the built-in default. |
 | `path` | Print the config file path. |
@@ -1780,6 +1780,7 @@ Examples:
 ```bash
 hermes profile list
 hermes profile create work --clone
+hermes profile create work --clone --sync-imports   # also carry over the import-agent sync manifest
 hermes profile use work
 hermes profile alias work --name h-work
 hermes profile export work -o work-backup.tar.gz

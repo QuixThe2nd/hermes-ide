@@ -108,36 +108,23 @@ _ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
     # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
     "welcome-api.nousresearch.com"})
 
-# Every Nous inference gateway, production or not, lives under this domain. Consulted only when
-# the operator has pointed the process at a non-production Portal (see below).
-_NOUS_INFERENCE_HOST_SUFFIX = ".nousresearch.com"
-
-
-def _operator_selected_non_production_portal() -> bool:
-    """True when the trusted ``HERMES_PORTAL_BASE_URL`` override names a Portal outside the
-    production allowlist — the operator has deliberately put this profile on another environment.
-
-    A token minted by that Portal is meant to be spent at that environment's own inference
-    gateway, and the Portal's refresh response names it. Keyed on the operator override, never on
-    the stored ``portal_base_url``, so a poisoned auth.json cannot widen the allowlist and a
-    production-Portal session that finds a foreign inference URL in its state is still refused.
-    """
-    override = _nous_portal_env_override()
-    if not override:
-        return False
-    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS
-    host = urlparse(override).hostname
-    return bool(host) and host not in _NOUS_PORTAL_ALLOWED_HOSTS  # unparseable override: fail closed
-
-
 def _nous_inference_host_allowed(hostname: Optional[str]) -> bool:
-    """Production hosts always; any Nous-domain host when the operator selected another Portal."""
+    """Production hosts always; otherwise only the host the operator named in
+    ``NOUS_INFERENCE_BASE_URL``.
+
+    A non-production Portal's refresh response names that environment's inference gateway. The
+    Portal-returned value is network provenance, so it does not get bearer-receive authority on
+    its own — not even for a Nous-owned host: the operator's explicit override is the authority,
+    and the network value is accepted exactly when it agrees with it. Then the persisted endpoint,
+    the pricing scope and the proxy all follow the environment the operator chose, and the
+    per-turn "refusing inference URL host" warning stops.
+    """
     if hostname in _ALLOWED_NOUS_INFERENCE_HOSTS:
         return True
-    if not hostname or not hostname.endswith(_NOUS_INFERENCE_HOST_SUFFIX):
+    if not hostname:
         return False
-    labels = hostname.removesuffix(_NOUS_INFERENCE_HOST_SUFFIX).split(".")
-    return all(labels) and _operator_selected_non_production_portal()
+    override = _nous_inference_env_override()
+    return override is not None and urlparse(override).hostname == hostname
 
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
@@ -166,6 +153,22 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     return cleaned.rstrip("/")
 
 
+def _scoped_operator_override(name: str) -> Optional[str]:
+    """An operator routing override (``NOUS_INFERENCE_BASE_URL``, ``HERMES_PORTAL_BASE_URL``)
+    resolved through the profile secret scope, or None.
+
+    ``get_secret`` already reads ``os.environ`` for a single-profile process, so the only time it
+    raises is a multi-profile call that has lost its profile scope. That call has no authority to
+    route on the launch profile's value — returning the ambient env there would send a secondary's
+    tokens to the launch profile's Portal or inference host — so the override is simply absent.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        return get_secret(name)
+    except UnscopedSecretError:
+        return None
+
+
 def _nous_inference_env_override() -> Optional[str]:
     """User-set ``NOUS_INFERENCE_BASE_URL`` override (trailing slash stripped) or None.
 
@@ -175,12 +178,7 @@ def _nous_inference_env_override() -> Optional[str]:
     profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("NOUS_INFERENCE_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(_scoped_operator_override("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:
@@ -194,12 +192,8 @@ def _nous_portal_env_override() -> Optional[str]:
     secondary's refresh token to the DEFAULT profile's Portal.
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("HERMES_PORTAL_BASE_URL") or get_secret("NOUS_PORTAL_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(
+        _scoped_operator_override("HERMES_PORTAL_BASE_URL") or _scoped_operator_override("NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -1019,10 +1013,14 @@ def resolve_nous_runtime_credentials(
         return _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
             force_refresh=force_refresh, stale_access_token=stale_access_token)
-    except AnonCredentialDead:
+    except AnonCredentialDead as dead_exc:
         from hermes_cli.auth import get_provider_auth_state
+        from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED
         dead = get_provider_auth_state("nous") or {}
-        clear_dead_guest("anon_credential_dead", dead_token=dead.get("anon_token"))
+        clear_dead_guest(str(dead_exc.code or "anon_credential_dead"), dead_token=dead.get("anon_token"))
+        # A locked account is retired but never silently replaced: the way forward is a sign-in.
+        if dead_exc.code == ANON_ACCOUNT_LOCKED:
+            raise
         if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
             raise
         return _resolve_nous_runtime_credentials(

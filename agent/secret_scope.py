@@ -34,6 +34,18 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE
 
 
+def serves_routed_profile() -> bool:
+    """True when the current task runs for a profile other than the process's own: always under
+    multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
+    per-profile cron ticker). The MCP registry scope and the check_fn cache key both follow this
+    predicate so a served profile's view never aliases the launch profile's (#111151)."""
+    if is_multiplex_active():
+        return True
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
+    override = get_hermes_home_override()
+    return override is not None and hermes_home_key(override) != hermes_home_key(get_process_hermes_home())
+
+
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
 
 
@@ -250,4 +262,19 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     except Exception:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
+    # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
+    # into that profile's own mapping. A secondary never inherits it (#80099 class).
+    from gateway.config_loader import bridged_allow_all_users
+    bridged = bridged_allow_all_users()
+    if bridged is not None and _is_process_home(hermes_home):
+        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
     return secrets
+
+
+def _is_process_home(hermes_home: Path) -> bool:
+    from hermes_constants import get_process_hermes_home
+    try:
+        return Path(hermes_home).resolve() == get_process_hermes_home().resolve()
+    except OSError:
+        return False

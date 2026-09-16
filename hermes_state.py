@@ -1325,15 +1325,21 @@ def _strip_background_review_harness(
         return messages
     out: List[Dict[str, Any]] = []
     skip_next_assistant = False
+    previous_was_harness = False
     for msg in messages:
         if _is_background_review_harness_message(msg):
-            skip_next_assistant = True
+            # A consecutive harness prompt occupies the preceding prompt's
+            # immediate reply slot, so it must not arm another assistant skip.
+            skip_next_assistant = not previous_was_harness
+            previous_was_harness = True
             continue
         if skip_next_assistant:
             skip_next_assistant = False
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 # The curator-mode reply to the harness prompt — drop it.
+                previous_was_harness = False
                 continue
+        previous_was_harness = False
         out.append(msg)
     return out
 

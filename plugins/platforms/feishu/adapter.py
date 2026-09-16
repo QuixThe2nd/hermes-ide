@@ -1383,9 +1383,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return executor
 
     async def _run_blocking(self, func, *args):
-        """Run a blocking Feishu SDK call on the adapter-owned thread pool."""
+        """Run a blocking Feishu SDK call on the adapter-owned thread pool.
+
+        ``copy_context().run`` mirrors ``asyncio.to_thread``: the worker sees the caller's
+        profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._get_sdk_executor(), func, *args)
+        return await loop.run_in_executor(
+            self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
 
     def _shutdown_sdk_executor(self) -> None:
         """Stop the adapter-owned SDK executor without touching the loop default."""
@@ -3442,10 +3447,12 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._seen_message_order) > self._dedup_cache_size:
                 self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
         # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
-        # offload the flush. The lock keeps flushes in mutation order (the snapshot inside the
-        # worker is taken under _dedup_lock, but the write itself is not).
+        # offload the flush onto the adapter-owned pool: the loop's default executor may already
+        # be torn down by a dead background loop, which used to wedge every inbound message in
+        # the dedup gate (#111020). The lock keeps flushes in mutation order (the snapshot
+        # inside the worker is taken under _dedup_lock, but the write itself is not).
         async with self._dedup_persist_lock_or_create():
-            await asyncio.to_thread(self._persist_seen_message_ids)
+            await self._run_blocking(self._persist_seen_message_ids)
         return False
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
@@ -3574,7 +3581,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             from lark_oapi.api.im.v1 import ListMessageRequest
             request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
-            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            response = await self._run_blocking(self._client.im.v1.message.list, request)
             if self._response_succeeded(response):
                 items = getattr(getattr(response, "data", None), "items", None)
                 if items and len(items) > 0:
@@ -3716,7 +3723,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # thread has an empty context = launch profile. connect() runs inside the profile scope
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
         self._ws_future = loop.run_in_executor(
-            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+            self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

@@ -1659,26 +1659,20 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     return None
 
 
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
     """Resolve a clarify prompt: send disposition, then the bounded wait.
 
-    The full caller contract in one testable seam: a definitive send failure
-    returns the undeliverable sentinel (registration torn down); ``sent`` and
-    ``ambiguous`` both proceed to ``wait_for_response`` with the configured
-    timeout — for ambiguous, the registration stays armed so a late reply to
-    the (probably rendered) card still resolves.
-    """
-    abort = _clarify_send_disposition(
-        fut, session_key=session_key, clarify_mod=clarify_mod
-    )
+    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
+    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
+    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
     if abort is not None:
-        return abort
+        return abort, False
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     if response is None or response == "":
         # Timeout or session-boundary cancellation
-        return f"[user did not respond within {int(timeout / 60)}m]"
-    return response
+        return f"[user did not respond within {int(timeout / 60)}m]", False
+    return response, True
 
 
 def _resolve_progress_thread_id(
@@ -8487,19 +8481,32 @@ class TurnRunner:
             # AMBIGUOUS — the card may have posted with a late ack. Only a
             # definitive failure tears down the registration; ambiguous
             # falls through to the bounded wait so a late reply resolves.
-            _clarify_response = _clarify_send_then_wait(
+            _clarify_response, _clarify_answered = _clarify_send_then_wait(
                 fut,
                 clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
                 clarify_mod=_clarify_mod,
             )
-            # Only re-arm typing when the user actually answered — the
-            # undeliverable sentinel and the timeout/cancellation strings
-            # start with '[' and must pass through untouched.
-            if not (
-                isinstance(_clarify_response, str)
-                and _clarify_response.startswith("[")
-            ):
+            # Branch on the explicit answered flag, never on the text: a
+            # real answer can start with '[' (a "[A] staging" label, free
+            # text) and must not be mistaken for a sentinel.
+            if not _clarify_answered:
+                # No answer arrived (timeout, /new, run end): retire the
+                # native card so it stops looking answerable. Adapters
+                # without a persistent card have no such method.
+                _retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
+                if callable(_retire):
+                    safe_schedule_threadsafe(
+                        _retire(
+                            ctx._status_adapter,
+                            clarify_id,
+                            "⏳ This prompt expired — please send a new request.",
+                        ),
+                        ctx._loop_for_step,
+                        logger=logger,
+                        log_message="Clarify card retire failed to schedule",
+                    )
+            else:
                 # User answered.  Reopen the typing indicator IMMEDIATELY —
                 # don't wait for the LLM's first post-answer token.  On native
                 # streaming (WeCom) the typing bubble is driven by the stream
@@ -13709,6 +13716,12 @@ class GatewayRunner(
             unavailable = getattr(agent, "_unavailable_fallback_keys", None)
             if unavailable:
                 unavailable.clear()
+
+    def _running_agent_ids(self) -> set:
+        """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
+        ``AIAgent.__eq__`` (MagicMock overrides it in tests)."""
+        return {id(a) for _, a in self._running_agent_items()
+                if a is not None and a is not _AGENT_PENDING_SENTINEL}
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
@@ -23233,6 +23246,19 @@ class GatewayRunner(
                                 "Failed to resume typing after clarify response",
                                 exc_info=True,
                             )
+                        # A typed answer to a native card (numeric pick, or
+                        # text after "Other") never reaches the click handler,
+                        # so the card would keep its buttons forever.
+                        if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                            try:
+                                await _clarify_adapter.retire_clarify_card(
+                                    _pending_clarify.clarify_id,
+                                    f"\u2705 answered: {_pending_clarify.response or _raw_clarify_reply}")
+                            except Exception:
+                                logger.debug(
+                                    "Failed to retire clarify card after typed answer",
+                                    exc_info=True,
+                                )
                     # Acknowledge with empty string so adapters that emit
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
@@ -23254,10 +23280,26 @@ class GatewayRunner(
                     # routing. Release this clarify first: redirect()
                     # degrades to steer() while tools are executing, and
                     # that steer cannot drain until the clarify tool returns.
-                    _clarify_mod.resolve_gateway_clarify(
+                    if _clarify_mod.resolve_gateway_clarify(
                         _pending_clarify.clarify_id,
                         "",
-                    )
+                    ):
+                        # Adapters with a persistent native card (Slack Block
+                        # Kit) retire it now, before the prose is routed, so
+                        # its buttons stop advertising a dead answer path.
+                        _clarify_adapter = self._adapter_for_source(source)
+                        # Class lookup: a MagicMock adapter must not fabricate
+                        # the method.
+                        if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                            try:
+                                await _clarify_adapter.retire_clarify_card(
+                                    _pending_clarify.clarify_id,
+                                    "\u21a9\ufe0f Clarification cancelled \u2014 your message will be handled as a follow-up.")
+                            except Exception:
+                                logger.debug(
+                                    "Failed to retire clarify card after prose cancellation",
+                                    exc_info=True,
+                                )
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are

@@ -486,6 +486,52 @@ class TestAgentCacheActiveSafety:
         assert runner._cleanup_agent_resources.call_count == 0
 
 
+    def test_cap_enforcement_finds_running_agent_ids(self, monkeypatch):
+        """Regression: _enforce_agent_cache_cap must find _running_agent_ids
+        on the runner (a mixin split dropped the method while the cap / idle
+        sweep paths still called it — an over-cap cache raised AttributeError
+        before any eviction could run).
+
+        Behavior check with more entries than the cap: the call completes,
+        the oldest IDLE entry is evicted down toward the cap, and the
+        mid-turn LRU entry is skipped (its id() resolved through
+        _running_agent_ids) — leaving the cache transiently over cap as
+        documented, never compensating by evicting a newer session.
+        """
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 2)
+        runner = self._runner()
+
+        released: list = []
+        runner._spawn_release_thread = (
+            lambda target, args, name, **kw: released.append(args)
+        )
+
+        active = self._fake_agent()
+        idle_oldest = self._fake_agent()
+        idle_mid = self._fake_agent()
+        idle_newest = self._fake_agent()
+
+        # LRU order: active (oldest), idle_oldest, idle_mid, idle_newest — cap
+        # is 2, so the candidate window (len - cap = 2) holds active + idle_oldest.
+        runner._agent_cache["session-active"] = (active, "sig")
+        runner._agent_cache["session-idle-old"] = (idle_oldest, "sig")
+        runner._agent_cache["session-idle-mid"] = (idle_mid, "sig")
+        runner._agent_cache["session-idle-new"] = (idle_newest, "sig")
+        runner._running_agents["session-active"] = active  # mid-turn
+
+        with runner._agent_cache_lock:
+            runner._enforce_agent_cache_cap()  # must not raise AttributeError
+
+        assert "session-idle-old" not in runner._agent_cache
+        assert "session-active" in runner._agent_cache
+        assert "session-idle-mid" in runner._agent_cache
+        assert "session-idle-new" in runner._agent_cache
+        # Skipped active slot leaves the cache transiently over cap (3 > 2).
+        assert len(runner._agent_cache) == 3
+        assert released == [(idle_oldest, "session-idle-old")]
+
     def test_idle_sweep_skips_active_agent(self, monkeypatch):
         """Idle-TTL sweep must not tear down an active agent even if 'stale'."""
         from gateway import run as gw_run

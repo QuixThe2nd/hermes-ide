@@ -372,6 +372,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-impeccable',
+                    'user-guide/skills/optional/creative/creative-ip-as-logo',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
                     'user-guide/skills/optional/creative/creative-mono-color',
@@ -777,6 +778,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'developer-guide/contributing',
         'developer-guide/worktree-ui-dev',
+        'developer-guide/free-tier-fault-rehearsal',
         {
           type: 'category',
           label: 'Architecture',

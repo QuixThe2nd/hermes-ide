@@ -19,13 +19,13 @@ import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT
 from tools import file_state
-from agent.redact import redact_sensitive_text
+from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
@@ -210,6 +210,19 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return _is_blocked_device_path(resolved)
 
 
+def _resolved_match_path(path: str, task_id: str) -> str:
+    """Best-effort task-cwd resolution of a search hit's path.
+
+    Search backends may return cwd-relative paths while the process cwd differs, so both the
+    read-block filter and the redaction classifier must resolve against the task cwd. An
+    unresolvable path is used as-is (the raw path is still worth classifying).
+    """
+    try:
+        return str(_resolve_path_for_task(path, task_id))
+    except (OSError, ValueError, RuntimeError):
+        return path
+
+
 def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
     """Remove credential/cache/env paths from a SearchResult in-place; return the omitted count.
 
@@ -220,11 +233,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 
     def _allowed(path: str) -> bool:
         nonlocal omitted
-        try:
-            target = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError, RuntimeError):
-            target = path
-        if get_read_block_error(target):
+        if get_read_block_error(_resolved_match_path(path, task_id)):
             omitted += 1
             return False
         return True
@@ -487,7 +496,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
         rendered = result_dict["content"]
-        result_dict["content"] = redact_sensitive_text(rendered, file_read=True)
+        result_dict["content"] = redact_sensitive_text(
+            rendered, file_read=True,
+            secret_file=_is_secret_file_arg(str(_resolved)))
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
@@ -588,12 +599,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
-    Guard order: device-path blocklist (no I/O) → stat-based special-file
-    guard (host only) → document extraction → binary-extension guard → Hermes
-    internal denylist → negative-result cache → dedup stub → real read.
+    Guard order: NT/device-namespace prefix (raw string, no resolution) →
+    device-path blocklist (no I/O) → stat-based special-file guard (host only)
+    → document extraction → binary-extension guard → Hermes internal denylist
+    → negative-result cache → dedup stub → real read.
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+
+        # On the RAW model-supplied string, before any expanduser()/resolve():
+        # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
+        # leak); on POSIX the task-base join would anchor the prefix as a
+        # relative segment and hide it from every resolved-path check below.
+        nt_err = get_nt_namespace_error(path, verb="Read")
+        if nt_err:
+            return tool_error(nt_err)
 
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
@@ -682,7 +702,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         redacted = False
         if result.content:
             unredacted = result.content
-            result.content = redact_sensitive_text(unredacted, file_read=True)
+            result.content = redact_sensitive_text(
+                unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
 
@@ -1026,6 +1047,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 pattern=pattern,
                 already_searched=count)
 
+        # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
+        # trigger and the task-base join would hide the prefix (see read_file_tool).
+        nt_err = get_nt_namespace_error(path, verb="Search")
+        if nt_err:
+            return tool_error(nt_err)
         try:
             resolved_search_path = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1050,7 +1076,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
-                m.content = redact_sensitive_text(m.content, file_read=True)
+                m.content = redact_sensitive_text(
+                    m.content, file_read=True,
+                    secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
         result_dict = result.to_dict(densify=True)
 
         if omitted:

@@ -1318,11 +1318,43 @@ def _has_media_directives(text: str) -> bool:
     return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
 
 
+# A provider can leak its exact end-of-sequence control token glued to the last MEDIA path
+# (``MEDIA:/x.png<|eos|>``). Neither tag regex accepts ``<`` as a path terminator — deliberately,
+# since widening the delimiter set re-opens the glue classes #68773/#88038 — so the attachment was
+# silently dropped (#111046). The one exact token is recognised here, at the seam every scan shares
+# (extraction, display strip, stream cleanup), and only when it terminates the whole response.
+_TERMINAL_SENTINEL = "<|eos|>"
+
+
+def _terminal_sentinel_start(text: str) -> int:
+    """Offset where the run of exact ``<|eos|>`` tokens closing ``text`` (trailing whitespace
+    ignored) begins, else -1; the run ends at ``len(text.rstrip())``."""
+    end = start = len(text.rstrip())
+    while start >= len(_TERMINAL_SENTINEL) and text[start - len(_TERMINAL_SENTINEL):start] == _TERMINAL_SENTINEL:
+        start -= len(_TERMINAL_SENTINEL)
+    return start if start < end else -1
+
+
 def _mask_media_scan_text(text: str) -> str:
-    """Offset-preserving mask of protected spans (code, quotes, JSON string values).
+    """Offset-preserving mask of protected spans (code, quotes, JSON string values) and of a
+    terminal ``<|eos|>`` sentinel, so a tag glued to it ends on whitespace like any other.
     BasePlatformAdapter is defined later in this module; resolved at call time."""
     A = BasePlatformAdapter
-    return A._mask_json_string_media(A._mask_protected_spans(text))
+    masked = A._mask_json_string_media(A._mask_protected_spans(text))
+    start = _terminal_sentinel_start(text)
+    if start >= 0:
+        masked = _blank_spans(masked, [(start, len(text.rstrip()))])
+    return masked
+
+
+def _deliverable_tag_spans(text: str) -> list:
+    """Spans to delete from ``text``: its deliverable MEDIA tags (located on the masked copy)
+    plus a terminal ``<|eos|>`` sentinel, which is a control token and never user content."""
+    spans = _real_media_tag_spans(_mask_media_scan_text(text))
+    start = _terminal_sentinel_start(text)
+    if spans and start >= 0:
+        spans.append((start, len(text.rstrip())))
+    return spans
 
 
 def _extensionless_media_matches(masked: str):
@@ -1389,7 +1421,7 @@ def _strip_media_tag_directives(text: str) -> str:
     if not text or not _has_media_directives(text):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return _delete_spans(cleaned, _real_media_tag_spans(_mask_media_scan_text(cleaned)))
+    return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -2663,7 +2695,9 @@ class BasePlatformAdapter(ABC):
         ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
         ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
         text-intercept resolves the next message). Default: numbered list +
-        ``mark_awaiting_text``."""
+        ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
+        ``async retire_clarify_card(clarify_id, notice)``; the gateway calls it when the clarify
+        ends without a click (timeout, session reset, superseding free prose)."""
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
@@ -3021,7 +3055,7 @@ class BasePlatformAdapter(ABC):
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).
         if media:
-            spans = _real_media_tag_spans(_mask_media_scan_text(cleaned))
+            spans = _deliverable_tag_spans(cleaned)
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
         return media, cleaned

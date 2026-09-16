@@ -183,11 +183,16 @@ _IMAGE_CORRUPT_PATTERNS = (
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is
 # not set", Alibaba, OpenAI-compat long tail). Recovery: strip image parts from
 # tool messages, remember (provider, model), retry. (#27344)
+# NVIDIA NIM's Rust gateway never names the field: its serde rejection says the
+# body "did not match any variant of untagged enum
+# ChatCompletionRequestToolMessageContent", which is the same list-type tool
+# content that every other wording here describes (#111231).
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "text is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
+    "chatcompletionrequesttoolmessagecontent",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
@@ -504,6 +509,7 @@ class _Ctx:
     approx_tokens: int
     context_length: int
     num_messages: int
+    base_url: str = ""  # the route the call went to; "" when the caller did not say
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
@@ -563,7 +569,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         if refusal["retry_after"] > 0:
             ctx["reset_at"] = time.time() + refusal["retry_after"]
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
-    kind = welcome_route_refusal(status, c.msg)
+    kind = welcome_route_refusal(status, c.msg, c.base_url if c.provider == "nous" else None)
     if kind is None:
         return None
     ctx = {"welcome_route": kind}
@@ -699,8 +705,12 @@ _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
 def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
+    base_url: str = "",
 ) -> ClassifiedError:
-    """Classify an API error into a structured recovery recommendation (see ``_STAGES``)."""
+    """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
+
+    ``base_url`` (optional) is the route the call went to; the Nous welcome tier keys its
+    dark-tier 403 on it because that refusal carries no distinguishing message."""
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
@@ -708,7 +718,7 @@ def classify_api_error(
     body = _extract_error_body(error)
     c = _Ctx(
         error, status_code, body, _build_error_msg(error, body), provider, model,
-        approx_tokens, context_length, num_messages,
+        approx_tokens, context_length, num_messages, str(base_url or ""),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
@@ -792,6 +802,9 @@ def _classify_400(c: _Ctx) -> Verdict:
     ) or "could not decrypt the provided encrypted_content" in msg or (
         # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
         "encrypted content could not be decrypted or parsed" in msg
+    ) or (
+        # OpenCode Zen wraps this OpenAI replay rejection in ``invalid_request_error`` (#111309).
+        "encrypted_content" in msg and "was not issued to this caller" in msg
     ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg

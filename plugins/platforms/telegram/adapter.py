@@ -29,7 +29,9 @@ def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
     if not text:
-        return text
+        # httpx timeout exceptions (ConnectTimeout, ReadTimeout, ...) stringify to "" — keep the
+        # class name so failure lines never log an empty reason (#111211).
+        return f"<{type(error).__name__}>" if error is not None else text
     try:
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
@@ -446,6 +448,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # separate opt-in (Desktop can leave rich draft frames overlaid): off keeps native draft transport
         # but skips rich draft rendering; the final reply still lands via sendRichMessage.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
+        self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
@@ -1282,7 +1286,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(
             content and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (
+                getattr(self, "_allow_cjk_rich_messages", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich())
 
@@ -1619,7 +1626,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if not self._polling_progress_event.is_set():
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
-            logger.info("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d)", self.name, generation)
+            # After network-error WARNINGs the line must read as the matching recovery event (#111211).
+            state = "recovered" if self._polling_network_error_count else "confirmed healthy"
+            logger.info("[%s] Telegram polling %s: getUpdates progressing (generation %d)", self.name, state, generation)
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
@@ -2581,7 +2590,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         # Telegram allows 100 commands but has an undocumented ~4KB payload limit; default cap 60.
         max_commands = telegram_menu_max_commands()
-        menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
+        # Skill discovery resolves every skill path on disk; a slow filesystem after a reconnect must
+        # not hold the gateway loop past the liveness watchdog (#110707). Only the Bot API call stays here.
+        menu_commands, hidden_count = await asyncio.to_thread(telegram_menu_commands, max_commands=max_commands)
         bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
         for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
             scope_name = getattr(scope_cls, "__name__", str(scope_cls))
@@ -2948,10 +2959,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._disarm_ptb_retry_loop()
                 self._spawn_polling_recovery(loop, self._handle_polling_conflict(error))
             elif self._looks_like_network_error(error):
-                logger.warning("[%s] Telegram network _redact_telegram_error_text(error), scheduling reconnect: %s", self.name, error)
+                logger.warning(
+                    "[%s] Telegram network error, scheduling reconnect: %s", self.name, _redact_telegram_error_text(error))
                 self._spawn_polling_recovery(loop, self._handle_polling_network_error(error))
             else:
-                logger.error("[%s] Telegram polling _redact_telegram_error_text(error): %s", self.name, error, exc_info=True)
+                logger.error("[%s] Telegram polling error: %s", self.name, _redact_telegram_error_text(error), exc_info=True)
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         polling_started = await self._start_polling_resilient(
@@ -4254,7 +4266,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             from telegram import InlineQueryResultArticle, InputTextMessageContent
             from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _CACHE, build_inline_results
-            results, next_offset = build_inline_results(
+            # Per-keystroke catalog build resolves every skill path; keep it off the loop (#110707).
+            results, next_offset = await asyncio.to_thread(
+                build_inline_results,
                 getattr(inline_query, "query", "") or "", offset=getattr(inline_query, "offset", "") or "")
             articles = [
                 InlineQueryResultArticle(
@@ -5873,7 +5887,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
+                menu_commands, _ = await asyncio.to_thread(
+                    telegram_menu_commands, max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
