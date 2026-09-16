@@ -12475,13 +12475,6 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   assertPoolEntryStillOwned(poolKey, entry)
 
-  // A deleted profile must not occupy a queued pool slot while a stale roster
-  // hydration is waiting. Keep the final boundary below as well to fence a
-  // delete that races an already-granted request.
-  assertLocalProfileCanStart(profile, profileDeletionGate, key =>
-    directoryExists(path.join(HERMES_HOME, 'profiles', key))
-  )
-
   if (spawnPriority === 'background' && !backgroundSlotRetryBackoff.canAttempt(poolKey)) {
     throw new BackgroundSlotRetryDeferredError(profile)
   }
