@@ -2916,6 +2916,17 @@ class GatewayTurnMixin:
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
         turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
         turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
+        # Publish this turn's progress queue so plugin hooks can feed the native bubble
+        # (``ctx.progress()``) — the delivery path behind ``display.tool_progress: plugin``.
+        # Fail-open: with no registration every plugin push is a no-op returning False.
+        try:
+            from hermes_cli.progress_bridge import register_progress_queue
+            register_progress_queue(
+                queue=turn_ctx.progress_queue, session_key=session_key,
+                session_id=getattr(turn_ctx, "session_id", None),
+            )
+        except Exception:
+            logger.debug("progress-bridge registration failed", exc_info=True)
         return turn_ctx, turn_runner, _cleanup_adapter
 
     def _thread_metadata_for_progress(
@@ -4080,6 +4091,12 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            # Drop the plugin-facing progress queue registration for this turn.
+            try:
+                from hermes_cli.progress_bridge import unregister_progress_queue
+                unregister_progress_queue(queue=turn_ctx.progress_queue, session_key=session_key)
+            except Exception:
+                logger.debug("progress-bridge unregister failed", exc_info=True)
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

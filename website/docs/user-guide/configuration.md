@@ -2001,7 +2001,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ```yaml
 display:
-  tool_progress: all      # off | new | all | verbose
+  tool_progress: all      # off | new | all | verbose | plugin
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
@@ -2118,10 +2118,26 @@ display:
 | `new` | Tool indicator only when the tool changes |
 | `all` | Every tool call with a short preview (default) |
 | `verbose` | Full args, results, and debug logs |
+| `plugin` | Bubble content rendered by a plugin through `ctx.progress()` |
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
 Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
+
+### Plugin-rendered progress (`plugin`)
+
+`tool_progress: plugin` hands the *content* of the native progress bubble to a plugin while the gateway keeps owning the message: edit throttling, overflow splitting, `cleanup_progress` and mid-run restart recovery stay core behaviour. In this mode the core stops queueing its own tool lines, and a plugin hook renders them instead by pushing into the running turn's queue:
+
+```python
+ctx.progress("→ reading config.yaml")          # append one line
+ctx.progress(("__body__", rendered_body))      # replace the whole bubble body
+```
+
+Whole-body updates exist for plugins that render their own layout (header, steps, a footer with live counters): a footer changes on every tick and appending lines cannot rewrite it.
+
+`ctx.progress()` returns `False` when no turn is running — a CLI session, a platform without progress support, plugin work outside a turn — and never raises, so progress stays optional for a plugin everywhere else.
+
+This mode is an opt-in hook surface with no built-in renderer: without a plugin that calls `ctx.progress()` the bubble stays empty. Every other mode is unchanged. A minimal working renderer ships in `plugins/live-progress/` (see its README).
 
 `off` hides tool-call *chrome* only. Application state that has its own surface in the Desktop app and TUI — the task list (`todo_list`), subagent progress, clarify questions, and MCP consent cards — keeps flowing regardless of this setting.
 

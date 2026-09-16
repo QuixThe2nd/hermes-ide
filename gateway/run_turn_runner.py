@@ -126,6 +126,12 @@ class TurnRunner:
             self._progress_subagent_notice(preview, kwargs)
             return
         self._progress_live_status(event_type, tool_name, args)
+        # ``plugin`` progress mode: the bubble (and its queue) stay alive -- tool_progress_enabled
+        # is true for this mode -- but the core stops queueing its own tool lines. A plugin
+        # renders the content instead, through ``ctx.progress()`` / hermes_cli.progress_bridge.
+        # Thinking lines keep following ``thinking_progress``.
+        if getattr(ctx, "progress_mode", None) == "plugin" and event_type in {"tool.started", "tool.completed"}:
+            return
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
         if ctx.log_queue is not None and event_type == "tool.started" and tool_name and tool_name != "_thinking":
@@ -631,6 +637,14 @@ class TurnRunner:
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
+        # ``("__body__", text)`` replaces the whole bubble body instead of appending a line. A
+        # plugin that renders its own layout (header + steps + footer with live counters) needs
+        # this: the footer changes on every tick and appending cannot rewrite it. Nothing else
+        # sends this marker, so every other mode behaves exactly as before.
+        if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__body__":
+            body = str(raw[1])
+            st.progress_lines = body.split("\n")
+            return st.progress_lines[-1] if st.progress_lines else ""
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
@@ -716,6 +730,27 @@ class TurnRunner:
         while True:
             try:
                 if not ctx._run_still_current():
+                    # Render what is still queued before returning: a plugin's final body (for
+                    # example its "done" line, pushed from ``post_llm_call``) can land after the
+                    # loop's last poll. The queue was drained without rendering here, which made
+                    # that last push invisible -- so absorb the tail and flush ONE final edit.
+                    try:
+                        pending = False
+                        while True:
+                            try:
+                                raw_pending = ctx.progress_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                            if self._is_reset_marker(raw_pending):
+                                self._reset_progress_bubble(st)
+                                continue
+                            self._progress_absorb(st, raw_pending)
+                            pending = True
+                        if pending and st.can_edit and st.progress_lines and st.progress_msg_id:
+                            await self._flush_progress_edit(st)
+                            logger.debug("final progress flush rendered %d line(s)", len(st.progress_lines))
+                    except Exception:
+                        logger.debug("final progress flush failed", exc_info=True)
                     self._drain_progress_queue()
                     return
                 raw = ctx.progress_queue.get_nowait()
@@ -737,6 +772,20 @@ class TurnRunner:
                         await asyncio.sleep(remaining)
                         continue
                     if not ctx._run_still_current():
+                        # The run can go non-current while we wait out the edit throttle, and a
+                        # plugin's final body lands exactly in that window: absorb what is left
+                        # and flush one edit instead of returning silently.
+                        with suppress(Exception):
+                            while True:
+                                try:
+                                    extra = ctx.progress_queue.get_nowait()
+                                except queue.Empty:
+                                    break
+                                if self._is_reset_marker(extra):
+                                    self._reset_progress_bubble(st)
+                                    continue
+                                self._progress_absorb(st, extra)
+                        await self._flush_progress_edit(st)
                         return
                     if not await self._progress_send_or_edit(st, msg):
                         continue
