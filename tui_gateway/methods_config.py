@@ -294,10 +294,15 @@ def _(rid, params: dict) -> dict:
 
 @method("setup.runtime_check")
 def _(rid, params: dict) -> dict:
-    """Strict provider check via the same resolve_runtime_provider() the agent uses on session
-    creation (setup.status is True if ANY provider auth state is discoverable): ok=False + the auth
-    error when the model can't be served, so UIs surface onboarding before a doomed prompt.
-    ``profile`` answers for THAT profile's pin and ``.env``; unknown -> ``ok=False``."""
+    """Readiness probe for the session a client is about to open (setup.status is True if ANY
+    provider auth state is discoverable): ok=False + the auth error when the model can't be served,
+    so UIs surface onboarding before a doomed prompt. Without ``provider`` it runs the SAME
+    resolver as session creation (``_resolve_agent_model_runtime``: startup model + provider pin,
+    then the configured fallback chain) — a probe that ignores the chain shows onboarding for a
+    backend whose sessions build fine. An explicit ``provider`` stays a strict single-provider
+    check so onboarding can verify the provider just connected without another provider's
+    fallback masking a failed connection. ``profile`` answers for THAT profile's pin and ``.env``;
+    unknown -> ``ok=False``."""
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
@@ -305,13 +310,17 @@ def _(rid, params: dict) -> dict:
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
-            runtime = resolve_runtime_provider(requested=requested)
+            if requested:
+                model, _startup_provider = _resolve_startup_runtime()
+                runtime = resolve_runtime_provider(requested=requested, target_model=model or None)
+            else:
+                model, runtime = _resolve_agent_model_runtime(None, None)
             provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
             provider = runtime.get("provider") or "provider"
             source = str(runtime.get("source") or "")
 
             def fail(error, src):
-                return {"ok": False, "provider": provider, "model": runtime.get("model"),
+                return {"ok": False, "provider": provider, "model": model,
                         "source": src, "error": error, **scoped}
             if (not provider_configured and provider == "bedrock"
                     and source in {"iam-role", "aws-sdk-default-chain"}):
@@ -324,7 +333,7 @@ def _(rid, params: dict) -> dict:
             from hermes_cli.anon_auth import route_is_welcome_host
             # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.
-            return {"ok": True, "provider": runtime.get("provider"), "model": runtime.get("model"),
+            return {"ok": True, "provider": runtime.get("provider"), "model": model,
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
