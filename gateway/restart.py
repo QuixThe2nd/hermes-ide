@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from hermes_cli.config import DEFAULT_CONFIG
 from utils import atomic_json_write
 
+from gateway import restart_preflight
+
 if TYPE_CHECKING:
     from gateway.session import SessionSource
 
@@ -331,7 +333,8 @@ async def queue_user_restart(
 
     Every user-restart entry point (the ``/restart`` slash command and the
     agent-callable ``restart`` tool) funnels through this helper so their
-    requester setup can never drift apart: persist the comeback routing
+    requester setup can never drift apart: warn about uncommitted runtime
+    source (the warning-only preflight below), persist the comeback routing
     (the in-memory command source plus the ``.restart_notify.json`` marker the
     next gateway process consumes), offer the opt-in wind-down prompt, then
     hand off to ``request_restart``, which opens the shared drain. Must run on
@@ -358,75 +361,111 @@ async def queue_user_restart(
             "via_service": None,
         }
 
-    # Save the requester's routing info so the new gateway process can
-    # notify them once it comes back online — best-effort, exactly like
-    # every other step before the drain hand-off.
-    if source is not None:
+    # Warning-only source preflight, BEFORE any requester routing is
+    # persisted: inspect the installed checkout and tell the requester about
+    # uncommitted runtime source. Bounded (scan + delivery budgets), coalesced
+    # across concurrent callers, and never a restart blocker — inspection or
+    # delivery failures only downgrade the notice. Cancellation still
+    # propagates: a cancelled setup must not reach request_restart.
+    preflight_attempt = await restart_preflight.warn_before_user_restart(
+        runner, source
+    )
+    if preflight_attempt is restart_preflight.ACTIVE_OWNER_PENDING:
+        # A concurrent caller's setup still owns the pending restart (its
+        # wind-down offer can outlast a coalescing rider's budget). This
+        # caller lost the race: keep the winner's routing, enter no setup of
+        # its own, and report the shared already-in-progress result. If that
+        # owner's setup fails, it releases the attempt for a later retry.
+        return {
+            "status": "already_in_progress",
+            "active_agents": runner._running_agent_count(),
+            "via_service": None,
+        }
+    try:
+        # Ownership recheck after the preflight's awaits: another entry point
+        # (or a signal-initiated drain) may have opened the restart while this
+        # caller was inspecting or delivering. The loser keeps the winner's
+        # routing and sends nothing further.
+        if getattr(runner, "_restart_requested", False) or getattr(runner, "_draining", False):
+            return {
+                "status": "already_in_progress",
+                "active_agents": runner._running_agent_count(),
+                "via_service": None,
+            }
+
+        # Save the requester's routing info so the new gateway process can
+        # notify them once it comes back online — best-effort, exactly like
+        # every other step before the drain hand-off.
+        if source is not None:
+            try:
+                runner._restart_command_source = dataclasses.replace(
+                    source,
+                    message_id=str(message_id)
+                    if message_id is not None
+                    else source.message_id,
+                )
+            except Exception:
+                runner._restart_command_source = source
         try:
-            runner._restart_command_source = dataclasses.replace(
-                source,
-                message_id=str(message_id)
-                if message_id is not None
-                else source.message_id,
+            atomic_json_write(
+                _hermes_home / ".restart_notify.json",
+                _restart_notify_payload(source, message_id),
+                indent=None,
             )
-        except Exception:
-            runner._restart_command_source = source
-    try:
-        atomic_json_write(
-            _hermes_home / ".restart_notify.json",
-            _restart_notify_payload(source, message_id),
-            indent=None,
-        )
-    except Exception as exc:
-        logger.debug("Failed to write restart notify file: %s", exc)
-
-    active_agents = runner._running_agent_count()
-
-    # Opt-in cooperative wind-down: for a native-Discord requester with at
-    # least one other live chat, offer the ⏸️ pause embed *before*
-    # request_restart() opens the drain, so the offer is bound to this
-    # restart cycle (request_restart re-enters the already-open cycle and
-    # mints no second generation). The embed is the only thing that can
-    # trigger a park steer — without it the restart simply waits for the
-    # live sessions to finish on their own. Runners without the capability
-    # (older cores, foreign objects) skip it, and any failure here just
-    # leaves the restart on the natural-wait drain.
-    send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
-    if callable(send_offer):
-        try:
-            await send_offer(source)
         except Exception as exc:
-            logger.debug("Restart wind-down offer skipped: %s", exc)
+            logger.debug("Failed to write restart notify file: %s", exc)
 
-    # This queued restart supersedes every OTHER pending restart gate in the
-    # process: their confirm waits are moot — the bounce happens no matter
-    # what their requesters reply — and resolving them HERE, with the
-    # distinguished token and BEFORE the drain interrupts anything, lets each
-    # waiting restart tool return the truthful "superseded" result while its
-    # session is still running (the natural-wait drain then collects the
-    # turn normally instead of forcing it). The sweep touches only
-    # restart-kind waits; the confirming gate's own entry is already
-    # resolved by its real reply, and first-writer-wins keeps it that way.
-    try:
-        from tools.clarify_gateway import resolve_restart_waits_superseded
+        active_agents = runner._running_agent_count()
 
-        superseded_gates = resolve_restart_waits_superseded()
-    except Exception as exc:
-        superseded_gates = 0
-        logger.debug("Restart queue: superseded-gate sweep failed: %s", exc)
-    if superseded_gates:
-        logger.info(
-            "Restart queue: %d pending restart gate(s) superseded by this restart",
-            superseded_gates,
-        )
+        # Opt-in cooperative wind-down: for a native-Discord requester with at
+        # least one other live chat, offer the ⏸️ pause embed *before*
+        # request_restart() opens the drain, so the offer is bound to this
+        # restart cycle (request_restart re-enters the already-open cycle and
+        # mints no second generation). The embed is the only thing that can
+        # trigger a park steer — without it the restart simply waits for the
+        # live sessions to finish on their own. Runners without the capability
+        # (older cores, foreign objects) skip it, and any failure here just
+        # leaves the restart on the natural-wait drain.
+        send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
+        if callable(send_offer):
+            try:
+                await send_offer(source)
+            except Exception as exc:
+                logger.debug("Restart wind-down offer skipped: %s", exc)
 
-    via_service = user_restart_via_service()
-    started = runner.request_restart(detached=not via_service, via_service=via_service)
-    return {
-        "status": "restarting" if started else "already_in_progress",
-        "active_agents": active_agents,
-        "via_service": via_service,
-    }
+        # This queued restart supersedes every OTHER pending restart gate in the
+        # process: their confirm waits are moot — the bounce happens no matter
+        # what their requesters reply — and resolving them HERE, with the
+        # distinguished token and BEFORE the drain interrupts anything, lets each
+        # waiting restart tool return the truthful "superseded" result while its
+        # session is still running (the natural-wait drain then collects the
+        # turn normally instead of forcing it). The sweep touches only
+        # restart-kind waits; the confirming gate's own entry is already
+        # resolved by its real reply, and first-writer-wins keeps it that way.
+        try:
+            from tools.clarify_gateway import resolve_restart_waits_superseded
+
+            superseded_gates = resolve_restart_waits_superseded()
+        except Exception as exc:
+            superseded_gates = 0
+            logger.debug("Restart queue: superseded-gate sweep failed: %s", exc)
+        if superseded_gates:
+            logger.info(
+                "Restart queue: %d pending restart gate(s) superseded by this restart",
+                superseded_gates,
+            )
+
+        via_service = user_restart_via_service()
+        started = runner.request_restart(detached=not via_service, via_service=via_service)
+        return {
+            "status": "restarting" if started else "already_in_progress",
+            "active_agents": active_agents,
+            "via_service": via_service,
+        }
+    finally:
+        # Setup resolved (started, failed, or cancelled): drop the provisional
+        # preflight state so a later attempt retries it, and wake any rider.
+        restart_preflight.release_restart_preflight(preflight_attempt)
 
 
 # ── superseded restart gates: one truthful result, one resume-seam note ──────
