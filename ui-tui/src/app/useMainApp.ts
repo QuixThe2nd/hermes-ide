@@ -67,6 +67,10 @@ import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
+import {
+  CONNECTION_LOST,
+  CONNECTION_LOST_ACTIVITY
+} from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 
@@ -945,8 +949,26 @@ export function useMainApp(gw: GatewayClient) {
       }
     }
 
-    const exitHandler = () => {
+    const exitHandler = (code: null | number) => {
       turnController.reset()
+      const state = getUiState()
+      const storedSid = state.info?.stored_session_id || null
+
+      // Attached socket closed: the backend (and any live turn) is still there —
+      // GatewayClient owns the backoff reconnect, and the next gateway.ready
+      // resumes the durable session id. Calling start() here would race that
+      // reconnect and reset its backoff.
+      if (gw.attached) {
+        recoverSidRef.current = storedSid ?? recoverSidRef.current
+        patchUiState({ busy: false, compacting: false, sid: null, status: 'reconnecting…' })
+
+        if (state.sid) {
+          turnController.pushActivity(CONNECTION_LOST_ACTIVITY, 'warn')
+          sys(CONNECTION_LOST)
+        }
+
+        return
+      }
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child
@@ -954,9 +976,8 @@ export function useMainApp(gw: GatewayClient) {
       // session (the user's complaint), respawn the gateway and resume the
       // persisted session via the next gateway.ready, so a single crash / OOM /
       // signal doesn't lose their work. planGatewayRecovery bounds the attempts
-      // so a gateway that crash-loops on startup can't spawn-storm, and falls
-      // back to recoverSidRef when sid was already cleared by a prior exit.
-      const plan = planGatewayRecovery(getUiState().sid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+      // so a gateway that crash-loops on startup can't spawn-storm.
+      const plan = planGatewayRecovery(storedSid, recoverSidRef.current, recoveryAtRef.current, Date.now())
 
       // Clear sid immediately: while the gateway is down, sid-guarded effects
       // (session.active_list poll, queue drain) would otherwise fire RPCs at a
