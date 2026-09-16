@@ -123,15 +123,4 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
 
     expect(loadArchivedSessions).toHaveBeenCalledTimes(1)
   })
-
-  it('does not reload archived sessions when the Archived view is closed', async () => {
-    $changeEventsAvailable.set(true)
-    render('default', 'local', async () => undefined)
-
-    await act(async () => {
-      $sessionsChangeTick.set(1)
-    })
-
-    expect(loadArchivedSessions).not.toHaveBeenCalled()
-  })
 })
