@@ -9289,6 +9289,45 @@ def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypa
     assert resp["result"]["ok"] is False
     assert resp["result"]["model"] == "z-ai/glm-5.2"
 
+def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypatch, tmp_path):
+    """The launch profile needs a scope too when its Codex route reads an override."""
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex.launch.test/v1")
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-5.3-codex", None))
+
+    def resolve_codex(requested=None, **_kwargs):
+        assert requested == "openai-codex"
+        return {
+            "provider": "openai-codex",
+            "api_key": "codex-oauth-token",
+            "base_url": secret_scope.get_secret("HERMES_CODEX_BASE_URL"),
+            "source": "credential-pool",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve_codex)
+    secret_scope.set_multiplex_active(True)
+    try:
+        response = server.handle_request(
+            {"id": "1", "method": "setup.runtime_check", "params": {"provider": "openai-codex"}}
+        )
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert response["result"] == {
+        "ok": True,
+        "provider": "openai-codex",
+        "model": "gpt-5.3-codex",
+        "source": "credential-pool",
+        "free_tier": False,
+    }
+
 
 def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
     """#94071: the Desktop preflights a freshly created bot on its target

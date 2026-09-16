@@ -248,18 +248,19 @@ def _readiness_check(rid, params, probe):
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
     profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
     for the launch profile instead)."""
-    import contextlib
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
-    scope = contextlib.nullcontext()
+    home = None
     if profile:
         from hermes_cli import profiles as profiles_mod
         if not profiles_mod.profile_exists(profile):
             return _ok(rid, {"ok": False, "profile": params.get("profile"),
                              "error": f"Profile '{profile}' does not exist on this backend."})
         home = _profile_home(profile)
-        if home is not None:
-            scope = _session_profile_runtime_scope({"profile_home": str(home)})
-    with scope:
+    # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
+    # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
+    # a single-profile process), or the first profile-scoped read inside the resolver
+    # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
+    with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
         payload = probe(profile, {"profile": profile} if profile else {})
     return _ok(rid, payload)
 
