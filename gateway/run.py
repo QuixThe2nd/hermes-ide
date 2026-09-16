@@ -16838,52 +16838,33 @@ class GatewayRunner(
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
 
-    async def _await_startup_boot_sends(
-        self,
-        *,
-        planned_restart_notification_pending: bool,
-    ) -> None:
-        """Run boot-path sends without letting them pin the inbound restore gate.
+    async def _await_startup_boot_sends(self, *, planned_restart_notification_pending: bool) -> None:
+        """Run boot-path sends without letting them pin the inbound restore gate (one Telegram
+        flood-control sleep must not freeze inbound on every platform): same bounded wait as the
+        resume gate, sends finish in the background on timeout. The ledger claim + ``resume_pending``
+        clear run INLINE before the send task exists — deferring it let a hung notification expire the
+        gate with zero rows claimed, so answered turns were replayed AND redelivered.
 
-        ``_send_restart_notification`` and ``_redeliver_pending_obligations``
-        used to be awaited inline *before* ``_finish_startup_restore``
-        released the gate. A single Telegram flood-control sleep on either
-        send froze inbound on every platform for the full ``retry_after``
-        (#91969).
-
-        This uses the same bounded ``asyncio.wait`` the resume gate already
-        uses: on timeout we return and let the sends finish in the
-        background. Tasks are not cancelled.
-
-        The ledger claim + ``resume_pending`` clear happen INLINE here,
-        before the send task exists: they are pure DB work (no network,
-        bounded by claimed-row count), and deferring them into the send
-        task left a window where a hung restart notification ahead of the
-        redelivery step let the gate expire with zero rows claimed — the
-        resume scheduler then replayed turns whose answers were already in
-        the ledger, and the background task later redelivered them too
-        (duplicate delivery + re-paid turn).
+        Planned-restart notices replay from the durable marker (checkpointed per target), the
+        shutdown comeback notice dedups against everything a boot notice already reached, and the
+        restart-channel-rename idle label restores after the lifecycle sends.
         """
+        from gateway.run import _startup_restore_drain_timeout_secs
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
             # Collect every chat a boot notice already reached, so the
             # shutdown comeback notice never double-pings a target that just
             # heard "we're back" from /restart or the notification-channel send.
-            skip_targets: set[tuple[str, str, Optional[str]]] = set()
             restart_target = await self._send_restart_notification()
+            skip_targets: set[tuple[str, str, Optional[str]]] = set()
             if restart_target is not None:
                 skip_targets.add(restart_target)
             if planned_restart_notification_pending:
-                try:
-                    delivered_home = await self._send_notification_channel_startup_notifications(
-                        skip_targets=skip_targets,
-                    )
-                    # Fresh set, never an in-place |= : the object handed to
-                    # the notification-channel send stays exactly what it saw.
-                    skip_targets = skip_targets | delivered_home
-                finally:
-                    _clear_planned_restart_notification()
+                delivered_boot = await self._replay_pending_planned_restart_notification()
+                # Fresh set, never an in-place |= : the object handed to the
+                # notification-channel send stays exactly what it saw.
+                skip_targets = skip_targets | (delivered_boot or set())
             await self._send_shutdown_comeback_notifications(skip_targets=skip_targets)
             try:
                 from gateway.restart_channel_rename import restore_on_startup
@@ -16897,26 +16878,15 @@ class GatewayRunner(
 
         boot_task = asyncio.create_task(_boot_sends())
         timeout = _startup_restore_drain_timeout_secs()
-        if timeout > 0:
-            _done, pending = await asyncio.wait({boot_task}, timeout=timeout)
-            if pending:
-                logger.warning(
-                    "Boot-path sends still running after %.0fs; releasing "
-                    "inbound gate so other platforms are not frozen. "
-                    "Restart notification / obligation redelivery continue "
-                    "in the background.",
-                    timeout,
-                )
-                boot_task.add_done_callback(self._log_background_boot_send_result)
-                tasks = getattr(self, "_background_tasks", None)
-                if tasks is None:
-                    self._background_tasks = set()
-                    tasks = self._background_tasks
-                tasks.add(boot_task)
-                boot_task.add_done_callback(tasks.discard)
-        else:
-            await boot_task
-
+        if timeout <= 0:
+            await boot_task  # unbounded: a failing send surfaces here (unlike the gate path)
+            return
+        await self._wait_bounded_or_release(
+            {boot_task}, timeout,
+            "Boot-path sends still running after %.0fs; releasing inbound gate so other platforms are not "
+            "frozen. Restart notification / obligation redelivery continue in the background.",
+            "background boot-path send failed after gate release: see traceback", track=True,
+        )
     @staticmethod
     def _log_background_boot_send_result(task: "asyncio.Task") -> None:
         """Done-callback for boot-path sends that outlived the restore gate."""
@@ -31681,16 +31651,16 @@ class GatewayRunner(
         return GatewayNotificationsMixin._free_tier_startup_line(self)
 
     async def _send_notification_channel_startup_notifications(
-        self,
-        *,
-        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        on_delivered: Optional[Callable[[tuple[str, str, Optional[str]]], None]] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured notification channels that the gateway is back online.
 
-        The notification is best-effort and sent once per configured
-        notification channel. ``skip_targets`` lets startup avoid duplicate messages
-        when a more specific restart notification is queued for the same chat.
+        Best-effort, once per configured notification channel. ``skip_targets`` lets startup avoid
+        duplicate messages when a more specific restart notification is queued for the same chat.
+        ``on_delivered`` persists each acknowledgment before attempting the next transport.
         """
+        from gateway.run_shutdown import _notice_target_key
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
@@ -31703,76 +31673,23 @@ class GatewayRunner(
         )
         if not any_channel:
             logger.info("Gateway online: no notification channel configured — skipping startup broadcast")
-
-        for platform, platform_cfg in self.config.platforms.items():
-            # Lifecycle broadcasts route to the platform's dedicated
-            # notification channel (e.g. a Discord "#gateway-restarts"
-            # channel); without one they are skipped.
-            home = platform_cfg.notification_channel
-            if not home or not home.chat_id:
-                continue
-
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
-            if transport is None:
-                continue
-
+        for platform, platform_cfg, channel, transport in self._notification_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
-
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            target = _notice_target_key(platform.value, channel.chat_id, channel.thread_id)
             if target in skipped or target in delivered:
                 continue
-
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=transport.adapter,
-                )
-                if transport.is_relay:
-                    metadata = dict(metadata or {})
-                    if home.user_id:
-                        metadata["user_id"] = home.user_id
-                    if home.scope_id:
-                        metadata["scope_id"] = home.scope_id
-                send_metadata = _non_conversational_metadata(metadata, platform=platform)
-                if send_metadata is not None or transport.is_relay:
-                    result = await transport.send(
-                        platform,
-                        str(home.chat_id),
-                        message,
-                        metadata=send_metadata,
-                    )
-                else:
-                    result = await transport.adapter.send(str(home.chat_id), message)
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.warning(
-                        "Notification-channel startup notification failed for %s:%s: %s",
-                        platform.value,
-                        home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
-                    )
-                    continue
-
+            if await self._send_notification_channel_message(
+                platform, channel, transport, message, "Notification-channel startup notification failed for %s:%s: %s",
+            ):
                 delivered.add(target)
-                logger.info(
-                    "Sent notification-channel startup notification to %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Notification-channel startup notification failed for %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    exc,
-                )
-
+                if on_delivered is not None:
+                    on_delivered(target)
+                logger.info("Sent notification-channel startup notification to %s:%s", platform.value, channel.chat_id)
         return delivered
 
     async def _send_session_db_warning_notifications(self) -> None:

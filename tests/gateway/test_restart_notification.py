@@ -642,7 +642,7 @@ async def test_relay_shutdown_comeback_notice_preserves_owner_metadata(
 
 
 @pytest.mark.asyncio
-async def test_boot_sends_wire_comeback_dedup_against_restart_and_home_notices(
+async def test_boot_sends_wire_comeback_dedup_against_restart_and_boot_notices(
     tmp_path, monkeypatch
 ):
     """skip_targets flows restart → notification-channel send → comeback, never double-pinging."""
@@ -651,16 +651,14 @@ async def test_boot_sends_wire_comeback_dedup_against_restart_and_home_notices(
 
     runner, _adapter = make_restart_runner()
     order: list[str] = []
-    channel_skip: list = []
     comeback_skip: list = []
 
     async def _restart_notify():
         order.append("restart")
         return ("telegram", "42", None)
 
-    async def _channel_notify(*, skip_targets=None):
+    async def _replay_notify():
         order.append("channel")
-        channel_skip.append(set(skip_targets))
         return {("telegram", "notify-1", None)}
 
     async def _comeback_notify(*, skip_targets=None):
@@ -669,7 +667,7 @@ async def test_boot_sends_wire_comeback_dedup_against_restart_and_home_notices(
         return set()
 
     runner._send_restart_notification = _restart_notify
-    runner._send_notification_channel_startup_notifications = _channel_notify
+    runner._replay_pending_planned_restart_notification = _replay_notify
     runner._send_shutdown_comeback_notifications = _comeback_notify
     runner._claim_pending_obligations = AsyncMock(return_value=[])
     runner._redeliver_claimed_obligations = AsyncMock(return_value=None)
@@ -677,9 +675,8 @@ async def test_boot_sends_wire_comeback_dedup_against_restart_and_home_notices(
     await runner._await_startup_boot_sends(planned_restart_notification_pending=True)
 
     assert order == ["restart", "channel", "comeback"]
-    # The notification-channel send must not re-ping the /restart chat...
-    assert channel_skip == [{("telegram", "42", None)}]
-    # ...and the comeback skips everyone a boot notice already reached.
+    # The comeback skips everyone a boot notice already reached: the /restart
+    # chat plus every target the planned-restart replay delivered.
     assert comeback_skip == [{("telegram", "42", None), ("telegram", "notify-1", None)}]
 
 
@@ -695,15 +692,15 @@ async def test_boot_sends_comeback_runs_without_planned_marker(tmp_path, monkeyp
     async def _restart_notify():
         return None
 
-    async def _channel_notify(*, skip_targets=None):
-        raise AssertionError("notification-channel startup notice must not fire without a planned marker")
+    async def _replay_notify():
+        raise AssertionError("planned-restart replay must not fire without a planned marker")
 
     async def _comeback_notify(*, skip_targets=None):
         comeback_skip.append(skip_targets)
         return set()
 
     runner._send_restart_notification = _restart_notify
-    runner._send_notification_channel_startup_notifications = _channel_notify
+    runner._replay_pending_planned_restart_notification = _replay_notify
     runner._send_shutdown_comeback_notifications = _comeback_notify
     runner._claim_pending_obligations = AsyncMock(return_value=[])
     runner._redeliver_claimed_obligations = AsyncMock(return_value=None)
