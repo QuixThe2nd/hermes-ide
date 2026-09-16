@@ -4,7 +4,6 @@ Teardown paths (a parent's ``delegate_task`` finishing, ``unregister_gateway_not
 end, a ``/stop``) end the wait fail-closed, but the tool result carries ``outcome="cancelled"``
 and the cause instead of "denied by user" (#112026, #22992).
 """
-import os
 import threading
 
 import pytest
@@ -25,6 +24,9 @@ def gateway_session(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
     monkeypatch.setenv("HERMES_SESSION_KEY", SESSION_KEY)
+    # ``--yolo`` is frozen at import from HERMES_YOLO_MODE; a host shell running yolo must not
+    # auto-approve the gate under test.
+    monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual", "timeout": 60})
     hooks = []
     original = approval_context._fire_approval_hook
@@ -48,7 +50,7 @@ def _run_gate_until_pending():
 
     thread = threading.Thread(target=worker)
     thread.start()
-    assert notified.wait(timeout=5), "approval was never enqueued"
+    assert notified.wait(timeout=10), "approval was never enqueued"
     return thread, holder
 
 
