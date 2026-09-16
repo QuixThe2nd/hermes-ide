@@ -662,21 +662,18 @@ def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplet
         sys.exit(1)
 
 
-def _apply_pending_fleet_restart_catchup(*, respect_no_gateway_restart: bool = False, no_gateway_restart: bool = False) -> None:
+def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
     No-op when nothing is pending; exits 1 on incomplete catch-up so automation
-    does not treat the fleet as healthy.
-
-    When called from a cron's ``--no-gateway-restart`` flow (both flags true),
-    the pending restart is deferred instead of executed: running it here would
-    kill the cron's own gateway mid-flight. The marker is kept for a later
-    out-of-cron update.
+    does not treat the fleet as healthy. ``defer`` (``--no-gateway-restart``) keeps
+    the marker and warns instead: running the restart from inside the gateway's own
+    cgroup would kill the caller.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
         return
-    if respect_no_gateway_restart and no_gateway_restart:
+    if defer:
         print()
         _warn_pending_fleet_restart()
         print("  (fleet restart deferred — --no-gateway-restart; marker kept)")

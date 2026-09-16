@@ -1273,8 +1273,7 @@ def _finish_already_up_to_date(
     # demotes the outcome to partial, but must not strand the fleet on stale code (#91277 fleet contract —
     # the pending-restart check always executes). Under --no-gateway-restart the
     # catch-up is deferred instead (executing it would kill the cron's own gateway).
-    _apply_pending_fleet_restart_catchup(
-        respect_no_gateway_restart=True, no_gateway_restart=no_gateway_restart)
+    _apply_pending_fleet_restart_catchup(defer=no_gateway_restart)
     if not current_checkout_complete:
         if gateway_mode:
             _write_gateway_update_exit_code(False)
