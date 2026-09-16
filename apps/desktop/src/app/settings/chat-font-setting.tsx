@@ -10,6 +10,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
 import { getNested, setNested } from './helpers'
 import { ListRow } from './primitives'
@@ -31,10 +32,10 @@ export function ChatFontSetting() {
   const copy = t.settings.appearance
   const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
-  // dataUpdatedAt of the record the previous profile was looking at; the seed
-  // effect refuses to reseed while the query still carries that stamp. A
-  // structurally-shared refetch keeps the object reference but bumps the stamp.
-  const [staleStamp, setStaleStamp] = useState<null | number>(null)
+  // The seed effect refuses to reseed while the query still carries the
+  // previous profile's stamp. A structurally-shared refetch keeps the object
+  // reference but bumps the stamp.
+  const { arm: armProfileLatch, pending: profilePending } = useProfileSwitchLatch({ dataUpdatedAt })
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
 
@@ -43,19 +44,19 @@ export function ChatFontSetting() {
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || dataUpdatedAt === staleStamp) {
+    if (!loadedConfig || draft !== null || profilePending) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setChatFontFamilyFromConfig(value)
-  }, [dataUpdatedAt, draft, loadedConfig, staleStamp])
+  }, [draft, loadedConfig, profilePending])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
     setDraft(null)
-    setStaleStamp(dataUpdatedAt)
+    armProfileLatch()
     setSaveVersion(0)
     setChatFontFamilyFromConfig('')
   })
