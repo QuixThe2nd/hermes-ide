@@ -91,14 +91,22 @@ class TestEligibility:
         assert web_tools_rescue._rescue_eligible(KeenableWebSearchProvider()) is False
 
     def test_gateway_selected_ring_vendor_is_eligible_without_direct_key(self, monkeypatch):
-        # The persisted Nous route uses its subscriber token, not the keyless ring.
+        # The persisted Nous route uses its subscriber token, not the keyless ring — eligible.
+        # The same keyless Firecrawl selected directly DID walk the ring — not eligible.
         monkeypatch.setattr(
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
+        monkeypatch.setattr("plugins.web.firecrawl.provider._env", lambda name: "")
+        monkeypatch.setattr("plugins.web.firecrawl.provider._is_tool_gateway_ready", lambda: True)
         monkeypatch.setattr(
             "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
         )
         assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is True
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.read_selection", lambda kind: "firecrawl"
+        )
+        monkeypatch.setattr("plugins.web.keyless_mcp._web_config_selects", lambda name: name == "firecrawl")
+        assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is False
 
     def test_non_ring_backend_is_eligible(self):
         class _SearxProvider(_KeyedBoomProvider):
