@@ -38,14 +38,16 @@ def test_warmup_leaves_probe_cached_for_first_prompt(tmp_path, monkeypatch):
     assert calls == [1]  # single worker; the first turn reuses the cache
 
 
-def test_warmup_does_not_build_context_files_without_turn_context(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        prompt_builder,
-        "build_context_files_prompt",
-        lambda: pytest.fail("gateway warm-up must not build context files"),
-    )
+def test_warmup_queues_no_context_file_warning_for_later_turns(tmp_path, monkeypatch):
+    """Boot has no agent and no model, so the warm-up must not read context files: an identity file over
+    the model-less default cap would otherwise queue a truncation warning into the executor thread's context,
+    where the next default-executor turn drains it as its own (#111773)."""
+    (tmp_path / "SOUL.md").write_text("x" * (prompt_builder.CONTEXT_FILE_MAX_CHARS + 1), encoding="utf-8")
+    prompt_builder.drain_truncation_warnings()
 
     _warm(tmp_path, monkeypatch, {}, "local")
+
+    assert prompt_builder.drain_truncation_warnings() == []
 
 
 @pytest.mark.parametrize("agent_section,backend", [({"environment_probe": False}, "local"), ({}, "ssh")])
