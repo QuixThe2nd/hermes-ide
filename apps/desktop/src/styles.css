@@ -1447,8 +1447,8 @@ body.guest-pointer-lock :is(webview, iframe) {
      #root. Same visual treatment, applied directly to the overlay
      container so its (and only its) internal scrollbar is themed. */
   .dt-portal-scrollbar::-webkit-scrollbar {
-    width: 0.25rem;
-    height: 0.25rem;
+    width: 0.5rem;
+    height: 0.5rem;
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-track,
