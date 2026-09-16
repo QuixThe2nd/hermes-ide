@@ -706,7 +706,7 @@ def _print_nonretryable_auth_guidance(
         _vlines(agent, "      • Check credits: https://openrouter.ai/settings/credits")
 
 
-def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str:
+def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool, door: bool = True) -> str:
     """Copy for a Nous free-tier refusal the classifier parsed (``welcome_refusal`` /
     ``welcome_route`` in ``error_context``); empty for every other error."""
     ctx = getattr(classified, "error_context", None) or {}
@@ -715,8 +715,29 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str
         return ""
     from hermes_cli.anon_auth import welcome_refusal_copy, welcome_route_refusal_copy
     if refusal:
-        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat)
-    return welcome_route_refusal_copy(str(route), in_chat=in_chat)
+        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat, door=door)
+    return welcome_route_refusal_copy(str(route), in_chat=in_chat, door=door)
+
+
+def _welcome_surface_kind(classified: Any) -> str:
+    """The free-tier failure kind a client renders its card from (``error_surface`` code
+    ``free_tier_<kind>``): the welcome refusal's reason, or the route refusal; "" otherwise."""
+    ctx = getattr(classified, "error_context", None) or {}
+    refusal = ctx.get("welcome_refusal") if isinstance(ctx, dict) else None
+    if isinstance(refusal, dict):
+        reason = str(refusal.get("reason") or "")
+        return {"admission_closed": "at_capacity", "feature_not_free": "model_not_free"}.get(reason, reason) or "refused"
+    route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
+    if route == "tier_disabled":
+        return "disabled"
+    return "route" if route else ""
+
+
+def _stamp_free_tier(result: Dict[str, Any], kind: str, message: str) -> Dict[str, Any]:
+    """Structured free-tier failure block: ``error_surface`` keys its code on ``kind`` and a client
+    shows ``message`` (the chat sentence) as the card body instead of its own generic copy."""
+    result["free_tier"] = {"kind": kind or "refused", "message": message}
+    return result
 
 
 def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
@@ -859,6 +880,10 @@ def nonretryable_client_error_result(
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
+    if _welcome_hint:
+        # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
+        _stamp_free_tier(result, _welcome_surface_kind(classified),
+                         _welcome_tier_guidance(classified, model=model, in_chat=True, door=False))
     return result
 
 
@@ -943,6 +968,7 @@ def max_retries_exhausted_result(
     agent._persist_session(messages, conversation_history)
     _billing_block = None
     _billing_unverified = False
+    _free_tier_kind = ""
     if _is_billing:
         _billing_unverified = classified.billing_unverified
         _final_response = _billing_terminal_label(_final_summary, _billing_unverified)
@@ -961,8 +987,9 @@ def max_retries_exhausted_result(
         )
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
-        else:
-            _final_response = _welcome_outage_copy(base_url, classified) or _final_response
+            _free_tier_kind = _welcome_surface_kind(classified)
+        elif _outage := _welcome_outage_copy(base_url, classified):
+            _final_response, _free_tier_kind = _outage, "outage"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.
@@ -985,6 +1012,10 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    if _free_tier_kind:
+        _stamp_free_tier(result, _free_tier_kind, (
+            _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)
+            if _welcome_hint else _final_response))
     return result
 
 
