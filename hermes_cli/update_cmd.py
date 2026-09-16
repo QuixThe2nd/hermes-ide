@@ -52,7 +52,7 @@ from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _read_prepared_generation_receipt, _restart_systemd_units_best_effort,
     _verify_fleet_on_expected_generation,
     _apply_pending_fleet_restart_catchup, _clear_fleet_restart_pending_marker,
-    _current_checkout_sha, _drain_or_signal_gateway_for_update, _fleet_probe_expected_runtimes,
+    _current_checkout_sha, _defer_fleet_restart_after_update, _drain_or_signal_gateway_for_update, _fleet_probe_expected_runtimes,
     _fleet_restart_pending_marker_path, _for_each_systemd_gateway_unit,
     _gateway_recovery_partition, _gateway_service_matches_profile, _pending_fleet_restart_needed,
     _receipt_looks_unfinished, _receipt_reports_stale_runtime, _resolve_manage_cmd,
@@ -987,6 +987,7 @@ class _UpdateOptions:
     # activation. deferred_defects collects this run's failed/partial preparation steps.
     defer_restart: bool = False
     deferred_defects: list = field(default_factory=list)
+    no_gateway_restart: bool = False
 
 
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
@@ -1025,6 +1026,11 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     # stock non-deferred path never reads it, so its warnings stay warnings.
     deferred_defects: list[str] = []
 
+    # --no-gateway-restart (cron inside the gateway's own cgroup): update code
+    # and dependencies but defer the fleet restart so the updater is not killed
+    # by its own restart. The pending-restart marker is kept for catch-up.
+    no_gateway_restart = bool(getattr(args, "no_gateway_restart", False))
+
     # Interactive terminals always stash-and-ask; only non-interactive updates consult
     # updates.non_interactive_local_changes (auto-restore vs discard).
     discard_local_changes = False
@@ -1038,7 +1044,8 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         active_tool_dependencies=active_tool_dependencies, pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes,
-        defer_restart=defer_restart, deferred_defects=deferred_defects)
+        defer_restart=defer_restart, deferred_defects=deferred_defects,
+        no_gateway_restart=no_gateway_restart)
 
 
 def _begin_update_receipt_and_plan(args):
@@ -1216,7 +1223,8 @@ def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
     gw_input_fn, pre_update_snapshot_id, had_desktop_app_before_update: bool,
     active_lazy_features, active_tool_dependencies, _windows_gateway_resume,
-    defer_restart: bool = False, deferred_defects: list | None = None) -> None:
+    defer_restart: bool = False, deferred_defects: list | None = None,
+    no_gateway_restart: bool = False) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     _invalidate_update_cache()
@@ -1263,8 +1271,10 @@ def _finish_already_up_to_date(
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale
     # code for two days. Runs BEFORE the runtime-verification exit gate below: a vulnerable SQLite runtime
     # demotes the outcome to partial, but must not strand the fleet on stale code (#91277 fleet contract —
-    # the pending-restart check always executes).
-    _apply_pending_fleet_restart_catchup()
+    # the pending-restart check always executes). Under --no-gateway-restart the
+    # catch-up is deferred instead (executing it would kill the cron's own gateway).
+    _apply_pending_fleet_restart_catchup(
+        respect_no_gateway_restart=True, no_gateway_restart=no_gateway_restart)
     if not current_checkout_complete:
         if gateway_mode:
             _write_gateway_update_exit_code(False)
@@ -1277,6 +1287,12 @@ def _apply_pulled_update(
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
     _windows_gateway_resume) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
+    # Fork --defer-restart state may be absent on stock _UpdateOptions namespaces
+    # (upstream tests build minimal opts); degrade to "not deferred" then.
+    defer_restart = getattr(opts, "defer_restart", False)
+    deferred_defects = getattr(opts, "deferred_defects", None)
+    if deferred_defects is None:
+        deferred_defects = []
     _invalidate_update_cache()
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, pre_pull_sha, in_place_update=_plan.in_place_update,
@@ -1286,7 +1302,7 @@ def _apply_pulled_update(
     # completed restart leaves this marker so the next update catches up even when git is
     # current. Distinct from ``.update-incomplete`` (venv/install repair).
     # See #95294.
-    if not _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "") and opts.defer_restart:
+    if not _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "") and defer_restart:
         # The write is normally best-effort — the stock updater can still restart the fleet
         # in-process without it. A DEFERRED run cannot: its whole contract is that the obligation
         # outlives the process, so an undurable breadcrumb means the preparation can never be
@@ -1309,19 +1325,19 @@ def _apply_pulled_update(
         git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
         active_tool_dependencies=opts.active_tool_dependencies,
         _windows_gateway_resume=_windows_gateway_resume,
-        deferred_defects=opts.deferred_defects)
+        deferred_defects=deferred_defects)
 
     node_failures = _update_node_dependencies()
     if node_failures:
-        opts.deferred_defects.append(
+        deferred_defects.append(
             "Node.js dependency refresh incomplete: " + ", ".join(node_failures))
     web_build_ok = _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     if web_build_ok is False:
-        opts.deferred_defects.append("web UI build failed")
+        deferred_defects.append("web UI build failed")
     desktop_build_ok = _rebuild_desktop_after_update(
         desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update)
     if desktop_build_ok is False:
-        opts.deferred_defects.append("desktop app rebuild failed")
+        deferred_defects.append("desktop app rebuild failed")
 
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -1332,17 +1348,17 @@ def _apply_pulled_update(
         had_desktop_app_before_update=had_desktop_app_before_update,
         node_failures=node_failures, desktop_build_ok=desktop_build_ok,
         pre_update_version=opts.pre_update_version,
-        deferred_defects=opts.deferred_defects)
+        deferred_defects=deferred_defects)
     if not update_complete:
         # A run whose own completion verification failed (WAL-vulnerable SQLite runtime, unrebuilt
         # Desktop app) is a partial update, and a partial update must not be published as a prepared
         # generation — activation would restart the fleet onto a checkout this run could not prove
         # complete. The non-deferred flow keeps its historical behavior: partial completion still
         # proceeds into the restart phase (#91277).
-        opts.deferred_defects.append(
+        deferred_defects.append(
             "update completion verification failed — the update is only partially complete")
 
-    if opts.defer_restart:
+    if defer_restart:
         # Preparation finished and HEAD advanced. Everything below is the activation half of the
         # transaction — gateway restarts, dashboard cleanup, fleet version check — and a deferred
         # run must not touch any of it. The marker written after the pull stays, so a later
@@ -1350,7 +1366,7 @@ def _apply_pulled_update(
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
-        _finish_deferred_restart(prepared_update=True, defects=opts.deferred_defects)
+        _finish_deferred_restart(prepared_update=True, defects=deferred_defects)
         return
 
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
@@ -1358,6 +1374,28 @@ def _apply_pulled_update(
     # the marker would never land and the new gateway's watcher would time out spuriously.
     if gateway_mode:
         _write_gateway_update_exit_code(update_complete)
+
+    if opts.no_gateway_restart:
+        # Cron inside the gateway's own cgroup: restarting the fleet now would
+        # SIGUSR1-drain this updater's own gateway and systemd would SIGKILL the
+        # updater with it. Defer instead — the pending marker written above is
+        # kept for the next normal update. Skipping the restart phase also skips
+        # its stale-module purge: this live interpreter still serves pre-update
+        # code and must not have its sys.modules graph mutated mid-flight.
+        # Windows pause/resume still runs (paused gateways must be resumed onto
+        # pre-update code); only the fleet restart + verification are deferred.
+        # The resume outcome is RETAINED (not discarded): a failed resume must
+        # still make this update partial, exactly as on the normal path.
+        resume_outcome = _GatewayRestartOutcome(
+            incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
+            restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(),
+        )
+        _resume_windows_gateways_and_merge_outcome(
+            resume_outcome, _windows_gateway_resume, gateway_mode)
+        _defer_fleet_restart_after_update(
+            update_complete=update_complete, resume_incomplete=resume_outcome.incomplete)
+        return
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
@@ -1372,7 +1410,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
-    defer_restart, deferred_defects = opts.defer_restart, opts.deferred_defects
+    defer_restart, deferred_defects = getattr(opts, "defer_restart", False), getattr(opts, "deferred_defects", [])
 
     print("☤ Updating Hermes Agent...")
     print()
@@ -1483,7 +1521,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 active_lazy_features=opts.active_lazy_features,
                 active_tool_dependencies=opts.active_tool_dependencies,
                 _windows_gateway_resume=_windows_gateway_resume,
-                defer_restart=defer_restart, deferred_defects=deferred_defects)
+                defer_restart=defer_restart, deferred_defects=deferred_defects,
+                no_gateway_restart=opts.no_gateway_restart)
             return
 
         if commit_count > 0:
