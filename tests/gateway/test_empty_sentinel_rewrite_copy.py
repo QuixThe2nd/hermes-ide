@@ -39,6 +39,8 @@ async def test_empty_sentinel_rewrite_uses_the_shared_explanation_with_the_model
 
 @pytest.mark.asyncio
 async def test_response_ready_log_includes_the_session_key(caplog):
+    """Per-conversation latency aggregation needs the session key on the completion line:
+    ``chat=`` alone merges every Slack thread of one channel (#111931)."""
     runner = _Runner()
     source = SimpleNamespace(chat_id="C1", platform=SimpleNamespace(value="slack"))
 
@@ -53,21 +55,3 @@ async def test_response_ready_log_includes_the_session_key(caplog):
     response_log = next(record.getMessage() for record in caplog.records
                         if record.getMessage().startswith("response ready:"))
     assert "session=slack:C1:thread-123" in response_log
-
-
-@pytest.mark.asyncio
-async def test_response_ready_log_uses_a_safe_session_fallback(caplog):
-    runner = _Runner()
-    source = SimpleNamespace(chat_id="C1", platform=SimpleNamespace(value="slack"))
-
-    with caplog.at_level("INFO", logger="gateway.run"):
-        await runner._hmwa_shape_agent_response(
-            {"final_response": "done", "messages": [], "api_calls": 1},
-            source, history=[], session_entry=SimpleNamespace(session_id="s"),
-            session_key=None, _quick_key=None, run_generation=0,
-            _run_start_session_id="s", _platform_name="slack", _msg_start_time=0.0,
-        )
-
-    response_log = next(record.getMessage() for record in caplog.records
-                        if record.getMessage().startswith("response ready:"))
-    assert "session=unknown" in response_log

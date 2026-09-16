@@ -114,6 +114,8 @@ class TestSlackSendRetryable:
 
     @pytest.mark.asyncio
     async def test_edit_api_failure_logs_the_slack_error_code(self, caplog):
+        """HTTP 200 + ok=false must name the body error code, not read as a transport failure
+        (#111931)."""
         adapter = _make_adapter()
         error = _slack_api_error(200)
         error.response.data = {"ok": False, "error": "message_not_found"}
