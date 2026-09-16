@@ -407,14 +407,36 @@ describe('httpStatusError', () => {
 })
 
 describe('htmlResponseError', () => {
-  it('names an auth redirect for 3xx HTML and keeps the endpoint-missing capability wording otherwise', () => {
-    const redirected = htmlResponseError('https://gateway.example.com/api/profiles', 302).message
+  it('names an auth redirect with its Location for 3xx and keeps the endpoint-missing capability wording for 2xx HTML', () => {
+    const redirected = htmlResponseError(
+      'https://gateway.example.com/api/profiles',
+      302,
+      'https://sso.example.com/login?next=%2Fapi%2Fprofiles'
+    ).message
 
     expect(redirected).toContain('status 302')
-    expect(redirected).toMatch(/redirected/)
+    expect(redirected).toContain('to https://sso.example.com/login?next=%2Fapi%2Fprofiles')
+    expect(redirected).toMatch(/authentication proxy/)
     expect(redirected).not.toContain('endpoint is likely missing')
-    expect(htmlResponseError('https://gateway.example.com/api/missing', 404).message).toContain(
+    expect(htmlResponseError('https://gateway.example.com/api/profiles', 307).message).toMatch(/redirected \(status 307\)\. This is usually/)
+    expect(htmlResponseError('https://gateway.example.com/api/missing', 200).message).toContain(
       'endpoint is likely missing'
     )
+  })
+
+  it('does not blame credentials when the redirect only fixes the scheme or a trailing slash', () => {
+    for (const [url, location] of [
+      ['http://gateway.example.com/api/profiles', 'https://gateway.example.com/api/profiles'],
+      ['https://gateway.example.com/api/profiles', '/api/profiles/'],
+      ['https://gateway.example.com/hermes/api/health', 'https://gateway.example.com/hermes/api/health/']
+    ]) {
+      const message = htmlResponseError(url, 301, location).message
+
+      expect(message).toContain(`to ${location}`)
+      expect(message).toMatch(/scheme or trailing slash/)
+      expect(message).not.toMatch(/authentication proxy/)
+    }
+
+    expect(htmlResponseError('https://gateway.example.com/api/profiles', 302, 'https://gateway.example.com/login').message).toMatch(/authentication proxy/)
   })
 })

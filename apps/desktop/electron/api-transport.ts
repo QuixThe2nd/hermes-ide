@@ -195,22 +195,54 @@ function readStatusCode(error: unknown): number {
 }
 
 /**
- * Error for a JSON endpoint that answered with HTML. A 2xx/404 HTML body is
- * the SPA index.html for an unregistered /api path, and downstream capability
+ * Error for a JSON endpoint that did not answer JSON. A 2xx HTML body is the
+ * SPA index.html for an unregistered /api path, and downstream capability
  * probes (isMissingHealthEndpointError, gateway-rpc) key on the "endpoint is
- * likely missing" wording. A 3xx is an access proxy bouncing the request to
- * its login page instead — the endpoint exists, the credentials never
- * arrived — so it must neither carry that wording nor blame the backend.
+ * likely missing" wording. A 3xx (callers never follow redirects, whatever
+ * the body) is the request being bounced elsewhere: an access proxy sending
+ * it to its login page, or a scheme / trailing-slash redirect when the saved
+ * URL is off by that much — so it must neither carry that wording nor blame
+ * the backend, and it names the Location when the server sent one.
  */
-function htmlResponseError(url: string, statusCode: unknown) {
+function htmlResponseError(url: string, statusCode: unknown, location?: unknown) {
   const status = Number(statusCode)
 
-  const hint =
-    status >= 300 && status < 400
-      ? 'The request was redirected, usually by an authentication proxy in front of the gateway; check the saved token and extra gateway headers.'
-      : 'The endpoint is likely missing on the Hermes backend.'
+  if (status >= 300 && status < 400) {
+    const target = typeof location === 'string' && location.trim() ? location.trim() : null
 
-  return new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}). ${hint}`)
+    const hint = isSchemeOrSlashRedirect(url, target)
+      ? 'The saved gateway URL differs from the server by scheme or trailing slash; update it to match.'
+      : 'This is usually an authentication proxy in front of the gateway; check the saved token and extra gateway headers.'
+
+    return new Error(
+      `Expected JSON from ${url} but the request was redirected (status ${statusCode})${target ? ` to ${target}` : ''}. ${hint}`
+    )
+  }
+
+  return new Error(
+    `Expected JSON from ${url} but got HTML (status ${statusCode}). The endpoint is likely missing on the Hermes backend.`
+  )
+}
+
+function isSchemeOrSlashRedirect(requestUrl: string, location: null | string): boolean {
+  if (!location) {
+    return false
+  }
+
+  try {
+    const from = new URL(requestUrl)
+    const to = new URL(location, requestUrl)
+    const strip = (value: string) => value.replace(/\/+$/, '')
+
+    return (
+      from.host === to.host &&
+      from.search === to.search &&
+      (from.protocol !== to.protocol || from.pathname !== to.pathname) &&
+      strip(from.pathname) === strip(to.pathname)
+    )
+  } catch {
+    return false
+  }
 }
 
 export {

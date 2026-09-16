@@ -5438,6 +5438,15 @@ function fetchJson(url, token, options: any = {}) {
                 return
               }
 
+              // http.request never follows redirects, so any 3xx -- with an HTML
+              // login page, an empty body, whatever -- is the request bouncing
+              // off a proxy or a scheme/slash mismatch, never JSON.
+              if (res.statusCode >= 300) {
+                reject(htmlResponseError(url, res.statusCode, res.headers.location))
+
+                return
+              }
+
               if (!text) {
                 resolve(null)
 
@@ -5595,6 +5604,12 @@ function fetchPublicJson(url, options: any = {}) {
 
               if ((res.statusCode || 500) >= 400) {
                 reject(httpStatusError(res.statusCode, text, res.statusMessage))
+
+                return
+              }
+
+              if (res.statusCode >= 300) {
+                reject(htmlResponseError(url, res.statusCode, res.headers.location))
 
                 return
               }
