@@ -866,14 +866,16 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
 
 
 def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
-    """Reject a bare ``custom`` placeholder (or an alias resolving to it: ollama, vllm, …) that fell
-    through the whole ladder to the OpenRouter default endpoint with no credential. Every other
-    custom rung (named entry, direct alias, local bypass, pool, ``key_cmd``) yields a key, a callable
-    or the ``no-key-required`` placeholder, so an EMPTY key on a ``custom`` runtime is exactly the
-    dead shape that otherwise dies at agent construction as ``No LLM provider configured``. Typed
+    """Reject a bare ``custom`` placeholder request that fell through the whole ladder to the
+    OpenRouter default endpoint with no credential. Every other custom rung (named entry, local
+    bypass, pool, ``key_cmd``) yields a key, a callable or the ``no-key-required`` placeholder, so
+    an EMPTY key on a ``custom`` runtime is exactly the dead shape that otherwise dies at agent
+    construction as ``No LLM provider configured``. Keyed on the literal request, not the resolved
+    shape: local aliases (``ollama``, ``vllm``) are resolved tolerantly by ``/model`` direct-alias
+    switching, which supplies the alias endpoint AFTER this call and must not fail here. Typed
     ``AuthError`` so every caller's fallback chain (CLI, gateway, TUI, cron) still advances (#17929).
     """
-    if runtime.get("provider") != "custom" or runtime.get("api_key"):
+    if requested_provider != "custom" or runtime.get("provider") != "custom" or runtime.get("api_key"):
         return
     raise AuthError(
         f"provider '{requested_provider}' resolved without credentials (no endpoint or API key configured). "

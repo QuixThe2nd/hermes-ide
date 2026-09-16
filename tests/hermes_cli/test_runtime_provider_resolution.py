@@ -1077,10 +1077,11 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
 
 
 def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
-    """#111741: a bare ``custom`` placeholder (or an alias resolving to it) that falls through to the
-    OpenRouter default with no key must raise a typed AuthError naming the request at resolve time,
-    instead of returning a dead runtime that dies later as "No LLM provider configured". With an
-    OpenRouter key present the same request keeps resolving exactly as before."""
+    """#111741: a bare ``custom`` placeholder that falls through to the OpenRouter default with no
+    key must raise a typed AuthError naming the request at resolve time, instead of returning a
+    dead runtime that dies later as "No LLM provider configured". A local alias (``ollama``) in the
+    same state keeps resolving tolerantly: ``/model`` direct-alias switching supplies its endpoint
+    after this call. With an OpenRouter key present the bare request resolves exactly as before."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
@@ -1104,8 +1105,8 @@ def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypa
     assert error.value.provider == "custom"
     assert error.value.code == "missing_api_key"
 
-    with pytest.raises(rp.AuthError, match="provider 'ollama'"):
-        rp.resolve_runtime_provider(requested="ollama")
+    alias = rp.resolve_runtime_provider(requested="ollama")
+    assert alias["provider"] == "custom" and not alias["api_key"]
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-usable-key")
     resolved = rp.resolve_runtime_provider(requested="custom")
