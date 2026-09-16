@@ -1276,7 +1276,9 @@ plan → snapshot → apply → restart-per-kind → verify → report
 - **Snapshot** (`hermes_cli/backup.py`): pre-update quick snapshot for
   EVERY profile (the code swap + fleet restart touch all of them), each
   into its own `state-snapshots/`, identical file set + 1 GiB per-file
-  cap + keep=1. **Never add a partial/tiered snapshot set** — mixed
+  cap + keep=3 (recovery-aware: an older snapshot stays past the limit
+  while it still holds the only usable copy of a DB the newer ones
+  skipped or failed to capture). **Never add a partial/tiered snapshot set** — mixed
   coverage creates torn-restore states across schema generations. Quick
   snapshots are FILE-LOSS RECOVERY (the per-profile cron-jobs safety
   net restores from them), NOT code-rollback insurance; `--backup` full

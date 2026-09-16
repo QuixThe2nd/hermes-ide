@@ -1995,7 +1995,7 @@ updates:
   pre_update_backup: false
 
   # Number of pre-update backup zips to retain.
-  backup_keep: 5
+  backup_keep: 3
 
   # What non-interactive updates do with local source edits in the Hermes repo.
   # Interactive terminal updates always prompt before restoring the autostash.

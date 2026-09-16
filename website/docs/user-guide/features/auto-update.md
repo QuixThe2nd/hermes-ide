@@ -38,7 +38,7 @@ the explicit management path for non-gateway installs and manual control.
 
 | Piece | Name | Notes |
 |---|---|---|
-| Timer | `hermes-auto-updater.timer` | Every **30 minutes** around the clock (`*:00,30:00`), `RandomizedDelaySec=0`, `AccuracySec=1s`, `Persistent=true` |
+| Timer | `hermes-auto-updater.timer` | **Four times a day** (`00,06,12,18:00:00`), `RandomizedDelaySec=0`, `AccuracySec=1s`, `Persistent=true` |
 | Service | `hermes-auto-updater.service` | `Type=oneshot`, **no** `PartOf=` / `BindsTo=` coupling to the gateway |
 
 First setup enables the **timer only** — it never starts the oneshot service immediately. On first enable the timer stamp is pre-set so `Persistent=true` does not catch up missed slots from before install.
@@ -82,7 +82,7 @@ A prepared update can also be picked up by hand: `/restart` or `hermes gateway r
 auto_update:
   enabled: true
   idle_minutes: 8
-  schedule: "*-*-* *:00,30:00"
+  schedule: "*-*-* 00,06,12,18:00:00"
   randomized_delay_sec: 0
   accuracy_sec: "1s"
   notify_on_success: ""

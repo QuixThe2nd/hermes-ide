@@ -11,10 +11,10 @@ from plugins.auto_update.config import (
 )
 
 
-def test_default_schedule_is_every_30_minutes_with_zero_delay():
-    assert default_schedule_calendar() == "*-*-* *:00,30:00"
+def test_default_schedule_is_every_six_hours_with_zero_delay():
+    assert default_schedule_calendar() == "*-*-* 00,06,12,18:00:00"
     cfg = load_auto_update_config({})
-    assert cfg["schedule"] == "*-*-* *:00,30:00"
+    assert cfg["schedule"] == "*-*-* 00,06,12,18:00:00"
     assert cfg["randomized_delay_sec"] == DEFAULT_RANDOMIZED_DELAY_SEC
     assert cfg["randomized_delay_sec"] == 0
     assert cfg["accuracy_sec"] == "1s"

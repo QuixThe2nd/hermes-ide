@@ -14,7 +14,7 @@ import zipfile
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_constants import (
     _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home, display_hermes_home,
@@ -1645,7 +1645,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
 _PRE_UPDATE_BACKUPS_DIR = "backups"
 _PRE_UPDATE_PREFIX = "pre-update-"
-_PRE_UPDATE_DEFAULT_KEEP = 5
+_PRE_UPDATE_DEFAULT_KEEP = 3
 _PRE_MIGRATION_PREFIX = "pre-migration-"
 _PRE_MIGRATION_DEFAULT_KEEP = 5
 
@@ -2789,9 +2789,9 @@ def _create_quick_snapshot_locked(
     manifest: Dict[str, int] = {}  # rel_path -> file size
     failed_dbs: list[str] = []  # present *.db that could not be snapshotted
     # #68805: track protected DB files skipped for size — they are snapshot
-    # incompleteness just like a failed copy, so pruning must be suppressed
-    # to preserve the older complete snapshot that may contain the only
-    # recoverable database.
+    # incompleteness just like a failed copy, so pruning below stays
+    # recovery-aware: an older snapshot still holding the only usable copy of
+    # one of these databases is retained past the keep limit.
     oversized_skipped: list[str] = []
 
     for rel in _QUICK_STATE_FILES:
@@ -2919,26 +2919,51 @@ def _create_quick_snapshot_locked(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    # #68805 review: skip pruning when a present DB failed to capture OR was
-    # skipped for size — either way the snapshot is incomplete and the older
-    # snapshot may contain the only recoverable database.
-    incomplete = failed_dbs or oversized_skipped
-    if not incomplete:
-        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
-    else:
-        if oversized_skipped:
-            print(
-                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
-                + ", ".join(oversized_skipped)
+    # #68805 → recovery-aware: prune after incomplete snapshots too. The pruner
+    # keeps the newest `keep` snapshots plus the oldest-run snapshots still holding
+    # the only usable copy of a DB this one failed or skipped for size, so repeated
+    # oversized/failed snapshots cannot grow an unbounded chain — while the older
+    # complete snapshot stays recoverable.
+    _prune_quick_snapshots(
+        root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep, hermes_home=home
+    )
+    if oversized_skipped:
+        # Claim a prior recovery point only when another surviving snapshot
+        # actually holds one of the skipped databases (manifest evidence — the
+        # same source the pruner trusts) — a home with no earlier copy must
+        # not be told one exists.
+        prior_recovery = False
+        for other in root.iterdir():
+            if other == snap_dir or not other.is_dir():
+                continue
+            try:
+                with open(other / "manifest.json", encoding="utf-8") as f:
+                    other_files = json.load(f).get("files")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(other_files, dict) and any(
+                rel in other_files for rel in oversized_skipped
+            ):
+                prior_recovery = True
+                break
+        print(
+            "  ⚠ Snapshot incomplete: DB file(s) skipped for size: "
+            + ", ".join(oversized_skipped)
+            + (
+                " — older recovery snapshots retained"
+                if prior_recovery
+                else " — no earlier snapshot holds a copy; "
+                     "run a manual backup to capture them"
             )
-            logger.warning(
-                "Quick snapshot skipped oversized DB file(s): %s",
-                ", ".join(oversized_skipped),
-            )
+        )
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture "
-            "and/or %d were oversized — preserving older snapshots as "
-            "recovery source",
+            "Quick snapshot skipped oversized DB file(s): %s",
+            ", ".join(oversized_skipped),
+        )
+    if failed_dbs or oversized_skipped:
+        logger.info(
+            "Quick snapshot incomplete (%d DB(s) failed to capture, %d oversized); "
+            "pruned with database recovery retention",
             len(failed_dbs), len(oversized_skipped),
         )
 
@@ -3505,23 +3530,120 @@ def restore_cron_jobs_all_profiles(
     return restored
 
 
-def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+def _snapshot_db_coverage(snap_dir: Path) -> frozenset:
+    """Relative paths of usable SQLite copies inside one quick snapshot.
+
+    The manifest is the source of truth; a legacy/unreadable manifest falls back to
+    judging what is physically on disk. A database only counts when its file is a
+    regular path inside the snapshot (no symlinks, no traversal) and passes the
+    existing full SQLite validation — a manifest entry whose file is missing, zeroed,
+    or corrupt provides no recovery coverage.
+    """
+    db_rels: Optional[Iterable[str]] = None
+    try:
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
+            files = json.load(f).get("files")
+        if isinstance(files, dict):
+            db_rels = [rel for rel in files if isinstance(rel, str)]
+    except (OSError, ValueError, AttributeError):
+        db_rels = None
+    if db_rels is None:
+        def _legacy_walk():
+            for dirpath, _dirnames, filenames in os.walk(snap_dir, followlinks=False):
+                for fname in filenames:
+                    if fname.endswith(".db"):
+                        yield (Path(dirpath) / fname).relative_to(snap_dir).as_posix()
+        db_rels = _legacy_walk()
+
+    covered: set = set()
+    for rel in db_rels:
+        if not rel.endswith(".db"):
+            continue
+        # Never follow manifest paths that escape the snapshot or aren't regular files.
+        if rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
+            continue
+        path = snap_dir / rel
+        if _is_non_regular_path(path) or not _is_within(path, snap_dir):
+            continue
+        # max_bytes=0 forces the FULL PRAGMA integrity_check: this verdict can
+        # authorize deleting an older snapshot, and a cheaper size-capped probe
+        # (header + schema only) passes on corruption outside the first page —
+        # a corrupt newer copy would then count as covering the DB and evict
+        # the last usable recovery copy of it.
+        if verify_sqlite_integrity(
+            path, check_header=True, run_pragma=True, max_bytes=0,
+        ).get("valid"):
+            covered.add(rel)
+    return frozenset(covered)
+
+
+def _prune_quick_snapshots(
+    root: Path,
+    keep: int = _QUICK_DEFAULT_KEEP,
+    hermes_home: Optional[Path] = None,
+) -> int:
+    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted.
+
+    Recovery-aware (#68805): an older snapshot is retained past the keep limit while it
+    still holds the only usable copy of a database that exists in the live home — per
+    relative path, so different snapshots failing different databases each keep their
+    own recovery source, and a config-only snapshot cannot displace the last database
+    copy. Repeated oversized/failed snapshots therefore stay bounded instead of growing
+    an unbounded chain, and the last usable recovery copy is never evicted.
+
+    Only managed snapshots (directories with a ``manifest.json``) are counted or
+    deleted; in-progress ``.partial`` staging dirs, dot-directories and unrelated
+    entries are never touched.
+    """
     if not root.exists():
         return 0
+    home = hermes_home or (root.parent if root.name == _QUICK_SNAPSHOTS_DIR else None)
 
     dirs = sorted(
         (
             d
             for d in root.iterdir()
             if d.is_dir() and not d.name.startswith(".") and not d.name.endswith(".partial")
+            and (d / "manifest.json").exists()
         ),
         key=lambda d: d.name,
         reverse=True,
     )
 
+    # Databases a snapshot should cover: everything the live home's quick-snapshot
+    # walk would attempt to capture. Unresolvable home → no coverage set → plain
+    # keep-based pruning (nothing extra retained, nothing extra deleted).
+    live_dbs: frozenset = frozenset()
+    if home is not None:
+        try:
+            live_dbs = frozenset(
+                rel for _src, rel, _in_dir in _quick_snapshot_candidates(home)
+                if rel.endswith(".db")
+            )
+        except OSError as exc:
+            logger.warning("Quick snapshot prune: could not enumerate live DBs: %s", exc)
+
+    keep = max(keep, 0)
+    # Coverage of the retained window, computed only when some older snapshot is
+    # actually up for deletion (steady state — at or under keep — verifies nothing).
+    _covered: list[Optional[set]] = [None]
+
+    def _retained_coverage() -> set:
+        if _covered[0] is None:
+            merged: set = set()
+            for d in dirs[:keep]:
+                merged |= _snapshot_db_coverage(d)
+            _covered[0] = merged
+        return _covered[0]
+
     deleted = 0
     for d in dirs[keep:]:
+        if live_dbs and (live_dbs - _retained_coverage()):
+            coverage = _snapshot_db_coverage(d)
+            if coverage & (live_dbs - _retained_coverage()):
+                # Still the recovery source for a DB no retained snapshot covers.
+                _covered[0] |= coverage
+                continue
         try:
             shutil.rmtree(d)
             deleted += 1
@@ -3536,7 +3658,11 @@ def prune_quick_snapshots(
     hermes_home: Optional[Path] = None,
 ) -> int:
     """Manually prune quick snapshots. Returns count deleted."""
-    return _prune_quick_snapshots(_quick_snapshot_root(hermes_home), keep=keep)
+    home = hermes_home or get_hermes_home()
+    with _backup_operation_lock(home):
+        return _prune_quick_snapshots(
+            _quick_snapshot_root(home), keep=keep, hermes_home=home
+        )
 
 
 def run_quick_backup(args) -> None:
@@ -3650,7 +3776,10 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
 _PRE_UPDATE_BACKUPS_DIR = "backups"
 _PRE_UPDATE_PREFIX = "pre-update-"
-_PRE_UPDATE_DEFAULT_KEEP = 5
+# Default retention for ``create_pre_update_backup``; ``hermes update`` normally forwards the
+# config ``updates.backup_keep`` (default 3) instead — this is the API fallback when no keep
+# is passed and no update config participates.
+_PRE_UPDATE_DEFAULT_KEEP = 3
 
 
 def _pre_update_backup_dir(hermes_home: Optional[Path] = None) -> Path:

@@ -41,7 +41,10 @@ _STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_log
 #: whose dataclass fails every ``isinstance`` against the plan built before the purge.
 _STALE_PURGE_PROTECTED_PREFIX = "hermes_cli.update_"
 
-_PRE_UPDATE_SNAPSHOT_KEEP = 1
+#: Quick snapshots kept per pre-update run: the newest 3, plus older snapshots the pruner
+#: retains while they still hold the only usable copy of a database the newer ones skipped
+#: or failed to capture (oversized/locked state.db — see backup._prune_quick_snapshots).
+_PRE_UPDATE_SNAPSHOT_KEEP = 3
 
 # Per-file cap for the quick snapshot (larger files skipped with a warning): it protects
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
@@ -817,9 +820,9 @@ def _run_full_backup() -> None:
         return
 
     try:
-        _keep = _load_updates_cfg().get("backup_keep", 5)
+        _keep = _load_updates_cfg().get("backup_keep", 3)
     except Exception:
-        _keep = 5
+        _keep = 3
 
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
