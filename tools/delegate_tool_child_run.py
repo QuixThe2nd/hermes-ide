@@ -424,10 +424,8 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        # Same identity as the main child turn (delegate_tool_child_run's worker): this runs
-        # on the parent's thread, where HERMES_KANBAN_TASK is set, so without the marker the
-        # kanban stop guard nudges the child to call kanban_complete. It owns no board task
-        # and cannot, and the nudge displaces the answer this retry exists to produce.
+        # Same identity as the main child turn: this runs on the parent worker's thread, and an
+        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
         from agent.delegation_context import delegated_child_context
         with delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
