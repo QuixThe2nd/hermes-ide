@@ -667,8 +667,11 @@ class TestStageCandidateVenvCrossPlatform:
         assert "UV_NO_CONFIG" not in sync_kwargs["env"]
         assert sync_kwargs["stderr"] == subprocess.STDOUT
 
-    def test_sync_failure_reports_the_child_reason(self, tmp_path, capsys, caplog):
-        """A rejected candidate must say WHY — the child's own diagnosis, not a bare rc."""
+    def test_sync_failure_reports_the_child_reason(self, tmp_path, caplog):
+        """A rejected candidate must say WHY — the child's own diagnosis, not a bare rc.
+
+        The reason rides the rejection into ``RuntimeRepairResult.detail`` (#111417, #111497).
+        """
         import logging
 
         from hermes_cli.managed_uv import _stage_candidate_venv
@@ -690,25 +693,25 @@ class TestStageCandidateVenvCrossPlatform:
              patch(
                  "hermes_cli.managed_uv._smoke_candidate_venv",
                  return_value=(True, "", None),
-             ):
-            candidate = _stage_candidate_venv(
+             ), \
+             pytest.raises(_CandidateStageError) as rejected:
+            _stage_candidate_venv(
                 "uv",
                 project_root=root,
                 generation=generation,
                 python=python,
             )
 
-        assert candidate is None
-        console = capsys.readouterr().out
         # The reason is the child's own diagnosis: the error + hint, without the progress noise
-        # that precedes them. It reaches the console AND the rejection the updater logs.
-        reason_line = next(
-            line for line in console.splitlines() if "dependency sync failed" in line)
-        assert "error: The lockfile at `uv.lock` needs to be updated" in reason_line
-        assert "hint: To update the lockfile, run `uv lock`." in reason_line
-        assert "Resolving despite existing lockfile" not in reason_line
+        # that precedes them. It reaches the rejection the repair returns AND the log.
+        reason = str(rejected.value)
+        assert reason.startswith("candidate dependency sync failed (rc=1): ")
+        assert "error: The lockfile at `uv.lock` needs to be updated" in reason
+        assert "hint: To update the lockfile, run `uv lock`." in reason
+        assert "Resolving despite existing lockfile" not in reason
         assert "candidate dependency sync failed (rc=1)" in caplog.text
         assert "needs to be updated" in caplog.text
+        assert not list((root / ".hermes-runtime").glob("venv-candidate-*"))
 
 
 class TestRuntimeCutover:

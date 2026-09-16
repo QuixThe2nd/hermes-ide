@@ -197,21 +197,32 @@ def _uv_version(uv_bin: str) -> str:
     ).stdout.strip()
 
 
+def _record_runtime_repair(repair: RuntimeRepairResult) -> None:
+    """Put the repair outcome into the update receipt (no-op outside ``hermes update``).
+
+    Receipts are built only from explicit ``record_step``/``record_skip`` calls, so without this
+    a failed repair left ``outcome: partial`` with no step naming the reason or the SQLite
+    versions. A deferred or not-applicable repair is a skip WITH its reason, not a failed step:
+    every pip/non-venv install would otherwise carry a red step in every receipt.
+    """
+    from hermes_cli.update_receipt import record_skip, record_step
+
+    detail = (
+        f"{repair.status}: {repair.detail}" if repair.detail else repair.status
+    ) + f" (sqlite {repair.sqlite_before or 'unknown'} → {repair.sqlite_after or 'unknown'})"
+    if repair.status in {"skipped", "not-applicable"}:
+        record_skip("sqlite_runtime_repair", detail)
+    else:
+        record_step("sqlite_runtime_repair", repair.status in {"safe", "repaired"}, detail)
+
+
 def _run_runtime_repair(
     uv_bin: str, repair_observer: Callable[[RuntimeRepairResult], None] | None,
     *, print_skip: bool = False) -> None:
     """Run the vulnerable-runtime repair hook; never raises (repair is non-fatal)."""
     try:
         repair = repair_vulnerable_runtime(uv_bin)
-        from hermes_cli.update_receipt import record_skip, record_step
-
-        detail = (
-            f"{repair.status}: {repair.detail} "
-            f"(sqlite {repair.sqlite_before or 'unknown'} → {repair.sqlite_after or 'unknown'})"
-        )
-        record_step("sqlite_runtime_repair", repair.status in {"safe", "repaired"}, detail)
-        if repair.status in {"skipped", "not-applicable"}:
-            record_skip("sqlite_runtime_repair", detail)
+        _record_runtime_repair(repair)
         if repair_observer is not None:
             repair_observer(repair)
         if repair.status == "failed":
@@ -573,7 +584,7 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
 
 
 # A failed ``uv sync`` prints its diagnosis last, so the tail is the actionable part. Kept
-# short: the reason travels into a one-line log entry and a one-line console warning.
+# short: the reason travels into a one-line log entry, the failure report and the receipt step.
 _SYNC_TAIL_LINES = 6
 _SYNC_REASON_CHARS = 600
 
@@ -601,11 +612,9 @@ def _stream_sync(argv: list[str], *, cwd: Path, env: dict[str, str]) -> tuple[in
     child's stdout while it runs, so a full stderr pipe blocks uv forever — stderr is merged
     into stdout and forwarded line by line instead of being captured and reprinted at the end.
 
-    The tail is kept anyway. Inherited stdout lands the child's diagnosis in console scrollback
-    ONLY: the rejection line the logger records carried the bare exit code, and the generic
-    "did not pass dependency and import smoke tests" detail the repair returns carries no reason
-    either (receipts quote explicitly recorded steps — none records this repair). Seen in the
-    field, that reads as "hermes update says the SQLite repair failed and never says why".
+    The tail is kept anyway: with inherited stdout the child's diagnosis survived in console
+    scrollback only, and the rejection carried a bare exit code — "hermes update says the SQLite
+    repair failed and never says why".
     """
     proc = subprocess.Popen(
         list(argv), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -666,10 +675,8 @@ def _stage_candidate_venv(
         [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
         cwd=project_root, env=sync_env)
     if status != 0:
-        # `_repair_under_lock`'s failure detail is generic ("did not pass dependency and import
-        # smoke tests"), so the reason is announced here; without it only console scrollback has
-        # the text — the rejection line the log records carries the bare exit code.
-        print(f"  ⚠ candidate dependency sync failed (rc={status}): {reason}")
+        # The reason travels with the rejection into RuntimeRepairResult.detail, which the
+        # failure report prints and the update receipt records.
         return reject("candidate dependency sync failed (rc=%d): %s", status, reason)
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
