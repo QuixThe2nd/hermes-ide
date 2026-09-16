@@ -78,6 +78,9 @@ afterEach(() => {
   mocks.setMcpServerEnabled.mockClear()
 })
 
+type McpHealthModule = Awaited<ReturnType<typeof importMcpHealth>>
+const importMcpHealth = () => import('./mcp-health')
+
 describe('shouldNotify', () => {
   const DAY = 24 * 60 * 60 * 1000
   const now = 1_000_000
@@ -164,7 +167,7 @@ it('honors a persisted snooze in a fresh module session, then re-notifies after 
   let clock = 1_700_000_000_000
   const until = clock + 24 * 60 * 60 * 1000
   const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
-  let freshSession: typeof import('./mcp-health') | undefined
+  let freshSession: McpHealthModule | undefined
 
   try {
     window.localStorage.setItem(key, String(until))
@@ -173,7 +176,7 @@ it('honors a persisted snooze in a fresh module session, then re-notifies after 
 
     // A fresh import drops in-memory transition state, as a renderer restart does.
     vi.resetModules()
-    freshSession = await import('./mcp-health')
+    freshSession = await importMcpHealth()
     freshSession.startMcpHealthChecker()
     mocks.gatewayState.set('open')
     await flush()
