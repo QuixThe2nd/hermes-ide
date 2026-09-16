@@ -531,7 +531,13 @@ def _user_local_bin_entries() -> list[str]:
     launcher inherits a PATH without it (only the login shell adds it), so CLIs
     installed there were ``command not found`` from the terminal tool (#111778)."""
     local_bin = Path.home() / ".local" / "bin"
-    return [str(local_bin)] if local_bin.is_dir() else []
+    try:
+        return [str(local_bin)] if local_bin.is_dir() else []
+    except OSError:
+        # HOME can point at a directory this process may not traverse (CI runs
+        # with HOME=/root as an unprivileged user); such a home has no usable
+        # ~/.local/bin either.
+        return []
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
