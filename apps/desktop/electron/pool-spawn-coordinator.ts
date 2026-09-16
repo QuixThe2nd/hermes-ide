@@ -85,6 +85,7 @@ export class BackgroundSlotRetryBackoff {
     const attempts = (this.#failures.get(key)?.attempts ?? 0) + 1
     const delay = Math.min(this.#baseDelayMs * 2 ** (attempts - 1), this.#maxDelayMs)
     this.#failures.set(key, { attempts, nextRetryAt: now + delay })
+
     return delay
   }
 
