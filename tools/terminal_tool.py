@@ -46,6 +46,7 @@ import threading
 import atexit
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -2442,6 +2443,42 @@ def is_persistent_env(task_id: str) -> bool:
     as persistent HERE: their lifetime is the SESSION, not the turn — they
     are removed by ``AIAgent.close()`` → ``cleanup_vm`` at session teardown
     and by the idle reaper, not per-turn.
+    """
+    env = get_active_env(task_id)
+    if env is None:
+        return False
+    if getattr(env, "_session_scoped", False):
+        return True
+    return bool(getattr(env, "_persistent", False))
+
+
+def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
+    """The terminal error envelope: ``output``/``exit_code``/``error`` (+ ``status``, extras)."""
+    body: Dict[str, Any] = {"output": "", "exit_code": exit_code, "error": error}
+    if status is not None:
+        body["status"] = status
+    body.update(extra)
+    return json.dumps(body, ensure_ascii=False)
+
+
+class _Rejected(Exception):
+    """Carries a finished tool-result JSON out of the planning/guard helpers, so
+    each early-return site is one ``raise`` instead of an isinstance-checked
+    ``str | plan`` union at the caller."""
+
+    def __init__(self, result_json: str):
+        super().__init__(result_json)
+        self.result_json = result_json
+
+
+@dataclass
+class _ApprovalVerdict:
+    """Outcome of the pre-exec guard pass.
+
+    ``note`` is the audit note attached to the result. ``approved_run`` is True
+    when the user explicitly approved (or pre-confirmed via ``force``); it drives
+    the clean-interrupt-slate clear before ``env.execute`` so an approved command
+    can't be SIGINT-killed by a bit that landed during the approval-wait.
     """
     note: Optional[str] = None
     approved_run: bool = False
