@@ -51,11 +51,12 @@ modules can import it cheaply.
 
 from __future__ import annotations
 
+import os
 import re
 import ssl
 import threading
 from typing import Any, Mapping, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 _LOCK = threading.Lock()
 _INACTIVE_REASON = "no route table registered"
@@ -71,6 +72,15 @@ HERMES_CALLER_LABEL = "hermes"
 # module's import-time surface.
 _CALLER_LABEL_MAX_CHARS = 64
 _PROFILE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._:-]")
+
+# Chat-attribution wire limits — the twin of the proxy's CHAT_* limits in
+# plugins.llm_usage_proxy.server, kept here for the same stdlib-only-import
+# reason.  Values are decoded lengths; the percent-encoded form is bounded
+# separately (a CJK name encodes to ~9 bytes per character).
+CHAT_TYPE_MAX_CHARS = 32
+CHAT_ID_MAX_CHARS = 128
+CHAT_NAME_MAX_CHARS = 128
+_CHAT_TYPE_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 
 # The proxy is loopback-only by construction (the plugin binds 127.0.0.1), so
 # a non-loopback origin is never a table this process verified.
@@ -547,6 +557,142 @@ def _caller_label_for_profile(profile: str) -> str:
     return (f"{HERMES_CALLER_LABEL}:{cleaned}")[:_CALLER_LABEL_MAX_CHARS]
 
 
+# ── per-request chat attribution ─────────────────────────────────────────────
+
+# The session vars read for chat attribution (see gateway.session_context):
+# the gateway binds PLATFORM/CHAT_ID/CHAT_NAME/THREAD_ID for its chats, the
+# CLI/TUI/ACP bind SOURCE (the agent binds SESSION_ID on every surface), and
+# the cron scheduler sets the CRON marker plus the job's durable JOB_ID/
+# JOB_NAME while deliberately leaving the chat vars empty (delivery metadata
+# is not a sender).  Nothing here infers a chat from timestamps or models —
+# a task that bound no identity attributes none, and the ledger records that
+# honestly as Unknown.
+_CHAT_TYPE_SESSION_VARS = ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE")
+
+
+def _session_env(name: str) -> str:
+    """Session var of the *requesting task* (ContextVar, else ``os.environ``).
+
+    ``gateway.session_context.get_session_env`` already implements exactly
+    that precedence; the manual fallback only covers a context where the
+    gateway package is not importable, where the env bridge (or the CLI,
+    which sets SOURCE in ``os.environ`` directly) still carries the value.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        return str(get_session_env(name, ""))
+    except Exception:
+        return os.environ.get(name, "")
+
+
+def _encode_bounded(value: Any, limit: int) -> Optional[str]:
+    """Percent-encoded header value for a chat field, or None when unusable.
+
+    UTF-8 percent-encoding keeps the header ASCII-clean — no control
+    characters, no CRLF smuggling, no encoding surprises on the wire — and
+    the proxy decodes the exact same way.  Following the caller-label
+    honesty rule, a value longer than *limit* (or empty) is dropped entirely
+    rather than truncated into a name nobody chose.  The encoded form is
+    bounded too, so a pathological value can never balloon one header.
+    """
+    text = str(value or "").strip()
+    if not text or len(text) > limit:
+        return None
+    encoded = quote(text, safe="-._~")
+    if len(encoded) > limit * 9 + 16:
+        return None
+    return encoded
+
+
+def _chat_type_for_request() -> Optional[str]:
+    """Chat type of the requesting task, or None when it named no surface.
+
+    ``cronjob`` wins over any delivery channel: a cron job's turn may
+    auto-deliver to a platform chat, but the request itself is the
+    scheduler's.  Otherwise the gateway's platform (discord, telegram, …)
+    or the local surface's source (cli, tui, acp, …) names the type.  A
+    bound value is used verbatim or NOT AT ALL — a malformed one is
+    rejected, never repaired or truncated into a surface nobody named.
+    """
+    if _session_env("HERMES_CRON_SESSION").strip() == "1":
+        return "cronjob"
+    for name in _CHAT_TYPE_SESSION_VARS:
+        raw = _session_env(name).strip()
+        if not raw:
+            continue
+        if len(raw) <= CHAT_TYPE_MAX_CHARS and _CHAT_TYPE_RE.match(raw):
+            return raw
+        # malformed: skip it rather than rewrite it; another var may still
+        # carry an honestly-bound surface
+    return None
+
+
+def _chat_identity_for_request(chat_type: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(chat_id, chat_name)`` of the requesting task, from actual recorded
+    session identity — never inferred from timestamps or models.
+
+    * a gateway chat: the platform's durable chat id, and a thread/topic
+      stays its own chat (``<chat>:<thread>``) so threads never collapse
+      into the parent or bleed into each other;
+    * a cron run: the job's durable id/name (``HERMES_SESSION_JOB_*``, bound
+      by the scheduler) — one ledger chat per job, not one per run;
+    * any other typed but id-less surface (cli, tui, acp, …): the task's
+      durable session id, so concurrent CLI sessions stay distinct rows.
+      Session and job ids are unique per profile installation, so the
+      ``<type>:<id>`` key needs no profile prefix to stay distinct;
+    * no bound identity at all: ``(None, None)`` — the ledger records an
+      honest Unknown.
+    """
+    chat_id = _session_env("HERMES_SESSION_CHAT_ID").strip()
+    if chat_id:
+        thread = _session_env("HERMES_SESSION_THREAD_ID").strip()
+        if thread:
+            chat_id = f"{chat_id}:{thread}"
+        return chat_id, _session_env("HERMES_SESSION_CHAT_NAME").strip() or None
+    if chat_type == "cronjob":
+        job_id = _session_env("HERMES_SESSION_JOB_ID").strip()
+        if job_id:
+            return job_id, _session_env("HERMES_SESSION_JOB_NAME").strip() or None
+        return None, None
+    if chat_type is not None:
+        session_id = _session_env("HERMES_SESSION_ID").strip()
+        if session_id:
+            return session_id, None
+    return None, None
+
+
+def chat_attribution_headers() -> dict[str, str]:
+    """The X-Usage-Chat-* headers naming the requesting task's chat identity.
+
+    Read per request — never per client — because one shared client serves
+    every task in the process, so the identity belongs to whichever task is
+    issuing the request right now.  ContextVars are task-local and inherited
+    by the executor/thread boundaries the agent uses, which is what makes
+    concurrent chats attribute to themselves and never to each other.  Any
+    failure here degrades to "no attribution" (the ledger keeps an honest
+    Unknown) — attribution can never break the request it describes.
+    """
+    from plugins.llm_usage_proxy.server import (
+        CHAT_ID_HEADER,
+        CHAT_NAME_HEADER,
+        CHAT_TYPE_HEADER,
+    )
+
+    headers: dict[str, str] = {}
+    chat_type = _chat_type_for_request()
+    if chat_type is not None:
+        headers[CHAT_TYPE_HEADER] = chat_type
+    chat_id, chat_name = _chat_identity_for_request(chat_type)
+    encoded_id = _encode_bounded(chat_id, CHAT_ID_MAX_CHARS)
+    if encoded_id is not None:
+        headers[CHAT_ID_HEADER] = encoded_id
+    encoded_name = _encode_bounded(chat_name, CHAT_NAME_MAX_CHARS)
+    if encoded_name is not None:
+        headers[CHAT_NAME_HEADER] = encoded_name
+    return headers
+
+
 def _proxied_request(
     request: Any, target: str, caller_label: str = HERMES_CALLER_LABEL
 ) -> Any:
@@ -558,10 +704,12 @@ def _proxied_request(
     rewrites Host to the upstream netloc when forwarding.
 
     Routed traffic also names itself: ``X-Usage-Caller: <caller_label>`` —
-    the profile-derived label of the transport that routes it — unless the
-    request already carries a label. The label is attribution for the proxy's
-    ledger only — it is not a credential and is stripped before the proxy
-    forwards anything upstream.
+    the profile-derived label of the transport that routes it — and, when the
+    requesting task carries one, its chat identity (``X-Usage-Chat-*``, see
+    :func:`chat_attribution_headers`) — unless the request already carries
+    them. Both are attribution for the proxy's ledger only — neither is a
+    credential and both are stripped before the proxy forwards anything
+    upstream.
     """
     import httpx
 
@@ -573,6 +721,15 @@ def _proxied_request(
         headers["Host"] = logical.netloc
     if not headers.get(CALLER_LABEL_HEADER):
         headers[CALLER_LABEL_HEADER] = caller_label
+    try:
+        for header, value in chat_attribution_headers().items():
+            if not headers.get(header):
+                headers[header] = value
+    except Exception:
+        # Chat attribution is telemetry about the request, never part of it:
+        # any failure in reading the session context degrades to an
+        # unattributed ledger row, never a failed provider call.
+        pass
     return httpx.Request(
         request.method,
         target,
@@ -767,6 +924,7 @@ __all__ = [
     "activate_routing",
     "base_url_routable",
     "build_sync_routed_client",
+    "chat_attribution_headers",
     "clear_route_table",
     "deactivate_routing",
     "register_route_table",

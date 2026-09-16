@@ -83,6 +83,18 @@ sending one never causes a `401`; once caller tokens exist, the token is still
 required. Hermes sets this header to `hermes` on the traffic it routes itself, and
 keeps whatever label a client supplied.
 
+Hermes's own routed transports additionally name the *chat* a request serves with
+`X-Usage-Chat-Type` / `X-Usage-Chat-Id` / `X-Usage-Chat-Name` (the requesting
+task's session identity: platform or local surface, durable chat id — with the
+thread id embedded so threads stay distinct — and display name; cron jobs send
+their durable job id/name, CLI/TUI sessions their session id). Same rules as the
+caller label: validated (ids/names travel percent-encoded; unusable values are
+ignored, never rewritten), recorded on the row in the `chat_type`/`chat_id`/
+`chat_name` columns — additive migrations, so rows written before the columns
+existed stay NULL and read as an explicit `Unknown` — and always stripped before
+forwarding. The read-only dashboard in `apps/usage-proxy-webui` filters and
+breaks down by these fields.
+
 With no caller tokens configured the proxy accepts anything and attributes nothing,
 which is what keeps Hermes's own in-process routing working unchanged. Once one
 token exists, requests must present a known one: an unknown or missing token is a
