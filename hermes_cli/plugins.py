@@ -1395,6 +1395,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (Abandonment bookkeeping stays coarse-keyed by (hook_name, id(cb)).)
         self._hook_running_callbacks: Dict[tuple, object] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        self._hook_abandoned: Dict[tuple, Set[tuple]] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
