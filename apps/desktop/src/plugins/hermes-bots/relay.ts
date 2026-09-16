@@ -394,35 +394,18 @@ async function drainRelayOutboxes() {
       }
     }
 
-    // Phase 2 — deliver. Envelopes for the same target profile stay in order,
-    // one turn at a time (the target gateway serialises that profile's turns
-    // behind its turn lock anyway; a second envelope sent while the first runs
-    // would only burn its lock-wait budget). Different targets run
-    // concurrently, so one long turn never holds every other bot's mail.
-    const lanes = new Map<string, RelayQueuedEnvelope[]>()
-
-    for (const item of queued) {
-      const key = `${String(item.envelope?.target_connection || '')}::${String(item.envelope?.target_profile || '')}`
-      const lane = lanes.get(key)
-
-      if (lane) {
-        lane.push(item)
-      } else {
-        lanes.set(key, [item])
-      }
+    // Phase 2 — deliver, without holding the drain. Envelopes for the same
+    // target profile stay in order, one turn at a time (the target gateway
+    // serialises that profile's turns behind its turn lock anyway; a second
+    // envelope sent while the first runs would only burn its lock-wait
+    // budget). Different targets run concurrently, so one long turn never
+    // holds every other bot's mail. The lanes outlive this drain: `drainBusy`
+    // covers the claim only, so a push that lands while a turn runs claims
+    // its envelope NOW instead of after that turn — otherwise the TTL clock
+    // kept running against a message the Desktop had not even looked at.
+    for (const { envelope, sender } of queued) {
+      enqueueRelayDelivery(sender, envelope, byId)
     }
-
-    await Promise.all(
-      [...lanes.values()].map(async lane => {
-        for (const { envelope, sender } of lane) {
-          if (relay.disposed) {
-            return
-          }
-
-          await deliverRelayEnvelope(sender, envelope, byId)
-        }
-      })
-    )
   } finally {
     relay.drainBusy = false
 
@@ -438,6 +421,28 @@ async function drainRelayOutboxes() {
 interface RelayQueuedEnvelope {
   envelope: RelayEnvelope
   sender: RelayConnection
+}
+
+// Delivery lanes: `target_connection::target_profile` → the tail of that
+// target's in-flight deliveries. A lane entry is removed once its tail
+// settles so an idle target holds no state.
+const relayLanes = new Map<string, Promise<void>>()
+
+/** Queue one claimed envelope behind the deliveries already running for the
+ *  same target profile; other targets are untouched. */
+function enqueueRelayDelivery(sender: RelayConnection, envelope: RelayEnvelope, byId: Map<string, RelayConnection>) {
+  const key = `${String(envelope?.target_connection || '')}::${String(envelope?.target_profile || '')}`
+
+  const tail = (relayLanes.get(key) ?? Promise.resolve()).then(() =>
+    relay.disposed ? undefined : deliverRelayEnvelope(sender, envelope, byId)
+  )
+
+  relayLanes.set(key, tail)
+  void tail.finally(() => {
+    if (relayLanes.get(key) === tail) {
+      relayLanes.delete(key)
+    }
+  })
 }
 
 /** Deliver one claimed envelope on the target connection's own socket and post
@@ -564,6 +569,9 @@ export function stopBotRelay() {
   // A rerun remembered mid-drain must not leak into the next start —
   // it would fire one stale drain after restart.
   relay.drainRerun = false
+  // Queued deliveries check `disposed` before they run; forget the lane tails
+  // so a restart starts every target fresh instead of behind stale chains.
+  relayLanes.clear()
   // Unpin every relay-retained socket (#93594): with the relay stopped the
   // pooled entries return to dispose-at-refcount-0 semantics.
   releaseRelayRetention()

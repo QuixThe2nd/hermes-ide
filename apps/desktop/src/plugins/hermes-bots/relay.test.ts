@@ -776,11 +776,13 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
   // outbox from being claimed, nor a's delivery from running: the gateway
   // checks envelope age against bot_mode.envelope_ttl_seconds at the claim,
   // and the sender's waiter is finite.
-  const toB = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
-  const toA = { id: 'env-2', message: 'quick one', target_connection: 'a', target_profile: 'default' }
+  type RelayEnvelopeFixture = { id: string; message: string; target_connection: string; target_profile: string }
+  const toB: RelayEnvelopeFixture = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
+  const toA: RelayEnvelopeFixture = { id: 'env-2', message: 'quick one', target_connection: 'a', target_profile: 'default' }
 
   it('claims every outbox first and delivers to different targets concurrently', async () => {
     let releaseB!: (value: { reply: string }) => void
+
     const pendingB = new Promise<{ reply: string }>(resolve => {
       releaseB = resolve
     })
@@ -824,22 +826,26 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
     stopBotRelay()
   })
 
-  it('keeps envelopes for the same target profile in order, one turn at a time', async () => {
-    let releaseFirst!: (value: { reply: string }) => void
-    const first = new Promise<{ reply: string }>(resolve => {
-      releaseFirst = resolve
+  it('claims an envelope that lands DURING a long turn and delivers it now; the same target still queues behind', async () => {
+    // Issue step 3: the push arrives while b's turn is running. The claim
+    // must not wait for that turn (the TTL clock is running on the gateway),
+    // a different target is delivered immediately, and a second envelope for
+    // the SAME target profile waits for the running turn, in order.
+    let releaseB!: (value: { reply: string }) => void
+
+    const pendingB = new Promise<{ reply: string }>(resolve => {
+      releaseB = resolve
     })
-    let delivered = 0
+
+    const outbox: Record<string, RelayEnvelopeFixture[]> = { a: [toB], b: [] }
 
     const calls = respondWith(call => {
       if (call.method === 'bot_relay.outbox.drain') {
-        return { envelopes: call.connectionId === 'a' ? [toB, { ...toB, id: 'env-3', message: 'second' }] : [] }
+        return { envelopes: outbox[call.connectionId].splice(0) }
       }
 
       if (call.method === 'bot_relay.deliver') {
-        delivered += 1
-
-        return delivered === 1 ? first : { reply: 'second done' }
+        return call.params.message === 'long job' ? pendingB : { reply: `${call.params.message} done` }
       }
 
       return {}
@@ -849,21 +855,32 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
 
     startBotRelay()
     await pushAndSettle()
-
     expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
       'long job'
     ])
 
-    releaseFirst({ reply: 'first done' })
+    // b's turn is running; gateway b now queues one envelope for a and one more for b/ops.
+    outbox.b.push(toA, { ...toB, id: 'env-3', message: 'second' })
+    await pushAndSettle()
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain' && call.connectionId === 'b')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
+      'long job',
+      'quick one'
+    ])
+
+    releaseB({ reply: 'long job done' })
     await vi.advanceTimersByTimeAsync(10)
 
     expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
       'long job',
+      'quick one',
       'second'
     ])
-    expect(calls.filter(call => call.method === 'bot_relay.reply').map(call => call.params.reply)).toEqual([
-      'first done',
-      'second done'
+    expect(calls.filter(call => call.method === 'bot_relay.reply').map(call => call.params.id)).toEqual([
+      'env-2',
+      'env-1',
+      'env-3'
     ])
 
     stopBotRelay()
