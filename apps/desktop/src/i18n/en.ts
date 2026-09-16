@@ -737,7 +737,7 @@ export const en: Translations = {
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
       tabStripTitle: 'Tab Strip',
-      tabStripDesc: 'Show tabs above a zone. Auto hides them when a zone holds a single pane.',
+      tabStripDesc: 'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',

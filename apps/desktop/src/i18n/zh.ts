@@ -688,7 +688,7 @@ export const zh = defineLocale({
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
       tabStripTitle: '标签栏',
-      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签。',
+      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签，除非还开着其他聊天或磁贴分区。',
       tabStripAuto: '自动',
       tabStripAlways: '始终',
       tabStripNever: '从不',
