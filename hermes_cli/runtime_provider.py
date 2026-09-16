@@ -866,22 +866,18 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
 
 
 def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
-    """Reject a stale bare ``custom`` placeholder before agent construction.
-
-    Named custom providers and local OpenAI-compatible servers retain their existing resolution
-    paths. A bare placeholder that reaches a remote endpoint without a credential, however, would
-    otherwise fail later with the unrelated ``No LLM provider configured`` diagnostic.
+    """Reject a bare ``custom`` placeholder (or an alias resolving to it: ollama, vllm, …) that fell
+    through the whole ladder to the OpenRouter default endpoint with no credential. Every other
+    custom rung (named entry, direct alias, local bypass, pool, ``key_cmd``) yields a key, a callable
+    or the ``no-key-required`` placeholder, so an EMPTY key on a ``custom`` runtime is exactly the
+    dead shape that otherwise dies at agent construction as ``No LLM provider configured``. Typed
+    ``AuthError`` so every caller's fallback chain (CLI, gateway, TUI, cron) still advances (#17929).
     """
-    if requested_provider != "custom":
-        return
-    api_key = runtime.get("api_key")
-    if callable(api_key) or has_usable_secret(api_key):
-        return
-    if _loopback_hostname(base_url_hostname(str(runtime.get("base_url") or ""))):
+    if runtime.get("provider") != "custom" or runtime.get("api_key"):
         return
     raise AuthError(
-        "provider 'custom' resolved without usable credentials. If this is a named custom provider, "
-        "use its real name (see providers: in config.yaml).",
+        f"provider '{requested_provider}' resolved without credentials (no endpoint or API key configured). "
+        "If this is a named custom provider, use its real name (see providers: in config.yaml).",
         provider=requested_provider,
         code="missing_api_key",
     )

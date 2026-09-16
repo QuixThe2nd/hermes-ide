@@ -1077,9 +1077,14 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
 
 
 def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
-    """A stale bare placeholder must name the bad request at resolution time."""
+    """#111741: a bare ``custom`` placeholder (or an alias resolving to it) that falls through to the
+    OpenRouter default with no key must raise a typed AuthError naming the request at resolve time,
+    instead of returning a dead runtime that dies later as "No LLM provider configured". With an
+    OpenRouter key present the same request keeps resolving exactly as before."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setattr(
         rp,
         "load_config",
@@ -1096,12 +1101,20 @@ def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypa
 
     with pytest.raises(rp.AuthError, match="provider 'custom'.*credentials.*real name") as error:
         rp.resolve_runtime_provider(requested="custom")
-
     assert error.value.provider == "custom"
     assert error.value.code == "missing_api_key"
 
+    with pytest.raises(rp.AuthError, match="provider 'ollama'"):
+        rp.resolve_runtime_provider(requested="ollama")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-usable-key")
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "sk-or-v1-usable-key"
+
 
 def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
+    """Control: a configured no-auth local endpoint still resolves with the placeholder key."""
     monkeypatch.setattr(
         rp,
         "load_config",
@@ -1118,8 +1131,6 @@ def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
 
     assert resolved["base_url"] == "http://localhost:11434/v1"
     assert resolved["api_key"] == "no-key-required"
-
-
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
