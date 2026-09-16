@@ -34,10 +34,11 @@ export function TerminalFontSetting() {
   // the timestamp is the freshness proof because React Query can reuse the
   // same config object when the next profile has identical settings.
   const [draft, setDraft] = useState<string | null>(null)
-  const [profilePending, setProfilePending] = useState(false)
+  // dataUpdatedAt of the record the previous profile was looking at; the seed
+  // effect refuses to reseed while the query still carries that stamp.
+  const [staleStamp, setStaleStamp] = useState<null | number>(null)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
-  const staleConfigStamp = useRef<null | number>(null)
 
   // Lexically outside every useEffect so async save callbacks can cancel the
   // in-flight version without assigning to a ref inside an effect body.
@@ -46,28 +47,19 @@ export function TerminalFontSetting() {
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || profilePending) {
+    if (!loadedConfig || draft !== null || dataUpdatedAt === staleStamp) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setTerminalFontFamilyFromConfig(value)
-  }, [draft, loadedConfig, profilePending])
-
-  // eslint-disable-next-line no-restricted-syntax -- query freshness stamp is a non-rendering latch
-  useEffect(() => {
-    if (profilePending && staleConfigStamp.current !== null && dataUpdatedAt !== staleConfigStamp.current) {
-      staleConfigStamp.current = null
-      setProfilePending(false)
-    }
-  }, [dataUpdatedAt, profilePending])
+  }, [dataUpdatedAt, draft, loadedConfig, staleStamp])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
     setDraft(null)
-    staleConfigStamp.current = dataUpdatedAt
-    setProfilePending(true)
+    setStaleStamp(dataUpdatedAt)
     setSaveVersion(0)
     // Do not show the previous profile's font while the new profile loads.
     setTerminalFontFamilyFromConfig('')

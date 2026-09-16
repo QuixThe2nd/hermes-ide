@@ -31,41 +31,31 @@ export function ChatFontSetting() {
   const copy = t.settings.appearance
   const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
-  const [profilePending, setProfilePending] = useState(false)
+  // dataUpdatedAt of the record the previous profile was looking at; the seed
+  // effect refuses to reseed while the query still carries that stamp. A
+  // structurally-shared refetch keeps the object reference but bumps the stamp.
+  const [staleStamp, setStaleStamp] = useState<null | number>(null)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
-  const staleConfigStamp = useRef<null | number>(null)
 
   const cancelPendingSave = () => {
     saveVersionRef.current = 0
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || profilePending) {
+    if (!loadedConfig || draft !== null || dataUpdatedAt === staleStamp) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setChatFontFamilyFromConfig(value)
-  }, [draft, loadedConfig, profilePending])
-
-  // A profile switch invalidates without clearing the shared query. Wait for
-  // its next successful result rather than comparing object identity: React
-  // Query may structurally share an unchanged config record across refetches.
-  // eslint-disable-next-line no-restricted-syntax -- query freshness stamp is a non-rendering latch
-  useEffect(() => {
-    if (profilePending && staleConfigStamp.current !== null && dataUpdatedAt !== staleConfigStamp.current) {
-      staleConfigStamp.current = null
-      setProfilePending(false)
-    }
-  }, [dataUpdatedAt, profilePending])
+  }, [dataUpdatedAt, draft, loadedConfig, staleStamp])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
     setDraft(null)
-    staleConfigStamp.current = dataUpdatedAt
-    setProfilePending(true)
+    setStaleStamp(dataUpdatedAt)
     setSaveVersion(0)
     setChatFontFamilyFromConfig('')
   })
