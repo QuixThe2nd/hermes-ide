@@ -39,13 +39,7 @@ from hermes_cli.update_cmd import (
 )
 
 
-pytestmark = [
-    pytest.mark.macos_only,
-    pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="launchd fleet restart is macOS-only; helpers use POSIX os.getuid",
-    ),
-]
+pytestmark = pytest.mark.macos_only  # launchd fleet restart is macOS-only; helpers use POSIX os.getuid
 
 UID = 501
 
@@ -200,8 +194,10 @@ class TestProbeLaunchdDomainForLabel:
 
 class TestGetServicePidsScoping:
     def _wire(self, monkeypatch):
-        monkeypatch.setattr(gw, "is_macos", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+        # The all_profiles branch also runs a real ``launchctl list`` prefix scan; a developer
+        # box with a live ai.hermes.gateway* fleet would leak its PIDs into the assertion.
+        monkeypatch.setattr(gw.subprocess, "run", lambda *a, **k: _completed(0, ""))
         monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(
             gw,
