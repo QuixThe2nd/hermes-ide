@@ -4544,11 +4544,11 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
         # A dispatcher-spawned Kanban worker must report its outcome in its exit code.
-        # This path fell through to an implicit 0 for every outcome, and the reap
-        # classifier reads rc=0 with the task still `running` as a protocol violation,
-        # which blocks the card on the FIRST occurrence. A provider quota wall
-        # therefore killed the card permanently, along with everything queued behind
-        # it. Interactive and plain `-q` runs are unaffected: they still exit 0.
+        # This path fell through to an implicit 0 for every outcome, and the reaper
+        # reads rc=0 with the task still `running` as a protocol violation: a provider
+        # quota wall was re-dispatched straight back into the same wall until the
+        # violation budget auto-blocked the card. Plain `-q` runs by a person are
+        # unaffected: they still exit 0.
         if os.environ.get("HERMES_KANBAN_TASK"):
             sys.exit(_single_query_exit_code(getattr(cli, "_last_turn_result", None)))
     finally:
