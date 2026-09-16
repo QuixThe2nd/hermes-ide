@@ -1,10 +1,11 @@
-"""Terminal pre-execution guards must not outlive the tool deadline.
+"""Terminal pre-execution guards share the command's wall-clock deadline (#111922).
 
 Adapted from upstream tests/tools/test_terminal_pre_guard_deadline.py
-(c1e749d679) onto this fork's seams: the fork monolith has no
+(c1e749d679 + c832920275) onto this fork's seams: the fork monolith has no
 _plan_execution/_acquire_env/_run_foreground split, so tests stub
-_get_env_config/_create_environment and read the JSON envelope
-terminal_tool returns instead of a bare string.
+_get_env_config/_create_environment and read the JSON envelope terminal_tool
+returns instead of a bare string. A guard that misses the deadline fails
+CLOSED: the command is refused, never executed unguarded.
 """
 
 from __future__ import annotations
@@ -17,13 +18,15 @@ import tools.terminal_tool as terminal_module
 
 
 def _install_stub_env(monkeypatch):
-    """Give terminal_tool a cached stub env so no real environment spawns."""
+    """Stub config/env/approval/plugin stages; returns the execution recorder."""
+    calls: list[str] = []
+
+    def _stub_execute(*_a, **_k):
+        calls.append("executed")
+        return {"output": "foreground-ran", "returncode": 0}
 
     def _stub_create(**_kwargs):
-        return SimpleNamespace(
-            execute=lambda *_a, **_k: {"output": "foreground-ran", "returncode": 0},
-            cwd="/tmp",
-        )
+        return SimpleNamespace(execute=_stub_execute, cwd="/tmp")
 
     monkeypatch.setattr(terminal_module, "_active_environments", {})
     monkeypatch.setattr(
@@ -43,11 +46,13 @@ def _install_stub_env(monkeypatch):
     # inline and its first call scans the whole plugin tree (seconds).
     import hermes_cli.lifecycle as _lifecycle
     monkeypatch.setattr(_lifecycle, "invoke_hook", lambda *a, **k: [])
+    return calls
 
 
 def test_terminal_tool_bounds_a_wedged_pre_execution_guard(monkeypatch):
-    """A stalled supervised-gateway identity probe cannot wedge terminal_tool."""
-    _install_stub_env(monkeypatch)
+    """A stalled supervised-gateway identity probe cannot wedge terminal_tool,
+    and a guard that misses the deadline refuses the command (fail-closed)."""
+    calls = _install_stub_env(monkeypatch)
 
     def _wedged_supervised_gateway_probe(*_a, **_k):
         time.sleep(1)
@@ -60,8 +65,10 @@ def test_terminal_tool_bounds_a_wedged_pre_execution_guard(monkeypatch):
 
     assert elapsed < 0.5, f"pre-execution guard wedged terminal_tool for {elapsed:.2f}s"
     payload = json.loads(result)
-    assert payload["output"] == "foreground-ran"
-    assert payload["exit_code"] == 0
+    assert payload["status"] == "error"
+    assert payload["exit_code"] == -1
+    assert "did not finish within" in payload["error"]
+    assert calls == [], "a wedged guard must refuse the command, not run it"
 
 
 def test_terminal_tool_runs_normal_pre_execution_guard(monkeypatch):

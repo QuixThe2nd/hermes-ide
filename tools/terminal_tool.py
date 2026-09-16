@@ -2447,6 +2447,15 @@ def is_persistent_env(task_id: str) -> bool:
     approved_run: bool = False
 
 
+def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
+    """The terminal error envelope: ``output``/``exit_code``/``error`` (+ ``status``, extras)."""
+    body: Dict[str, Any] = {"output": "", "exit_code": exit_code, "error": error}
+    if status is not None:
+        body["status"] = status
+    body.update(extra)
+    return json.dumps(body, ensure_ascii=False)
+
+
 class _Rejected(Exception):
     """Carries a finished tool-result JSON out of the planning/guard helpers, so
     each early-return site is one ``raise`` instead of an isinstance-checked
@@ -3427,9 +3436,11 @@ def terminal_tool(
 
         # Pre-execution guards run behind the command's wall-clock deadline so
         # a wedged probe (kernel-level psutil identity checks) cannot hold a
-        # cron run forever. A timed-out guard fails open: its worker is
-        # abandoned, while guard rejections keep their original behavior.
-        # (Upstream c1e749d679, ported onto the fork's inline guard chain.)
+        # cron run forever. A guard that never rendered a verdict fails
+        # CLOSED: these checks apply unconditionally, so the command is
+        # refused with a retryable error instead of running unguarded.
+        # (Upstream c1e749d679 + c832920275, ported onto the fork's inline
+        # guard chain.)
         from agent.deadline import run_bounded_sync
 
         bounded_guard = run_bounded_sync(
@@ -3441,10 +3452,11 @@ def terminal_tool(
             label="terminal.pre-exec-guard",
         )
         if bounded_guard.timed_out:
-            logger.warning(
-                "Terminal pre-execution guard timed out after %ss; continuing fail-open",
-                effective_timeout,
-            )
+            raise _Rejected(_error_json(
+                f"Terminal pre-execution guard did not finish within {effective_timeout}s "
+                "(process-identity probe wedged); the command was not run. Retry the call.",
+                status="error",
+            ))
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
