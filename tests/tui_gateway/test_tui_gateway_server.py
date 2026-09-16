@@ -9246,6 +9246,33 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     assert default["result"]["provider"] == "anthropic"
 
 
+def test_setup_runtime_check_agrees_with_session_fallback_chain(monkeypatch):
+    """#111775: with the primary blocked and a complete fallback entry, the probe answers what
+    ``_make_agent`` would build (fallback provider + model); an explicit ``provider`` stays strict
+    so another provider's fallback cannot mask a failed connection."""
+    from hermes_cli.auth import AuthError
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("claude-sonnet-4-5", None))
+    monkeypatch.setattr(server, "_load_fallback_model",
+                        lambda: [{"provider": "openrouter", "model": "openai/gpt-4.1-mini", "api_key": "sk-or-fb"}])
+
+    def fake_resolve(*, requested=None, target_model=None, explicit_api_key=None, **_kw):
+        if requested == "openrouter":
+            return {"provider": "openrouter", "api_key": explicit_api_key, "source": "explicit"}
+        raise AuthError("No Anthropic credentials found.", provider="anthropic")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    assert default["result"]["ok"] is True
+    assert (default["result"]["provider"], default["result"]["model"]) == ("openrouter", "openai/gpt-4.1-mini")
+
+    strict = server.handle_request(
+        {"id": "2", "method": "setup.runtime_check", "params": {"provider": "anthropic"}})
+    assert strict["result"]["ok"] is False
+    assert "Anthropic" in strict["result"]["error"]
+
+
 def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypatch):
     """#111775: the probe names the model session creation would use, never ``model: null``."""
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
