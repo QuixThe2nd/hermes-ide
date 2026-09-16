@@ -1941,7 +1941,8 @@ def _warm_turn_machinery_sync() -> int:
     * ``model_tools.get_tool_definitions`` — materializes tool schemas and
       primes the tool-registry ``check_fn`` TTL cache so availability
       probes don't run (and fail cold) inside the user's first turn;
-    * the context-file tier (AGENTS.md / SOUL.md discovery + read).
+    Context files are deliberately NOT warmed here: building them needs the
+    active turn's agent and model context, so they stay lazy (upstream 87661da3).
 
     Returns the number of tool schemas materialized (logged for
     diagnosability).
@@ -1950,12 +1951,6 @@ def _warm_turn_machinery_sync() -> int:
     import model_tools
 
     tool_defs = model_tools.get_tool_definitions(quiet_mode=True)
-    try:
-        from agent.prompt_builder import build_context_files_prompt
-
-        build_context_files_prompt()
-    except Exception:
-        logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
     return len(tool_defs)
 
 
