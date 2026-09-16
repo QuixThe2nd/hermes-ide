@@ -42,6 +42,17 @@ The tick also rotates the **primary** model slot (`model.default` + `model.provi
 4. The primary swap and the chain reorder are written in ONE `save_config` call, with the same backup/restore rollback and post-write verification as the chain-only path (verification re-checks both the chain signature and the primary keys).
 5. The staleness freeze blocks primary writes too; `--force-quota` bypasses it.
 
+### Pinned primary (optional)
+
+Set `fallback_quota_reorder.pinned_primary` with `provider` and `model` keys to keep a chosen route as primary regardless of quota scores. When the exact route is already primary or appears in `fallback_providers`, every successful reorder promotes or retains it while the rest of the chain keeps normal quota rotation. Matching is exact on the model string (case-sensitive after strip); provider comparison is case-insensitive. A malformed mapping, a blank `provider`/`model`, or a configured target that is neither the current primary nor a fallback entry fails the run with an error. Unset or empty `{}` disables pinning and leaves score-based rotation unchanged.
+
+```yaml
+fallback_quota_reorder:
+  pinned_primary:
+    provider: openrouter
+    model: example/model
+```
+
 `--dry-run` prints the pending swap:
 
 ```text
