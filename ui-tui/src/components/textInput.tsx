@@ -940,6 +940,15 @@ export function TextInput({
       return
     }
 
+    // An external value replaced the draft. A key burst still waiting on its
+    // 16ms flush is now stale; letting it fire would hand the parent the old
+    // draft on top of the value it just set.
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    pendingParentValue.current = null
     setCur(value.length)
     setSel(null)
     curRef.current = value.length

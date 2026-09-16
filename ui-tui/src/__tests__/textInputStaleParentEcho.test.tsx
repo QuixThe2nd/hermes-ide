@@ -53,12 +53,19 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 
 function Harness({
   onValue,
+  setValueRef,
   snapshotRef
 }: {
   onValue: (value: string) => void
+  setValueRef?: React.MutableRefObject<((next: string) => void) | null>
   snapshotRef: React.RefObject<InputCursorSnapshot | null>
 }) {
   const [value, setValue] = useState('')
+
+  if (setValueRef) {
+    // Stands in for history navigation / a slash completion replacing the draft.
+    setValueRef.current = setValue
+  }
 
   return React.createElement(TextInput, {
     cursorSnapshotRef: snapshotRef,
@@ -139,6 +146,60 @@ describe('stale parent own-echo during deferred key-burst flush', () => {
     // unmount published the final {cursor, value} into the snapshot ref.
     expect(values.at(-1)).toBe('abcde')
     expect(snapshotRef.current).toEqual({ cursor: 5, value: 'abcde' })
+  })
+
+  it('drops a pending key-burst flush when an external value replaces the draft', async () => {
+    vi.stubEnv('TERM_PROGRAM', 'iTerm.app')
+    vi.stubEnv('TMUX', '')
+
+    const stdout = new FakeTty()
+    const stdin = new FakeTty()
+    const stderr = new FakeTty()
+    const values: string[] = []
+    const snapshotRef = useRefBridge()
+    const setValueRef: React.MutableRefObject<((next: string) => void) | null> = { current: null }
+
+    const instance = renderSync(
+      React.createElement(Harness, { onValue: v => values.push(v), setValueRef, snapshotRef }),
+      {
+        patchConsole: false,
+        stderr: stderr as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as unknown as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await tick()
+
+      for (const ch of ['a', 'b', 'c']) {
+        stdin.send(ch)
+        await tick()
+      }
+
+      vi.advanceTimersByTime(16)
+      await tick()
+      await tick()
+
+      // "d" arms a new deferred flush; history navigation then replaces the
+      // draft before that flush fires.
+      stdin.send('d')
+      await tick()
+      setValueRef.current?.('history draft')
+      await tick()
+      await tick()
+
+      // The stale burst must not be handed to the parent 16ms later.
+      vi.advanceTimersByTime(16)
+      await tick()
+      await tick()
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+
+    expect(values).toEqual(['a', 'abc'])
+    expect(snapshotRef.current).toEqual({ cursor: 'history draft'.length, value: 'history draft' })
   })
 })
 
