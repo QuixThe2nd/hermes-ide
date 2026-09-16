@@ -1458,14 +1458,11 @@ class TestCloneAllExcludesRuntimeTrees:
         assert set(at_root) == set(self.RUNTIME_TREES)
         assert nested == []
 
-    def test_named_profile_source_keeps_its_own_runtime_dirs(self, profile_env):
-        # The exclusion is gated on the default profile: a named profile that
-        # really has a models/ dir of its own must not have it dropped.
+        # Gated on the default profile: a named profile that really has a
+        # models/ dir of its own must not have it dropped when used as source.
         source = create_profile("source", no_alias=True)
         (source / "models").mkdir()
-        ignore = _clone_all_copytree_ignore(source)
-
-        assert ignore(str(source), ["models", "runtimes", "node", "SOUL.md"]) == []
+        assert _clone_all_copytree_ignore(source)(str(source), ["models", "runtimes", "node", "SOUL.md"]) == []
 
     def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):
         default_home = profile_env / ".hermes"
