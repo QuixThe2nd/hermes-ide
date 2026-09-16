@@ -3809,9 +3809,9 @@ def _prune_quick_snapshots(
     copy. Repeated oversized/failed snapshots therefore stay bounded instead of growing
     an unbounded chain, and the last usable recovery copy is never evicted.
 
-    Only managed snapshots (directories with a ``manifest.json``) are counted or
-    deleted; in-progress ``.partial`` staging dirs, dot-directories and unrelated
-    entries are never touched.
+    Only managed snapshots (real directories with a ``manifest.json``) are counted
+    or deleted — a child symlink never is; in-progress ``.partial`` staging dirs,
+    dot-directories and unrelated entries are never touched either.
 
     Usability is judged by the FULL integrity check, memoized in
     ``.db-integrity-cache.json`` beside the snapshots (see
@@ -3834,7 +3834,14 @@ def _prune_quick_snapshots(
         (
             d
             for d in root.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and not d.name.endswith(".partial")
+            # A child symlink is not a managed snapshot: ``is_dir()`` and the
+            # manifest probe both follow it, so a timestamp-named link would
+            # consume a keep slot and its target's DB copies could pass as
+            # recovery coverage, evicting older real snapshots. Skip links
+            # before following them — linked or relative ancestors (HERMES_HOME,
+            # the snapshots root itself) are still fully supported.
+            if not d.is_symlink() and d.is_dir()
+            and not d.name.startswith(".") and not d.name.endswith(".partial")
             and (d / "manifest.json").exists()
         ),
         key=lambda d: d.name,
