@@ -3001,6 +3001,12 @@ def _resolve_command_cwd(
     return recorded or default_cwd
 
 
+# Floor for the pre-exec guard's share of the command deadline: a short command timeout
+# (1s in tests, a few seconds in practice) must not turn the guard's own cold-start cost
+# (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
+_PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
+
+
 def _pre_exec_block(
     command: str, *, env: Any, env_type: str, cwd: str,
     workdir: Optional[str], session_key: str,
@@ -3442,18 +3448,26 @@ def terminal_tool(
         # (Upstream c1e749d679 + c832920275, ported onto the fork's inline
         # guard chain.)
         from agent.deadline import run_bounded_sync
+        from tools.interrupt import acting_for_tid
 
-        bounded_guard = run_bounded_sync(
-            lambda: _pre_exec_block(
-                command, env=env, env_type=env_type, cwd=cwd, workdir=workdir,
-                session_key=session_key,
-            ),
-            effective_timeout,
-            label="terminal.pre-exec-guard",
-        )
+        # The guard chain runs on the deadline worker; keep it answerable to /stop
+        # aimed at this tool thread (a remote-backend script read polls is_interrupted()).
+        guard_timeout = max(effective_timeout, _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+        _acting_token = acting_for_tid.set(threading.current_thread().ident)
+        try:
+            bounded_guard = run_bounded_sync(
+                lambda: _pre_exec_block(
+                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir,
+                    session_key=session_key,
+                ),
+                guard_timeout,
+                label="terminal.pre-exec-guard",
+            )
+        finally:
+            acting_for_tid.reset(_acting_token)
         if bounded_guard.timed_out:
             raise _Rejected(_error_json(
-                f"Terminal pre-execution guard did not finish within {effective_timeout}s "
+                f"Terminal pre-execution guard did not finish within {guard_timeout}s "
                 "(process-identity probe wedged); the command was not run. Retry the call.",
                 status="error",
             ))

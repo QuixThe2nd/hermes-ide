@@ -20,6 +20,7 @@ import tools.terminal_tool as terminal_module
 def _install_stub_env(monkeypatch):
     """Stub config/env/approval/plugin stages; returns the execution recorder."""
     calls: list[str] = []
+    monkeypatch.setattr(terminal_module, "_PRE_EXEC_GUARD_MIN_TIMEOUT_S", 0)
 
     def _stub_execute(*_a, **_k):
         calls.append("executed")
@@ -96,3 +97,21 @@ def test_terminal_tool_preserves_pre_execution_rejection(monkeypatch):
     monkeypatch.setattr(terminal_module, "_pre_exec_block", _rejecting_pre_exec_block)
 
     assert terminal_module.terminal_tool("echo ok") == rejected_json
+
+
+def test_pre_execution_guard_on_the_deadline_worker_sees_the_tool_threads_interrupt(monkeypatch):
+    """"/stop keys on the tool thread's tid; the guard chain moved onto a worker must still see it."""
+    _install_stub_env(monkeypatch)
+    from tools.interrupt import is_interrupted, set_interrupt
+
+    seen: list[bool] = []
+    monkeypatch.setattr(terminal_module, "_pre_exec_block", lambda *_a, **_k: seen.append(is_interrupted()))
+
+    set_interrupt(True)
+    try:
+        terminal_module.terminal_tool("echo ok")
+    finally:
+        set_interrupt(False)
+
+    assert seen == [True], "guard on the deadline worker was blind to the tool thread's interrupt bit"
+    assert is_interrupted() is False, "the tool thread's own interrupt view must not leak past the guard"
