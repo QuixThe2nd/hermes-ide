@@ -58,6 +58,7 @@ async def git_status_route(path: str):
 _GH_AUTH_TTL_S = 300.0
 _gh_auth_cache: Optional[tuple] = None  # (monotonic_ts, payload)
 _gh_auth_probe_task: Optional[asyncio.Task] = None
+_gh_auth_probe_started = 0.0  # monotonic start of _gh_auth_probe_task
 
 
 def _probe_gh_auth() -> dict:
@@ -83,16 +84,24 @@ def _clear_gh_auth_probe_task(completed_task: asyncio.Task) -> None:
 async def gh_auth_status_route(refresh: bool = False):
     """``{"available", "authenticated"}`` for the `gh` CLI; cached 5 min
     (``refresh=true`` bypasses so the pill withdraws right after a login)."""
-    global _gh_auth_cache, _gh_auth_probe_task
-    if not refresh and _gh_auth_cache and time.monotonic() - _gh_auth_cache[0] < _GH_AUTH_TTL_S:
+    global _gh_auth_cache, _gh_auth_probe_task, _gh_auth_probe_started
+    asked = time.monotonic()
+    if not refresh and _gh_auth_cache and asked - _gh_auth_cache[0] < _GH_AUTH_TTL_S:
         return _gh_auth_cache[1]
-    if _gh_auth_probe_task is None:
-        _gh_auth_probe_task = asyncio.create_task(asyncio.to_thread(_probe_gh_auth))
-        _gh_auth_probe_task.add_done_callback(_clear_gh_auth_probe_task)
-    probe_task = _gh_auth_probe_task
-    # Shield the shared probe: disconnecting one requester must not cancel the
-    # probe that other refreshes/cache misses are awaiting.
-    payload = await asyncio.shield(probe_task)
+    while True:
+        if _gh_auth_probe_task is None or _gh_auth_probe_task.done():
+            _gh_auth_probe_task = asyncio.create_task(asyncio.to_thread(_probe_gh_auth))
+            _gh_auth_probe_started = time.monotonic()
+            _gh_auth_probe_task.add_done_callback(_clear_gh_auth_probe_task)
+        probe_task, started = _gh_auth_probe_task, _gh_auth_probe_started
+        # Shield the shared probe: disconnecting one requester must not cancel the
+        # probe that other refreshes/cache misses are awaiting.
+        payload = await asyncio.shield(probe_task)
+        # A refresh must not accept a probe that started before it was asked for (it may predate
+        # `gh auth login`, and its answer would then be cached for the full TTL): wait that one out,
+        # then start or join the next. Still only one `gh` runs at a time.
+        if not refresh or started >= asked:
+            break
     _gh_auth_cache = (time.monotonic(), payload)
     return payload
 
