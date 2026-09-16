@@ -95,6 +95,14 @@ auto_update:
 - Empty notification strings keep success/failure quiet except for systemd journal logs.
 - Non-empty strings append one line to `$HERMES_HOME/auto-update/notifications.log` (notification failures are non-fatal).
 
+## Backup retention
+
+The stock updater keeps three full pre-update archives by default (`updates.backup_keep`) and three recent lightweight pre-update snapshots. If recent snapshots omit a database or contain unusable copies, pruning preserves older usable recovery copies for the affected database paths. Relative and symlinked Hermes homes use the same retention rules.
+
+A database counts as a replacement only after full SQLite integrity validation. Pruning caches that result against the snapshot file's device, inode, size and nanosecond modification/change times, and revalidates when the identity changes. It stops checking copies once the required database paths are covered. Initial validation can still read an entire large database; unchanged copies do not incur that scan on every update. This cache assumes finalized snapshot files are immutable and does not detect silent corruption that leaves file metadata unchanged.
+
+The lightweight snapshot size cap remains 1 GiB per file. Oversized databases need full-backup coverage; retaining an older copy does not make it a fresh backup. Pre-migration retention and explicit user overrides are unchanged.
+
 ## Legacy units
 
 Older installs may have shipped `hermes-auto-update.service` / `hermes-auto-update.timer` plus a wrapper script. The plugin:
