@@ -10381,28 +10381,6 @@ class GatewayRunner(
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)
 
-        # Opportunistic shadow-repo cleanup — deletes stale checkpoint repos
-        # under ~/.hermes/checkpoints/.  Opt-in via checkpoints.auto_prune,
-        # idempotent via .last_prune marker.
-        try:
-            from hermes_cli.config import load_config as _load_full_config
-            _ckpt_cfg = (_load_full_config().get("checkpoints") or {})
-            if _ckpt_cfg.get("auto_prune", False):
-                from tools.checkpoint_manager import maybe_auto_prune_checkpoints
-                # delete_orphans is intentionally never honoured here: a
-                # missing workdir at startup is ambiguous (deleted project
-                # vs. an unmounted external volume / network share / VPN
-                # not yet up) and this sweep runs unattended. Orphan cleanup
-                # is only ever done via the explicit `hermes checkpoints
-                # prune` command, which the user has to invoke.
-                maybe_auto_prune_checkpoints(
-                    retention_days=int(_ckpt_cfg.get("retention_days", 7)),
-                    min_interval_hours=int(_ckpt_cfg.get("min_interval_hours", 24)),
-                    delete_orphans=False,
-                    max_total_size_mb=int(_ckpt_cfg.get("max_total_size_mb", 500)),
-                )
-        except Exception as exc:
-            logger.debug("checkpoint auto-maintenance skipped: %s", exc)
 
         # DM pairing store for code-based user authorization.
         # ``pairing_store`` stays as the global/default store for the
@@ -37072,6 +37050,16 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 
+def _housekeeping_checkpoint_prune() -> None:
+    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
+    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Kept for API parity with
+    upstream (804707bea6); the gateway calls ``auto_prune_from_config`` directly in the
+    housekeeping tick below (fork's monolith has its own tick loop).
+    """
+    from tools.checkpoint_manager import auto_prune_from_config
+    auto_prune_from_config()
+
+
 def _start_gateway_housekeeping(
     stop_event: threading.Event,
     adapters=None,
@@ -37114,6 +37102,7 @@ def _start_gateway_housekeeping(
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
     FTS_STALE_RETRY_EVERY = 1  # SessionDB rate-limits the real work (_FTS_STALE_RETRY_SECONDS)
+    CHECKPOINT_PRUNE_EVERY = 60  # ticks — once per hour (24h .last_prune gate owns the real cadence)
 
     # Every platform media cache prunes on the same hourly cadence — one loop
     # over (name, cleanup_fn), not a copy-pasted try/except per cache.
@@ -37298,6 +37287,19 @@ def _start_gateway_housekeeping(
                     type(exc).__name__,
                     exc,
                 )
+
+        # Checkpoint store pruning rides this tick (upstream 804707bea6): its
+        # ``git gc`` can hold the thread for tens of seconds on a large store,
+        # so it runs LAST and never on the startup path. auto_prune_from_config
+        # gates on checkpoints.auto_prune and the 24h .last_prune marker.
+        if tick_count % CHECKPOINT_PRUNE_EVERY == 0:
+            try:
+                from tools.checkpoint_manager import auto_prune_from_config
+                result = auto_prune_from_config()
+                if not result.get("skipped", True):
+                    logger.info("Checkpoint prune: %s", result)
+            except Exception as exc:
+                logger.debug("Checkpoint prune tick error: %s", exc)
 
         stop_event.wait(timeout=interval)
     logger.info("Gateway housekeeping stopped")
