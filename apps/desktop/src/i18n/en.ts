@@ -727,7 +727,7 @@ export const en: Translations = {
       terminalFontReset: 'Use default',
       chatFontTitle: 'Chat Font',
       chatFontDesc:
-        'Choose an installed font for chat and the rest of the app. Handy for readability faces such as OpenDyslexic; leave blank to use the theme\'s font.',
+        "Choose an installed font for chat and the rest of the app. Handy for readability faces such as OpenDyslexic; leave blank to use the theme's font.",
       chatFontPlaceholder: 'OpenDyslexic or a CSS font stack',
       chatFontPreview: 'Preview',
       chatFontSample: 'The quick brown fox jumps over the lazy dog. 0123456789',
@@ -3428,7 +3428,7 @@ export const en: Translations = {
     timedOutHeading: 'That sign-in link has expired',
     timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
     retiredBody:
-      'Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you\'re ready.',
+      "Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you're ready.",
     errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
     busyHeading: 'Almost there',
     busyBody: wait =>
@@ -3450,7 +3450,8 @@ export const en: Translations = {
       powRequired:
         "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
       locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
-      generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
+      generic:
+        "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
       signInBelow: 'Signing in is free and keeps the free model. Pick Nous below.',
       tryAgain: 'Try again',
       retrying: 'Trying again…'
@@ -4084,8 +4085,10 @@ export const en: Translations = {
     sudoSendFailed: 'Could not send sudo password',
     secretSendFailed: 'Could not send secret',
     sudoTitle: 'Administrator password',
-    sudoDesc: 'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
-    sudoCommandUnavailable: 'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
+    sudoDesc:
+      'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
+    sudoCommandUnavailable:
+      'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
