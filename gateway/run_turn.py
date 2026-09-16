@@ -93,7 +93,7 @@ def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[An
     unaffected. Returns ``history`` unchanged — same object — when nothing needs dropping, so the
     landed-compression and below-the-limit paths stay byte-identical.
     """
-    if not isinstance(history, list) or not isinstance(limit, int) or limit <= 0 or len(history) <= limit:
+    if len(history) <= limit:
         return history
     head_end = 0
     while (head_end < len(history) and isinstance(history[head_end], dict)

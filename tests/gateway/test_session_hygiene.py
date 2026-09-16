@@ -1914,7 +1914,8 @@ def test_bound_model_input_without_hygiene_is_deterministic_and_fail_closed():
 
 @pytest.mark.asyncio
 async def test_hygiene_miss_bounds_the_model_payload(monkeypatch, tmp_path):
-    """Turn-hold expiry without a landed summary must not feed the model the whole transcript."""
+    """Turn-hold expiry without a landed summary must not feed the model the whole transcript
+    (#111988); a landed commit is still adopted byte-identical."""
     worker_started = threading.Event()
     release_worker = threading.Event()
     cleanup_done = threading.Event()
@@ -1973,53 +1974,16 @@ async def test_hygiene_miss_bounds_the_model_payload(monkeypatch, tmp_path):
 
         release_worker.set()
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=3)
+
+        # Control: a LANDED hygiene commit is adopted as-is — its 25 summary rows exceed the
+        # limit, and the bound must not touch them (only the unlanded path is clipped).
+        db.create_session("sess-landed", "telegram")
+        runner2, _adapter2, event2 = _make_cooldown_runner(
+            monkeypatch, tmp_path, _LandedCompressAgent, db, "sess-landed"
+        )
+        runner2.session_store.load_transcript.return_value = _make_bound_probe_transcript()
+        assert await asyncio.wait_for(runner2._handle_message(event2), timeout=15) == "ok"
+        assert _turn_payload(runner2) is _LandedCompressAgent.last_compressed
     finally:
         release_worker.set()
-        db.close()
-
-
-@pytest.mark.asyncio
-async def test_hygiene_landed_payload_is_byte_identical(monkeypatch, tmp_path):
-    """A landed hygiene commit is adopted as-is — the bound must not touch it."""
-    transcript = _make_bound_probe_transcript()
-    db, runner, _adapter, event = _make_bound_runner(
-        monkeypatch, tmp_path, _LandedCompressAgent,
-        "compression:\n"
-        "  enabled: true\n"
-        f"  hygiene_hard_message_limit: {_HARD_LIMIT}\n",
-        transcript,
-    )
-    try:
-        assert await asyncio.wait_for(runner._handle_message(event), timeout=15) == "ok"
-        payload = _turn_payload(runner)
-        assert payload is _LandedCompressAgent.last_compressed, (
-            "a landed hygiene commit must reach the model as the adopted transcript, "
-            f"unmodified; got {len(payload)} rows"
-        )
-        runner.session_store.rewrite_transcript.assert_called()
-    finally:
-        db.close()
-
-
-@pytest.mark.asyncio
-async def test_hygiene_not_needed_payload_is_the_loaded_transcript(monkeypatch, tmp_path):
-    """Below the limit the payload is the very list loaded from disk — zero behaviour change."""
-    transcript = _make_bound_probe_transcript(total=_HARD_LIMIT - 1)
-    db, runner, _adapter, event = _make_bound_runner(
-        monkeypatch, tmp_path, _LandedCompressAgent,
-        "compression:\n"
-        "  enabled: true\n"
-        f"  hygiene_hard_message_limit: {_HARD_LIMIT}\n",
-        transcript,
-    )
-    # A context window wide enough that the token threshold cannot fire either: hygiene is a
-    # no-op this turn, so the bound must be one too.
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length", lambda *_args, **_kwargs: 1_000_000
-    )
-    try:
-        assert await asyncio.wait_for(runner._handle_message(event), timeout=15) == "ok"
-        payload = _turn_payload(runner)
-        assert payload is transcript, "a sub-limit transcript must pass through untouched"
-    finally:
         db.close()
