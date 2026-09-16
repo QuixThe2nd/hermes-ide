@@ -316,8 +316,11 @@ _PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
 # path, or an absolute path — not merely a string whose FIRST character is one of those.
 # A 40-char AWS secret key starts with '/' ~1 in 64 times and argon2/bcrypt digests always
 # start with '$'; an unanchored class let those secrets skip every check below.
-_PATH_OR_VAR_VALUE_RE = re.compile(
-    r"^(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[/:.\w-]*|~/[\w./-]*|/(?:[\w.-]+/)*[\w.-]*)$")
+# Further ``$VAR`` interpolations may appear anywhere in the path (``/run/user/$UID/ssh``,
+# ``$XDG_RUNTIME_DIR/agent.$USER.sock``, ``$A:$B`` lists); crypt digests never parse as one
+# because their ``$`` fields start with a digit or carry ``=``/``,``.
+_SHELL_VAR_REF = r"\$(?:\{[A-Za-z_]\w*[^}]*\}|[A-Za-z_]\w*)"
+_PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
 
 
 def _is_word_start(s: str, i: int) -> bool:
