@@ -52,18 +52,14 @@ _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
 
 
 def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., str]) -> str:
-    """Return a bounded, secret-redacted completion summary for public run events."""
+    """Bounded, secret-redacted result summary for the public run stream — redacted BEFORE
+    truncation so a cut never leaves a secret's prefix on the wire."""
     if result is None:
         return ""
-    if not isinstance(result, str):
-        try:
-            result = json.dumps(result, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            result = str(result)
-    preview = redact_sensitive_text(result, force=True)
-    if len(preview) > _TOOL_COMPLETED_PREVIEW_MAX_CHARS:
-        return preview[:_TOOL_COMPLETED_PREVIEW_MAX_CHARS - 3] + "..."
-    return preview
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    preview = redact_sensitive_text(text, force=True)
+    limit = _TOOL_COMPLETED_PREVIEW_MAX_CHARS
+    return preview if len(preview) <= limit else preview[: limit - 3] + "..."
 
 # Presentation bounds for the pending-clarify card this surface serves.
 # They bound what leaves the process on the session clarify routes (and
