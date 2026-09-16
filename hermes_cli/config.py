@@ -935,23 +935,15 @@ _ENV_CONFIG_KEYS = frozenset({
     'GITHUB_TOKEN', 'HONCHO_API_KEY'})
 
 
-def _is_platform_env_config_key(key: str) -> bool:
-    """Return whether a platform setup value is owned by ``.env``."""
-    if "." in key:
-        return False
-    from hermes_cli.setup_hidden_env import is_setup_hidden_env
-
-    return is_setup_hidden_env(key.upper())
-
-
 def _is_env_config_key(key: str) -> bool:
-    """Return whether `hermes config set` routes this key to .env."""
+    """Return whether `hermes config set` routes this credential-shaped key to .env through the
+    provider credential lifecycle. Non-secret env settings (``*_HOME_CHANNEL``, ``*_ALLOWED_USERS``)
+    are ``config_env_routing.is_env_setting_key`` and take the plain ``.env`` path."""
     if "." in key:
         return False
     key_upper = key.upper()
     return (
-        _is_platform_env_config_key(key)
-        or key_upper in _ENV_CONFIG_KEYS
+        key_upper in _ENV_CONFIG_KEYS
         or key_upper.endswith(('_API_KEY', '_TOKEN', '_SECRET'))
         or key_upper.startswith('TERMINAL_SSH'))
 
@@ -3560,16 +3552,18 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
-        if _is_platform_env_config_key(key):
-            save_env_value(key.upper(), value)
-            print(f"✓ Set {key} in {get_env_path()}")
-            return
-        # Unified lifecycle: also rotates any config.yaml mirror of the old value.
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
         save_provider_env_credential(key.upper(), value)
+        print(f"✓ Set {key} in {get_env_path()}")
+        return
+    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
+
+    if is_env_setting_key(key):
+        # Same file the platform setup flows and /sethome write (#111848).
+        save_env_setting(key, value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
 
@@ -3636,8 +3630,13 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
     ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
     this command from sessions whose transcripts persist (#84106, #110758)."""
+    from hermes_cli.config_env_routing import is_env_setting_key, read_env_setting
+
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
+        value = _MISSING if env_value is None else env_value
+    elif is_env_setting_key(key):
+        env_value = read_env_setting(key)
         value = _MISSING if env_value is None else env_value
     else:
         # Mirror set_config_value: read the canonical display.platforms path.
@@ -3667,17 +3666,20 @@ def unset_config_value(key: str):
     _exit_if_key_managed(key, "unset")
 
     if _is_env_config_key(key):
-        if _is_platform_env_config_key(key):
-            if not remove_env_value(key.upper()):
-                _exit_invalid(f"Config key not set: {key}")
-            print(f"✓ Unset {key} from {get_env_path()}")
-            return
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
         # the provider is fully removed instead of left resurrectable.
         # See #51071.
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         if not remove_provider_env_credential(key.upper()).get("found"):
+            _exit_invalid(f"Config key not set: {key}")
+        print(f"✓ Unset {key} from {get_env_path()}")
+        return
+    from hermes_cli.config_env_routing import is_env_setting_key, remove_env_setting
+
+    if is_env_setting_key(key):
+        # Also drops a stale top-level config.yaml copy left by older `config set` runs (#111848).
+        if not remove_env_setting(key):
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return
