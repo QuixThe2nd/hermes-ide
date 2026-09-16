@@ -3341,7 +3341,13 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             return True, None
         if seg not in node:
             sibling = _suggest_closest_key(seg, set(node.keys()))
-            return False, ".".join(consumed + [sibling]) if sibling is not None else None
+            if sibling is not None:
+                return False, ".".join(consumed + [sibling])
+            # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
+            rest = ".".join(segments[len(consumed):])
+            if _split_key_path(rest)[0] in _known_top_level_keys() and _validate_config_key(rest)[0]:
+                return False, rest
+            return False, None
         consumed.append(seg)
         node = node[seg]
     return True, None
@@ -3535,9 +3541,19 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "this notice.)", Colors.DIM))
 
 
+def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
+    lines = [color(f"✗ '{key}' is not a recognized config key — nothing was written.", Colors.RED)]
+    if suggestion:
+        lines.append(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
+    lines.append(color(
+        "  (Custom top-level keys are supported; use --force to write this path anyway.)", Colors.DIM))
+    return "\n".join(lines)
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
+    ``force`` writes an unknown path under a known section (otherwise refused), skips the
+    unknown-top-level-key notice AND authorizes replacing a mapping section with a
     scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
     to ``model.default``."""
     if is_managed():
@@ -3568,17 +3584,17 @@ def set_config_value(key: str, value: str, force: bool = False):
         return
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
-    # runtime reads. Unknown keys are still written (top-level scalars are bridged into os.environ
-    # for skills/external apps) but get a post-write "did you mean" hint.
+    # runtime reads.
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
-        # Unknown-key notice (#34067): the key is still written (arbitrary keys are supported — top-level
-        # scalars are bridged into os.environ for skills and external apps), but a plausible-but-wrong
-        # dotted path like ``gateway.discord.gateway_restart_notification`` previously reported bare success
-        # and left the user debugging behavior that never changed. Warn after the write so the user gets
-        # immediate feedback plus a "did you mean" hint, without blocking legitimate unknown keys.
         print(_redirect_note)
     is_known, suggestion = _validate_config_key(key)
+    # Unknown-key handling (#34067, #112003): an unknown path UNDER a known section can only be a
+    # typo (``gateway.discord.gateway_restart_notification``), so it is refused before anything is
+    # written. Unknown TOP-LEVEL keys stay writable with a post-write notice — their scalars are
+    # bridged into os.environ for skills/external apps, so that namespace is open by design.
+    if not is_known and not force and _split_key_path(key)[0] in _known_top_level_keys():
+        _exit_invalid(_unknown_subkey_refusal(key, suggestion))
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
