@@ -28,7 +28,7 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     marker.write_text("{}", encoding="utf-8")
     assert gateway_run._planned_restart_notification_pending() is True
 
-    gateway_run._clear_planned_restart_notification()
+    gateway_run._planned_restart_notification_path().unlink()
 
     assert gateway_run._planned_restart_notification_pending() is False
 

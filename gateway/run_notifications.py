@@ -15,7 +15,7 @@ import logging
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, cast
+from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -799,21 +799,26 @@ class GatewayNotificationsMixin:
             return None
         return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
 
-    async def _replay_pending_planned_restart_notification(self) -> set[tuple[str, str, Optional[str]]]:
-        """Checkpoint each successful home notice so unavailable targets survive boot/reconnect.
+    _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
-        Boot sends may outlive the restore gate and overlap reconnects. Serialize the read/send/ack
-        sequence; the marker also carries acknowledgments across process restarts.
+    async def _replay_pending_planned_restart_notification(self) -> set[tuple[str, str, Optional[str]]]:
+        """Send the planned-restart online notice to every home channel still owed one; clear
+        ``.restart_pending.json`` only once all of them were reached.
+
+        Runs from the boot pass and again from ``_install_reconnected_adapter``, so a home whose
+        platform was down at boot gets its notice when the platform comes back (#112109). Delivered
+        targets are recorded in the marker so neither a later replay nor the next process (if this
+        one restarts first) notifies a home twice. The lock serializes a boot pass that outlived the
+        restore gate against a concurrent reconnect replay.
 
         Returns the set of targets the boot notice reached (for comeback dedup).
         """
         from gateway.run import _planned_restart_notification_path
         from utils import atomic_json_write
 
-        lock = getattr(self, "_planned_restart_notice_lock", None)
-        if lock is None:
-            lock = self._planned_restart_notice_lock = asyncio.Lock()
-        async with lock:
+        if self._planned_restart_notice_lock is None:
+            self._planned_restart_notice_lock = asyncio.Lock()
+        async with self._planned_restart_notice_lock:
             path = _planned_restart_notification_path()
             if not path.exists():
                 return
@@ -822,27 +827,30 @@ class GatewayNotificationsMixin:
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Resolve obligations from configuration, never from the currently live transports.
                 # Removed homes and explicit notification opt-outs no longer owe a notice.
-                targets = {
+                owed = {
                     _notice_target_key(platform.value, cfg.notification_channel.chat_id, cfg.notification_channel.thread_id)
                     for platform, cfg in self.config.platforms.items()
                     if cfg.notification_channel and cfg.notification_channel.chat_id and cfg.gateway_restart_notification
                 }
-                pending = targets - delivered
 
-                def checkpoint(target=None):
-                    if target is not None:
-                        delivered.add(target)
-                        pending.discard(target)
-                    data["delivered_targets"] = list(delivered)
-                    data["pending_targets"] = list(pending)
-                    atomic_json_write(path, data)
+                pending = set(owed) - delivered
 
-                checkpoint()
-                await self._send_notification_channel_startup_notifications(
-                    skip_targets=delivered, on_delivered=checkpoint,
+                def _checkpoint(target):
+                    delivered.add(target)
+                    pending.discard(target)
+                    data["delivered_targets"] = [list(t) for t in delivered]
+                    data["pending_targets"] = [list(t) for t in pending]
+                    atomic_json_write(path, data, indent=None)
+
+                delivered |= await self._send_notification_channel_startup_notifications(
+                    skip_targets=delivered, on_delivered=_checkpoint,
                 )
-                if not pending:
+                if owed <= delivered:
                     path.unlink(missing_ok=True)
+                else:
+                    data["delivered_targets"] = [list(t) for t in delivered]
+                    data["pending_targets"] = [list(t) for t in pending]
+                    atomic_json_write(path, data, indent=None)
                 return delivered
             except Exception:
                 logger.warning("Planned-restart notification remains pending", exc_info=True)
@@ -888,6 +896,7 @@ class GatewayNotificationsMixin:
                     on_delivered(target)
                 logger.info("Sent notification-channel startup notification to %s:%s", platform.value, channel.chat_id)
         return delivered
+
 
     async def _send_session_db_warning_notifications(self) -> None:
         """Broadcast a state.db failure warning to all notification channels.

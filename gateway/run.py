@@ -2846,10 +2846,6 @@ def _planned_restart_notification_pending() -> bool:
     return _planned_restart_notification_path().exists()
 
 
-def _clear_planned_restart_notification() -> None:
-    _planned_restart_notification_path().unlink(missing_ok=True)
-
-
 def _shutdown_notification_path() -> Path:
     return _hermes_home / ".shutdown_notify.json"
 
