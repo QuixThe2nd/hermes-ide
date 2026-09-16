@@ -8,9 +8,8 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
-import hashlib
 import json
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
@@ -36,23 +35,6 @@ from tools.skill_manager_batch import _skill_manage_batch
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
-
-
-# Advisory locks serialize the complete skill mutation transaction across
-# processes.  ``fcntl`` is unavailable on Windows, where ``msvcrt`` provides
-# the equivalent byte-range lock instead.
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows fallback
-    fcntl = None
-try:
-    import msvcrt
-except ImportError:  # pragma: no cover - POSIX
-    msvcrt = None
-
-
-_held_skill_mutation_locks: "_ctxvars.ContextVar[frozenset[str]]" = _ctxvars.ContextVar(
-    "held_skill_mutation_locks", default=frozenset())
 
 
 def _guard_agent_created_enabled() -> bool:
@@ -98,73 +80,28 @@ def _skills_dir() -> Path:
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
 
 
-def _skill_mutation_lock_path(name: str) -> Path:
-    """Return a stable per-skill lock path without placing it in the skill.
-
-    The lock must survive a delete/recreate cycle: a lock file inside the
-    skill directory could be unlinked while another writer still holds it.
-    Lock files stay under the active Hermes home rather than a category
-    directory, so deleting the last categorized skill still removes that now
-    empty category.
-    """
+def _skill_lock_path(name: str) -> Path:
+    """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
+    ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
+    waiting writer. Keyed by the resolved skill dir so ``foo`` and ``category/foo`` share one lock."""
     existing = _find_skill(name)
     skill_dir = Path(existing["path"]) if existing else _resolve_skill_dir(name)
-    try:
-        identity = str(skill_dir.resolve())
-    except OSError:
-        identity = str(skill_dir.absolute())
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    return _skills_dir() / ".skill_manage_locks" / f"{digest}.lock"
+    return _skills_dir() / ".locks" / f"{skill_dir.name}.lock"
 
 
-@contextmanager
 def _skill_mutation_lock(name: str):
-    """Serialize one skill's read-transform-validate-write window.
-
-    Locking is intentionally advisory and fail-open only where neither
-    platform primitive exists, preserving the tool's existing portability on
-    unsupported platforms.  The Windows lock file contains one byte because
-    ``msvcrt.locking`` cannot lock an empty range.
-    """
-    lock_path = _skill_mutation_lock_path(name)
-    lock_key = str(lock_path)
-    held = _held_skill_mutation_locks.get()
-    if lock_key in held:
-        yield
-        return
-    if fcntl is None and msvcrt is None:  # pragma: no cover - unsupported platform
-        yield
-        return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if msvcrt is not None and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
-    with open(lock_path, "r+" if msvcrt is not None else "a+", encoding="utf-8") as handle:
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        else:  # pragma: no cover - Windows fallback
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        token = _held_skill_mutation_locks.set(held | {lock_key})
-        try:
-            yield
-        finally:
-            _held_skill_mutation_locks.reset(token)
-            with suppress(OSError, IOError):
-                if fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                else:  # pragma: no cover - Windows fallback
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_skill_lock_path(name))
 
 
-@contextmanager
 def _skill_mutation_locks(names):
-    """Acquire several skill locks in path order for an atomic batch."""
-    lock_names = sorted(dict.fromkeys(names), key=lambda name: str(_skill_mutation_lock_path(name)))
-    with ExitStack() as stack:
-        for name in lock_names:
-            stack.enter_context(_skill_mutation_lock(name))
-        yield
+    """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
+    from tools.skill_usage import skill_file_lock
+    stack = ExitStack()
+    for lock_path in sorted({_skill_lock_path(n) for n in names}):
+        stack.enter_context(skill_file_lock(lock_path))
+    return stack
 
 
 MAX_NAME_LENGTH = 64

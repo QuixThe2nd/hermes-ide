@@ -144,57 +144,49 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged
-    # Hold every target's lock from the snapshot through either commit or
-    # rollback.  Individual operations re-enter these locks through
-    # skill_manage(), but the outer fence is what keeps a concurrent writer
-    # from landing between this batch's snapshot and its final operation.
-    mutation_locks = _smt._skill_mutation_locks(names)
-    mutation_locks.__enter__()
-    try:
+    # Every target's lock is held from the snapshot through commit or rollback; the per-op
+    # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
+    # between the snapshot and a rollback would be silently reverted.
+    with _smt._skill_mutation_locks(names):
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
-    except BaseException as exc:
-        mutation_locks.__exit__(type(exc), exc, exc.__traceback__)
-        raise
-    snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
-    if snap_err is not None:
-        shutil.rmtree(snap_root, ignore_errors=True)
-        mutation_locks.__exit__(None, None, None)
-        return tool_error(snap_err, success=False)
-    # Single-op path with the gate bypassed (the batch already cleared/staged it).
-    results = []
-    rollback_failed = False
-    token = _smt._skill_gate_bypass.set(True)
-    try:
-        for i, op in enumerate(operations):
-            raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
-                                          task_id=task_id, session_id=session_id)
-            try:
-                parsed = json.loads(raw)
-            except Exception:  # noqa: BLE001
-                parsed = {"success": False, "error": "unparseable op result"}
-            if not parsed.get("success"):
-                note, rollback_failed = _rollback(snapshots, _smt._find_skill)
-                fail = {  # key order is wire-visible
-                    "success": False,
-                    "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
-                              f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."),
-                    "failed_index": i, "completed_before_failure": i}
-                # Carry the failing op's teaching payload (patch's file_preview /
-                # fuzzy-match hints) through — without it the model recovers blind.
-                for k, v in parsed.items():
-                    if k not in ("success", "error") and v is not None:
-                        fail.setdefault(k, v)
-                return json.dumps(fail, ensure_ascii=False)
-            results.append({"name": names[i], "action": op["action"],
-                            "file_path": op.get("file_path"), "success": True})
-    finally:
-        _smt._skill_gate_bypass.reset(token)
-        if rollback_failed:
-            # Keep the snapshots so the operator can still recover by hand.
-            logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
-        else:
+        snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
+        if snap_err is not None:
             shutil.rmtree(snap_root, ignore_errors=True)
-        mutation_locks.__exit__(None, None, None)
+            return tool_error(snap_err, success=False)
+        # Single-op path with the gate bypassed (the batch already cleared/staged it).
+        results = []
+        rollback_failed = False
+        token = _smt._skill_gate_bypass.set(True)
+        try:
+            for i, op in enumerate(operations):
+                raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
+                                              task_id=task_id, session_id=session_id)
+                try:
+                    parsed = json.loads(raw)
+                except Exception:  # noqa: BLE001
+                    parsed = {"success": False, "error": "unparseable op result"}
+                if not parsed.get("success"):
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill)
+                    fail = {  # key order is wire-visible
+                        "success": False,
+                        "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
+                                  f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."),
+                        "failed_index": i, "completed_before_failure": i}
+                    # Carry the failing op's teaching payload (patch's file_preview /
+                    # fuzzy-match hints) through — without it the model recovers blind.
+                    for k, v in parsed.items():
+                        if k not in ("success", "error") and v is not None:
+                            fail.setdefault(k, v)
+                    return json.dumps(fail, ensure_ascii=False)
+                results.append({"name": names[i], "action": op["action"],
+                                "file_path": op.get("file_path"), "success": True})
+        finally:
+            _smt._skill_gate_bypass.reset(token)
+            if rollback_failed:
+                # Keep the snapshots so the operator can still recover by hand.
+                logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
+            else:
+                shutil.rmtree(snap_root, ignore_errors=True)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per
