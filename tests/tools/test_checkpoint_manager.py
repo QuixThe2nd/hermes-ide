@@ -1101,6 +1101,56 @@ class TestGcOnlyAfterStoreMutation:
         assert len(gc_calls) == 1
 
 
+class TestStoreSelfHealAfterRefsLoss:
+    """The 2026-09-13 / 2026-09-16 outages: git's own background ``gc --auto`` packed every ref
+    in the shared store, deleted the then-empty ``refs/`` tree, and from then on every checkpoint
+    operation failed rc=128 "not a git repository" — ~50 lost snapshots over 18 hours until a
+    human recreated the directories.  The store must heal itself instead: ``_run_git`` repairs
+    the missing dirs and retries the failed command once, and a freshly init'ed store always
+    has the complete bare skeleton."""
+
+    def test_commit_path_survives_refs_dir_deletion(self, mgr, work_dir, checkpoint_base, caplog):
+        """rmtree(store/'refs') — the observed damage — then the public commit path succeeds."""
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+        mgr.new_turn()
+        store = _store_path(checkpoint_base)
+        shutil.rmtree(store / "refs")
+
+        (work_dir / "main.py").write_text("v2\n")
+        with caplog.at_level(logging.WARNING, logger="tools.checkpoint_manager"):
+            assert mgr.ensure_checkpoint(str(work_dir), "post-damage") is True
+        # The checkpoint succeeded via the self-heal (repair + one retry in _run_git),
+        # not by some silent workaround.
+        assert any("repairing and retrying" in r.getMessage() for r in caplog.records)
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+        assert [c["reason"] for c in mgr.list_checkpoints(str(work_dir))][0] == "post-damage"
+
+    def test_repair_recreates_skeleton_and_is_noop_when_present(self, tmp_path):
+        from tools.checkpoint_manager import _repair_bare_repo_dirs
+
+        store = tmp_path / "store"
+        store.mkdir()
+        _repair_bare_repo_dirs(store)
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+
+        # No-op when they exist: nothing is rebuilt or destroyed.
+        sentinel = store / "refs" / "heads" / ".sentinel"
+        sentinel.write_text("keep me\n")
+        _repair_bare_repo_dirs(store)
+        assert sentinel.read_text() == "keep me\n"
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+
+    def test_init_store_leaves_complete_bare_skeleton(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+
+
 class TestMaybeAutoPruneCheckpoints:
     def test_prunes_once_then_skips_within_interval(self, tmp_path):
         base = tmp_path / "checkpoints"

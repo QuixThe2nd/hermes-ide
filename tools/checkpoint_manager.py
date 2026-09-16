@@ -223,10 +223,11 @@ def _git_subprocess(cmd: List[str], env: dict, timeout: int, cwd: Optional[str] 
 
 
 def _repair_bare_repo_dirs(store: Path) -> None:
-    """Recreate ``refs/heads`` and ``branches`` after ``git gc``: gc on a bare repo with only
-    packed refs can remove them, yet git 2.34+ requires them — without them ``git add -A``
-    fails with "not a git repository" and every checkpoint operation silently fails."""
-    for subdir in ("refs/heads", "branches"):
+    """Recreate ``refs/heads``, ``refs/tags`` and ``branches`` after ``git gc``: gc on a bare
+    repo with only packed refs can remove them, yet git 2.34+ requires them — without them
+    ``git add -A`` fails with "not a git repository" and every checkpoint operation silently
+    fails."""
+    for subdir in ("refs/heads", "refs/tags", "branches"):
         if (store / subdir).exists():
             continue
         try:
@@ -264,6 +265,21 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
+
+    if (result.returncode == 128 and "not a git repository" in result.stderr
+            and _store_has_head(store)):
+        # Self-heal the one observed store corruption: git's own background ``gc --auto`` can
+        # pack every ref and delete the then-empty ``refs/`` tree, after which every command
+        # against the store fails rc=128 forever.  Recreate the missing directories and retry
+        # the SAME command exactly once — no other error retries.
+        logger.warning("Checkpoint store lost its refs/ tree (auto-gc?) — repairing and retrying: %s",
+                       result.stderr.strip())
+        _repair_bare_repo_dirs(store)
+        try:
+            result = _git_subprocess(cmd, _git_env(store, str(wd), index_file=index_file), timeout, cwd=str(wd))
+        except Exception as exc:
+            logger.error("Git retry after store repair failed running %s: %s", " ".join(cmd), exc, exc_info=True)
+            return False, "", str(exc)
 
     ok = result.returncode == 0
     # NUL-delimited output contains literal paths, including leading spaces.
@@ -430,6 +446,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             return f"Shadow store init failed: {result.stderr.strip()}"
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         return f"Shadow store init failed: {exc}"
+    _repair_bare_repo_dirs(store)  # fresh/legacy stores always start with the full skeleton
     for key, value in _STORE_GIT_CONFIG:
         _run_git(["config", key, value], store, str(base))
     (store / "info").mkdir(exist_ok=True)
