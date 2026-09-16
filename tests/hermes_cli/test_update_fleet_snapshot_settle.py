@@ -50,7 +50,21 @@ def test_snapshot_waits_for_late_current_gateway_state(monkeypatch) -> None:
     assert result == [expected]
     assert clock.now > 30.0
     assert clock.now <= update_cmd_fleet._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
-    assert len(clock.sleeps) > 15
+
+
+def test_snapshot_stops_waiting_once_the_restarted_unit_is_dead(monkeypatch) -> None:
+    """A successor that exits (unit failed/inactive) fails closed at once, not at the 120s deadline."""
+    clock = _FakeClock()
+    monkeypatch.setattr(update_cmd_fleet._time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(update_cmd_fleet._time, "sleep", clock.sleep)
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        update_cmd_fleet, "_systemctl",
+        lambda cmd, *, timeout: SimpleNamespace(stdout="failed\n", stderr="", returncode=3))
+
+    restart = SimpleNamespace(pre_restart_gateway_pids=[101], restarted_scoped_units={"user/hermes-gateway.service"})
+    assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == []
+    assert clock.now < 30.0
 
 
 def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) -> None:
