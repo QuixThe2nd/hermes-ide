@@ -503,7 +503,12 @@ Every profile that works kanban tasks automatically gets the worker lifecycle â€
 That final `kanban_complete` / `kanban_block` call is part of the worker
 protocol. If the worker process exits with status 0 while the task is still
 `running`, the dispatcher treats that as a protocol violation and emits a
-`protocol_violation` event.
+`protocol_violation` event. A dispatcher-spawned worker whose turn failed
+therefore exits non-zero: `1` for an ordinary failure, and `75`
+(`EX_TEMPFAIL`) when the provider rate-limited it or the account hit a
+billing/quota wall â€” the dispatcher records that run as `rate_limited` and
+requeues the task without counting a failure, so a quota window is never
+booked as a protocol violation.
 
 **Agent-side prevention:** Before the worker exits, Hermes injects up to two
 synthetic nudges when it detects the model is about to stop without a terminal
