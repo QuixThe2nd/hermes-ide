@@ -69,16 +69,6 @@ const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
-export interface PtyKeepaliveInput {
-  isActive: boolean
-  visibilityState?: DocumentVisibilityState
-  socketReadyState?: number | null
-}
-
-export function shouldSendPtyKeepalive({ isActive, visibilityState, socketReadyState }: PtyKeepaliveInput): boolean {
-  return isActive && visibilityState !== 'hidden' && socketReadyState === WS_OPEN
-}
-
 export function shouldReconnectPtyOnPageResume({
   isActive,
   visibilityState,

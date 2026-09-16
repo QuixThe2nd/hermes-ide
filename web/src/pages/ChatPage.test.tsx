@@ -15,10 +15,6 @@ class FakeFitAddon {
 }
 
 class FakeWebglAddon {
-  constructor() {
-    webglAddonConstructed += 1;
-  }
-
   onContextLoss() {
     return { dispose() {} };
   }
@@ -165,7 +161,6 @@ type CloseEventLike = {
 
 let container: HTMLDivElement;
 let root: Root;
-let webglAddonConstructed = 0;
 
 // jsdom runs without an origin here (per-file @vitest-environment jsdom on a
 // node-default config), so localStorage is undefined. Stub it so components
@@ -200,7 +195,6 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
-  webglAddonConstructed = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
@@ -265,7 +259,7 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
-  it("uses the canvas renderer and sends a visible PTY keepalive", async () => {
+  it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
     vi.useFakeTimers();
     try {
       const { default: ChatPage } = await import("./ChatPage");
@@ -278,7 +272,6 @@ describe("ChatPage", () => {
         await Promise.resolve();
       });
       expect(FakeWebSocket.instances).toHaveLength(1);
-      expect(webglAddonConstructed).toBe(0);
 
       const socket = FakeWebSocket.instances[0];
       await act(async () => socket.onopen?.());

@@ -4,7 +4,7 @@
  *   <div host> (dashboard chrome)                                         .
  *     └─ <div wrapper> (rounded, dark bg, padded — the "terminal window"  .
  *         look that gives the page a distinct visual identity)            .
- *         └─ @xterm/xterm Terminal (canvas renderer, Unicode 11 widths)   .
+ *         └─ @xterm/xterm Terminal (WebGL renderer, Unicode 11 widths)    .
  *              │ onData      keystrokes → WebSocket → PTY master          .
  *              │ onResize    terminal resize → `\x1b[RESIZE:cols;rows]`   .
  *              │ write(data) PTY output bytes → VT100 parser              .
@@ -19,6 +19,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -51,7 +52,6 @@ import {
   type PtyConnectionState,
   ptyReconnectDelayMs,
   shouldBlockPtyInput,
-  shouldSendPtyKeepalive,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
 import {
@@ -92,6 +92,7 @@ import {
   ptyRejectionBanner,
   type PtyBannerAction,
 } from "@/lib/pty-close-copy";
+import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -929,9 +930,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       };
     }
 
-    // Keep the default canvas renderer. Reconnects recreate the xterm
-    // instance; avoiding WebGL prevents those short-lived instances from
-    // exhausting the browser's limited WebGL context budget.
+    // WebGL draws from a texture atlas sized with device pixels. On phones and
+    // in DevTools device mode that often produces *visually* much larger cells
+    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
+    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
+    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
+    const useWebgl = terminalTierWidthPx(host) >= 768;
+    if (useWebgl) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch (err) {
+        console.warn(
+          "[hermes-chat] WebGL renderer unavailable; falling back to default",
+          err,
+        );
+      }
+    }
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -1304,17 +1320,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       };
       sendTerminalResize();
-      keepaliveTimer = setInterval(() => {
-        if (
-          shouldSendPtyKeepalive({
-            isActive: isActiveRef.current,
-            visibilityState: document.visibilityState,
-            socketReadyState: ws.readyState,
-          })
-        ) {
-          sendTerminalResize();
-        }
-      }, PTY_KEEPALIVE_INTERVAL_MS);
+      // Application-level keepalive: browsers cannot send WS ping frames, and a
+      // loopback-bound dashboard behind a reverse proxy gets no server pings
+      // either, so a quiet PTY socket is idle traffic to any proxy timeout.
+      // Runs whenever the socket is open — a hidden tab still owns its PTY.
+      keepaliveTimer = setInterval(sendTerminalResize, PTY_KEEPALIVE_INTERVAL_MS);
       // Resumed sessions replay scrollback over the socket. Start pinned to
       // the bottom so the latest output is in view; released once the user
       // scrolls up (#59591).
@@ -1599,6 +1609,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       wsRef.current?.close();
       wsRef.current = null;
       host.removeEventListener("keydown", _imeCompositionGuard, true);
+      // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
+      // context alive on dispose, so a reconnect storm hits the browser's
+      // context cap and blanks the live terminal (#111909).
+      loseWebglContexts(host);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
