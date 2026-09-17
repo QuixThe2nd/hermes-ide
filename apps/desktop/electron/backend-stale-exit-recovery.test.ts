@@ -25,3 +25,7 @@ test('double stale exits coalesce to one recovery', () => {
   const state = { hasCurrentProcess: false, hasPendingStart: false, intentionalTeardown: false, recoveryClaimed: false }
   assert.equal([claimStaleBackendExitRecovery(state), claimStaleBackendExitRecovery(state)].filter(Boolean).length, 1)
 })
+
+test('current exit while a replacement start is pending does not recover again', () => {
+  assert.equal(claimStaleBackendExitRecovery({ hasCurrentProcess: false, hasPendingStart: true, intentionalTeardown: false, recoveryClaimed: false }), false)
+})
