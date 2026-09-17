@@ -56,6 +56,7 @@ import {
 } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
+import { toggleGroupChatPinned } from './group-pin'
 import { $activeGroupMemberKeys } from './group-presence'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
@@ -558,6 +559,11 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{group}</span>
+          {room.pinned ? (
+            <Tip label={b.roster.pinned}>
+              <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />
+            </Tip>
+          ) : null}
           {needsYou ? (
             <Tip label={b.group.needsYourInput}>
               <Codicon aria-label={b.roster.needsInput} className="shrink-0 text-(--ui-accent)" name="question" />
@@ -580,6 +586,19 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
         <ContextMenuSeparator />
+        {/* Same affordance as a bot row's pin; pinned rooms lead the roster
+            band, and the flag lives on the room record. */}
+        <ContextMenuItem
+          onSelect={() => {
+            const pinned = toggleGroupChatPinned(group)
+
+            if (pinned !== null) {
+              host.notify({ kind: 'info', message: `${group} ${pinned ? 'pinned to top' : 'unpinned'}` })
+            }
+          }}
+        >
+          {room.pinned ? 'Unpin' : 'Pin to top'}
+        </ContextMenuItem>
         {/* Filing — the same submenu a bot row gets, driving the room-record
             assignment instead of profile meta. */}
         <ContextMenuSub>

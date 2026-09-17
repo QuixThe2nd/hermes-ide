@@ -178,7 +178,7 @@ export interface GroupChat {
   tombstone?: boolean
   /** Local display order, deliberately excluded from the gateway mirror. */
   rosterOrder?: number
-  /** Read when ordering rooms; no write site in the plugin today. */
+  /** "Pin to top" on the room row (`group-pin.ts`); the outer band of the room order. */
   pinned?: boolean
   /** Which user-made sidebar section this group chat is filed under
    *  (`user-sections.ts`). Like a bot's `sectionId` it is membership on the

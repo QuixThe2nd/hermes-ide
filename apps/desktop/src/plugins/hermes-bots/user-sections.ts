@@ -267,6 +267,7 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
 
   for (const row of rows || []) {
     const group = (row as { kind?: string; name?: string })?.kind === 'group' ? row : null
+
     const id = group
       ? groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
       : botSectionId((((row as { bot?: RosterRow })?.bot || row) as RosterRow), metaByName)
