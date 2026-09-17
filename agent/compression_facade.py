@@ -126,6 +126,21 @@ def _run_under_progress_timeout(
         result_msgs, result_prompt = run(fence, target_messages=snapshot)
         return (messages if result_msgs is snapshot else result_msgs), result_prompt
 
+    def _same_turn_fallback_worker(fence=None):
+        """Run the pinned fallback as recovery for the just-stalled attempt.
+
+        ``_report_compression_timeout`` records the primary route's cooldown
+        only after the retry returns.  The primary worker can still record its
+        own cooldown while unwinding, however, so the retry must explicitly
+        bypass that one guard.  It does not clear the cooldown and leaves the
+        structural breakers in force.
+        """
+        snapshot = copy.deepcopy(messages)
+        result_msgs, result_prompt = run(
+            fence, target_messages=snapshot, same_turn_fallback_recovery=True,
+        )
+        return (messages if result_msgs is snapshot else result_msgs), result_prompt
+
     timeout_cause = {"total_exhausted": False, "progress_observed": False}
 
     def _on_timeout_cause(total_exhausted, progress_observed):
@@ -150,7 +165,7 @@ def _run_under_progress_timeout(
         idle_timeout_seconds=idle_timeout, total_ceiling_seconds=total_ceiling, on_timeout=_on_timeout,
         on_timeout_cause=_on_timeout_cause,
         on_commit_overrun=lambda waited, ceiling: _warn_commit_overrun(agent, waited, ceiling), fence=active_fence,
-        telemetry_agent=agent, new_fence=_publish_new_fence,
+        telemetry_agent=agent, new_fence=_publish_new_fence, fallback_worker=_same_turn_fallback_worker,
     )
 
 
@@ -242,11 +257,11 @@ class CompressionFacadeMixin:
             self._active_compression_commit_fence = active_fence
         try:
 
-            def _run(fence=None, target_messages=None):
+            def _run(fence=None, target_messages=None, same_turn_fallback_recovery=False):
                 return compress_context(
                     self, target_messages if target_messages is not None else messages, system_message,
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
-                    bypass_cooldown=bypass_cooldown,
+                    bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
                 )
 

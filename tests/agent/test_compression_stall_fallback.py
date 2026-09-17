@@ -29,6 +29,7 @@ from agent.context_compressor import (
     pin_summary_route,
     take_pinned_summary_route,
 )
+from agent.compression_facade import CompressionFacadeMixin
 from agent.conversation_compression import (
     CompressionCommitFence,
     resolve_compression_fallback_route,
@@ -228,6 +229,53 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
     assert msgs is original, "no messages may be dropped when both routes stall"
     assert prompt == "degraded-prompt"
     assert len(timeouts) == 1, "the degrade must be reported exactly once"
+
+
+class _FacadeStallAgent(CompressionFacadeMixin):
+    """Small facade host for the cooldown-bypass handoff contract."""
+
+    session_id = "STALL_FALLBACK_FACADE"
+    _cached_system_prompt = "cached-prompt"
+
+    def _conversation_root_id(self):
+        return None
+
+
+def test_facade_marks_stall_fallback_as_same_turn_recovery(monkeypatch):
+    """A primary timeout records its cooldown before the fallback worker runs.
+
+    The retry is still part of that same recovery attempt, so it must reach
+    ``compress_context`` with the narrow cooldown bypass.  A normal automatic
+    attempt remains subject to the cooldown on the next turn.
+    """
+    agent = _FacadeStallAgent()
+    original = [{"role": "user", "content": "keep-me"}]
+    calls = []
+
+    def _compress_context(_agent, messages, _system_message, *, commit_fence, bypass_cooldown=False, **_kwargs):
+        route = take_pinned_summary_route()
+        calls.append((route, bypass_cooldown))
+        if route is None:
+            while not commit_fence.is_cancelled:
+                threading.Event().wait(0.001)
+            return messages, "primary-cancelled"
+        if not bypass_cooldown:
+            return messages, "cooldown-blocked"
+        return [{"role": "user", "content": "fallback summary"}], "fallback-prompt"
+
+    monkeypatch.setattr("agent.conversation_compression.compress_context", _compress_context)
+    monkeypatch.setattr(
+        "agent.conversation_compression.resolve_context_compression_timeouts", lambda: (0.02, 1.0)
+    )
+
+    with _patch_chain([CHAIN_ENTRY]):
+        messages, prompt = agent._compress_context(original, "system")
+
+    assert calls[0] == (None, False)
+    assert calls[1][0] is not None
+    assert calls[1][1] is True
+    assert messages == [{"role": "user", "content": "fallback summary"}]
+    assert prompt == "fallback-prompt"
 
 
 # ---------------------------------------------------------------------------

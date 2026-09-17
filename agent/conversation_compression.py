@@ -2420,6 +2420,7 @@ def run_compress_context_with_progress_timeout(
     telemetry_agent: Any = None,
     stall_fallback: bool = True,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+    fallback_worker: Optional[Callable[[CompressionCommitFence], Tuple[list, str]]] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware timeout.
 
@@ -2731,7 +2732,7 @@ def run_compress_context_with_progress_timeout(
         # own summary call a no-op.
         if stall_fallback:
             recovered = _retry_compression_on_fallback_chain(
-                worker=worker,
+                worker=fallback_worker or worker,
                 messages=messages,
                 system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle,
