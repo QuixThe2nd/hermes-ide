@@ -1774,6 +1774,10 @@ DEFAULT_CONFIG = {
     "personalities": {},
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
+        # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
+        # dials them instead of rejecting them as private. Empty = normal private-address verdict.
+        "fake_ip_ranges": [],
         "redact_secrets": True,
         # Operator opt-out of the config-file write guard. When true, the
         # agent's write_file/patch tools may edit the Hermes config file
