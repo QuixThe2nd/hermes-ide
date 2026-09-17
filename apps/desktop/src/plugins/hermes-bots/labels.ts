@@ -71,6 +71,33 @@ export function slugify(value: string) {
     .slice(0, 64)
 }
 
+/** The profile id the backend accepts (`hermes_cli.profiles._PROFILE_ID_RE`
+ *  is ASCII-only), derived from whatever the user typed as the bot's name.
+ *  Letters and digits outside ASCII become a deterministic `u<hex>` token
+ *  per code point — `小助手` → `u5c0f-u52a9-u624b`, `test机器人` →
+ *  `test-u673a-u5668-u4eba` — so a CJK name no longer slugs to '' and leaves
+ *  Create disabled (#96153). Plain ASCII names slug exactly as before. */
+export function slugifyProfileName(value: string) {
+  return slugify(
+    value
+      .normalize('NFKD')
+      .replace(/[\p{L}\p{N}]/gu, ch => (/[a-zA-Z0-9]/.test(ch) ? ch : `-u${ch.codePointAt(0)!.toString(16)}-`))
+      .replace(/-+/g, '-')
+  )
+}
+
+/** Split the dialog's Name field into the backend id and the display title.
+ *  A non-ASCII name cannot be the profile id, so the entered string survives
+ *  as the title when the user left Title empty. */
+export function botProfileIdentity(name: string, title: string) {
+  const enteredName = name.trim()
+
+  return {
+    slug: slugifyProfileName(enteredName),
+    title: title.trim() || (/[^\u0020-\u007e]/.test(enteredName) ? enteredName : '')
+  }
+}
+
 /** Flatten markdown syntax out of a one-line roster preview so rows read
  *  like Discord's — no raw **bold**, `code`, > quotes, or [link](url)
  *  characters in the preview line. */
