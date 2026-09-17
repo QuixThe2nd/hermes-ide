@@ -225,4 +225,18 @@ describe('reconcileBusyStatesOnReconnect', () => {
     publishSessionState('rt1', { ...$sessionStates.get().rt1, busy: false })
     expect($unreadFinishedSessionIds.get()).toContain('s1')
   })
+
+  // The only confirm producer for a parked completion is the ACTIVE profile's
+  // session.active_list poll, which never lists a background socket's
+  // runtimes. Parking a scoped downgrade would therefore lose the dot for a
+  // turn that ended while that socket was down; it lights at once instead.
+  it('a scoped reconcile lights the unread dot immediately — no poll can confirm it', () => {
+    publishSessionState('rtA', state({ busy: true, sawAssistantPayload: true, storedSessionId: 'sA' }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+
+    reconcileBusyStatesOnReconnect(registryBackendScopeKey('connA', 'default'))
+
+    expect($workingSessionIds.get()).not.toContain('sA')
+    expect($unreadFinishedSessionIds.get()).toEqual(['sA'])
+  })
 })

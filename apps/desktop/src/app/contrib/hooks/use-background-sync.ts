@@ -25,7 +25,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
-  confirmReconnectSettle,
+  confirmReconnectSettlesExcept,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -404,6 +404,7 @@ export function rehydrateLiveSessionStatuses(
   stateAtRequest = $sessionStates.get()
 ): void {
   const seen = new Set<string>()
+  const workingStoredIds = new Set<string>()
 
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
@@ -416,6 +417,10 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+
+    if (working) {
+      workingStoredIds.add(storedSessionId)
+    }
 
     const existing = $sessionStates.get()[runtimeSessionId]
 
@@ -454,8 +459,6 @@ export function rehydrateLiveSessionStatuses(
 
     if (!working) {
       setSessionStalled(storedSessionId, false)
-      // Authoritative: the turn a reconnect reconcile downgraded blind is over.
-      confirmReconnectSettle(storedSessionId)
 
       continue
     }
@@ -508,15 +511,17 @@ export function rehydrateLiveSessionStatuses(
           // does, so the transcript matches the state.
           messages: sealOpenToolParts(existing.messages)
         })
-      } else {
-        // Already downgraded by the reconnect reconcile: its absence here is
-        // the terminal fact that reconcile lacked, so the dot lights now.
-        confirmReconnectSettle(existing?.storedSessionId)
       }
     }
   }
 
   liveRuntimeIdsByProfile.set(profileKey, seen)
+
+  // Completions the reconnect reconcile downgraded blind: this snapshot is the
+  // terminal fact it lacked. Every parked session not reported working is
+  // over, whether or not an earlier poll ever saw its runtime (a turn that
+  // started just before the drop was never polled).
+  confirmReconnectSettlesExcept(workingStoredIds)
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -748,7 +753,13 @@ export function useBackgroundSync({
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events
-        // still work as before; leave the current sidebar state untouched.
+        // still work as before; leave the current sidebar state untouched —
+        // except completions the reconnect reconcile parked awaiting this
+        // snapshot: with no snapshot to confirm them they light now (the
+        // pre-#113029 behaviour) rather than never.
+        if (!cancelled) {
+          confirmReconnectSettlesExcept(new Set())
+        }
       } finally {
         inFlight = false
 
