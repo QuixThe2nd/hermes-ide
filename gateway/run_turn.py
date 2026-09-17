@@ -301,11 +301,7 @@ class GatewayTurnMixin:
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(
-            source,
-            self._reply_anchor_for_event(event),
-            allow_source_message_id_fallback=not bool(getattr(event, "_heartbeat_session_id", None)),
-        )
+        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -2661,9 +2657,7 @@ class GatewayTurnMixin:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(
-            source, event_message_id, allow_source_message_id_fallback=not scheduled_heartbeat,
-        )
+        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = (
             None if scheduled_heartbeat
             else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
