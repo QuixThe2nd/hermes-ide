@@ -3226,6 +3226,37 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     return retry_kwargs if changed else None
 
 
+def _is_reasoning_field_rejection(exc: Exception) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``). Chat-only models behind OpenAI-compatible relays reject the top-level
+    ``reasoning_effort: none`` a disabled ``reasoning_config`` projects on the custom profile
+    ("Unrecognized request argument supplied: reasoning_effort", #112781); the route default is
+    the right answer for such a model, so the reaction is one retry without any reasoning field."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    return any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think"))
+
+
+def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without reasoning wire controls (top-level ``reasoning_effort``, the adapter's
+    private ``_reasoning_config`` and every ``extra_body`` reasoning key); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("reasoning_effort", None) is not None
+    changed = retry_kwargs.pop("_reasoning_config", None) is not None or changed
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict):
+        remaining = {k: v for k, v in extra_body.items() if str(k).strip().lower() not in _PROFILE_REASONING_KEYS}
+        if len(remaining) != len(extra_body):
+            if remaining:
+                retry_kwargs["extra_body"] = remaining
+            else:
+                retry_kwargs.pop("extra_body", None)
+            changed = True
+    return retry_kwargs if changed else None
+
+
 def _is_model_not_found_error(exc: Exception) -> bool:
     """"Requested model doesn't exist" (404 / invalid model) — typically a long-lived process pinned a
     since-dropped model. Excludes billing keywords, which :func:`_is_payment_error` owns."""
@@ -6999,7 +7030,7 @@ _LadderRoute = NamedTuple("_LadderRoute", [
 def _ladder_parameter_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], max_tokens: Optional[int],
 ):
-    """Rungs 1-3: retry without temperature / structured-output format / max_tokens.
+    """Rungs 1-4: retry without temperature / structured-output format / reasoning field / max_tokens.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
     client, task, tag = route.client, route.task, route.tag
     if "temperature" in kwargs and _is_unsupported_parameter_error(first_err, "temperature"):
@@ -7017,6 +7048,19 @@ def _ladder_parameter_rungs(
             logger.info("Auxiliary %s%s: provider rejected the structured-output "
                         "format field; retrying once without it (schema "
                         "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
+            resp, first_err = yield from _rung(
+                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
+            if first_err is None:
+                return resp, None, retry_kwargs
+            kwargs = retry_kwargs
+    # A chat-only model on an OpenAI-compatible relay rejects the profile's thinking-off encoding
+    # (top-level ``reasoning_effort: none``); the caller only wanted "no thinking", which is what
+    # such a model does anyway, so retry once with every reasoning field omitted (#112781).
+    if _is_reasoning_field_rejection(first_err):
+        retry_kwargs = _without_reasoning_fields(kwargs)
+        if retry_kwargs is not None:
+            logger.info("Auxiliary %s%s: provider rejected the reasoning field; retrying once "
+                        "without it (route default applies): %s", task or "call", tag, first_err)
             resp, first_err = yield from _rung(
                 _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
             if first_err is None:
