@@ -6,7 +6,8 @@ import {
   $sessionStates,
   $workingSessionIds,
   clearAllSessionStates,
-  publishSessionState
+  publishSessionState,
+  reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
 
 import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
@@ -54,16 +55,16 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     expect($workingSessionIds.get()).toContain('stored-cold')
   })
 
-  it('ignores an idle snapshot captured before a live turn event', () => {
-    const stateAtRequest = $sessionStates.get()
+  // #113029 (salvage #113038): `session.active_list` is an async snapshot. A
+  // stream event that lands while the request is in flight is the newer fact
+  // in either direction — an old idle row must not finish a live turn, an old
+  // working row must not revive a finished one.
+  it('ignores a snapshot captured before a live turn event, in either direction', () => {
+    const live = { ...createClientSessionState('stored-race'), busy: true, sawAssistantPayload: true, turnLive: true }
 
-    publishSessionState('runtime-race', {
-      ...createClientSessionState('stored-race'),
-      busy: true,
-      sawAssistantPayload: true,
-      turnLive: true
-    })
-
+    // Request went out while idle; the turn started before the response landed.
+    let stateAtRequest = $sessionStates.get()
+    publishSessionState('runtime-race', live)
     rehydrateLiveSessionStatuses(
       { sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'idle' }] },
       Date.now(),
@@ -73,20 +74,10 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
 
     expect($workingSessionIds.get()).toContain('stored-race')
     expect($unreadFinishedSessionIds.get()).not.toContain('stored-race')
-  })
 
-  it('ignores a working snapshot captured before the terminal event', () => {
-    const live = {
-      ...createClientSessionState('stored-race'),
-      busy: true,
-      sawAssistantPayload: true,
-      turnLive: true
-    }
-
-    publishSessionState('runtime-race', live)
-    const stateAtRequest = $sessionStates.get()
+    // Request went out while working; the turn finished before the response landed.
+    stateAtRequest = $sessionStates.get()
     publishSessionState('runtime-race', { ...live, busy: false, turnLive: false })
-
     rehydrateLiveSessionStatuses(
       { sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }] },
       Date.now(),
@@ -116,6 +107,33 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
 
     rehydrateLiveSessionStatuses({ sessions: [] })
     expect($workingSessionIds.get()).not.toContain('stored-race')
+  })
+
+  // #113029: a reconnect reconcile downgrades busy blind, so it defers the
+  // unread dot. The authoritative snapshot decides: gone/idle → the turn really
+  // ended while the socket was down and the dot lights; working → no dot.
+  it('lights the deferred completion only when the snapshot confirms the turn ended', () => {
+    const live = { ...createClientSessionState('stored-race'), busy: true, sawAssistantPayload: true, turnLive: true }
+
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }]
+    })
+    publishSessionState('runtime-race', live)
+    reconcileBusyStatesOnReconnect()
+    expect($unreadFinishedSessionIds.get()).not.toContain('stored-race')
+
+    // Still working on the backend: the arc comes back, no completion.
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }]
+    })
+    expect($workingSessionIds.get()).toContain('stored-race')
+    expect($unreadFinishedSessionIds.get()).not.toContain('stored-race')
+
+    // Second reconnect; this time the turn ended while the socket was down.
+    reconcileBusyStatesOnReconnect()
+    rehydrateLiveSessionStatuses({ sessions: [] })
+    expect($workingSessionIds.get()).not.toContain('stored-race')
+    expect($unreadFinishedSessionIds.get()).toContain('stored-race')
   })
 
   it('shows the spinner when a runtime id is recycled onto a new stored session', () => {
