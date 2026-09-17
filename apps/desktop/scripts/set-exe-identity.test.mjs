@@ -30,7 +30,7 @@ test('retries transient rcedit commit failures with bounded backoff', async () =
     })
 
     assert.equal(attempts, 3)
-    assert.deepEqual(delays, [100, 300])
+    assert.deepEqual(delays, [500, 1000])
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -51,7 +51,7 @@ test('stops retrying after the bounded rcedit retry budget is exhausted', async 
       }),
       /Unable to commit changes/
     )
-    assert.equal(attempts, 3)
+    assert.equal(attempts, 4)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
