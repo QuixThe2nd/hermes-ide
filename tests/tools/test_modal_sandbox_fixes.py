@@ -384,6 +384,18 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
 
+    def test_raising_registry_lookup_keeps_container_guards_on(self, monkeypatch):
+        """A registry that raises during the provider lookup must fail soft to guards-on,
+        not propagate out of the approval predicate."""
+        from agent import terminal_env_registry as R
+        import tools.approval as A
+
+        def boom(*_a, **_k):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr(R._registry, "get_provider", boom)
+        assert A._should_skip_container_guards("p_disposable") is False
+
     def test_registered_disposable_plugin_skips_container_guards(self):
         """Plugin classification uses its registered provider, not built-in names only."""
         from agent import terminal_env_registry
