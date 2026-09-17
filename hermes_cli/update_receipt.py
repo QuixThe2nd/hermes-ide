@@ -531,6 +531,12 @@ _FLEET_ROW_LINES = {
     "down": "  ✗ {profile} — DOWN (gateway was running before the update; pid {pid} is gone and nothing replaced it)",
 }
 _FLEET_ROW_UNKNOWN = "  ? {profile} (pid {pid}) — version unknown (gateway predates version stamping; restart to enable)"
+# A gateway this update relaunched that had not published its code identity when the settle window
+# closed (#112634): it was just restarted on the new code, so "restart to enable" would be wrong.
+_FLEET_ROW_IDENTITY_PENDING = (
+    "  ? {profile} (pid {pid}) — restarted by this update, code identity not published yet"
+    " — re-check with `hermes gateway status`"
+)
 
 
 def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
@@ -550,7 +556,8 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
     for entry in fleet:
         sha = entry.get("code_sha")
         states.add(entry.get("state"))
-        print(_FLEET_ROW_LINES.get(entry.get("state"), _FLEET_ROW_UNKNOWN).format(
+        fallback = _FLEET_ROW_IDENTITY_PENDING if entry.get("identity_pending") else _FLEET_ROW_UNKNOWN
+        print(_FLEET_ROW_LINES.get(entry.get("state"), fallback).format(
             profile=entry.get("profile"), pid=entry.get("pid"), short=sha[:8] if isinstance(sha, str) and sha else "?",
         ))
     stale_or_down = sum(1 for entry in fleet if entry.get("state") in ("stale", "down"))
