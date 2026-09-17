@@ -975,7 +975,10 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
     tool loop ends on ``user(task)``, and a merged ``user(task + guidance)`` byte-differs
     from the ``user(task)`` every later iteration replays, so the provider prefix cache
     collapsed to the system prompt on iteration 2 of every turn (#112358). Converters
-    that require strict alternation already merge adjacent same-role turns.
+    that require strict alternation (Anthropic Messages, Converse, native Gemini) merge
+    adjacent same-role turns, so there the task turn still varies on iteration 1; on the
+    OpenAI-compatible wire the request ends ``user(task), user(guidance)``, which a
+    chat template that enforces strict user/assistant alternation rejects.
     """
     agg_messages.append({"role": "user", "content": guidance})
 
