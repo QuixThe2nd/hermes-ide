@@ -313,18 +313,25 @@ def test_server_request_round_trip_uses_response_frame(capture):
         assert not server_requests._open
 
 
-def test_response_settlement_wins_over_a_later_cancel(capture):
+@pytest.mark.parametrize("method, qids, settle, expected", [
+    ("sudo", None,
+     lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
+     {"value": "yes"}),
+    # Batch clarify's lock-based resolution follows the same first-settlement rule.
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+])
+def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
     """A response and cancellation may race; the first settlement owns the result."""
     from tui_gateway import server_requests
 
-    req = server_requests.ServerRequest("s1", "sudo", {})
+    req = server_requests.ServerRequest("s1", method, {}, qids=qids)
     with server_requests._lock:
         server_requests._open[req.id] = req
 
-    assert server_requests.resolve_response({"id": req.id, "result": {"value": "yes"}})
+    assert settle(server_requests, req)
     assert server_requests.cancel("s1") == 0
     assert req.answered is True
-    assert req.result == {"value": "yes"}
+    assert req.result == expected
     assert req.event.is_set()
 
 
@@ -351,21 +358,6 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
     assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
     assert cancels == []
     assert not server_requests._open
-
-
-def test_final_clarify_lock_settlement_wins_over_a_later_cancel(capture):
-    """Batch clarify's lock-based resolution follows the same first-settlement rule."""
-    from tui_gateway import server_requests
-
-    req = server_requests.ServerRequest("s1", "clarify", {}, qids=["q1"])
-    with server_requests._lock:
-        server_requests._open[req.id] = req
-
-    assert server_requests.lock_answer(req.id, "q1", "yes") == []
-    assert server_requests.cancel("s1") == 0
-    assert req.answered is True
-    assert req.result == {"answers": {"q1": "yes"}}
-    assert req.event.is_set()
 
 
 def test_server_request_error_response_fails_fast(capture):

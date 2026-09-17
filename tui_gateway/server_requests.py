@@ -109,7 +109,17 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     """
     req = ServerRequest(sid, method, params, qids=qids)
     _register(req)
-    req.event.wait(timeout)
+    try:
+        req.event.wait(timeout)
+    except BaseException:
+        # The wait itself died (KeyboardInterrupt, SystemExit, injected error): withdraw the request
+        # or it stays in _open forever — replayed to every reconnecting client and reported by
+        # pending_kind() as a human still being waited on.
+        with _lock:
+            still_open = _open.pop(req.id, None) is req
+        if still_open:
+            _emit_cancel(req, "interrupted")
+        raise
     with _lock:
         # The verdict is the state committed under the lock, never wait()'s return value: a
         # response frame can land after the deadline expires and before this removal, and
