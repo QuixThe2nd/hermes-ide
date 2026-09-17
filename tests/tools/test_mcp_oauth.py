@@ -17,6 +17,7 @@ from tools.mcp_oauth import (
     OAuthNonInteractiveError,
     build_oauth_auth,
     remove_oauth_tokens,
+    _cached_client_info,
     _cached_redirect,
     _can_open_browser,
     _is_interactive,
@@ -677,6 +678,16 @@ class TestCallbackPortReservation:
         (None, None), not propagate AttributeError/TypeError through the OAuth flow (#112568)."""
         storage = self._seed_client_info(tmp_path, payload)
         assert _cached_redirect(storage) == (None, None)
+
+    @pytest.mark.parametrize("payload", [["not", "a", "dict"], "just-a-string", 123])
+    def test_non_dict_client_info_degrades_to_fresh_registration(self, tmp_path, payload):
+        """The MCP SDK calls storage.get_client_info() while building OAuthClientProvider, one
+        step after _cached_redirect. A non-object client.json must read as "no registration"
+        on both paths (fresh DCR + CIMD still eligible), not AttributeError out of auth init
+        (#112568)."""
+        storage = self._seed_client_info(tmp_path, payload)
+        assert _cached_client_info(storage) is None
+        assert asyncio.run(storage.get_client_info()) is None
 
 
 # ---------------------------------------------------------------------------

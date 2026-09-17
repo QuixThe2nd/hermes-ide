@@ -277,9 +277,12 @@ def _reserve_callback_port() -> int:
 def _cached_client_info(storage: "HermesTokenStorage | None") -> dict | None:
     """The on-disk client registration for *storage*, or None."""
     try:
-        return _read_json(storage._client_info_path()) if storage is not None else None
+        info = _read_json(storage._client_info_path()) if storage is not None else None
     except (AttributeError, TypeError, ValueError):
         return None
+    # A non-object payload is not a registration get_client_info could ever load, so callers
+    # (CIMD eligibility, redirect reuse) must see "no cached registration", not "exists".
+    return info if isinstance(info, dict) else None
 
 
 def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None, int | None]":
@@ -434,6 +437,12 @@ class HermesTokenStorage:
         """Read *path* into SDK model *sdk_name*; None if absent, no SDK, or corrupt.
         ``fixup(data)`` may rewrite the raw dict before validation."""
         data = _read_json(path)
+        if data is not None and not isinstance(data, dict):
+            # A non-object payload (list/str/number) has no fields for the fixups' ``.get``/``.pop``
+            # and cannot validate: treat it like any other corrupt file instead of crashing auth init.
+            logger.warning("Corrupt %s at %s -- ignoring: expected a JSON object, got %s",
+                           label, path, type(data).__name__)
+            return None
         cls = _sdk_class(sdk_name) if data is not None else None
         if (cls is not None and sdk_name == "OAuthMetadata" and isinstance(data, dict)
                 and data.get("device_authorization_endpoint")):
