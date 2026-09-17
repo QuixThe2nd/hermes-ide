@@ -66,3 +66,26 @@ test('a stale exit is not claimed while the slot has an owner, a start is pendin
   // Nothing above consumed the latch.
   assert.equal(latch.claim(slotState(empty)), true)
 })
+
+test('a backend that dies after every ready is respawned at most maxRespawns times per window, then reported as crash-looping', () => {
+  let clock = 1_000
+  const latch = createBackendExitRecoveryLatch({ maxRespawns: 3, windowMs: 120_000, now: () => clock })
+  const empty = { hasCurrentOwner: false, hasPendingStart: false, intentionalTeardown: false }
+
+  // ready -> dies -> respawn, three times within the window.
+  for (let i = 0; i < 3; i++) {
+    assert.equal(latch.claim(empty), true, `respawn ${i + 1}`)
+    assert.equal(latch.isCrashLooping(), false)
+    latch.reset()
+    clock += 5_000
+  }
+
+  // The fourth death inside the window is a crash loop: no respawn.
+  assert.equal(latch.claim(empty), false)
+  assert.equal(latch.isCrashLooping(), true)
+
+  // Once the window has passed the supervisor may try again.
+  clock += 120_000
+  assert.equal(latch.claim(empty), true)
+  assert.equal(latch.isCrashLooping(), false)
+})

@@ -23,19 +23,51 @@ export type BackendExitRecoveryState = {
   intentionalTeardown: boolean
 }
 
-export function createBackendExitRecoveryLatch() {
+export type BackendExitRecoveryOptions = {
+  /** Respawns the supervisor grants per `windowMs` before it stops and lets the user relaunch. */
+  maxRespawns?: number
+  windowMs?: number
+  now?: () => number
+}
+
+export function createBackendExitRecoveryLatch({
+  maxRespawns = 3,
+  windowMs = 120_000,
+  now = Date.now
+}: BackendExitRecoveryOptions = {}) {
   let claimed = false
+  let respawnedAt: number[] = []
+  let crashLooping = false
 
   return {
-    /** True exactly once per empty slot; `reset()` when a backend becomes ready again. */
+    /**
+     * True exactly once per empty slot; `reset()` when a backend becomes ready
+     * again. A backend that dies again shortly after every ready re-arms the
+     * latch each time, so the grant is also bounded: more than `maxRespawns`
+     * within `windowMs` is a crash loop, and the supervisor stops respawning
+     * (`isCrashLooping()`) instead of cycling child + error toast forever.
+     */
     claim(state: BackendExitRecoveryState): boolean {
       if (claimed || state.hasCurrentOwner || state.hasPendingStart || state.intentionalTeardown) {
         return false
       }
 
+      const at = now()
+      respawnedAt = respawnedAt.filter(t => at - t < windowMs)
+      crashLooping = respawnedAt.length >= maxRespawns
+
+      if (crashLooping) {
+        return false
+      }
+
+      respawnedAt.push(at)
       claimed = true
 
       return true
+    },
+    /** True when the last `claim` was refused because the respawn budget for the window is spent. */
+    isCrashLooping(): boolean {
+      return crashLooping
     },
     reset(): void {
       claimed = false
