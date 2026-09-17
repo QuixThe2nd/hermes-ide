@@ -1262,6 +1262,8 @@ class CLICommandsMixin:
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /resume.")
         from cli import _sync_process_session_id
         target = _command_arg(cmd_original)
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
