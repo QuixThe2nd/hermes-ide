@@ -37965,7 +37965,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             except Exception as _e:
                 logger.debug("format_context_for_log failed: %s", _e)
 
-            # Spawn the heavyweight diagnostic (ps auxf, pstree, dmesg) in
+            # Spawn the heavyweight diagnostic (comm-only ps, pstree, dmesg) in
             # a detached subprocess so it can finish writing to disk even
             # if our cgroup is being torn down.  Bounded by an internal
             # timeout; never blocks the event loop here.
