@@ -53,12 +53,8 @@ def desktop_env(tmp_path, monkeypatch):
             return _Result(1, stdout="Error: [stage-native-deps] boom")
 
         @staticmethod
-        def _desktop_bundle_install_supported():
-            return True
-
-        @staticmethod
         def _install_rebuilt_desktop_app(_desktop_dir):
-            return None
+            return [], []
 
     monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
     monkeypatch.setattr(

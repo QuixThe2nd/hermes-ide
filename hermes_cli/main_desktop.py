@@ -1064,35 +1064,6 @@ def _app_asar_hash(app_path: Path) -> str | None:
         return None
 
 
-def _macos_adhoc_sign_bundle(app: Path) -> None:
-    """Clear quarantine and apply a deep ad-hoc signature on a macOS .app bundle.
-
-    Mirrors what ``_desktop_macos_relaunchable_fixup`` does for the release/
-    copy, but operates on an arbitrary bundle path (e.g. /Applications/Hermes.app).
-    No-op when a real signing identity is configured or off-macOS.  Best-effort.
-    """
-    if sys.platform != "darwin":
-        return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
-        return
-    if not str(app).endswith(".app") or not app.is_dir():
-        return
-    codesign = shutil.which("codesign")
-    if not codesign:
-        return
-    try:
-        subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
-    except Exception as exc:
-        logger.debug("macOS ad-hoc signing of %s skipped: %s", app, exc)
-
-
-def _desktop_bundle_install_supported() -> bool:
-    """Return whether the current platform has a copyable installed bundle."""
-    platform = sys.platform
-    return platform == "darwin" or platform == "win32"
-
-
 def _swap_in_new_macos_bundle(tmp: Path, target: Path, old: Path) -> None:
     """Move a staged macOS bundle into place without losing the old bundle."""
     moved_old = False
@@ -1124,104 +1095,82 @@ def _swap_in_new_macos_bundle(tmp: Path, target: Path, old: Path) -> None:
     shutil.rmtree(old, ignore_errors=True)
 
 
-def _install_rebuilt_desktop_app(desktop_dir: Path) -> Path | None:
-    """Install the freshly rebuilt desktop app to the system install location.
+def _running_macos_app_bundles() -> set[Path]:
+    """``.app`` bundles of every live Hermes Desktop process. A running bundle is never swapped
+    under: Electron loads ``app.asar`` chunks and helper apps lazily, so renaming its bundle away
+    and deleting the old tree crashes the live app (the detached updater waits for it to exit)."""
+    import psutil  # noqa: PLC0415
+    bundles: set[Path] = set()
+    for proc in psutil.process_iter(["exe"]):
+        exe = proc.info.get("exe") or ""
+        if exe.endswith("/Contents/MacOS/Hermes"):
+            bundles.add(Path(exe).resolve().parents[2])
+    return bundles
 
-    ``hermes desktop --build-only`` (called by ``hermes update``) rebuilds the
-    Electron app into ``apps/desktop/release/`` but does NOT copy it to the
-    standard install location (e.g. ``/Applications/Hermes.app``).  The
-    in-app updater in ``main.cjs`` handles the swap via a detached script;
-    this function covers the CLI ``hermes update`` path so the installed app
-    does not go stale.
 
-    Only installs when the current platform has a copyable installed bundle
-    (a macOS ``.app`` or Windows NSIS directory), a rebuilt package exists,
-    and an installed copy already exists at a standard location. Linux
-    AppImage/deb/rpm installs remain owned by their original package mechanism;
-    ``packaged_gui_app_paths`` only returns ``.desktop`` launchers there.
+def _stage_macos_bundle_copy(src: Path, dst: Path) -> None:
+    """``ditto`` copies a bundle with its signature, xattrs and symlinks intact (``shutil`` drops
+    the resource-fork metadata codesign verifies)."""
+    subprocess.run(["/usr/bin/ditto", str(src), str(dst)], check=True, capture_output=True)
 
-    Compares the macOS ``app.asar`` SHA-256 to avoid unnecessary copies, then
-    clears quarantine and re-applies ad-hoc signing. Returns the installed path
-    on success, or ``None`` when no install was needed or possible.
+
+def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[str]]:
+    """Copy the rebuilt macOS bundle over every stale installed ``Hermes.app`` (#52339).
+
+    ``hermes desktop --build-only`` (what ``hermes update`` runs) packages into
+    ``apps/desktop/release/`` only. Finder, the Dock and Spotlight launch the copy in
+    ``/Applications`` (or ``~/Applications``), so without this step every update leaves the
+    installed shell one build behind the backend it boots. The detached Desktop updater swaps
+    only the bundle it was launched from, so an app running from ``release/`` never refreshed
+    the installed copy either.
+
+    Returns ``(installed, problems)``: bundles that were replaced, and one user-facing line per
+    bundle that could not be (running, copy or swap failure). Both empty means every installed
+    copy was already current.
     """
-    if not _desktop_bundle_install_supported():
-        logger.debug(
-            "Skipping post-update Desktop bundle install on unsupported platform %s",
-            sys.platform,
-        )
-        return None
-
+    if sys.platform != "darwin":
+        return [], []
     rebuilt_exe = _desktop_packaged_executable(desktop_dir)
     if rebuilt_exe is None:
-        return None
+        return [], []
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+    # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
+    return _install_rebuilt_macos_bundles(
+        rebuilt_exe.parents[2], packaged_gui_app_paths(), running=_running_macos_app_bundles())
 
-    # Resolve the rebuilt .app bundle directory
-    rebuilt_app: Path | None = None
-    if sys.platform == "darwin":
-        # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app = .../Hermes.app
-        if len(rebuilt_exe.parents) >= 2 and str(rebuilt_exe.parents[2]).endswith(".app"):
-            rebuilt_app = rebuilt_exe.parents[2]
-    elif sys.platform == "win32":
-        # win-unpacked is a directory, not a .app bundle
-        rebuilt_app = rebuilt_exe.parent
-    else:
-        return None
 
-    if rebuilt_app is None or not rebuilt_app.is_dir():
-        return None
-
-    # Find existing installed copies at standard locations
-    from hermes_cli.gui_uninstall import packaged_gui_app_paths
-
-    installed_apps = [
-        path
-        for path in packaged_gui_app_paths()
-        if path.is_dir()
-        and (sys.platform == "win32" or path.suffix.casefold() == ".app")
-    ]
-    if not installed_apps:
-        return None  # nothing installed → nothing to update
-
-    rebuilt_hash = _app_asar_hash(rebuilt_app) if sys.platform == "darwin" else None
-
-    for installed_app in installed_apps:
-        # Skip if the installed copy is already current
-        if sys.platform == "darwin" and rebuilt_hash:
-            installed_hash = _app_asar_hash(installed_app)
-            if installed_hash and installed_hash == rebuilt_hash:
-                continue  # already up to date
-
-        # On macOS, use ditto for a metadata-preserving staged copy, then move
-        # the installed bundle aside and atomically-as-possible swap the staged
-        # copy in. The old bundle is restored if either rename fails. Windows
-        # installs are directories, so copytree replaces their contents.
-        try:
-            if sys.platform == "darwin":
-                ditto = shutil.which("ditto")
-                if not ditto:
-                    continue
-                tmp = installed_app.parent / f"{installed_app.name}.hermes-update-new"
-                old = installed_app.parent / f"{installed_app.name}.hermes-update-old"
-                shutil.rmtree(tmp, ignore_errors=True)
-                shutil.rmtree(old, ignore_errors=True)
-                subprocess.run([ditto, str(rebuilt_app), str(tmp)], check=True, capture_output=True)
-                _swap_in_new_macos_bundle(tmp, installed_app, old)
-            else:
-                if installed_app.is_dir():
-                    shutil.rmtree(installed_app, ignore_errors=True)
-                shutil.copytree(rebuilt_app, installed_app, dirs_exist_ok=True)
-
-            # Apply macOS quarantine clear + ad-hoc signing directly on
-            # the installed bundle (not the release/ copy).
-            if sys.platform == "darwin":
-                _macos_adhoc_sign_bundle(installed_app)
-
-            return installed_app
-        except Exception as exc:
-            logger.debug("Desktop app install to %s failed: %s", installed_app, exc)
+def _install_rebuilt_macos_bundles(
+        rebuilt_app: Path, candidates: list[Path], *, running: set[Path]) -> tuple[list[Path], list[str]]:
+    """Stage-and-swap ``rebuilt_app`` over each existing bundle in ``candidates`` whose ``app.asar``
+    differs. The rebuilt bundle already carries the stable local signing identity and no
+    quarantine xattr (``_desktop_macos_relaunchable_fixup``); ``ditto`` preserves both, so nothing
+    is re-signed here and TCC grants survive."""
+    rebuilt_hash = _app_asar_hash(rebuilt_app)
+    if rebuilt_hash is None:
+        return [], []
+    installed: list[Path] = []
+    problems: list[str] = []
+    for app in candidates:
+        if not app.is_dir() or _app_asar_hash(app) == rebuilt_hash:
             continue
-
-    return None
+        if app.resolve() in running:
+            problems.append(
+                f"{app} is running and was not refreshed; quit Hermes Desktop and run "
+                "`hermes update` again (or update from inside the app)")
+            continue
+        tmp = app.parent / f"{app.name}.hermes-update-new"
+        old = app.parent / f"{app.name}.hermes-update-old"
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(old, ignore_errors=True)
+        try:
+            _stage_macos_bundle_copy(rebuilt_app, tmp)
+            _swap_in_new_macos_bundle(tmp, app, old)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            problems.append(f"{app} could not be replaced ({exc}); the previous app was kept")
+            continue
+        installed.append(app)
+    return installed, problems
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
