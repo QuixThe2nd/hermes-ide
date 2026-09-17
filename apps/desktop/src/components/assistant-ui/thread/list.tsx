@@ -48,6 +48,7 @@ import { responseMessageRole, ResponseMessages } from './response-group'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
+import { useTimelineReveal } from './use-timeline-reveal'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -461,7 +462,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
-  const { olderAvailable, expandWindow } = useTranscriptWindow()
+  const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
   useEffect(() => {
     $mountedTranscriptPanes.set($mountedTranscriptPanes.get() + 1)
@@ -669,8 +670,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
   useEffect(
-    () => publishThreadAtBottom(isAtBottom, { paneVisible, sessionId: scrollSessionId }),
-    [isAtBottom, paneVisible, scrollSessionId]
+    () => publishThreadAtBottom(isAtBottom && !isHistorical, { paneVisible, sessionId: scrollSessionId }),
+    [isAtBottom, isHistorical, paneVisible, scrollSessionId]
   )
   useEffect(
     () => () => resetPublishedThreadScroll({ paneVisible, sessionId: scrollSessionId }),
@@ -681,13 +682,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(
     () =>
       onScrollToBottomRequest(() => {
+        if (isHistorical) {returnToLatest?.()}
+
         if (jumpRestoreRef.current) {
           jumpRestoreRef.current()
         } else {
           void scrollToBottom()
         }
       }, scrollSessionId),
-    [scrollToBottom, scrollSessionId]
+    [scrollToBottom, scrollSessionId, isHistorical, returnToLatest]
   )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
@@ -1173,6 +1176,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       setRenderBudget(budget => budget + paneBudget)
     }
   }, [anchorBeforePrepend, growWindow, hiddenCount, olderAvailable, paneBudget])
+
+  useTimelineReveal({
+    viewport: scrollRef,
+    groups: weightedGroups,
+    hiddenCount,
+    renderBudget,
+    olderAvailable,
+    expandWindow,
+    sessionKey,
+    revealBudget: budget => setRenderBudget(current => Math.max(current, budget)),
+    prepare: () => {
+      cancelRestoreRef.current?.()
+      applyRestoreRef.current = null
+      restoreFromBottomRef.current = null
+      loadSettledRef.current = true
+      stopScroll()
+    }
+  })
 
   // Scroll/wheel at the top edge pages older turns through the same showEarlier
   // path as the button. Wheel is required because browsers emit no `scroll`
