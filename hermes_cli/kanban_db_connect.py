@@ -777,7 +777,10 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
 _BASE_TASK_COLUMNS = (
     ("body", "body TEXT"),
     ("assignee", "assignee TEXT"),
+    ("priority", "priority INTEGER DEFAULT 0"),
+    ("created_by", "created_by TEXT"),
     ("started_at", "started_at INTEGER"),
+    ("completed_at", "completed_at INTEGER"),
     ("workspace_kind", "workspace_kind TEXT NOT NULL DEFAULT 'scratch'"),
     ("workspace_path", "workspace_path TEXT"),
     ("claim_lock", "claim_lock TEXT"),
@@ -895,6 +898,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # so a ``CREATE INDEX`` over a missing column in SCHEMA_SQL would abort
     # init on legacy boards before the ALTER TABLE pass runs. ``IF NOT EXISTS``
     # keeps re-running here cheap and correct on fresh DBs.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
