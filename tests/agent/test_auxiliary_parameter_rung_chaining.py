@@ -51,7 +51,8 @@ def _rejecting_client(*rejected_fields):
 def test_primary_rungs_chain_in_provider_order_and_strip_each_field_once():
     client = _rejecting_client("reasoning_effort", "temperature", "max_tokens")
     kwargs = {"model": "m", "messages": [], "temperature": 0.3, "max_tokens": 64, "reasoning_effort": "none"}
-    route = _LadderRoute(client, "title_generation", "", False, "", "", None, None, None, None, None, None, None)
+    route = _LadderRoute(**{**dict.fromkeys(_LadderRoute._fields), "client": client, "task": "title_generation",
+                            "tag": "", "async_mode": False, "base_info": "", "resolved_provider": ""})
     first_err = _Bad400("Error code: 400 - Unsupported value: 'reasoning_effort' does not support 'none'")
 
     def perform(step):
