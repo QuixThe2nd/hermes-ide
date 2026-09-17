@@ -1050,10 +1050,10 @@ class TestSkillViewCollisionDetection:
 
 
 class TestSameRootDuplicationResolves:
-    """Duplication inside ONE search dir is not tier shadowing (#112179): a symlink-view root
-    legitimately carries ``<root>/name`` and ``<root>/cat/name``; the shallower path wins and
-    the bare name stays loadable. An equal-rank tie (or a cross-tier spread, covered by
-    TestSkillViewCollisionDetection) still refuses."""
+    """Copies of ONE skill inside ONE search dir are not shadowing (#112179): a symlink-view root
+    legitimately carries ``<root>/name`` and ``<root>/cat/name`` with identical content; the
+    shallower path wins and the bare name stays loadable. Two DIFFERENT skills sharing a name
+    (or a cross-tier spread, covered by TestSkillViewCollisionDetection) still refuse."""
 
     def _patch_dirs(self, local_dir, external_dirs=()):
         return (
@@ -1064,8 +1064,8 @@ class TestSameRootDuplicationResolves:
     def test_nested_copy_inside_same_root_does_not_block_bare_name(self, tmp_path):
         local_dir = tmp_path / "local"
         local_dir.mkdir()
-        _make_skill(local_dir, "arxiv", body="TOP LEVEL VERSION")
-        _make_skill(local_dir, "arxiv", category="research", body="NESTED CATEGORY VERSION")
+        _make_skill(local_dir, "arxiv", body="IDENTICAL COPY")
+        _make_skill(local_dir, "arxiv", category="research", body="IDENTICAL COPY")
 
         p1, p2 = self._patch_dirs(local_dir)
         with p1, p2:
@@ -1073,7 +1073,41 @@ class TestSameRootDuplicationResolves:
 
         assert result["success"] is True, result
         assert result["path"] == "arxiv/SKILL.md"
-        assert "TOP LEVEL VERSION" in result["content"]
+        assert "IDENTICAL COPY" in result["content"]
+
+    def test_different_skill_with_same_frontmatter_name_in_same_root_refuses(self, tmp_path):
+        """A shallower ``evil/SKILL.md`` carrying ``name: github`` must not shadow the real
+        ``software-development/github`` by bare name: different content is not a copy."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "github", category="software-development", body="REAL GITHUB")
+        evil = local_dir / "evil"
+        evil.mkdir()
+        (evil / "SKILL.md").write_text("---\nname: github\ndescription: d.\n---\nEVIL BODY\n")
+
+        p1, p2 = self._patch_dirs(local_dir)
+        with p1, p2:
+            result = json.loads(skill_view("github"))
+
+        assert result["success"] is False, result
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_nested_package_skill_does_not_shadow_top_level_legacy_flat_md(self, tmp_path):
+        """``skills/foo.md`` (legacy flat) vs ``skills/hubpkg/foo/SKILL.md``: the exact 'nested
+        copy shadows the top-level skill' shape the refusal exists for."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        (local_dir / "foo.md").write_text("---\nname: foo\ndescription: d.\n---\nLEGACY FLAT\n")
+        _make_skill(local_dir, "foo", category="hubpkg", body="NESTED PACKAGE")
+
+        p1, p2 = self._patch_dirs(local_dir)
+        with p1, p2:
+            result = json.loads(skill_view("foo"))
+
+        assert result["success"] is False, result
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
 
     def test_equal_rank_same_root_still_refuses(self, tmp_path):
         local_dir = tmp_path / "local"
@@ -1091,14 +1125,14 @@ class TestSameRootDuplicationResolves:
 
 
 class TestTrustWarningSymlinkAware:
-    """A root that exposes a skill through a symlink has vouched for it (#112179): the trust
-    check accepts the lexical path, while a genuinely outside file still warns."""
+    """The trust check is on the RESOLVED path: a symlink whose target lives under a registered
+    search dir is quiet, a SKILL.md symlinked to a file outside every root still warns."""
 
     def _log(self, name, skill_md, all_dirs, active):
         from tools.skills_tool import _log_security_warnings
         _log_security_warnings(name, skill_md, "plain body", list(all_dirs), active)
 
-    def test_symlinked_entry_is_trusted_by_the_root_that_exposes_it(self, tmp_path, caplog):
+    def test_symlink_resolving_under_a_registered_dir_is_trusted(self, tmp_path, caplog):
         lib = tmp_path / "library"
         root = tmp_path / "root"
         real = lib / "demo"
@@ -1111,18 +1145,24 @@ class TestTrustWarningSymlinkAware:
             pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
         with caplog.at_level("WARNING"):
-            self._log("demo", root / "demo" / "SKILL.md", [root], root)
+            self._log("demo", root / "demo" / "SKILL.md", [root, lib], root)
 
         assert "outside the trusted" not in caplog.text, caplog.text
 
-    def test_genuinely_outside_file_still_warns(self, tmp_path, caplog):
+    def test_skill_md_symlinked_to_outside_every_root_still_warns(self, tmp_path, caplog):
+        """skill_view only ever passes ``<search_dir>/...`` paths, so the symlink-to-outside
+        file is the one shape that must keep warning."""
         root = tmp_path / "root"
-        root.mkdir()
-        outside = tmp_path / "elsewhere" / "x" / "SKILL.md"
+        (root / "sym").mkdir(parents=True)
+        outside = tmp_path / "elsewhere" / "SKILL.md"
         outside.parent.mkdir(parents=True)
-        outside.write_text("---\nname: x\ndescription: d.\n---\nbody\n")
+        outside.write_text("---\nname: sym\ndescription: d.\n---\nbody\n")
+        try:
+            (root / "sym" / "SKILL.md").symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
         with caplog.at_level("WARNING"):
-            self._log("x", outside, [root], root)
+            self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text

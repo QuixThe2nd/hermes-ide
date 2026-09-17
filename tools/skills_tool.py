@@ -4,6 +4,7 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+import hashlib
 import json
 import logging
 import os
@@ -485,6 +486,18 @@ def _rank_same_root_candidate(candidate, root: Path) -> tuple:
     return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
 
 
+def _provably_same_skill(candidates) -> bool:
+    """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
+    or byte-identical content (copy). Anything else is two different skills sharing a name,
+    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
+    try:
+        if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
+            return True
+        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
+    except OSError:
+        return False
+
+
 def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
     """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
     precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
@@ -495,18 +508,19 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
-        # ambiguity WITHIN the project tier still refuses.
+        # ambiguity WITHIN the project tier (two different skills) still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
     if len(candidates) > 1:
-        # The refusal below guards against one TIER silently shadowing another. Duplicates inside
-        # a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy) involve no second
-        # tier, so rank them instead; an equal-rank tie or a cross-tier spread still refuses.
+        # The refusal below guards against one skill silently shadowing another. Copies of ONE
+        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
+        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
+        # cross-tier spread still refuses.
         roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
-        if len(roots) == 1 and None not in roots:
+        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
             root = roots.pop()
             ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
             if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
-                logger.info("Skill '%s': %d same-root candidates, resolved to %s (nested: %s)",
+                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
                             name, len(candidates), ranked[0][1],
                             "; ".join(str(smd) for _sd, smd in ranked[1:]))
                 candidates = [ranked[0]]
@@ -539,15 +553,14 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
-    and/or when common prompt-injection patterns appear. A trusted root that exposes a skill
-    through a symlink has vouched for it, so the lexical path counts as well as the resolved one
-    (a symlink-view root otherwise warned on every load)."""
+    and/or when common prompt-injection patterns appear. The check is on the RESOLVED path:
+    every candidate is built as ``<search_dir>/...`` so a lexical test can never fire, and a
+    SKILL.md symlinked to a file outside every root is exactly what this guards against."""
     trusted_dirs = [active_skills_dir.resolve()]
     with suppress(Exception):
         trusted_dirs.extend(d.resolve() for d in all_dirs)
     warnings = []
-    if not (_under_any(skill_md, trusted_dirs)
-            or any(skill_md.is_relative_to(d) for d in (active_skills_dir, *all_dirs))):
+    if not _under_any(skill_md, trusted_dirs):
         warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
     if any(p in content.lower() for p in _INJECTION_PATTERNS):
         warnings.append("skill content contains patterns that may indicate prompt injection")
