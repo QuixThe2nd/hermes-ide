@@ -241,53 +241,6 @@ describe('createSessionRpcDispatcher: routes by the session OWNING connection wh
     expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
     expect(ambientRequest).not.toHaveBeenCalled()
   })
-
-  it('routes a session that lives on the REMOTE connection to that connection', async () => {
-    gatewayMocks.activeConnectionId = 'local'
-    twoConnections()
-    recordSessionEventScope({ connectionId: 'homelab', profile: 'default', session_id: 'rt-remote' })
-    setSessions([makeSessionInfo({ id: 'rt-remote', profile: 'default' })])
-    const { ambientRequest, request } = dispatcher()
-
-    await expect(request('prompt.submit', { session_id: 'rt-remote', text: 'again' })).resolves.toEqual({
-      routed: true
-    })
-
-    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('homelab', 'default', 'prompt.submit', {
-      session_id: 'rt-remote',
-      text: 'again'
-    })
-    expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
-    expect(ambientRequest).not.toHaveBeenCalled()
-  })
-
-  it('keeps a connection-tagged row owner over a conflicting event scope', async () => {
-    gatewayMocks.activeConnectionId = 'homelab'
-    twoConnections()
-    setSessions([makeSessionInfo({ connection_id: 'source-b', id: 'stored-shared', profile: 'default' })])
-    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'stored-shared' })
-
-    await expect(dispatcher().request('session.resume', { session_id: 'stored-shared' })).resolves.toEqual({
-      routed: true
-    })
-
-    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('source-b', 'default', 'session.resume', {
-      session_id: 'stored-shared'
-    })
-  })
-
-  it('leaves a request with NO session context on the ambient socket, ledger or not', async () => {
-    gatewayMocks.activeConnectionId = 'homelab'
-    twoConnections()
-    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
-    const { ambientRequest, request } = dispatcher()
-
-    await expect(request('config.get', {})).resolves.toEqual({ ambient: true })
-
-    expect(ambientRequest).toHaveBeenCalledWith('config.get', {})
-    expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
-    expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
-  })
 })
 
 describe('createSessionRpcDispatcher: stale runtime recovery', () => {

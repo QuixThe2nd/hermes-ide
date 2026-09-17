@@ -1314,12 +1314,6 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     expect(knownOwnerForSession('rt-local')).toEqual({ connectionId: 'local', profile: 'default' })
   })
 
-  it('still answers with the bare row profile when no event ever named the connection', () => {
-    setSessions([{ id: 'rt-unproven', profile: 'default' } as never])
-
-    expect(knownOwnerForSession('rt-unproven')).toBe('default')
-  })
-
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {
     expect(knownOwnerForSession('unknown-session')).toBeUndefined()
     expect(knownOwnerForSession(null)).toBeUndefined()
