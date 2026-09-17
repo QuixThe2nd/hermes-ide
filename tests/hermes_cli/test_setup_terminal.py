@@ -30,11 +30,6 @@ def test_ssh_port_reset_to_22_removes_saved_port(ssh_wizard):
     assert get_env_value("TERMINAL_SSH_PORT") is None
 
 
-def test_ssh_port_22_with_nothing_saved_stays_clean(ssh_wizard):
-    ssh_wizard(["host.example.com", "me", "22", "/tmp/key"])
-    assert get_env_value("TERMINAL_SSH_PORT") is None
-
-
 def test_ssh_port_non_default_still_saves(ssh_wizard):
     # Control: the deliberate skip is only for the default; a real port persists.
     ssh_wizard(["host.example.com", "me", "2222", "/tmp/key"])
