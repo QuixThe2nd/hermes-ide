@@ -154,6 +154,17 @@ describe('weather reference app (async contract)', () => {
     launchWidget('weather', 'nowhere')
     await vi.waitFor(() => expect(activeState()?.phase.kind).toBe('error'))
     expect(activeState()?.phase).toMatchObject({ message: expect.stringContaining('503') })
+
+    // Geocoding succeeds at the HTTP level but matches nothing: surfaced as an error, not a hang.
+    resetOverlayState()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ json: async () => ({ results: [] }), ok: true }))
+    )
+
+    launchWidget('weather', 'nowhere')
+    await vi.waitFor(() => expect(activeState()?.phase.kind).toBe('error'))
+    expect(activeState()?.phase).toMatchObject({ message: expect.stringContaining('location not found') })
   })
 
   it('r refreshes; Esc/q/Enter close', () => {
