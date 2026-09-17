@@ -218,7 +218,7 @@ hermes moa configure review       # create or update a named preset
 hermes moa delete review
 ```
 
-`hermes moa list` marks the aggregator as the acting model that carries almost all of the cost and lists references as advising once per user turn. When the aggregator's provider differs from your main `model.provider`, both `list` and `configure` add:
+`hermes moa list` marks the aggregator as the acting model that carries almost all of the cost and lists references as advising once per user turn (by default). When the aggregator's provider differs from your main `model.provider`, both `list` and `configure` add:
 
 ```text
 Aggregator is on nous; the whole tool loop will be billed there, not to openai-codex.

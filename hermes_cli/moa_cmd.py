@@ -76,12 +76,12 @@ def _provider_mismatch_notice(
     if isinstance(cfg, dict):
         model_section = cfg.get("model")
         if isinstance(model_section, dict):
-            main_provider = str(model_section.get("provider") or "").strip()
-    agg_provider = str((aggregator or {}).get("provider") or "").strip()
+            main_provider = str(model_section.get("provider") or "").strip().lower()
+    agg_provider = str((aggregator or {}).get("provider") or "").strip().lower()
     if (
         not main_provider
         or not agg_provider
-        or main_provider == "moa"
+        or main_provider in ("moa", "auto")  # "auto" is a routing pseudo-provider, not a billing seat
         or main_provider == agg_provider
     ):
         return None
@@ -98,7 +98,7 @@ def _print_config(config: dict[str, Any]) -> None:
     print(f"Active in config: {cfg.get('active_preset') or '(off)'}")
     for name, preset in cfg["presets"].items():
         print(f"\n{'*' if name == cfg['default_preset'] else ' '} {name}")
-        print("  Reference models (advise once per user turn):")
+        print("  Reference models (advise once per user turn by default):")
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {_format_slot(slot)}")
         agg_slot = preset["aggregator"]

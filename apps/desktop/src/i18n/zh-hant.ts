@@ -1221,10 +1221,10 @@ export const zhHant = defineLocale({
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',
       moaDescription:
-        '設定以「混合代理」提供者下模型形式出現的命名預設。聚合模型是執行模型——它執行工具迴圈的每一步，整個運行幾乎全部費用都計入其提供者。參考模型每輪使用者訊息僅提供一次建議。',
+        '設定以「混合代理」提供者下模型形式出現的命名預設。聚合模型是執行模型——它執行工具迴圈的每一步，整個運行幾乎全部費用都計入其提供者。參考模型預設每輪使用者訊息僅提供一次建議。',
       moaAggregator: '聚合模型',
       moaAggregatorBilled: '執行模型 · 整個運行在此計費',
-      moaReferenceHint: '每輪僅建議一次',
+      moaReferenceHint: '默認每輪僅建議一次',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
