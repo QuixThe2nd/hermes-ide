@@ -139,9 +139,8 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 
 SNAPSHOT_FILE = "scan_snapshot.json"
 CHECKPOINT_FILE = "scan_checkpoint.json"
-# Checkpoint schema 2: stats were computed from the full (inactive+compacted, deduped)
-# history so rewind/compaction never shrink lifetime sums.  Version 1 caches (active-only
-# window) are treated as stale and force a one-time rescan.
+# Checkpoint schema 2: per-session stats read the compaction-archived display history, not just
+# the active window. Version 1 caches were computed active-only and are rescanned once.
 _CHECKPOINT_SCHEMA_VERSION = 2
 
 
@@ -585,14 +584,10 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                 stats = dict(cached["stats"])
                 reused += 1
             else:
-                # Full history (inactive + compacted, deduped) so rewind/compaction never
-                # shrink lifetime sums.  Dedup collapses compaction generations (#112273).
-                try:
-                    messages = db.get_messages(sid, include_inactive=True, include_compacted=True)
-                except TypeError:
-                    # Test fakes / older SessionDB builds without the flags.
-                    messages = db.get_messages(sid)
-                stats = analyze_messages(sid, title or "Untitled", messages)
+                # Compaction-archived display history too (deduped, no Undo/Rewind rows): the active
+                # window shrinks after compaction, and stats read from it were never monotonic
+                # (#112273). Rewound rows stay out — that work was undone.
+                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid, include_compacted=True))
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):
@@ -728,17 +723,11 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
         unlock_id = definition["id"]
         if not is_partial and result["unlocked"] and unlock_id not in unlocks:
             unlocks[unlock_id] = {"unlocked_at": now, "first_tier": result.get("tier"), "evidence": evidence_for(definition, scan.get("sessions", []))}
-        # Sticky unlocks: once recorded in state.json, an achievement stays unlocked even
-        # if a later scan's aggregate dips below threshold (rewind/compaction shrink, #112273).
-        was_unlocked = unlock_id in unlocks
-        if was_unlocked and not result["unlocked"]:
-            result = dict(result)
-            result["unlocked"] = True
-            result["discovered"] = True
-            result["state"] = "unlocked"
-            # Preserve a tier for display when the live aggregate no longer reaches one.
-            if result.get("tier") is None:
-                result["tier"] = unlocks[unlock_id].get("first_tier")
+        # Sticky unlocks: state.json is a floor. A badge earned on evidence that rewind/compaction
+        # later removed from the scan basis must not flicker back to locked (#112273).
+        if unlock_id in unlocks and not result["unlocked"]:
+            result.update(unlocked=True, discovered=True, state="unlocked",
+                          tier=result.get("tier") or unlocks[unlock_id].get("first_tier"))
         item = {**definition, **result}
         if result["unlocked"]:
             item["unlocked_at"] = unlocks.get(unlock_id, {}).get("unlocked_at")
