@@ -329,6 +329,43 @@ describe('session-gone classification', () => {
       clock.mockRestore()
     }
   })
+
+  // A turn that dies BEFORE its prompt is committed (agent-init failure,
+  // no-agent refusal) leaves a retained `{ status: 'error' }` and a transcript
+  // that never grew — the failure must still surface instead of the poll
+  // sitting out its deadline and reading the silence as a timeout.
+  it('reports a retained failure whose prompt never reached history', async () => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+    const room = await loadRoom({ turn: () => [] })
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    let submitted = false
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown> & { messages?: { role: string }[] }
+
+      submitted = submitted || method === 'prompt.submit'
+
+      if (method === 'session.resume' && submitted) {
+        return {
+          ...result,
+          inflight: { error: 'agent initialization failed', status: 'error', streaming: false },
+          messages: (result.messages || []).filter(message => message.role !== 'user')
+        }
+      }
+
+      return result
+    }
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(
+        'agent initialization failed'
+      )
+      expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
+    } finally {
+      clock.mockRestore()
+    }
+  })
 })
 
 describe('per-turn socket lease', () => {
@@ -1099,6 +1136,36 @@ describe('stranded harvest', () => {
 
     expect(log(room, 'Quiet2')).toHaveLength(0)
     expect(room.chat.$groupChats.get().Quiet2.stranded?.builder).toBeUndefined()
+  })
+
+  // The late turn died before its prompt was committed: the transcript never
+  // grew past the marker, but the retained failure is still the answer — a
+  // 'failed' row keyed like every other activity row, not a silent consume.
+  it('reports a retained failure behind an unchanged transcript instead of consuming the marker silently', async () => {
+    const room = await loadRoom()
+    const activity = await import('./group-activity')
+    const { groupMemberKey } = await import('./group-membership')
+    const member: GroupMember = { connectionId: 'mini', name: 'builder', remoteSource: true }
+    const key = groupMemberKey(member)
+
+    room.chat.updateGroupChat('Dead', current => {
+      current.sessions = { [key]: 'sid-builder' }
+      current.stranded = { [key]: { before: 1, thread: 't1' } }
+
+      return current
+    })
+    seedSession(room, 'sid-builder', 'builder', 'Group: Dead', [['user', 'p1']])
+    const requestProfile = host.requestProfile as (...args: unknown[]) => Promise<Record<string, unknown>>
+
+    host.requestProfile = async (...args: unknown[]) => ({
+      ...(await requestProfile(...args)),
+      inflight: { error: 'agent initialization failed', status: 'error', streaming: false }
+    })
+
+    await room.turns.harvestStrandedGroupReply('Dead', member)
+
+    expect(room.chat.$groupChats.get().Dead.stranded?.[key]).toBeUndefined()
+    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([['failed', key]])
   })
 
   it('never re-submits into a member the harvest just confirmed is still running', async () => {
