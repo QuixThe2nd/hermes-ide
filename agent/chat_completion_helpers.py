@@ -1084,6 +1084,23 @@ class _RequestClientRegistry:
             self.agent._close_request_openai_client(request_client, reason=reason)
 
 
+# Silence budget for high/xhigh reasoning effort on a Codex request. GPT-5-family models at
+# high effort think server-side for 100-170s before the first substantive SSE event even on a
+# ~6KB prompt (#112909), while the token-sized tiers below hand such a prompt 12s/120s/90s; the
+# watchdog killed healthy requests three times in a row and blamed the provider. Applies as a
+# floor to the IMPLICIT defaults only -- explicit env/config values keep winning.
+HIGH_EFFORT_SILENCE_FLOOR_SECONDS = 300.0
+
+
+def _high_effort_silence_floor(agent) -> float:
+    """``HIGH_EFFORT_SILENCE_FLOOR_SECONDS`` when the wire reasoning config is high/xhigh and enabled, else 0."""
+    cfg = getattr(agent, "reasoning_config", None)
+    if not isinstance(cfg, dict) or cfg.get("enabled") is False:
+        return 0.0
+    effort = str(cfg.get("effort") or "").strip().lower()
+    return HIGH_EFFORT_SILENCE_FLOOR_SECONDS if effort in {"high", "xhigh"} else 0.0
+
+
 @dataclass
 class _NonStreamWatchdogs:
     """Poll-loop thresholds for one non-streaming request."""
@@ -1116,6 +1133,9 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     codex = agent.api_mode == "codex_responses"
     openai_codex_backend = _is_openai_codex_backend(agent)
     est_tokens = estimate_request_context_tokens(api_kwargs)
+    effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
+    if effort_floor and not agent._stale_timeout_is_explicit():
+        stale_timeout = max(stale_timeout, effort_floor)
     codex_floor = 0.0
     if codex and openai_codex_backend:
         # Raise the stale floor for large payloads so healthy gateway-scale
@@ -1129,13 +1149,14 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         if hard_timeout > 0:
             stale_timeout = min(stale_timeout, hard_timeout)
 
-    idle_default = next(
+    idle_default = max(effort_floor, next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
-        12.0)
+        12.0))
 
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.
     ttfb_enabled = codex
+    ttfb_explicit = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", -1.0) != -1.0
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
@@ -1156,6 +1177,9 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
+    if ttfb_enabled and not ttfb_explicit:
+        # High-effort thinking precedes the first event; the floor outranks the implicit cap.
+        ttfb_timeout = max(ttfb_timeout, effort_floor)
 
     # An operator-set idle timeout keeps first-event semantics; only the implicit
     # default defers arming until model progress. Sentinel: env_float returns the
