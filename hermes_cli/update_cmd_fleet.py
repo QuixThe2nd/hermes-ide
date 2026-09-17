@@ -450,8 +450,6 @@ def _run_pending_fleet_restart() -> bool:
     """
     from hermes_cli.update_cmd import _m
     print("→ Restarting gateways left on pre-update code...")
-    with suppress(Exception):
-        _m()._purge_stale_hermes_modules()
     # Warn if legacy Hermes gateway unit files are still installed. When both hermes.service (from a
     # pre-rename install) and the current hermes-gateway.service are enabled, they SIGTERM-fight for the
     # same bot token (see PR #11909). Flagging here means every `hermes update` surfaces the issue until the
@@ -1559,10 +1557,6 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     # already-restarted units to ``_finish_dashboard_update_cleanup`` (review on #83595).
     restarted_scoped_units: set = set()
 
-    # Purge stale cached Hermes modules FIRST: the import below loads new gateway
-    # source into this pre-update interpreter, and a cached sibling missing a
-    # symbol the new source expects would ImportError and abort the whole phase.
-    _m()._purge_stale_hermes_modules()
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
         # module aborts into recovery BEFORE any unit is touched.
