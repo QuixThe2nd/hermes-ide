@@ -39,20 +39,6 @@ interface ActiveTranscriptSession {
   profile?: string | null
 }
 
-/** Only a bound tile's explicit route can override visible session ownership. */
-function preferredActiveTranscriptOwner(
-  storedSessionId: string,
-  runtimeSessionId?: null | string
-): SessionProfileRoute | undefined {
-  const runtimeId = runtimeSessionId ?? $activeSessionId.get()
-  const tiles = $sessionTiles.get().filter(tile => tile.storedSessionId === storedSessionId)
-  const activeTile = runtimeId
-    ? tiles.find(tile => tile.runtimeId === runtimeId)
-    : tiles.length === 1 ? tiles[0] : undefined
-
-  return activeTile?.ownerRoute
-}
-
 /** Profile/connection scope used to read an active transcript from storage. */
 export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession | undefined): ProfileScope {
   if (!stored) {
@@ -69,14 +55,14 @@ export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession
   return stored.profile
 }
 
-/** Resolve an active transcript from a verified owner, matching visible rows,
- *  or its unique hidden owner. Visible-first remains when no owner is verified
- *  so a stale hint cannot rewrite a viewed session row. */
+/** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
 export function resolveActiveTranscriptSession(
   storedSessionId: string,
-  runtimeSessionId?: null | string
+  runtimeSessionId: string
 ): ActiveTranscriptSession | undefined {
-  const verifiedOwner = preferredActiveTranscriptOwner(storedSessionId, runtimeSessionId)
+  const verifiedOwner = $sessionTiles.get().find(
+    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
+  )?.ownerRoute
 
   if (verifiedOwner) {
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
@@ -98,7 +84,7 @@ export interface ActiveTranscriptRefreshDeps {
   busyRef: MutableRefObject<boolean>
   requestSequenceRef: MutableRefObject<number>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
-  resolveSession: (storedSessionId: string) => ActiveTranscriptSession | null | undefined
+  resolveSession: (storedSessionId: string, runtimeSessionId: string) => ActiveTranscriptSession | null | undefined
   signatureRef: MutableRefObject<Map<string, string>>
   updateSessionState: (
     sessionId: string,
@@ -263,7 +249,7 @@ export async function reconcileActiveTranscript({
     return
   }
 
-  const stored = resolveSession(storedSessionId)
+  const stored = resolveSession(storedSessionId, runtimeSessionId)
 
   if (!stored) {
     return
