@@ -191,6 +191,43 @@ def test_candidate_list_marks_cron_referenced_skills(curator_env, monkeypatch):
     assert "cron=no" in plain_line
 
 
+def test_candidate_list_excludes_disabled_skills(curator_env, monkeypatch):
+    """The review fork must not be asked to inspect skills skill_view rejects."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c.skill_usage, "curated_report", lambda: [
+        {"name": "global-disabled", "state": "active"},
+        {"name": "platform-disabled", "state": "active"},
+        {"name": "enabled", "state": "active"},
+    ])
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"platform-disabled"})
+    monkeypatch.setattr(
+        c, "get_disabled_skill_names", lambda: {"global-disabled", "platform-disabled"},
+        raising=False,
+    )
+
+    listing = c._render_candidate_list()
+
+    assert "global-disabled" not in listing
+    assert "platform-disabled" not in listing
+    assert "enabled" in listing
+
+
+def test_candidate_list_keeps_candidates_when_disabled_resolution_fails(curator_env, monkeypatch):
+    """Unreadable config must not make the curator silently skip all work."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c.skill_usage, "curated_report", lambda: [
+        {"name": "enabled", "state": "active"},
+    ])
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: set())
+
+    def _broken_disabled_resolver():
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr(c, "get_disabled_skill_names", _broken_disabled_resolver, raising=False)
+
+    assert "enabled" in c._render_candidate_list()
+
+
 def _write_cron_job(home: Path, skill_ref: str, monkeypatch):
     """Write a real jobs.json referencing *skill_ref* and reload ``cron.jobs``.
 
