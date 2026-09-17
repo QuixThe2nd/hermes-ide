@@ -178,7 +178,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   })
   handle('capture', async (event, requestId) => {
     const result = await capture.take(event.sender.id, requestId)
-    if (!result.ok && result.reason === 'screen-permission') {
+    if (result.ok === false && result.reason === 'screen-permission') {
       publish()
     }
 
