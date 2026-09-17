@@ -30,7 +30,6 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import { claimStaleBackendExitRecovery } from './backend-stale-exit-recovery'
 import {
   destroyKeepaliveAgents,
   downloadAgentFor,
@@ -62,6 +61,7 @@ import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
@@ -1466,7 +1466,14 @@ const backendDialClaims = new BackendDialClaims()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
-let staleExitRecoveryClaimed = false
+// Primary-slot bookkeeping for the exit supervisor (#112344). `primaryStartsInFlight`
+// counts startHermes() calls that have not settled; `primaryRecoverySuppressed`
+// is set by every intentional invalidate of the slot and cleared by the next
+// startHermes(), so the dying child's stale exit never respawns behind a
+// re-home, a quit, or a latched boot failure.
+let primaryStartsInFlight = 0
+let primaryRecoverySuppressed = false
+const primaryExitRecovery = createBackendExitRecoveryLatch()
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by backendConnectionState +
 // startHermes(); this pool only holds EXTRA profile
@@ -11297,12 +11304,20 @@ function resetHermesConnection({ soft = false } = {}) {
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
-  const hermesProcess = backendConnectionState.invalidate()
+  const hermesProcess = invalidatePrimaryConnection()
   stopBackendChild(hermesProcess)
 
   if (!soft) {
     resetBootProgressForReconnect()
   }
+}
+
+// Every deliberate emptying of the primary slot goes through here so the
+// dying child's stale exit reads as intentional (see primaryRecoverySuppressed).
+function invalidatePrimaryConnection() {
+  primaryRecoverySuppressed = true
+
+  return backendConnectionState.invalidate()
 }
 
 // Re-home the primary backend: reset connection state, then wait for the live
@@ -12921,27 +12936,46 @@ async function prepareProfileRenameRequest(request) {
 }
 
 function startHermes() {
-  return localBackendLifecycle.start(runHermesStart)
+  primaryRecoverySuppressed = false
+  primaryStartsInFlight += 1
+
+  const start = localBackendLifecycle.start(runHermesStart)
+
+  const releaseStart = () => {
+    primaryStartsInFlight -= 1
+  }
+
+  void start.then(releaseStart, releaseStart)
+
+  return start
 }
 
+// A ready primary child died. When its exit leaves the primary slot with no
+// owner and no start in flight (outside an intentional teardown), the
+// supervisor owns the respawn (#112344): the stale-classified exit used to
+// "log and return", and recovery then hinged on the renderer noticing its
+// socket drop — a 9 h engine-less window when it did not. Pool children are
+// deliberately not consulted: they never own the window backend.
 function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error = null, ready = false } = {}) {
   if (!ready) {
     return false
   }
 
-  if (claimStaleBackendExitRecovery({
-    hasCurrentProcess: backendConnectionState.getProcess() !== null,
-    hasPendingStart: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
-    intentionalTeardown: softRehomeInProgress || isQuittingForHandoff || backendShutdown.hasStarted(),
-    recoveryClaimed: staleExitRecoveryClaimed
-  })) {
-    staleExitRecoveryClaimed = true
-    sendBackendExit({ code, signal, ...(error ? { error } : {}) })
-    startHermes().catch(() => {})
-    return true
+  const claimed = primaryExitRecovery.claim({
+    hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
+    hasPendingStart: primaryStartsInFlight > 0,
+    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
+  })
+
+  if (!claimed) {
+    return false
   }
 
-  return false
+  rememberLog('[supervisor] backend exit left no primary owner and no start in flight; respawning')
+  sendBackendExit({ code, signal, ...(error ? { error } : {}) })
+  startHermes().catch(respawnError => rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`))
+
+  return true
 }
 
 async function runHermesStart() {
@@ -13302,7 +13336,7 @@ async function runHermesStart() {
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     backendReady = true
-    staleExitRecoveryClaimed = false
+    primaryExitRecovery.reset()
     backendStartFailure = null
 
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
@@ -13358,7 +13392,7 @@ async function runHermesStart() {
       throw error
     }
 
-    const failedProcess = backendConnectionState.invalidate()
+    const failedProcess = invalidatePrimaryConnection()
     stopBackendChild(failedProcess)
 
     if (error instanceof FirstRunSetupResetError) {

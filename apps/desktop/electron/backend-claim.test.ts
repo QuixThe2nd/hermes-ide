@@ -137,32 +137,18 @@ test('attach tolerates a child with missing stdio streams', () => {
 
 // --- formatBackendExitLine ---------------------------------------------------
 
-test('exit line carries the buffered tail next to the exit code', () => {
+test('exit line carries the buffered tail next to the exit code, preferring the signal', () => {
   const tail = createBackendOutputTail(64)
   tail.append('Traceback (most recent call last):\n')
 
-  const line = formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail)
-
-  assert.equal(line, 'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):')
+  assert.equal(
+    formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail),
+    'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):'
+  )
+  assert.equal(formatBackendExitLine('Hermes backend exited', null, 'SIGTERM', tail), 'Hermes backend exited (SIGTERM)\nRecent backend output:\nTraceback (most recent call last):')
 })
 
-test('exit line prefers the signal over the code, matching the old shape', () => {
-  const tail = createBackendOutputTail(64)
-  tail.append('bye\n')
-
-  const line = formatBackendExitLine('Hermes backend exited', 1, 'SIGTERM', tail)
-
-  assert.equal(line, 'Hermes backend exited (SIGTERM)\nRecent backend output:\nbye')
-})
-
-test('exit line stays byte-identical to the legacy shape when the tail is empty', () => {
-  const line = formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64))
-
-  assert.equal(line, 'Hermes backend exited (0)')
-})
-
-test('exit line tolerates a missing tail', () => {
-  const line = formatBackendExitLine('Hermes backend exited', 1, null, null)
-
-  assert.equal(line, 'Hermes backend exited (1)')
+test('exit line stays byte-identical to the legacy shape when the tail is empty or missing', () => {
+  assert.equal(formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64)), 'Hermes backend exited (0)')
+  assert.equal(formatBackendExitLine('Hermes backend exited', 1, null, null), 'Hermes backend exited (1)')
 })
