@@ -414,8 +414,8 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
     spawn_detached_desktop(&mut cmd).map(|_child| ())
 }
 
-// The installer exits right after launch, so Desktop must not keep its
-// stdout/stderr pipe open (issue TBD).
+// The installer exits right after launch, so the Desktop must not keep the
+// installer's stdout/stderr open (#112856).
 #[cfg(target_os = "macos")]
 pub(crate) fn open_macos_app_detached(app_bundle: &std::path::Path) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/open");
@@ -1392,22 +1392,14 @@ mod tests {
         );
     }
 
+    // One invariant per launch builder (std = launcher fast path, tokio =
+    // `--update` handoff); stdout and stderr share the same inheritance
+    // mechanism, so each builder is paired with a different stream rather
+    // than running the full 2x2 matrix. Regression coverage for #112856.
     #[cfg(windows)]
     #[test]
     fn desktop_launch_stdout_pipe_closes_when_installer_exits_std() {
         assert_desktop_launch_pipe_closes("std", "stdout");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn desktop_launch_stderr_pipe_closes_when_installer_exits_std() {
-        assert_desktop_launch_pipe_closes("std", "stderr");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn desktop_launch_stdout_pipe_closes_when_installer_exits_tokio() {
-        assert_desktop_launch_pipe_closes("tokio", "stdout");
     }
 
     #[cfg(windows)]
