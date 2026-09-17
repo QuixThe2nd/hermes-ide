@@ -241,6 +241,8 @@ def _cli_recover_attempts(source: Path, lf_path: Path, sqlite3_bin: str, *, time
             except subprocess.TimeoutExpired:
                 dump.kill()
                 load.kill()
+                dump.wait()  # reap: kill() alone leaves returncode None and a zombie until GC
+                load.wait()
                 raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
         attempts.append({
             "command": command, "dump_returncode": dump.returncode, "load_returncode": load.returncode,
