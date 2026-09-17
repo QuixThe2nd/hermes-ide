@@ -109,17 +109,40 @@ def test_matrix_room_thread_seed_key_matches_room_reply_key():
 
 def test_dm_seed_default_is_backward_compatible():
     """Callers that don't pass is_dm keep today's thread-keyed behavior —
-    the new parameter must not silently rekey non-DM call sites."""
+    the new parameter must not silently rekey non-DM call sites (Discord
+    keys an in-thread reply on the ``thread`` slot)."""
     store = MagicMock()
     adapter = MagicMock()
     adapter._session_store = store
 
     with patch("gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
-            {"id": "j3"}, adapter, "telegram", "123", "9001", "brief",
+            {"id": "j3"}, adapter, "discord", "123", "9001", "brief",
         )
 
     assert _seeded_source(store).chat_type == "thread"
+
+
+def test_telegram_forum_topic_seed_key_matches_topic_reply_key():
+    """The Telegram adapter types every supergroup message ``group`` (forum topics included), so a
+    forum-topic cron seed typed ``thread`` is a row no topic reply ever resolves to — the same
+    shape as the Matrix bug, on the sibling platform."""
+    store = MagicMock()
+    adapter = MagicMock()
+    adapter._session_store = store
+
+    with patch("gateway.mirror.mirror_to_session", return_value=True):
+        _seed_cron_thread_session(
+            {"id": "j8", "name": "digest"}, adapter, "telegram",
+            "-1001234567", "77", "Three bullets", chat_name="ops", is_dm=False,
+        )
+
+    reply_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-1001234567", chat_type="group", user_id="42",
+        thread_id="77",
+    )
+    assert build_session_key(_seeded_source(store)) == build_session_key(reply_source)
+    assert build_session_key(_seeded_source(store)) == "agent:main:telegram:group:-1001234567:77"
 
 
 def test_scoped_dm_thread_seed_key_matches_scoped_reply_key():

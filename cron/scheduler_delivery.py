@@ -179,9 +179,10 @@ def _maybe_mirror_cron_delivery(
 
 
 # chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
-# key the shared "thread" lane; Slack and Matrix keep the parent channel/room's "group" — a seed
-# on the wrong slot is a row no reply ever resolves to (#111896, #112918).
-_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group"}
+# key the shared "thread" lane; Slack, Matrix and Telegram (forum topics: ``_build_message_event``
+# types every supergroup "group") keep the parent channel/room's "group" — a seed on the wrong slot
+# is a row no reply ever resolves to (#111896, #112918).
+_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
 
 
 def _open_continuable_cron_thread(
