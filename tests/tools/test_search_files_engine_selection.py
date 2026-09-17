@@ -8,6 +8,7 @@ import pytest
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import SearchResult, ShellFileOperations
 from tools.file_tools import SEARCH_FILES_SCHEMA, _handle_search_files, search_tool
+from tools.registry import registry
 
 
 class RecordingEnvironment:
@@ -284,6 +285,37 @@ def test_handler_forwards_modified_order(monkeypatch):
     _handle_search_files({"pattern": "*.py", "target": "files", "order": "modified"})
 
     assert captured["order"] == "modified"
+
+
+@pytest.mark.parametrize("target", ["content", "files"])
+@pytest.mark.parametrize("blank_path", ["", " \t "])
+def test_handler_normalizes_blank_path_to_current_directory(monkeypatch, target, blank_path):
+    captured = {}
+
+    def fake_search_tool(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr("tools.file_tools.search_tool", fake_search_tool)
+
+    registry.dispatch("search_files", {"pattern": "needle", "target": target, "path": blank_path})
+
+    assert captured["target"] == target
+    assert captured["path"] == "."
+
+
+def test_handler_preserves_nonblank_path(monkeypatch):
+    captured = {}
+
+    def fake_search_tool(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr("tools.file_tools.search_tool", fake_search_tool)
+
+    registry.dispatch("search_files", {"pattern": "needle", "path": "src"})
+
+    assert captured["path"] == "src"
 
 
 def test_repeated_search_key_distinguishes_order(monkeypatch):
