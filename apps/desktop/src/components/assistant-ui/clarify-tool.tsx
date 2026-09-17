@@ -955,13 +955,15 @@ function ClarifyToolBatchPending({
 
   // qids only exist on the gateway request — args are a hydration-race
   // fallback for display, never answerable (no ids to respond with).
-  const questions = request?.questions ?? []
-  const ready = Boolean(request?.requestId) && questions.length > 0
+  const liveQuestions = request?.questions ?? []
+  const ready = Boolean(request?.requestId) && liveQuestions.length > 0
 
   // Preview items from the tool args: same question text/choices, synthetic
   // qids, shown disabled until the live request lands (or indefinitely when
   // the caller has no gateway request at all — e.g. an external tool call —
-  // so the user sees the question instead of an endless spinner).
+  // so the user sees the question instead of an endless spinner). ONE form
+  // renders both states: every control is disabled while !ready, so nothing
+  // is ever staged under a synthetic qid and the swap to live qids is clean.
   const previewQuestions: ClarifyQuestion[] = useMemo(
     () =>
       (fromArgs?.questions ?? []).map((entry, index) => ({
@@ -972,6 +974,8 @@ function ClarifyToolBatchPending({
       })),
     [fromArgs]
   )
+
+  const questions = ready ? liveQuestions : previewQuestions
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -1117,58 +1121,16 @@ function ClarifyToolBatchPending({
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
 
-      if (allStaged) {
+      if (ready && allStaged) {
         void confirmAll()
       }
     },
-    [allStaged, confirmAll]
+    [allStaged, confirmAll, ready]
   )
 
-  if (!ready) {
-    if (previewQuestions.length > 0) {
-      return (
-        <form
-          aria-disabled="true"
-          className="my-1.5 grid gap-4"
-          data-clarify-batch={previewQuestions.length}
-          data-clarify-batch-preview=""
-          onSubmit={event => event.preventDefault()}
-        >
-          <ClarifyShell className="grid gap-3">
-            <div className="flex items-start gap-2">
-              <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-                {copy.questionProgress(0, previewQuestions.length)}
-              </span>
-              <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
-            </div>
-            {previewQuestions.map(question => (
-              <BatchQuestionBlock
-                disabled
-                key={question.qid}
-                locked={false}
-                onDraft={() => {}}
-                onToggle={() => {}}
-                question={question}
-                staged={emptyStage}
-              />
-            ))}
-          </ClarifyShell>
+  const disabled = submitting || !ready
 
-          <div className="flex items-center justify-end gap-1">
-            <Button disabled size="xs" type="button" variant="text">
-              {copy.skip}
-            </Button>
-            <Button disabled size="xs" type="submit">
-              {copy.confirmAndContinueLabel}
-              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                ⏎
-              </span>
-            </Button>
-          </div>
-        </form>
-      )
-    }
-
+  if (questions.length === 0) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
@@ -1178,8 +1140,10 @@ function ClarifyToolBatchPending({
 
   return (
     <form
+      aria-disabled={ready ? undefined : 'true'}
       className="my-1.5 grid gap-4"
       data-clarify-batch={questions.length}
+      data-clarify-batch-preview={ready ? undefined : ''}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
     >
@@ -1192,7 +1156,7 @@ function ClarifyToolBatchPending({
         </div>
         {questions.map(question => (
           <BatchQuestionBlock
-            disabled={submitting}
+            disabled={disabled}
             key={question.qid}
             locked={false}
             onDraft={value => draftFor(question, value)}
@@ -1204,10 +1168,10 @@ function ClarifyToolBatchPending({
       </ClarifyShell>
 
       <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
+        <Button disabled={disabled} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !allStaged} size="xs" type="submit">
+        <Button disabled={disabled || !allStaged} size="xs" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
