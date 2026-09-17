@@ -1177,7 +1177,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
-        # /v1/runs). Read from config.yaml gateway.api_server.max_concurrent_runs; 0 disables the cap.
+        # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
+        # gateway.api_server.max_concurrent_runs; 0 disables the cap.
         # Bounds CPU / memory / upstream-LLM-quota exhaustion from a request flood (#7483).
         self._inflight_agent_runs: int = 0
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
