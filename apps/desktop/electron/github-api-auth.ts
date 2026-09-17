@@ -7,17 +7,11 @@
 // reach the update server". Authenticating moves the caller onto the token's
 // 5,000/hour budget.
 //
-// Precedence mirrors the Python client (tools/skills_hub_github.py::GitHubAuth):
-// GITHUB_TOKEN / GH_TOKEN first, then the `gh` CLI's own keyring token. The
-// ladder itself stays subprocess-free and pure; the `gh` lookup is injected by
-// the caller (main.ts owns the binary resolution and the child process).
-
-export type GithubTokenSource = 'env' | 'gh-cli' | 'none'
-
-export interface GithubTokenResolution {
-  token: string | null
-  source: GithubTokenSource
-}
+// Only the env rung of the Python client's ladder
+// (tools/skills_hub_github.py::GitHubAuth) is wired: GITHUB_TOKEN, then
+// GH_TOKEN, read from the process env per request and never stored. Whether a
+// GUI app may also spend the user's `gh` CLI login on a passive background
+// check is a product call, kept out of this module.
 
 /** Env vars consulted, in precedence order. */
 export const GITHUB_TOKEN_ENV_VARS = ['GITHUB_TOKEN', 'GH_TOKEN'] as const
@@ -48,36 +42,4 @@ export function githubApiHeaders(base: Record<string, string>, token?: string | 
   }
 
   return headers
-}
-
-/**
- * Resolve a token for api.github.com. `gh` runs only when the env rung is
- * empty, and a missing / unauthenticated / slow `gh` resolves to
- * `{ token: null, source: 'none' }` rather than throwing: the anonymous
- * 60/hour budget is a legitimate fallback rung, not an error.
- */
-export async function resolveGithubToken({
-  env = {},
-  readGhCliToken
-}: {
-  env?: Record<string, string | undefined>
-  readGhCliToken?: () => Promise<string | null>
-} = {}): Promise<GithubTokenResolution> {
-  const fromEnv = githubTokenFromEnv(env)
-
-  if (fromEnv) {
-    return { token: fromEnv, source: 'env' }
-  }
-
-  if (!readGhCliToken) {
-    return { token: null, source: 'none' }
-  }
-
-  try {
-    const token = (await readGhCliToken())?.trim()
-
-    return token ? { token, source: 'gh-cli' } : { token: null, source: 'none' }
-  } catch {
-    return { token: null, source: 'none' }
-  }
 }

@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -216,7 +216,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { githubApiHeaders, resolveGithubToken } from './github-api-auth'
+import { githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -410,7 +410,15 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  branchTipApiUrl,
+  cacheIsFresh,
+  compareApiUrl,
+  describeUpdateCheckFailure,
+  githubRepoSlug,
+  parseCompare,
+  rateLimitFromHeaders
+} from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -2971,45 +2979,6 @@ function resolveGhBinary() {
   return _ghBinaryCache
 }
 
-// Credentials for the update check's api.github.com calls: env first (an
-// explicit GITHUB_TOKEN / GH_TOKEN wins), then the `gh` CLI's keyring token —
-// the same ladder the Python client uses (tools/skills_hub_github.py). A shared
-// exit IP (proxy/VPN/office NAT) exhausts the anonymous 60/hour budget for
-// everyone behind it, which is what makes an update check report a rate limit.
-//
-// Resolved once per process: a token cannot change under a running app, and
-// re-shelling `gh` on every check would be pure work. Anonymous stays a valid
-// rung — a missing `gh` is not an error.
-let _githubApiTokenCache = null
-let _githubApiTokenResolved = false
-
-function readGhCliToken(): Promise<string | null> {
-  return new Promise(resolve => {
-    execFile(
-      resolveGhBinary(),
-      ['auth', 'token'],
-      { env: process.env, windowsHide: true, timeout: 5_000 },
-      (err, stdout) => resolve(err ? null : String(stdout || ''))
-    )
-  })
-}
-
-async function resolveGithubApiToken() {
-  if (!_githubApiTokenResolved) {
-    const { token, source } = await resolveGithubToken({ env: process.env, readGhCliToken })
-
-    _githubApiTokenCache = token
-    _githubApiTokenResolved = true
-
-    if (token) {
-      // One line, so a rate-limit report can name the budget the check spent.
-      rememberLog(`[updates] api.github.com credentials: ${source}`)
-    }
-  }
-
-  return _githubApiTokenCache
-}
-
 function recentHermesLog() {
   return hermesLog.slice(-20).join('\n')
 }
@@ -3340,47 +3309,11 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
   return { behind: null, updateAvailable: true, targetSha, commits: [] }
 }
 
-// One line a user can act on (or paste into a bug report) instead of the
-// generic "couldn't reach the update server": which host, which failure.
-// #105855 was a run of GitHub outages that read as a Hermes bug because the
-// UI hid the cause.
-function describeUpdateCheckFailure(error) {
-  const status = error?.statusCode
-  const code = error?.code
-
-  if (status === 403 || status === 429) {
-    return `GitHub API rate limit reached (HTTP ${status}) — try again in an hour.`
-  }
-
-  if (typeof status === 'number' && status >= 500) {
-    return `GitHub is having trouble (HTTP ${status} from api.github.com) — check githubstatus.com and try again later.`
-  }
-
-  if (typeof status === 'number') {
-    return `api.github.com answered HTTP ${status}.`
-  }
-
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-    return 'DNS lookup for api.github.com failed — check your connection or proxy.'
-  }
-
-  if (code === 'ETIMEDOUT' || error?.message === 'timeout') {
-    return 'api.github.com did not answer within 10 seconds.'
-  }
-
-  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-    return `Connection to api.github.com failed (${code}) — a firewall or proxy may be blocking it.`
-  }
-
-  if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
-    return `TLS handshake with api.github.com failed (${code}) — a proxy may be intercepting HTTPS.`
-  }
-
-  return `api.github.com: ${error?.message || String(error)}`
-}
-
-async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
-  const token = await resolveGithubApiToken()
+// GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call
+// from the anonymous 60/hour-per-IP budget to the token's 5,000/hour one; the
+// header shape is otherwise unchanged. Read per request, never stored.
+function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const token = githubTokenFromEnv(process.env)
 
   return new Promise((resolve, reject) => {
     const req = https.get(
@@ -3404,7 +3337,13 @@ async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
           const body = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(Object.assign(new Error(`HTTP ${res.statusCode}`), { statusCode: res.statusCode }))
+            reject(
+              Object.assign(new Error(`HTTP ${res.statusCode}`), {
+                statusCode: res.statusCode,
+                ...rateLimitFromHeaders(res.headers),
+                authenticated: Boolean(token)
+              })
+            )
 
             return
           }
