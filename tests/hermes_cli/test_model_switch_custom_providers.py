@@ -74,7 +74,9 @@ def test_picker_native_catalog_is_admitted_to_the_shared_model_cache(monkeypatch
     never stored therefore read back empty on the next open, and the row's whole provider group
     disappeared from the picker until someone hit Refresh Models. The round-trip stays a
     ``_NativePickerModelList``: the native flag is what lets a genuinely model-less Ollama
-    persist an authoritative empty catalog.
+    persist an authoritative empty catalog. The entry is keyed on what the no-probe read hashes
+    (api_key + the caller's headers), not on the Authorization header the native probe
+    synthesizes from the key — a keyed endpoint otherwise wrote a row nobody could read back.
     """
     monkeypatch.setattr(
         "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
@@ -87,9 +89,9 @@ def test_picker_native_catalog_is_admitted_to_the_shared_model_cache(monkeypatch
     from hermes_cli.models import cached_fetch_api_models
 
     url = "http://127.0.0.1:11434/v1"
-    assert _fetch_picker_live_models(None, url, "custom", False) == ["qwen3:8b"]
+    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
 
-    no_probe = cached_fetch_api_models(None, url, cache_only=True, timeout=1.5)
+    no_probe = cached_fetch_api_models("sk-ollama", url, cache_only=True, timeout=1.5)
     assert isinstance(no_probe, _NativePickerModelList)
     assert no_probe == ["qwen3:8b"]
 

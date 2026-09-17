@@ -137,10 +137,13 @@ def _fetch_picker_live_models(
         # Admit the native catalog to the SHARED disk cache: a no-probe picker open (every endpoint
         # that is not the current one) reads ``provider_models_cache.json`` only, so a native probe
         # that answered here but was never stored came back empty on the next open — the provider's
-        # whole group vanished from the picker until the user hit Refresh Models.
+        # whole group vanished from the picker until the user hit Refresh Models. Key the entry on
+        # the caller's ``headers`` (what that cache_only read hashes), not ``resolved_headers``: the
+        # native probe's synthesized Authorization would otherwise land under a fingerprint the
+        # read side never computes, and a keyed endpoint kept flickering.
         native_models = (
             cached_fetch_api_models(
-                api_key, api_url, timeout=timeout, headers=resolved_headers, api_mode=api_mode,
+                api_key, api_url, timeout=timeout, headers=headers, api_mode=api_mode,
                 fetch_models=_probe_native_catalog)
             if cache else _probe_native_catalog())
         if native_models is not None:
