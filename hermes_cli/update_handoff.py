@@ -90,21 +90,44 @@ def post_swap_command(handoff_path: Path, argv_tail: list[str]) -> list[str]:
     return [str(post_swap_python()), "-m", "hermes_cli.main", "update", *argv_tail, "--post-swap", str(handoff_path)]
 
 
-def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: list[str]) -> int:
-    """Run the post-swap tail in a child interpreter on the pulled code; returns its exit code.
-
-    The parent has already detached from the receipt (the child resumes it) and only relays the
-    exit code. On Windows, when this process runs from ``hermes.exe``, the child cannot be
-    awaited: the shim is one of the files the dependency sync must replace and it stays open
-    for as long as this process lives (#88838, #89599). That case spawns detached, prints where
-    the run continues and returns 0 — the child prints its own result and ``--gateway`` writes
-    the true exit code to ``.update_exit_code`` exactly as before.
-    """
+def post_swap_child_env() -> dict[str, str]:
+    """Environment for the child. ``HERMES_UPDATE_REEXEC`` marks it as already off the Windows
+    shim (no second re-exec at the sync boundary; ``cmd_update`` hard-exits it when its receipt
+    is durable instead of waiting on a leftover non-daemon thread). The lock hand-off pid is
+    only claimed when nobody upstream (Tauri/Electron updater) already named theirs."""
+    from hermes_cli.main_install_repair import _UPDATE_REEXEC_ENV
     from hermes_cli.update_lock import HANDOFF_PID_ENV
 
+    env = {**os.environ, POST_SWAP_ENV: "1", _UPDATE_REEXEC_ENV: "1"}
+    env.setdefault(HANDOFF_PID_ENV, str(os.getpid()))
+    return env
+
+
+def _print_manual_continuation(cmd: list[str], exc: OSError) -> None:
+    logger.warning("Post-swap hand-off could not start: %s", exc)
+    print(f"  ⚠ Could not start the post-update interpreter: {exc}")
+    print("  The code update is applied. Finish it with:")
+    print(f"    {subprocess.list2cmdline(cmd)}")
+
+
+def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: list[str]) -> int | None:
+    """Run the post-swap tail in a child interpreter on the pulled code.
+
+    Returns the child's exit code, or ``None`` when no child could be started (the caller then
+    owns the failure bookkeeping). The parent has already detached from the receipt (the child
+    resumes it) and only relays the exit code. On Windows, when this process runs from
+    ``hermes.exe``, the child cannot be awaited: the shim is one of the files the dependency
+    sync must replace and it stays open for as long as this process lives (#88838, #89599).
+    That case spawns detached, prints where the run continues and returns 0 — the child prints
+    its own result and ``--gateway`` writes the true exit code to ``.update_exit_code``.
+
+    Ctrl-C reaches parent and child together; the child owns the receipt and the Windows
+    gateway resume, so the parent keeps waiting for it instead of ``subprocess.run``'s
+    kill-on-interrupt, which would cut it off mid-cleanup.
+    """
     handoff_path = write_handoff(payload)
     cmd = post_swap_command(handoff_path, argv_tail)
-    env = {**os.environ, POST_SWAP_ENV: "1", HANDOFF_PID_ENV: str(os.getpid())}
+    env = post_swap_child_env()
     logger.debug("Post-swap hand-off → %s", subprocess.list2cmdline(cmd))
     sys.stdout.flush()
     sys.stderr.flush()
@@ -113,23 +136,27 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
         try:
             subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
         except OSError as exc:
-            logger.debug("Detached post-swap hand-off failed: %s", exc)
-            print("  ⚠ Could not continue the update under the venv Python. Run it yourself:")
-            print(f"    {subprocess.list2cmdline(cmd)}")
-            return 1
+            _print_manual_continuation(cmd, exc)
+            return None
         print("→ Windows: hermes.exe cannot replace itself while it runs; the update")
         print("  continues under the venv Python. The code update is already applied and")
         print("  this shell returns right away; the install finishes below.")
         return 0
 
     try:
-        result = subprocess.run(cmd, env=env)
+        child = subprocess.Popen(cmd, env=env, stdin=sys.stdin)
     except OSError as exc:
-        logger.warning("Post-swap hand-off could not start: %s", exc)
-        print(f"  ⚠ Could not start the post-update interpreter: {exc}")
-        print("  The code update is applied. Finish it with:")
-        print(f"    {subprocess.list2cmdline(cmd)}")
-        return 1
-    with _best_effort("Could not remove post-swap hand-off file: %s"):
-        handoff_path.unlink()
-    return int(result.returncode)
+        _print_manual_continuation(cmd, exc)
+        return None
+    try:
+        return int(child.wait())
+    except KeyboardInterrupt:
+        print("\n  Interrupted — waiting for the update child to finish its cleanup...")
+        try:
+            return int(child.wait(timeout=60))
+        except subprocess.TimeoutExpired:
+            child.terminate()
+            return 130
+        except KeyboardInterrupt:
+            child.terminate()
+            return 130

@@ -1191,7 +1191,8 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 
 def _handle_update_called_process_error(
-    e, args, gateway_mode: bool, had_desktop_app_before_update: bool) -> None:
+    e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
+    _windows_gateway_resume=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     zip_fallback_ok = _should_zip_fallback_on_update_error(e)
@@ -1200,7 +1201,8 @@ def _handle_update_called_process_error(
         print("→ Falling back to ZIP download...")
         print()
         desktop_build_ok = _update_via_zip(
-            args, had_desktop_app_before_update=had_desktop_app_before_update)
+            args, had_desktop_app_before_update=had_desktop_app_before_update,
+            _windows_gateway_resume=_windows_gateway_resume)
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
@@ -1376,8 +1378,18 @@ def _post_swap_payload(
         "active_tool_dependencies": opts.active_tool_dependencies,
         "plan": _pre_update_plan.to_dict() if _pre_update_plan is not None else None,
         "windows_gateway_resume": _windows_gateway_resume,
+        # {profile: snapshot_id} from the pre-update backup; the post-migration safety nets for
+        # sibling profiles read it (update_cmd_config._LAST_SIBLING_SNAPSHOTS).
+        "sibling_snapshots": dict(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS),
         "receipt": detach_update_receipt(),
     }
+
+
+def _sibling_snapshots_module():
+    # The backup phase REBINDS ``update_cmd_config._LAST_SIBLING_SNAPSHOTS``; read the module
+    # attribute at call time, never this module's import-time copy of the empty dict.
+    import hermes_cli.update_cmd_config as _cfg
+    return _cfg
 
 
 def _hand_off_post_swap(args, **payload_kwargs) -> None:
@@ -1387,13 +1399,26 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     and only relays the exit code (``hermes_cli/update_handoff.py``).
     """
     from hermes_cli.update_handoff import continue_update_in_fresh_interpreter
+    from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _post_swap_payload(**payload_kwargs)
-    if payload["windows_gateway_resume"]:
-        import atexit as _atexit
-        with suppress(Exception):
-            _atexit.unregister(_m()._resume_windows_gateways_after_update)
     code = continue_update_in_fresh_interpreter(payload, argv_tail=_post_swap_argv_tail(args))
+    token = payload_kwargs.get("_windows_gateway_resume")
+    if token and code is not None:
+        # The child got its own copy (serialized before this flip) and owns the resume; every
+        # parent-side hook (atexit, the ZIP path's ``finally``) reads this flag and stays out
+        # of the way. When no child ran, the parent still resumes what it paused.
+        token["resume_needed"] = False
+    if code is None:
+        # No child ran: take the receipt back so this failure is recorded, and leave the
+        # install breadcrumb so the next launch finishes the dependency sync (new code, old deps).
+        if payload["receipt"]:
+            resume_update_receipt(payload["receipt"])
+        _record_update_step("post_swap_handoff", False, "child interpreter could not start")
+        _m()._write_update_incomplete_marker()
+        if payload_kwargs.get("gateway_mode"):
+            _write_gateway_update_exit_code(False)
+        code = 1
     sys.exit(code)
 
 
@@ -1404,6 +1429,8 @@ def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = read_handoff(args.post_swap)
+    with suppress(OSError):
+        Path(args.post_swap).unlink()
     if payload.get("receipt"):
         resume_update_receipt(payload["receipt"])
     _execute_post_swap(payload, args, gateway_mode)
@@ -1413,8 +1440,10 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
     """The tail ``_apply_pulled_update`` / ``_update_via_zip`` used to run in the pre-pull
     interpreter, driven from a hand-off payload."""
     from dataclasses import replace as _replace
+    import hermes_cli.update_cmd_config as _cfg
     from hermes_cli.update_inventory import UpdatePlan
 
+    _cfg._LAST_SIBLING_SNAPSHOTS = dict(payload.get("sibling_snapshots") or {})
     _pre_update_plan = UpdatePlan.from_dict(payload["plan"]) if payload.get("plan") else None
     _windows_gateway_resume = payload.get("windows_gateway_resume")
     if _windows_gateway_resume:
@@ -1435,11 +1464,14 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
             desktop_build_ok = _finish_zip_update(
                 active_tool_dependencies=opts.active_tool_dependencies,
                 pre_update_version=opts.pre_update_version,
-                had_desktop_app_before_update=had_desktop_app_before_update)
+                had_desktop_app_before_update=had_desktop_app_before_update,
+                _windows_gateway_resume=_windows_gateway_resume)
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)
             return
-        _, git_cmd, _ = _prepare_git_command()
+        # The parent already ran the checkout preflight (fork banner, lockfile churn, EOL); the
+        # child only needs a working git.
+        git_cmd = _ensure_non_trampoline_git(_base_git_cmd())
         _finish_pulled_update(
             git_cmd, payload["branch"], payload.get("pre_pull_sha"), opts, gateway_mode=gateway_mode,
             is_fork=bool(payload.get("is_fork")), desktop_dir=desktop_dir,
@@ -1449,7 +1481,9 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
     except _shim_quarantine_error_type() as e:
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
-        _handle_update_called_process_error(e, args, gateway_mode, had_desktop_app_before_update)
+        _handle_update_called_process_error(
+            e, args, gateway_mode, had_desktop_app_before_update,
+            _windows_gateway_resume=_windows_gateway_resume)
 
 
 def _finish_pulled_update(
@@ -1618,8 +1652,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(2)
         try:
             desktop_build_ok = _update_via_zip(
-                args, had_desktop_app_before_update=had_desktop_app_before_update)
+                args, had_desktop_app_before_update=had_desktop_app_before_update,
+                _windows_gateway_resume=_windows_gateway_resume)
         finally:
+            # No-op once the post-swap child owns the token (``resume_needed`` flipped);
+            # still resumes after a pre-swap refusal (dirty tree, --branch).
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
@@ -1700,7 +1737,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # See #87331.
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
-        _handle_update_called_process_error(e, args, gateway_mode, had_desktop_app_before_update)
+        _handle_update_called_process_error(
+            e, args, gateway_mode, had_desktop_app_before_update,
+            _windows_gateway_resume=_windows_gateway_resume)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

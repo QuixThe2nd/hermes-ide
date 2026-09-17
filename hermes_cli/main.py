@@ -576,6 +576,11 @@ def _apply_profile_override() -> None:
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
         return
+    # The post-swap updater child inherits the home its parent already resolved (possibly the
+    # root for `-p default`); re-reading the sticky active_profile here would finish the update
+    # — receipt, config migration, exit code — in another profile's home.
+    if profile_name is None and hermes_home_env and os.environ.get("HERMES_UPDATE_POST_SWAP") == "1":
+        return
 
     if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
         try:

@@ -356,7 +356,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._refresh_active_memory_provider_dependencies()
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
     interpreter born on the new code (never returns; the child owns the receipt and exit code)."""
@@ -383,11 +383,14 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     from dataclasses import replace as _replace
     _hand_off_post_swap(
         args, swap="zip", branch=branch, opts=_replace(opts, pre_update_version=pre_update_version),
-        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update)
+        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
+        _windows_gateway_resume=_windows_gateway_resume)
     return True  # unreachable: _hand_off_post_swap exits with the child's code
 
 
-def _finish_zip_update(*, active_tool_dependencies, pre_update_version, had_desktop_app_before_update: bool) -> bool:
+def _finish_zip_update(
+    *, active_tool_dependencies, pre_update_version, had_desktop_app_before_update: bool,
+    _windows_gateway_resume=None) -> bool:
     """Post-swap tail of the ZIP path (runs in the interpreter born on the new tree). Returns
     ``False`` when a Desktop rebuild ran and failed."""
     from hermes_cli.update_cmd import (
@@ -401,7 +404,7 @@ def _finish_zip_update(*, active_tool_dependencies, pre_update_version, had_desk
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra breaks on this machine, keep
     # base deps and reinstall the remaining extras individually so update does not silently strip working
     # capabilities. See #86735.
-    _m()._abort_dependency_sync_if_self_locked()
+    _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip(active_tool_dependencies)
     # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs
