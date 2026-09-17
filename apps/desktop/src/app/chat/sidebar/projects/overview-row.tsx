@@ -26,7 +26,7 @@ import {
 
 import { expandedProjectSessions, latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
-import type { SidebarProjectTree } from './workspace-groups'
+import { excludeProjectSessions, type SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
@@ -81,6 +81,13 @@ interface ProjectOverviewRowProps {
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
+  /** What the project tree drops (pins, filter misses, just-deleted rows) —
+   *  the same predicate `previewSessions` was built with, so a "Show all"
+   *  hydration can't resurrect them. */
+  isSessionHidden?: (session: SessionInfo) => boolean
+  /** How many of the backend's `sessionCount` that predicate hides, so
+   *  "Show all N" promises only rows the view will actually render. */
+  hiddenSessionCount?: number
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -96,6 +103,8 @@ export function ProjectOverviewRow({
   renderRows,
   activeProjectId,
   previewSessions,
+  isSessionHidden,
+  hiddenSessionCount = 0,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -118,8 +127,12 @@ export function ProjectOverviewRow({
   const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
   const fetched = (previewSessions ?? []).slice(0, limit)
   const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
-  const preview = renderRows ? (expanded ? expandedProjectSessions(recent, expanded) : recent) : []
-  const hiddenCount = project.sessionCount - preview.length
+  // The hydrated lanes come straight from the backend, so — like the drill-in
+  // (index.tsx) — they haven't been through the tree's exclusion filter yet.
+  const visible = expanded && isSessionHidden ? excludeProjectSessions(expanded, isSessionHidden) : expanded
+  const preview = renderRows ? (visible ? expandedProjectSessions(recent, visible) : recent) : []
+  const total = project.sessionCount - hiddenSessionCount
+  const hiddenCount = total - preview.length
   const offerShowAll = !showAllSessions && !expanded && preview.length > 0 && hiddenCount > 0
 
   const showAll = () => {
@@ -132,7 +145,7 @@ export function ProjectOverviewRow({
     }
 
     setExpanding(true)
-    fetchProjectSessions(project.id)
+    fetchProjectSessions(project.id, { supersedable: false })
       .then(tree => void (tree && setExpanded(tree)))
       .catch(() => onEnter?.(project.id))
       .finally(() => setExpanding(false))
@@ -261,7 +274,7 @@ export function ProjectOverviewRow({
                   </SidebarRowLeadGlyph>
                 </SidebarRowLead>
                 <SidebarRowLabel className="text-xs underline-offset-4 group-hover/more:underline">
-                  {s.projects.showAllCount(project.sessionCount)}
+                  {s.projects.showAllCount(total)}
                 </SidebarRowLabel>
               </SidebarRowBody>
             </SidebarRowShell>

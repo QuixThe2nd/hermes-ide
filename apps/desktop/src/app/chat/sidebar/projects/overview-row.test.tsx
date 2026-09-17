@@ -14,7 +14,7 @@ afterEach(cleanup)
 const workspaceOpen = vi.hoisted(() => ({ value: false }))
 
 const projectsStore = vi.hoisted(() => ({
-  fetchProjectSessions: vi.fn<(id: string) => Promise<null | SidebarProjectTree>>(),
+  fetchProjectSessions: vi.fn<(id: string, options?: { supersedable?: boolean }) => Promise<null | SidebarProjectTree>>(),
   projectProfile: vi.fn<() => null | string>(() => 'default')
 }))
 
@@ -121,8 +121,37 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show all 5 sessions' }))
 
     await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
-    expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p1')
+    expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p1', { supersedable: false })
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
+  })
+
+  // The hydrated lanes are the raw backend payload: pinned, filtered-out and
+  // just-deleted sessions must go through the same exclusion the previews did,
+  // and N must not promise rows the view hides.
+  it('"Show all" runs the hydrated lanes through the tree exclusion and counts only what it will render', async () => {
+    workspaceOpen.value = true
+    const five = Array.from({ length: 5 }, (_, index) => session(`s${index + 1}`, 500 - index))
+    const busy = { ...project, sessionCount: 5 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: five }] }]
+    } as unknown as SidebarProjectTree)
+    // s2 is pinned (renders in Pinned), s5 was just deleted.
+    const hidden = new Set(['s2', 's5'])
+
+    render(
+      <ProjectOverviewRow
+        hiddenSessionCount={hidden.size}
+        isSessionHidden={item => hidden.has(item.id)}
+        previewSessions={[five[0], five[2]]}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 3 sessions' }))
+
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s3,s4'))
   })
 
   it('offers the "new session" add button on Home, which starts one with no folder', () => {
