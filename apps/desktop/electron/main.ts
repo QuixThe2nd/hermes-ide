@@ -302,6 +302,7 @@ import {
 } from './plugin-profile-routes'
 import { evictPoolEntries } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
+import { createPoolRetirer } from './pool-retire'
 import {
   BackgroundSlotRetryBackoff,
   BackgroundSlotRetryDeferredError,
@@ -12388,12 +12389,20 @@ async function stopRegistryConnectionBackends(connectionId) {
 // Mark a pool profile as recently used so the idle reaper spares it. The
 // renderer calls this when it opens a profile's chat WS and periodically while
 // streaming, since the main process can't see the direct renderer↔backend WS.
-function touchPoolBackend(profile) {
+// It also reports whether a prompt turn currently leases the backend: a
+// foreground dial that must retire a resident skips leased ones early. That
+// flag is an optimisation, never the proof — the backend probe is (see
+// pool-retire.ts). Shape from #104871 by @bounce12340.
+function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
   for (const key of poolTouchKeys(profile)) {
     const entry = backendPool.get(key)
 
     if (entry) {
       entry.lastActiveAt = Date.now()
+
+      if (typeof options.activeTurn === 'boolean') {
+        entry.activeTurn = options.activeTurn
+      }
 
       return
     }
@@ -12578,6 +12587,23 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     throw new BackgroundSlotRetryDeferredError(profile)
   }
 
+  // Trigger point (from #104871): a foreground dial against a full pool may
+  // retire ONE resident the backend proves idle. Prepare it BEFORE taking a
+  // ticket so the request below sits at the queue head when the slot frees;
+  // commit AFTER so nothing that was not already waiting can take that slot.
+  // Null (nothing provably idle) falls through to the ordinary bounded wait.
+  const retirement =
+    spawnPriority === 'foreground' && localBackendSpawnCoordinator.activeCount >= poolMaxBackends()
+      ? await poolRetirer.retireForForeground(poolKey)
+      : null
+
+  try {
+    assertPoolEntryStillOwned(poolKey, entry)
+  } catch (error) {
+    retirement?.abandon()
+    throw error
+  }
+
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
     priority: spawnPriority
@@ -12585,6 +12611,12 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   entry.localBackendSlotKey = poolKey
   entry.localBackendSpawnRequest = spawnRequest
+
+  // The slot is released by the retired child's real exit (stopPoolBackend →
+  // releaseLocalBackendSlot), never here; this only starts the teardown.
+  void retirement?.commit().catch(error => {
+    rememberLog(`Pool retirement for "${poolKey}" failed: ${error instanceof Error ? error.message : String(error)}`)
+  })
 
   if (spawnRequest.queued) {
     rememberLog(
@@ -12850,6 +12882,48 @@ async function stopPoolBackend(profile: string) {
   await poolStopper.stop(profile)
   releaseLocalBackendSlot(entry)
 }
+
+// Backend-proven idleness for cooperative retirement (pool-retire.ts). Only
+// the child's own ledgers count: `/api/health/idle` reads running sessions,
+// running cron jobs (HERMES_DESKTOP=1 runs the in-process ticker) and prompts
+// waiting on a human. A runtime predating the route 404s, a probe error or an
+// unreadable ledger reads as null; both are "busy" to the retirer.
+async function probePoolBackendIdle(entry: any): Promise<boolean | null> {
+  if (!entry?.process || !entry.port || !entry.token) {
+    return null
+  }
+
+  try {
+    const body: any = await fetchJson(`http://127.0.0.1:${entry.port}/api/health/idle`, entry.token, {
+      timeoutMs: 3_000
+    })
+
+    return body?.idle === true ? true : body?.idle === false ? false : null
+  } catch {
+    return null
+  }
+}
+
+// Tell every window the pooled backend under `poolKey` is being retired so the
+// renderer parks that scope (wantOpen=false) instead of redialing into the
+// slot it just vacated. Fired BEFORE the SIGTERM (pool-retire.ts contract).
+function broadcastPoolBackendRetiring(poolKey: string) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    const { webContents } = win
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('hermes:pool:retiring', { poolKey })
+    }
+  }
+}
+
+const poolRetirer = createPoolRetirer<any>({
+  pool: backendPool,
+  probeIdle: (_key, entry) => probePoolBackendIdle(entry),
+  stopBackend: stopPoolBackend,
+  onRetiring: broadcastPoolBackendRetiring,
+  log: rememberLog
+})
 
 async function teardownPoolBackendAndWait(profile) {
   await Promise.all(localProfilePoolKeys(profile).map(key => stopPoolBackend(key)))
@@ -15240,8 +15314,8 @@ function revalidateSuspectPoolAfterResume() {
   )
 }
 
-ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
-  touchPoolBackend(profile)
+ipcMain.handle('hermes:backend:touch', async (_event, profile, options) => {
+  touchPoolBackend(profile, options)
 
   return { ok: true }
 })
