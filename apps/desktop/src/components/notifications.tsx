@@ -124,7 +124,10 @@ function TopCenterStack({
       )}
       role="region"
     >
-      <CardStack count={expanded ? 1 : notifications.length} backClassName="rounded-lg border border-(--stroke-nous) bg-popover shadow-nous">
+      <CardStack
+        backClassName="rounded-lg border border-(--stroke-nous) bg-popover shadow-nous"
+        count={expanded ? 1 : notifications.length}
+      >
         <NotificationItem notification={latest} />
       </CardStack>
       {expanded && older.map(n => <NotificationItem key={n.id} notification={n} />)}
@@ -163,7 +166,10 @@ function BottomRightStack({
   return createPortal(
     <div
       aria-label={copy.region}
-      className={cn(REGION_BASE, 'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse max-h-[70vh] overflow-y-auto overscroll-contain p-1')}
+      className={cn(
+        REGION_BASE,
+        'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse max-h-[70vh] overflow-y-auto overscroll-contain p-1'
+      )}
       role="region"
     >
       {older.length > 0 && (
@@ -171,12 +177,20 @@ function BottomRightStack({
           <Button onClick={() => setExpanded(value => !value)} size="xs" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>
-          <Button onClick={() => notifications.forEach(notification => dismissNotification(notification.id))} size="xs" variant="text">
+          <Button
+            onClick={() => notifications.forEach(notification => dismissNotification(notification.id))}
+            size="xs"
+            variant="text"
+          >
             {copy.clearAll}
           </Button>
         </div>
       )}
-      <CardStack count={expanded ? 1 : notifications.length} direction="up" backClassName="rounded-lg border border-(--stroke-nous) bg-popover shadow-nous">
+      <CardStack
+        backClassName="rounded-lg border border-(--stroke-nous) bg-popover shadow-nous"
+        count={expanded ? 1 : notifications.length}
+        direction="up"
+      >
         <NotificationItem notification={latest} />
       </CardStack>
       {expanded && older.map(notification => <NotificationItem key={notification.id} notification={notification} />)}
