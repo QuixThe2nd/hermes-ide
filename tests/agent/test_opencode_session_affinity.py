@@ -131,3 +131,20 @@ def test_async_out_of_turn_call_binds_the_explicit_main_runtime_session(monkeypa
 
     assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
     assert aux._RUNTIME_MAIN_CONTEXT.get() is None
+
+
+def test_tui_gateway_oneshot_runtime_snapshot_carries_the_session(monkeypatch, out_of_turn):
+    """The Desktop/TUI-gateway ``llm.oneshot`` path builds its explicit ``main_runtime`` from the live
+    agent; without ``session_id`` an OpenCode title request sends no ``x-opencode-session`` (#112717)."""
+    from tui_gateway.server import _main_runtime_from_agent
+
+    agent = SimpleNamespace(
+        provider="opencode-zen", model="glm-5", base_url="https://opencode.ai/zen/v1", api_key="test-key",
+        api_mode="chat_completions", auth_mode="", session_id="sess-desktop-1",
+    )
+    captured = {}
+    _route_to_fake_opencode_client(monkeypatch, captured, async_mode=False)
+
+    aux.call_llm(task="title_generation", main_runtime=_main_runtime_from_agent(agent), messages=_MSGS)
+
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-desktop-1"

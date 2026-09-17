@@ -2940,7 +2940,9 @@ def _main_runtime_from_agent(agent) -> dict | None:
     if agent is None:
         return None
     runtime: dict = {}
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+    # ``session_id`` rides along so a session-bound ``llm.oneshot`` (title, approval) on an OpenCode
+    # route sends the conversation's ``x-opencode-session`` like the main turn does (#112717).
+    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode", "session_id"):
         value = getattr(agent, field, None)
         if isinstance(value, str) and value.strip():
             runtime[field] = value.strip()
