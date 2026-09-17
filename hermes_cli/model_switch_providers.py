@@ -94,6 +94,7 @@ def _fetch_picker_live_models(
     """Fetch picker models with native Ollama and cached generic discovery."""
     from hermes_cli.models import _get_ollama_native_headers, cached_fetch_api_models, fetch_api_models
     from hermes_cli.models_local import (
+        _OLLAMA_LOCAL_MODELS_CACHE_TTL,
         _normalize_openai_base_url,
         fetch_ollama_local_models,
         should_use_ollama_native_catalog,
@@ -140,11 +141,13 @@ def _fetch_picker_live_models(
         # whole group vanished from the picker until the user hit Refresh Models. Key the entry on
         # the caller's ``headers`` (what that cache_only read hashes), not ``resolved_headers``: the
         # native probe's synthesized Authorization would otherwise land under a fingerprint the
-        # read side never computes, and a keyed endpoint kept flickering.
+        # read side never computes, and a keyed endpoint kept flickering. Clamp the fresh window
+        # to the native TTL (300s, as cached_provider_model_ids does for the built-in slug): a
+        # locally pulled model must not stay invisible for the generic 1h TTL.
         native_models = (
             cached_fetch_api_models(
                 api_key, api_url, timeout=timeout, headers=headers, api_mode=api_mode,
-                fetch_models=_probe_native_catalog)
+                fetch_models=_probe_native_catalog, ttl_seconds=_OLLAMA_LOCAL_MODELS_CACHE_TTL)
             if cache else _probe_native_catalog())
         if native_models is not None:
             return native_models

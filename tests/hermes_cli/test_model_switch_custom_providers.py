@@ -118,6 +118,66 @@ def test_picker_native_catalog_skips_cache_admission_when_cache_is_off(monkeypat
     assert cached_fetch_api_models(None, url, cache_only=True, timeout=1.5) is None
 
 
+def _native_picker_probe(monkeypatch, models_by_call):
+    """Native Ollama detection on, ``/api/tags`` answering successive ``models_by_call``."""
+    monkeypatch.setattr(
+        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+    )
+    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
+    answers = iter(models_by_call)
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: next(answers)
+    )
+
+
+def _age_cached_rows(seconds):
+    from hermes_cli import models as models_mod
+
+    cache = models_mod._load_provider_models_cache()
+    for row in cache.values():
+        row["at"] -= seconds
+    for key, row in cache.items():
+        models_mod._store_cache_entry(key, row, cache)
+
+
+def test_picker_native_catalog_uses_the_short_native_ttl(monkeypatch):
+    """The current endpoint's native row must expire on the 300s Ollama TTL, not the 1h generic one.
+
+    A model pulled after the first picker open otherwise stays invisible for up to an hour;
+    ``cached_provider_model_ids`` clamps the built-in ``ollama`` slug the same way. Past the
+    native TTL the row is stale: served once, with a background refresh scheduled.
+    """
+    from hermes_cli.models_local import _OLLAMA_LOCAL_MODELS_CACHE_TTL
+
+    _native_picker_probe(monkeypatch, [["qwen3:8b"]])
+    url = "http://127.0.0.1:11434/v1"
+    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
+
+    refreshes = []
+    monkeypatch.setattr(
+        "hermes_cli.models._spawn_swr_refresh", lambda key, fn=None: refreshes.append(key)
+    )
+    _age_cached_rows(_OLLAMA_LOCAL_MODELS_CACHE_TTL + 1)
+    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
+    assert len(refreshes) == 1, "row older than the native TTL must be revalidated, not fresh"
+
+
+def test_picker_empty_native_catalog_is_not_stale_served(monkeypatch):
+    """An authoritative empty native row is valid only inside the TTL.
+
+    Beyond it the probe must run again, or an Ollama that was model-less at first open keeps
+    an empty picker row for the whole 7-day stale window after models are pulled.
+    """
+    from hermes_cli.models import _PROVIDER_MODELS_CACHE_TTL
+
+    _native_picker_probe(monkeypatch, [[], ["back:latest"]])
+    url = "http://127.0.0.1:11434/v1"
+    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == []
+
+    _age_cached_rows(_PROVIDER_MODELS_CACHE_TTL + 100)
+    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["back:latest"]
+
+
 def test_picker_generic_discovery_preserves_api_mode(monkeypatch):
     calls = []
 
