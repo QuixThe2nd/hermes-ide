@@ -2133,17 +2133,32 @@ class GatewayTurnMixin:
         """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.
 
         Under multiplexing config/skills/memory resolve to the source profile's home AND credentials
-        come from its secret scope (never process-global ``os.environ``). Hosted-room activity can
-        activate the same process-wide credential guard for a standalone gateway, which must bind
-        its default profile rather than leave a later credential read unscoped."""
-        from agent.secret_scope import is_multiplex_active
+        come from its secret scope (never process-global ``os.environ``). A standalone gateway
+        (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
+        credential guard — see ``_standalone_launch_scope``."""
         from gateway.run import _profile_runtime_scope
-        if (
-            getattr(getattr(self, "config", None), "multiplex_profiles", False)
-            or is_multiplex_active()
-        ):
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
-        return nullcontext()
+        return self._standalone_launch_scope()
+
+    @staticmethod
+    def _standalone_launch_scope():
+        """Scope for a standalone gateway's own (launch-profile) work: a no-op until the process hosts
+        another profile home, then the launch profile's OWN runtime scope.
+
+        A native hosted room running a second profile calls
+        ``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
+        so ``get_secret`` fails closed for every unscoped read afterwards — including the standalone
+        gateway's ordinary turns, which never bound a scope because ``multiplex_profiles`` is off
+        (#112878). The launch profile is a profile too: bind its ``.env`` over the env frozen at
+        activation (a key injected by systemd / ``op run`` has no file to rebuild it from), never a
+        secondary's scope and never live ``os.environ``."""
+        from agent.secret_scope import is_multiplex_active
+        if not is_multiplex_active():
+            return nullcontext()
+        from hermes_constants import get_process_hermes_home
+        from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+        return launch_profile_runtime_scope(get_process_hermes_home())
 
     def _media_delivery_scope_for_source(self, source: SessionSource):
         """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the

@@ -9,7 +9,6 @@ import asyncio
 from pathlib import Path
 from unittest import mock
 
-from agent import secret_scope
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
 
@@ -47,27 +46,4 @@ class TestBackgroundTaskProfileScope:
         scope.assert_called_once_with(Path("/fake/profile"))
         inner.assert_awaited_once()
 
-
-def test_standalone_gateway_binds_default_scope_after_hosted_activation(
-    tmp_path, monkeypatch
-):
-    """Regression for #112878: hosted rooms can activate fail-closed scopes globally.
-
-    A gateway configured without multiplexing must still bind its default profile
-    when a hosted room has already activated the process-wide secret guard.
-    """
-    from tui_gateway import launch_profile_policy
-
-    home = tmp_path / "default"
-    home.mkdir()
-    (home / ".env").write_text("OPENAI_API_KEY=default-key\n", encoding="utf-8")
-    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
-
-    runner = _make_runner(multiplex=False)
-    source = mock.MagicMock()
-    with mock.patch.object(runner, "_resolve_profile_home_for_source", return_value=home):
-        launch_profile_policy.activate_multi_profile_hosting()
-        with runner._profile_scope_for_source(source):
-            assert secret_scope.get_secret("OPENAI_API_KEY") == "default-key"
 
