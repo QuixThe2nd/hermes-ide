@@ -667,8 +667,10 @@ describe('ClarifyTool batch card', () => {
 
     expect(screen.getByText('Color?')).toBeTruthy()
     expect(screen.getByText('Name?')).toBeTruthy()
+    // The spinner card is gone; the preview keeps only a screen-reader loading cue.
     expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
-    expect(document.querySelector('[data-clarify-batch-preview]')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toMatch(/loading question/i)
+    expect(document.querySelector('[data-clarify-batch-preview]')?.getAttribute('aria-busy')).toBe('true')
     // Nothing is answerable yet: no qids to respond with.
     expect((screen.getByRole('button', { name: /red/ }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /Skip/ }) as HTMLButtonElement).disabled).toBe(true)

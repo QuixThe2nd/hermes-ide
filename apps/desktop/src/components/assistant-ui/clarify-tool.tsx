@@ -1140,13 +1140,18 @@ function ClarifyToolBatchPending({
 
   return (
     <form
-      aria-disabled={ready ? undefined : 'true'}
+      aria-busy={ready ? undefined : 'true'}
       className="my-1.5 grid gap-4"
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
     >
+      {ready ? null : (
+        <span className="sr-only" role="status">
+          {copy.loadingQuestion}
+        </span>
+      )}
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
