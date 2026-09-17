@@ -30,9 +30,11 @@ import {
   $narrowViewport,
   $newSessionTabAction,
   $paneVisible,
+  adoptContributedPanes,
   registerPaneCloser,
   removeTreePane,
-  revealTreePane
+  revealTreePane,
+  undismissTreePanes
 } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
@@ -1331,6 +1333,24 @@ export const host = {
    *  safe to call in render. Feature-detect on older desktops
    *  (`typeof host.paneVisibility === 'function'`). */
   paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
+
+  /** Forget a persisted Close for a contributed pane so adoption puts it back
+   *  where its dock hint says — WITHOUT fronting it or un-collapsing its zone
+   *  (that is `revealPane`, for an explicit user action). For a pane a plugin
+   *  registers conditionally (Bot Mode's Scheduled jobs pane exists only while
+   *  Bot Mode is on screen), its re-registration is the only "show" the user
+   *  ever performs, so a remembered Close would otherwise strand the pane until
+   *  a full layout reset (#102224). Feature-detect on older desktops. */
+  undismissPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    undismissTreePanes([id])
+    adoptContributedPanes()
+  },
 
   /** Reveal a contributed pane and its zone from an explicit user action. */
   revealPane: (paneId: string): void => {

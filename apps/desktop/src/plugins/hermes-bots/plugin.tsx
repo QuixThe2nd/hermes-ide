@@ -416,8 +416,8 @@ export default {
     // keeps the pane's spot, so re-registering re-adopts it where it was.
     // host.paneVisibility is feature-detected: older desktops without the SDK
     // export keep the always-registered behavior.
-    const registerRoutinesPane = () =>
-      ctx.register({
+    const registerRoutinesPane = () => {
+      const dispose = ctx.register({
         id: 'routines',
         area: 'panes',
         // The app's noun for these, so the tab agrees with the pane header and
@@ -440,6 +440,18 @@ export default {
         },
         render: () => <RoutinesPane />
       })
+
+      // The pane's ✕ remembers a Close across launches, and nothing else ever
+      // shows this pane again — it only comes back by being registered here.
+      // Entering Bot Mode is the user asking for their bot's chrome, so a
+      // remembered Close is dropped and the pane returns the way it first
+      // arrived: as the collapsed right-edge tab (#102224).
+      if (typeof host.undismissPane === 'function') {
+        host.undismissPane(`${ID}:routines`)
+      }
+
+      return dispose
+    }
 
     if (typeof host.paneVisibility === 'function') {
       // The contribution-scoped pane id (`register` prefixes `${ID}:`).
