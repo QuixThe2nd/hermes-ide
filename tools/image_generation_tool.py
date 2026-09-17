@@ -660,8 +660,6 @@ def _dispatch_to_plugin_provider(
     return _provider_result(result, "Provider returned a non-dict result")
 
 
-# Native Krea model ids are served by the Krea managed gateway (managed mode only —
-# direct/BYO users keep their pipeline).
 def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
     """Return ``model_id`` when it is one of the Krea plugin's model ids, else ``None``."""
     from plugins.image_gen.krea import KREA_MODEL_IDS
@@ -670,38 +668,63 @@ def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
     return candidate if candidate in KREA_MODEL_IDS else None
 
 
-def _maybe_route_managed_krea(
-    prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> Optional[str]:
-    """JSON result from the managed Krea gateway, or ``None`` to fall through.
+def _managed_model_plugin() -> Optional[tuple]:
+    """``(plugin_name, model_id)`` when the managed selection stores a Krea or Portal model, else ``None``.
 
-    Fires only for a native Krea model with no ``image_gen.provider`` other than
-    ``"nous"`` stored (a picker choice dispatches normally) and a resolvable Krea gateway.
+    The managed row writes ``provider: nous`` for three gateways; the model id says which. FAL
+    models (and an unset model) return ``None`` so the in-tree FAL path handles them. Only the
+    ``nous``/unset selection qualifies — a direct/BYO provider pick dispatches normally.
     """
+    from tools.image_generation_managed import KREA, PORTAL, managed_backend_for_model
+
     configured_provider = _read_configured_image_provider()
     if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
         return None
-    normalized = _normalize_krea_model(_read_configured_image_model())
-    if normalized is None:
+    model_id = _read_configured_image_model()
+    backend = managed_backend_for_model(model_id)
+    if backend == KREA:
+        return "krea", model_id
+    if backend == PORTAL and configured_provider == NOUS_MANAGED_PROVIDER:
+        return "nous", model_id
+    return None
+
+
+def _maybe_route_managed_model(
+    prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> Optional[str]:
+    """JSON result from the Krea or Portal gateway the stored model belongs to, or ``None`` to fall
+    through to FAL.
+
+    A Krea model with no reachable Krea gateway falls through (direct/BYO users keep their
+    pipeline); a Portal model never does — falling through would silently bill a FAL default.
+    """
+    target = _managed_model_plugin()
+    if target is None:
         return None
+    plugin_name, model_id = target
     try:
-        from plugins.image_gen.krea import _resolve_managed_krea_gateway
-        if _resolve_managed_krea_gateway() is None:
-            return None
-        provider = _get_plugin_provider("krea")
+        if plugin_name == "krea":
+            from plugins.image_gen.krea import _resolve_managed_krea_gateway
+            if _resolve_managed_krea_gateway() is None:
+                return None
+        provider = _get_plugin_provider(plugin_name)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Managed Krea routing unavailable: %s", exc)
-        return None
+        logger.debug("Managed %s routing unavailable: %s", plugin_name, exc)
+        provider = None
     if provider is None:
-        return None
-    kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio, "model": normalized}
+        if plugin_name == "krea":
+            return None
+        return _provider_error(
+            f"image_gen.model='{model_id}' is a Nous Portal model but the Portal image backend is not "
+            f"available. Pick another model via `hermes tools` → Image Generation.", "provider_not_registered")
+    kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio, "model": model_id}
     try:
         _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale)
         result = provider.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Managed Krea routing failed: %s", exc)
-        return _provider_error(f"Managed Krea generation error: {exc}", "provider_exception")
-    return _provider_result(result, "Krea provider returned a non-dict result")
+        logger.warning("Managed %s routing failed: %s", plugin_name, exc)
+        return _provider_error(f"Managed {provider.display_name} generation error: {exc}", "provider_exception")
+    return _provider_result(result, f"{provider.display_name} provider returned a non-dict result")
 
 
 def _confine_source_images(image_url, reference_image_urls, task_id, *, permitted: tuple = ("image",)):
@@ -742,12 +765,12 @@ def _handle_image_generate(args, **kw):
         args.get("image_url"), args.get("reference_image_urls"), task_id)
     if confine_error is not None:
         return confine_error
-    # Order matters: explicit plugin provider (incl. "krea"), then model-driven managed Krea
-    # interception (only when no provider is set, so BYO/direct FAL stays untouched), then FAL.
+    # Order matters: explicit plugin provider, then the model-driven managed gateways (Krea /
+    # Portal — only under the "nous"/unset selection, so BYO/direct FAL stays untouched), then FAL.
     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
                    upscale=upscale if isinstance(upscale, bool) else None)
     raw = None
-    for route in (_dispatch_to_plugin_provider, _maybe_route_managed_krea, image_generate_tool):
+    for route in (_dispatch_to_plugin_provider, _maybe_route_managed_model, image_generate_tool):
         raw = route(prompt, aspect_ratio, **sources)
         if raw is not None:
             break
@@ -763,15 +786,15 @@ _NO_CAPABILITIES = {"modalities": ["text"], "max_reference_images": 0, "supports
 def _active_image_capabilities() -> Dict[str, Any]:
     """Best-effort capabilities of the active backend/model; never raises.
 
-    Mirrors runtime dispatch: a Krea model id under the managed selection asks the Krea
+    Mirrors runtime dispatch: a Krea or Portal model id under the managed selection asks that
     plugin, a set ``image_gen.provider`` asks that plugin, else the FAL catalog.
     Fail-closed: an undeclared capability is advertised as absent.
     """
     info: Dict[str, Any] = dict(_NO_CAPABILITIES)
     configured_provider = _read_configured_image_provider()
-    managed_selection = configured_provider in (None, NOUS_MANAGED_PROVIDER)
-    if managed_selection and _normalize_krea_model(_read_configured_image_model()) is not None:
-        plugin_name = "krea"
+    managed = _managed_model_plugin()
+    if managed is not None:
+        plugin_name = managed[0]
     elif configured_provider and configured_provider != "fal":
         plugin_name = configured_provider
     else:
