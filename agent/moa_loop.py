@@ -968,26 +968,22 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
 
 
 def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
-    """Attach the per-turn reference block at the END of the aggregator prompt.
+    """Attach the per-turn reference block as its OWN trailing user message.
 
-    The block varies per iteration; appending keeps ``[system][task][tool-history]``
-    cache-stable. A trailing user turn is merged in place (string, or a new text part
-    AFTER the cache_control-marked part); otherwise a user message is appended (two
-    consecutive user turns would be rejected by strict providers).
+    The block varies per turn; appending keeps ``[system][task][tool-history]``
+    cache-stable. It is never merged into a trailing user turn: iteration 1 of a
+    tool loop ends on ``user(task)``, and a merged ``user(task + guidance)`` byte-differs
+    from the ``user(task)`` every later iteration replays, so the provider prefix cache
+    collapsed to the system prompt on iteration 2 of every turn (#112358). Converters
+    that require strict alternation already merge adjacent same-role turns.
     """
-    last = agg_messages[-1] if agg_messages else None
-    last_content = last.get("content") if last is not None and last.get("role") == "user" else None
-    if isinstance(last_content, str):
-        last["content"] = last_content + "\n\n" + guidance
-    elif isinstance(last_content, list):
-        last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
-    else:
-        agg_messages.append({"role": "user", "content": guidance})
+    agg_messages.append({"role": "user", "content": guidance})
 
 
 def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
-    """Exact inverse of ``_attach_reference_guidance`` (the three attach shapes), so a
-    cache breakpoint never lands on the turn-varying guidance. Inputs are not mutated."""
+    """Exact inverse of ``_attach_reference_guidance`` (plain string, or its cache-decorated
+    single-text-part form), so a cache breakpoint never lands on the turn-varying guidance.
+    Inputs are not mutated."""
     if not guidance or not messages:
         return messages
     guidance_text = str(guidance)
@@ -995,21 +991,12 @@ def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> li
     if not isinstance(last, dict) or last.get("role") != "user":
         return messages
     content = last.get("content")
-    if content == guidance_text:  # shape (c): guidance was its own user message
+    if content == guidance_text:
         return list(messages[:-1])
-    suffix = "\n\n" + guidance_text
-    if isinstance(content, str) and content.endswith(suffix):  # shape (a): merged into a string turn
-        return [*messages[:-1], {**last, "content": content[: -len(suffix)]}]
-    if isinstance(content, list) and content:
-        last_part = content[-1]
-        if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
-            text = last_part.get("text") or ""
-            if text in (suffix, guidance_text):
-                # Shape (b): guidance rode as its own trailing part. Guidance as the
-                # only content drops the whole message (mirrors shape c).
-                return list(messages[:-1]) if len(content) == 1 else [*messages[:-1], {**last, "content": list(content[:-1])}]
-            if text.endswith(suffix):
-                return [*messages[:-1], {**last, "content": [*content[:-1], {**last_part, "text": text[: -len(suffix)]}]}]
+    if isinstance(content, list) and len(content) == 1:
+        part = content[0]
+        if isinstance(part, dict) and part.get("type", "text") == "text" and (part.get("text") or "") == guidance_text:
+            return list(messages[:-1])
     return messages
 
 
