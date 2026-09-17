@@ -70,7 +70,7 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
-from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_repetition_dominated
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
@@ -355,9 +355,10 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
-    if is_repetition_dominated(visible):
-        # Same guard as the truncated-continuation path: the looped bytes must reach neither the
-        # replayed correction nor the placeholder below (empty ``visible`` takes the hidden shape).
+    if is_runaway_repetition(visible):
+        # Runaway shape only (a correct batch-style partial stays replayable): the looped bytes must
+        # reach neither the replayed correction nor the placeholder below (empty ``visible`` takes
+        # the hidden shape).
         checkpoint_parts.append(REPETITION_LOOP_INTERRUPTED)
         visible = ""
     elif visible:
