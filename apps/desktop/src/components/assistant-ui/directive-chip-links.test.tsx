@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
@@ -30,19 +30,10 @@ afterEach(() => {
 })
 
 // The wire form of a url chip in a SENT user message: a `<button>` had none of
-// the gestures a real link gets, which is exactly what these tests pin.
+// the open-elsewhere gestures a real link gets, which is exactly what these
+// tests pin (#112219). Plain click → in-app pane is covered by
+// session-ref-open.test.tsx.
 describe('sent-message url chip', () => {
-  it('opens the in-app preview pane on a plain click', async () => {
-    const openExternal = installDesktopBridge()
-
-    render(<DirectiveContent text={`@url:\`${PR_URL}\``} />)
-
-    fireEvent.click(screen.getByRole('link'))
-
-    expect(openExternal).not.toHaveBeenCalled()
-    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe(PR_URL))
-  })
-
   // Platform-specific on purpose (same rule as lib/external-link.test.tsx):
   // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
   it('escapes to the system browser on the platform open-elsewhere modifier', () => {
