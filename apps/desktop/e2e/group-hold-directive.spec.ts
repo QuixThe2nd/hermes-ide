@@ -69,6 +69,17 @@ async function createRoom(page: MockBackendFixture['page']) {
   return groupComposer
 }
 
+/** A bot created moments ago runs its intro turn in the background; when it
+ *  lands, the roster fronts that bot's chat tab and yanks the center away from
+ *  the room. Re-select the room before reading room content. */
+async function showRoom(page: MockBackendFixture['page']) {
+  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+
+  if ((await groupTab.getAttribute('aria-selected')) !== 'true') {
+    await groupTab.click()
+  }
+}
+
 test.beforeEach(async () => {
   fixture = await setupMockBackend({ mockServer: {
     holdFirstCompletionContaining: 'LANE_H_FIRST',
@@ -94,7 +105,10 @@ test('a distant German filler word does not hold the mentioned bot (#103893)', a
   await expect.poll(() => fixture!.mock.receivedPrompts.some(p => p.includes('LANE_H_GERMAN')), { timeout: 60_000 }).toBe(true)
   // ... and the persisted room record must not carry a hold for it.
   expect(await roomHolds(page)).toEqual([])
-  await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+  await expect(async () => {
+    await showRoom(page)
+    await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 5_000 })
+  }).toPass({ timeout: 60_000 })
   await expect(page.locator('[data-slot="group-hold-status"]')).toHaveCount(0)
   console.log('GERMAN FILLER: prompt delivered, holds =', JSON.stringify(await roomHolds(page)))
   await page.screenshot({ path: test.info().outputPath('german-filler-after.png') })
@@ -123,8 +137,11 @@ test('@all with a task re-engages a room the user stopped (#97740)', async () =>
   await groupComposer.press('Enter')
   await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes('LANE_H_ALLTASK')).length, { timeout: 90_000 }).toBeGreaterThanOrEqual(2)
   expect(await roomHolds(page)).toEqual([])
+  await expect(async () => {
+    await showRoom(page)
+    await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 5_000 })
+  }).toPass({ timeout: 60_000 })
   await expect(page.locator('[data-slot="group-hold-status"]')).toHaveCount(0)
-  await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 60_000 })
   console.log('@all TASK: prompts delivered to', fixture!.mock.receivedPrompts.filter(p => p.includes('LANE_H_ALLTASK')).length, 'members; holds =', JSON.stringify(await roomHolds(page)))
   await page.screenshot({ path: test.info().outputPath('all-task-after.png') })
 })

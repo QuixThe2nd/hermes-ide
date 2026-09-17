@@ -81,7 +81,17 @@ test('a member whose backend fails the turn is reported at once, not read as bus
   // The gateway has failed the turn; the room must say so within the base
   // turn timeout instead of extending the deadline on the retained snapshot.
   const activity = page.getByRole('button', { name: /^Activity/ })
-  await expect(activity).toContainText('Programmer hit an error', { timeout: 120_000 })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+
+  await expect(async () => {
+    // A just-created bot's background intro turn can front that bot's chat
+    // tab and yank the center away from the room; re-select the room first.
+    if ((await groupTab.getAttribute('aria-selected')) !== 'true') {
+      await groupTab.click()
+    }
+
+    await expect(activity).toContainText('Programmer hit an error', { timeout: 5_000 })
+  }).toPass({ timeout: 120_000 })
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0, { timeout: 30_000 })
 
   const room = await page.evaluate(name => {
