@@ -737,9 +737,11 @@ async function fetchManifest({
   })
 
   if (result.code !== 0) {
-    throw new Error(
-      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
-    )
+    // The tail lands in the Setup failure banner, not the log ring, so strip
+    // the installer's colour/OSC bytes here too (#112675).
+    const tail = stripAnsi(result.stderr || result.stdout).trim()
+
+    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`)
   }
 
   // The manifest is the LAST JSON line on stdout (install.ps1 may print

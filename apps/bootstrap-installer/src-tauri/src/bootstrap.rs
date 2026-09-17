@@ -583,7 +583,7 @@ async fn run_bootstrap(
         let err = format!(
             "install.ps1 -Manifest failed: exit {:?}\n{}",
             manifest_result.exit_code,
-            manifest_result.stderr.trim()
+            crate::events::strip_ansi(manifest_result.stderr.trim())
         );
         emit_event(
             &app,
