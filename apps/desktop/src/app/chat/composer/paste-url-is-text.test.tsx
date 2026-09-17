@@ -35,14 +35,9 @@ afterEach(cleanup)
 // handler no longer consults it. On the pre-fix tree it is called once and the
 // payload is dropped; here it must never be called and the URL must survive.
 //
-// Scope note: this asserts the URL lands as TEXT, not the `@url:` chip form.
-// A lone pasted URL currently lands un-chipped because of a separate, older bug
-// in `url-refs.ts` — `resolveExactLinkPaste` leaves the shared `URL_RE.lastIndex`
-// past the first match, so the `linkifyUrls` call later in the same handler
-// starts scanning after the URL and finds nothing (visible in prose pastes too:
-// of two links, only the second chips). That defect is tracked separately; it is
-// not this change's to fix, and asserting the chip here would fail for a reason
-// that has nothing to do with the interception.
+// `composerPlainText` round-trips a `@url:` chip to its directive text, so the
+// assertions hold whether the link lands chipped or raw — the chip form is
+// url-refs.test.ts's contract, this file's is only that the paste survives.
 const PR_COMMENT_URL = 'https://github.com/o/r/pull/1#issuecomment-2'
 
 const state: ChatBarState = {
