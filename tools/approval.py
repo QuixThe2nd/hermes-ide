@@ -19,6 +19,7 @@ import os
 import threading
 from typing import Optional
 
+from agent import terminal_env_registry
 from utils import env_var_enabled, is_truthy_value
 from tools import approval_context
 from tools.approval_context import (
@@ -997,7 +998,9 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    return terminal_env_registry.provider_flag(env_type, "skip_container_guards", False)
 
 
 def _user_deny_block(command: str) -> dict | None:
