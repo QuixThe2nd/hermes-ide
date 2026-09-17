@@ -99,8 +99,10 @@ resumed: @mention a held member, or address the whole room (`@all …` /
 `@everyone …`, any wording) to release everyone — `@all resume` is not a
 required incantation. `stop`, `halt` or `pause` holds a member only when the
 word sits next to its @mention (`stop @bot`, `@bot please pause`); the same word
-elsewhere in the sentence is ordinary prose, so a German `halt` no longer
-silences the bot it was sent to. A quiet room watches timed-out members for another 21 minutes after the
+elsewhere in the sentence is read as ordinary prose, so a German `halt` no longer
+silences the bot it was sent to — but such a message does not release a held
+member either (`@bot please just stop now` never wakes it; repeat the stop next
+to the mention to hold it). A quiet room watches timed-out members for another 21 minutes after the
 foreground wait ends; this observation window does not extend the turn itself.
 Unresolved member failures remain visible in the collapsed Activity summary after
 the room settles — including a turn the member's backend itself failed (bad

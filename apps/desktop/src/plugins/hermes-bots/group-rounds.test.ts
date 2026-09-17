@@ -865,11 +865,26 @@ describe('member holds (#93129)', () => {
       const action = rounds.classifyGroupHoldDirective(text, ['conn::impl'], false)
 
       expect([...action.hold]).toEqual([])
-      expect([...action.release]).toEqual(['conn::impl'])
+      // Ambiguous, so neutral: the prose reading must not wake a held member either.
+      expect([...action.release]).toEqual([])
     }
 
     // Keys are roster keys, not handles: proximity must still hold on the raw @token.
     expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual(['conn::impl'])
+  })
+
+  // A genuine stop whose stop word sits 3+ tokens from the mention may miss the
+  // hold, but it must never RELEASE (re-dispatch) the member it tells to stop.
+  it('never releases the addressed member on a distant genuine stop', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['@impl please just stop now', 'hey @impl could you stop', '@impl, I need you to stop', '@impl you can stop']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['c1::impl'], false)
+
+      expect([...action.release]).toEqual([])
+    }
+
+    expect(rounds.classifyGroupHoldDirective('@all please just stop now', [], true).releaseAll).toBe(false)
   })
 
   // #97740: a room stopped by the user went permanently silent because only
