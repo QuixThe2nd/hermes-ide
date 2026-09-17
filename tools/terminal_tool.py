@@ -4438,6 +4438,8 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    from agent.terminal_approval_batch import validate_prepared_terminal
+    validate_prepared_terminal(args)
     # Mirror of execute_code's misplaced-argument recovery: models sometimes
     # send execute_code's ``code`` argument here. Without this, the call
     # falls through to command=None and fails with "Invalid command:
