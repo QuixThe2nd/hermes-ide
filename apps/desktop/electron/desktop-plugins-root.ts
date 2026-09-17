@@ -181,27 +181,44 @@ export async function materializeDesktopHalf(
 
   if (fs.existsSync(target)) {
     if (!existing) {
-      return null
+      // A real standalone install has its entry point. A marker-less folder
+      // without one is an interrupted unified-package copy: the old copy
+      // wrote the marker last, so leaving it here would block every retry.
+      if (fs.existsSync(path.join(target, 'plugin.js'))) {
+        return null
+      }
     }
 
-    if (existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
+    if (existing && existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
       return null
     }
-
-    await fs.promises.rm(target, { force: true, recursive: true })
   }
 
   await fs.promises.mkdir(appRoot, { recursive: true })
-  await fs.promises.cp(sourceDir, target, { force: true, recursive: true })
+  const stagingRoot = await fs.promises.mkdtemp(path.join(appRoot, `.${packageName}.staging-`))
+  const stagedTarget = path.join(stagingRoot, packageName)
 
-  const marker: DesktopHalfMarker = {
-    package: packageName,
-    source: sourceDir,
-    sourceMtimeMs: stat.mtimeMs,
-    ...(await packageOrigin(packageDir))
+  try {
+    await fs.promises.cp(sourceDir, stagedTarget, { force: true, recursive: true })
+
+    const marker: DesktopHalfMarker = {
+      package: packageName,
+      source: sourceDir,
+      sourceMtimeMs: stat.mtimeMs,
+      ...(await packageOrigin(packageDir))
+    }
+
+    await fs.promises.writeFile(path.join(stagedTarget, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+
+    // Directory replacement is not atomic across the platforms Electron
+    // supports, but the complete, marked copy is prepared before removing an
+    // old copy. This prevents a failed copy from becoming a permanent
+    // marker-less target.
+    await fs.promises.rm(target, { force: true, recursive: true })
+    await fs.promises.rename(stagedTarget, target)
+  } finally {
+    await fs.promises.rm(stagingRoot, { force: true, recursive: true })
   }
-
-  await fs.promises.writeFile(path.join(target, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
 
   return target
 }
