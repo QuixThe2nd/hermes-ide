@@ -1620,10 +1620,7 @@ def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if _is_dir_or_denied(cursor_rules_dir):
-        try:
-            candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-        except OSError:
-            pass
+        candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
     return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
 
 
