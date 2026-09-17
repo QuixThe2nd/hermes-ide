@@ -116,7 +116,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `HERMES_NOUS_TIMEOUT_SECONDS` | Nous 凭证/token 流程的 HTTP 超时 |
 | `HERMES_DUMP_REQUESTS` | 将 API 请求载荷转储到日志文件（`true`/`false`） |
 | `HERMES_PREFILL_MESSAGES_FILE` | 包含在 API 调用时注入的临时预填消息的 JSON 文件路径 |
-| `HERMES_TIMEZONE` | IANA 时区覆盖（例如 `America/New_York`） |
+| `HERMES_TIMEZONE` | IANA 时区覆盖（例如 `America/New_York`）。在 Linux/macOS 上还会作为 `TZ` 导出给 `execute_code` 子进程；在 Windows 上这些子进程保留操作系统时区，因为 Windows C 运行时只支持 POSIX 形式的 `TZ` 字符串，IANA 名称会被解析成错误的偏移量 |
 
 ## 工具 API
 
