@@ -105,7 +105,8 @@ class TestGetProviderGroq:
 
 
 class TestProcessErrorDetail:
-    """Subprocess diagnostics preserve the original STT helper failure."""
+    """#112582: a failed STT helper reports its real error even when
+    CalledProcessError carries no captured output (stderr/stdout default to None)."""
 
     @staticmethod
     def _detail(*, stderr=None, stdout=None):
@@ -122,16 +123,16 @@ class TestProcessErrorDetail:
     def test_prefers_stderr_over_stdout(self):
         assert self._detail(stderr=" stderr detail \n", stdout="stdout detail") == "stderr detail"
 
-    def test_falls_back_to_stdout_when_stderr_is_missing(self):
-        assert self._detail(stdout=" stdout detail \n") == "stdout detail"
-
-    def test_falls_back_to_exception_when_output_is_missing(self):
-        detail = self._detail()
-
-        assert "returned non-zero exit status 1" in detail
-
-    def test_decodes_byte_output(self):
-        assert self._detail(stderr=b" bad \xff output \n") == "bad \ufffd output"
+    @pytest.mark.parametrize(
+        ("stderr", "stdout", "expected"),
+        [
+            (None, None, "returned non-zero exit status 1"),
+            (None, " stdout detail \n", "stdout detail"),
+            (b" bad \xff output \n", None, "bad \ufffd output"),
+        ],
+    )
+    def test_missing_or_byte_output_does_not_mask_the_failure(self, stderr, stdout, expected):
+        assert expected in self._detail(stderr=stderr, stdout=stdout)
 
 
 class TestGetProviderFallbackPriority:
