@@ -991,7 +991,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         ) || null
 
     const display = isUser
-      ? 'You'
+      ? b.group.you
       : displayName(
           member || {
             name: entry.from.name
@@ -1005,7 +1005,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
-      ? 'You'
+      ? b.group.you
       : revealed
         ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display
