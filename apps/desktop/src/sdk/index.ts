@@ -1747,8 +1747,9 @@ export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
- *  dialog: it shows the warning and resends with
- *  `confirm_expensive_model: true` on Confirm (#95293). */
+ *  dialog: it asks through the app's ConfirmDialog (Switch anyway / Keep
+ *  current model) and only a confirmed answer resends with
+ *  `confirm_expensive_model: true` (#95293, #112458). */
 export {
   type GuardedModelSwitchResult,
   surfaceModelSwitchConfirm,

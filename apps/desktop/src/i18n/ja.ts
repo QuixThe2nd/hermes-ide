@@ -3615,7 +3615,13 @@ export const ja = defineLocale({
     cwdStagedTitle: '作業ディレクトリがステージングされました',
     cwdStagedMessage:
       'このアクティブなセッションへの cwd の変更を適用するにはデスクトップバックエンドを再起動してください。',
+    modelSwitchConfirmBody: 'このモデル切り替えには確認が必要です。',
+    modelSwitchConfirmLabel: 'それでも切り替える',
+    modelSwitchConfirmTitle: (model: string) => `${model} に切り替えますか？`,
+    modelSwitchConfirmTitleFallback: 'モデルを切り替えますか？',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
+    modelSwitchKeepLabel: '現在のモデルを維持',
+    modelSwitchStaleNotice: '選択が変更されたため、モデルの切り替えは適用されませんでした。',
     hydrationSyncing: (profile: string) => `${profile} を同期中\u2026`,
     sessionExported: 'セッションをエクスポートしました',
     sessionExportFailed: 'セッションをエクスポートできませんでした',
