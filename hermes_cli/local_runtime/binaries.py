@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import logging
@@ -9,8 +10,10 @@ import os
 import platform
 import shutil
 import subprocess
+import tarfile
 import urllib.request
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -186,18 +189,26 @@ def _download(url: str, dest: Path,
     the server sends no Content-Length) — a several-hundred-MB archive must never look hung."""
     logger.info("downloading %s", url)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            chunk = r.read(1 << 20)
-            if not chunk:
-                break
-            f.write(chunk)
-            done += len(chunk)
-            if progress is not None:
-                progress(done, total)
-    tmp.replace(dest)
+    try:
+        with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+            length = r.headers.get("Content-Length")
+            total = int(length) if length is not None else 0
+            done = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if progress is not None:
+                    progress(done, total)
+            # Chunked reads can return EOF without raising IncompleteRead.
+            if length is not None and done != total:
+                raise BinaryResolutionError(
+                    f"incomplete download for {dest.name}: expected {total} bytes, got {done}")
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _extract(archive: Path, dest: Path,
@@ -207,7 +218,6 @@ def _extract(archive: Path, dest: Path,
         opener, list_members, size = zipfile.ZipFile, "infolist", "file_size"
         kwargs = {}
     else:
-        import tarfile
         opener, list_members, size = tarfile.open, "getmembers", "size"
         kwargs = {"filter": "data"}
     with opener(archive) as ar:
@@ -289,19 +299,31 @@ def ensure_runtime_installed(tag: str, backend: str,
     for i, asset in enumerate(plan.assets, 1):
         label = f"{i}/{n_assets}" if n_assets > 1 else ""
         archive = downloads / asset
-        if not archive.exists():
-            _download(RELEASE_URL.format(tag=tag, asset=asset), archive,
-                      progress=stage_progress("download", label))
-        if progress is not None:
-            progress("verify", 0, 0, label)
-        digest = _sha256(archive)
-        expected = (expected_sha256 or {}).get(asset)
-        if expected and digest != expected:
-            archive.unlink(missing_ok=True)
-            raise BinaryResolutionError(
-                f"sha256 mismatch for {asset}: expected {expected}, got {digest}")
+        # Older versions could cache truncated responses. Replace a corrupt
+        # cache entry once; a corrupt fresh download must fail and be evicted.
+        for attempt in range(2):
+            cached = archive.exists()
+            if not cached:
+                _download(RELEASE_URL.format(tag=tag, asset=asset), archive,
+                          progress=stage_progress("download", label))
+            if progress is not None:
+                progress("verify", 0, 0, label)
+            digest = _sha256(archive)
+            expected = (expected_sha256 or {}).get(asset)
+            if expected and digest != expected:
+                archive.unlink(missing_ok=True)
+                raise BinaryResolutionError(
+                    f"sha256 mismatch for {asset}: expected {expected}, got {digest}")
+            try:
+                _extract(archive, install_dir, progress=stage_progress("extract", label))
+            except (zipfile.BadZipFile, tarfile.ReadError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
+                archive.unlink(missing_ok=True)
+                if not cached or attempt == 1:
+                    raise BinaryResolutionError(f"invalid runtime archive {asset}: {exc}") from exc
+                logger.warning("discarding corrupt cached runtime archive %s: %s", asset, exc)
+            else:
+                break
         recorded[asset] = digest
-        _extract(archive, install_dir, progress=stage_progress("extract", label))
 
     if progress is not None:
         progress("verify", 0, 0, "")
