@@ -189,12 +189,24 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         return False
 
 
-def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+def _resolve_local_name(target: str, roster: list[str], root: Path | None = None) -> Optional[str]:
+    """Map a target to a local profile FOLDER id: 'hermes' → 'default'; an exact folder id
+    (case-insensitive); else — when ``root`` is given — a friendly name or its Desktop @-slug
+    (profile.yaml ``display_name`` / Bot Mode title: 'Scribe', '@scribe', 'Dr. Foo' → 'foo').
+    Ambiguous friendly names resolve to None so a DM never lands on the wrong bot (#100671)."""
     want = target.strip().lower()
+    if not want:
+        return None
     if want == "hermes":
         return "default" if "default" in roster else None
-    return next((name for name in roster if name.lower() == want), None) if want else None
+    exact = next((name for name in roster if name.lower() == want), None)
+    if exact is not None or root is None:
+        return exact
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    aliases = local_alias_map(root)
+    hits = set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+    return next(iter(hits)) if len(hits) == 1 else None
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
@@ -274,11 +286,11 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
-    # Local teammate.
+    # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
+    resolved = _resolve_local_name(raw_target, roster, root)
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
-    if not is_local_shape and "@" not in raw_target:
+    if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
-    resolved = _resolve_local_name(raw_target, roster) if is_local_shape else None
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the

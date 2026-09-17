@@ -313,6 +313,54 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def _rename(home: Path, folder: str, *, display_name: str = "", title: str = "") -> None:
+    lines = ["description: teammate for tests", "ui_meta:", "  hermes-bots:", "    shape: cloud"]
+    if title:
+        lines.append(f"    title: {title}")
+    if display_name:
+        lines.append(f"display_name: {display_name}")
+    (home / "profiles" / folder / "profile.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ["Scribe", "@scribe", "Dr. Foo", "dr-foo", "drfoo", "Builder"])
+def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkeypatch, target):
+    """A display name, Bot Mode title or the Desktop's @-slug of either lands on the
+    folder id message_agent keys on — the same aliases the composer autocompletes (#100671)."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("writer", "foo", "builder"))
+    _rename(home, "writer", display_name="Scribe")
+    _rename(home, "foo", title="Dr. Foo")
+    _rename(home, "builder", display_name="Builder")
+    expected = {"Scribe": "writer", "@scribe": "writer", "Dr. Foo": "foo", "dr-foo": "foo", "drfoo": "foo",
+                "Builder": "builder"}[target]
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping", agent=_FakeAgent(home)))
+
+    assert result["status"] == "sent", result
+    assert result["to"] == f"@{expected}"
+    _mode, _dm_file, argv = _runner_parts(calls[0]["command"])
+    assert argv[1:3] == ["-p", expected]
+
+
+def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
+    """Two bots titled the same must not let a DM land on whichever sorts first; the
+    reserved @hermes alias can never be hijacked by a rename."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("aaa", "bbb", "ops"))
+    _rename(home, "aaa", display_name="Scribe")
+    _rename(home, "bbb", display_name="Scribe")
+    _rename(home, "ops", display_name="Hermes")
+
+    ambiguous = json.loads(bot_mode_dm.message_agent_tool(target="Scribe", message="ping", agent=_FakeAgent(home)))
+    hijack = json.loads(bot_mode_dm.message_agent_tool(target="hermes", message="ping",
+                                                       agent=_FakeAgent(home / "profiles" / "aaa")))
+
+    assert "error" in ambiguous and "No teammate named 'Scribe'" in ambiguous["error"]
+    assert hijack.get("to") == "@hermes"
+    assert [_runner_parts(c["command"])[2][1:3] for c in calls] == [["-p", "default"]]
+
+
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tmp_path, monkeypatch
 ):

@@ -139,14 +139,52 @@ def _bullet(handle: str, *parts: str) -> str:
 
 def _profile_role(profile_dir: Path) -> str:
     """Teammate role line: Bot Mode title — profile description; tells a teammate
-    WHO to message for a job. Single-line, ≤160 chars, "" when neither. Never raises."""
+    WHO to message for a job. A friendly ``display_name`` (``hermes profile rename``) that
+    differs from both the folder id and the title leads the line, so an untagged
+    "talk to Scribe" maps to the folder handle without a disk search (#100671).
+    Single-line, ≤160 chars, "" when nothing. Never raises."""
     def _role() -> str:
         data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
-        line = _role_line(str((_bots_meta(data) or {}).get("title") or "").strip(),
-                          str(data.get("description") or "").strip())
+        title = str((_bots_meta(data) or {}).get("title") or "").strip()
+        display = str(data.get("display_name") or "").strip()
+        if display.lower() in (profile_dir.name.lower(), title.lower()):
+            display = ""
+        line = _role_line(display, title, str(data.get("description") or "").strip())
         return " ".join(line.split())[:160]
 
     return _swallow(_role, "")
+
+
+# Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
+_RESERVED_ALIASES = frozenset({"all", "everyone", "user", "default", "hermes"})
+
+
+def alias_forms(value: str) -> set[str]:
+    """Lower-cased mention forms of a friendly name, mirroring the Desktop's
+    ``mentionNameForms``: slugified (``"Dr. Foo"`` → ``dr-foo``, what autocomplete inserts)
+    and collapsed (``drfoo``). Reserved tokens and empty forms are dropped."""
+    name = str(value or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name).strip("-")
+    collapsed = re.sub(r"[^a-z0-9_-]+", "", name)
+    return {f for f in (slug, collapsed)
+            if f and re.fullmatch(r"[a-z0-9][a-z0-9_-]*", f) and f not in _RESERVED_ALIASES}
+
+
+def local_alias_map(root: Path) -> dict[str, set[str]]:
+    """``alias form → {folder ids}`` for every local profile's friendly names (profile.yaml
+    ``display_name`` and the Bot Mode title). Folder ids themselves are not aliases — the
+    caller matches those first — so a friendly name equal to ANOTHER folder id is visibly
+    ambiguous instead of silently winning. Never raises."""
+    def _build() -> dict[str, set[str]]:
+        aliases: dict[str, set[str]] = {}
+        for name, profile_dir in _roster(root):
+            data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
+            friendly = (str(data.get("display_name") or ""), str((_bots_meta(data) or {}).get("title") or ""))
+            for form in set().union(*(alias_forms(f) for f in friendly)):
+                aliases.setdefault(form, set()).add(name)
+        return aliases
+
+    return _swallow(_build, {})
 
 
 def _peers(root: Path) -> list[str]:
