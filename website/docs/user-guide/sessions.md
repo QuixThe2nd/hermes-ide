@@ -74,7 +74,7 @@ Each session is tagged with its source platform:
 
 | Source | Description |
 |--------|-------------|
-| `cli` | Interactive CLI (`hermes` or `hermes chat`) |
+| `cli` | Interactive CLI (`hermes` or `hermes chat`), and one-shot runs (`hermes chat -q`, `hermes -z`). A one-shot child launched from inside a TUI or Desktop session is still tagged `cli`, not `tui`/`desktop` — it is not that conversation, so it never shows up in the TUI/WebUI picker as a resumable chat. Pass `--source tool` to keep one-shot integration runs out of session lists entirely. |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
