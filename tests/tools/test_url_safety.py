@@ -19,7 +19,6 @@ from tools.url_safety import (
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
-    _reset_fake_ip_cache,
 )
 
 import ipaddress
@@ -515,26 +514,23 @@ class TestDeclaredFakeIpSentinelRanges:
             "hermes_cli.config.read_raw_config",
             lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
         )
-        _reset_fake_ip_cache()
+        _reset_allow_private_cache()
         yield
-        _reset_fake_ip_cache()
+        _reset_allow_private_cache()
 
-    def test_undeclared_host_is_unaffected(self):
-        with _resolves_to("198.18.0.23"):
-            assert is_safe_url("https://example.com/file.jpg") is False
-
-    def test_declared_sentinel_is_dialable_with_private_blocking_on(self, declared):
+    def test_declared_sentinel_is_dialable_pre_flight_and_at_connect_time(self, declared):
         with _resolves_to("198.18.1.125"):
             assert is_safe_url("https://example.com/") is True
-
-    def test_declared_sentinel_passes_the_connect_time_check_too(self, declared):
         with _resolves_to("198.18.0.55"):
             assert _resolved_http_connect_ips("example.com", 443, "https") == ["198.18.0.55"]
 
-    def test_declaration_does_not_excuse_real_private_answers(self, declared):
+    def test_declaration_excuses_only_the_declared_block(self, declared):
+        # Real private answers and the cloud-metadata floor stay blocked under the declaration...
         with _resolves_to("192.168.99.99"):
             assert is_safe_url("https://example.com/") is False
-
-    def test_metadata_floor_outranks_the_declaration(self, declared):
         with _resolves_to("169.254.169.254"):
             assert is_safe_url("http://example.com/") is False
+        # ...and the sentinel block itself is blocked again once the declaration is gone.
+        _reset_allow_private_cache()
+        with patch("hermes_cli.config.read_raw_config", lambda: {}), _resolves_to("198.18.0.23"):
+            assert is_safe_url("https://example.com/file.jpg") is False

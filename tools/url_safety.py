@@ -159,9 +159,10 @@ def _resolve_allow_private_urls() -> bool:
 
 
 def _reset_allow_private_cache() -> None:
-    """Reset the cached toggle — only for tests."""
-    global _allow_private_resolved, _cached_allow_private
-    _allow_private_resolved = _cached_allow_private = False
+    """Reset the cached toggle and the cached fake-ip ranges — only for tests."""
+    global _allow_private_resolved, _cached_allow_private, _fake_ip_resolved, _cached_fake_ip_ranges
+    _allow_private_resolved = _cached_allow_private = _fake_ip_resolved = False
+    _cached_fake_ip_ranges = ()
 
 
 def _resolve_fake_ip_ranges() -> tuple:
@@ -177,35 +178,27 @@ def _resolve_fake_ip_ranges() -> tuple:
         from hermes_cli.config import read_raw_config
         block = read_raw_config().get("security", {})
         raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
-        if isinstance(raw, str):
-            raw = [part.strip() for part in raw.split(",")]
-        if not isinstance(raw, (list, tuple)):
-            return ()
-        networks = []
-        for entry in raw:
-            if not str(entry).strip():
-                continue
-            try:
-                networks.append(ipaddress.ip_network(str(entry).strip(), strict=False))
-            except ValueError:
-                logger.warning("Ignoring unparseable security.fake_ip_ranges entry: %r", entry)
-        return tuple(networks)
     except Exception:
         return ()  # config unavailable (tests, early import) — keep the secure default
+    entries = [raw] if isinstance(raw, str) else raw if isinstance(raw, (list, tuple)) else ()
+    networks = []
+    for entry in entries:
+        try:
+            networks.append(ipaddress.ip_network(str(entry).strip(), strict=False))
+        except ValueError:
+            logger.warning("Ignoring unparseable security.fake_ip_ranges entry: %r", entry)
+    return tuple(networks)
 
 
 def _global_fake_ip_ranges() -> tuple:
-    """Process-lifetime cache, same shape as the allow_private toggle."""
+    """Process-lifetime cache with the same profile-scope bypass as ``_global_allow_private_urls``:
+    a multiplex gateway must not apply the first profile's declaration to later ones."""
     global _fake_ip_resolved, _cached_fake_ip_ranges
+    if get_hermes_home_override() is not None:
+        return _resolve_fake_ip_ranges()
     if not _fake_ip_resolved:
         _fake_ip_resolved, _cached_fake_ip_ranges = True, _resolve_fake_ip_ranges()
     return _cached_fake_ip_ranges
-
-
-def _reset_fake_ip_cache() -> None:
-    """Reset the cached sentinel ranges — only for tests."""
-    global _fake_ip_resolved, _cached_fake_ip_ranges
-    _fake_ip_resolved, _cached_fake_ip_ranges = False, ()
 
 
 def _normalize_hostname(host: Optional[str]) -> str:
@@ -237,19 +230,13 @@ def _is_always_blocked_ip(ip: _IPAddress) -> bool:
     return ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS)
 
 
-def _is_local_proxy_sentinel(ip: _IPAddress) -> bool:
-    """True when *ip* is in a fake-ip block this host declared in ``security.fake_ip_ranges``.
-
-    The dial still goes to the local proxy, which resolves and connects to the real target, so
-    exempting a declared block grants no reach an attacker lacks through the proxy's own DNS.
-    Undeclared ranges keep the ordinary private-address verdict.
-    """
-    networks = _global_fake_ip_ranges()
-    if not networks:
-        return False
+def _is_declared_fake_ip(ip: _IPAddress) -> bool:
+    """True when *ip* falls in a block declared in ``security.fake_ip_ranges``. The dial still goes
+    to the local proxy, which resolves and connects to the real target, so a declared block grants
+    no reach an attacker lacks through the proxy's own DNS; undeclared ranges keep the private verdict."""
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return any(ip in net for net in networks)
+    return any(ip in net for net in _global_fake_ip_ranges())
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
@@ -310,11 +297,7 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
     ignores ``allow_private``; ordinary private/internal classes are blocked only when it is False."""
     if _is_always_blocked_ip(ip):
         return "cloud metadata address"
-    if not allow_private and _is_blocked_ip(ip):
-        # A fake-ip sentinel is the local proxy's own address, not an internal target — dialable either way.
-        if _is_local_proxy_sentinel(ip):
-            logger.debug("Allowing local-proxy fake-ip sentinel address: %s", ip)
-            return None
+    if not allow_private and _is_blocked_ip(ip) and not _is_declared_fake_ip(ip):
         return "private/internal address"
     return None
 
