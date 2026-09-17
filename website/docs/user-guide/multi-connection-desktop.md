@@ -134,6 +134,12 @@ authentication; manage sign-in from the registered connection controls.
        shell; on a `zsh` login shell the probe watchdog cannot kill the whole
        process group, so a hung probe's grandchildren may linger on the remote
        (bash/sh remotes reap them).
+     - **Hermes path (optional)** — full path to the `hermes` executable on
+       the remote (for example `/opt/hermes/bin/hermes`). Leave blank to
+       auto-detect. Set it when the remote's non-interactive shell does not
+       have `hermes` on its `PATH` and **Test** reports *"Hermes is not
+       installed on the remote host"*; clearing the field restores
+       auto-detection.
 5. Click **Save connection** (or **Cancel**).
 6. Click **Test** on the new row and wait for *"Reachable"*.
 
