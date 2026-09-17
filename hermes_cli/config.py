@@ -3577,7 +3577,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         save_provider_env_credential(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting, unknown_env_name_note
+    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
 
     if is_env_setting_key(key):
         # Every UPPER_SNAKE name is an environment setting: same file the platform setup flows and
@@ -3589,9 +3589,6 @@ def set_config_value(key: str, value: str, force: bool = False):
         except ValueError as exc:
             _exit_invalid(f"✗ {exc}")
         print(f"✓ Set {key.upper()} in {get_env_path()}")
-        note = unknown_env_name_note(key)
-        if note:
-            print(note)
         return
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the

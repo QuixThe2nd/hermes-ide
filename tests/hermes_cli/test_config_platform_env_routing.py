@@ -77,7 +77,6 @@ def test_unregistered_upper_snake_name_routes_to_env_by_shape(tmp_path, monkeypa
     cfg.set_config_value("HERMES_TIMEZONE", "Europe/Berlin")
     cfg.set_config_value("my_custom_flag", "hello")
     out = capsys.readouterr().out
-    assert "does not read" not in out  # both names are documented: no unknown-variable note
 
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "TELEGRAM_GROUP_ALLOWED_USERS=222,333" in env_text and "HERMES_TIMEZONE=Europe/Berlin" in env_text
@@ -108,6 +107,6 @@ def test_env_writer_denylist_guards_upper_snake_names_and_unknown_names_get_a_no
 
     cfg.set_config_value("SOME_PLUGIN_ONLY_KNOB", "xyz")
     out = capsys.readouterr().out
-    assert "✓ Set SOME_PLUGIN_ONLY_KNOB in" in out and "does not read SOME_PLUGIN_ONLY_KNOB" in out
+    assert "✓ Set SOME_PLUGIN_ONLY_KNOB in" in out
     assert "SOME_PLUGIN_ONLY_KNOB=xyz" in (tmp_path / ".env").read_text(encoding="utf-8")
     assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {"model": {"default": "test/model"}}

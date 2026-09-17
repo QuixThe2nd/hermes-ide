@@ -41,16 +41,6 @@ def is_env_setting_key(key: str) -> bool:
     return bool(_ENV_SHAPE_RE.match(key)) or is_registered_env_name(key.upper())
 
 
-def unknown_env_name_note(key: str) -> Optional[str]:
-    """One-line heads-up when Hermes itself does not enumerate ``key``. The value is
-    still exported to the process environment from ``.env``, so a plugin or skill may read it."""
-    name = key.upper()
-    if is_registered_env_name(name):
-        return None
-    return (f"  (note: Hermes does not read {name} itself; it is exported to the process environment "
-            "from .env for plugins, skills and external tools)")
-
-
 def _drop_config_yaml_copies(key: str) -> bool:
     """Remove same-named top-level ``config.yaml`` copies (as typed and upper-cased) so the ``.env``
     value is the only one the gateway bridge and CLI readers can disagree about."""
