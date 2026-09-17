@@ -263,11 +263,11 @@ class TestUpdateManagedPythonEnvIsolation:
         assert uv_env.get("UV_NO_CONFIG") == "1"
 
 
-class TestCmdUpdateBranchFallback:
-    def test_current_checkout_restores_optional_dependencies_after_runtime_repair(
-        self, monkeypatch
-    ):
-        """A SQLite venv replacement must retain lazy and Hermes Tools installs."""
+class TestRepairCurrentCheckoutRuntimeRepair:
+    """Already-up-to-date path after a managed SQLite runtime repair (#112571)."""
+
+    @staticmethod
+    def _run(monkeypatch, *, repaired: bool):
         from hermes_cli.managed_uv import RuntimeRepairResult
         from hermes_cli import main as hm
 
@@ -294,12 +294,13 @@ class TestCmdUpdateBranchFallback:
             update_cmd, "_repair_node_deps_on_current_checkout", lambda *args, **kwargs: True
         )
 
-        def repair(*, repair_observer):
-            repair_observer(RuntimeRepairResult("repaired"))
+        def ensure(*, repair_observer, **_kwargs):
+            if repaired:
+                repair_observer(RuntimeRepairResult("repaired"))
             return "uv"
 
-        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", repair)
-        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", repair)
+        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", ensure)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", ensure)
 
         assert update_cmd._repair_current_checkout(
             assume_yes=True,
@@ -311,12 +312,26 @@ class TestCmdUpdateBranchFallback:
             upstream_checked=True,
             _windows_gateway_resume=None,
         )
+        return restored, lazy_features, tool_dependencies
 
+    def test_restores_optional_dependencies_after_runtime_repair(self, monkeypatch):
+        """A SQLite venv replacement passes the core-import probe, yet the swapped-in venv was
+        built from uv.lock alone: the captured lazy backends and Hermes Tools deps must be
+        restored into it, once each, with the repaired installer prefix."""
+        restored, lazy_features, tool_dependencies = self._run(monkeypatch, repaired=True)
         assert restored == [
             ("lazy", ["uv", "pip"], {"VIRTUAL_ENV": "venv"}, lazy_features),
             ("tools", ["uv", "pip"], {"VIRTUAL_ENV": "venv"}, tool_dependencies),
         ]
 
+    def test_healthy_venv_without_runtime_repair_is_left_alone(self, monkeypatch):
+        """Control: no repair + healthy core imports = the venv was never replaced, so nothing
+        is reinstalled (the up-to-date path stays a no-op for Python deps)."""
+        restored, _, _ = self._run(monkeypatch, repaired=False)
+        assert restored == []
+
+
+class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
 

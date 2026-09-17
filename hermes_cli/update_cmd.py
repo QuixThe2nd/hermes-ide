@@ -681,8 +681,8 @@ def _repair_current_checkout(
     # python-build-standalone refreshes the embedded SQLite; keep the boundary hook here too.
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
     runtime_repairs = []
-    updated_uv = update_managed_uv(repair_observer=runtime_repairs.append)
-    ensured_uv = ensure_uv(repair_observer=runtime_repairs.append)
+    update_managed_uv(repair_observer=runtime_repairs.append)
+    repair_uv = ensure_uv(repair_observer=runtime_repairs.append)
     runtime_repaired = next((result for result in runtime_repairs if result.repaired), None)
 
     # A current checkout does NOT imply a healthy install (a prior sync may have died
@@ -705,24 +705,17 @@ def _repair_current_checkout(
             active_lazy_features=active_lazy_features,
             active_tool_dependencies=active_tool_dependencies,
             _windows_gateway_resume=_windows_gateway_resume)
-    elif runtime_repaired is not None:
-        # A successful SQLite repair atomically replaces the venv. Core imports can therefore
-        # be healthy while lazily-installed backends and ``hermes tools`` dependencies vanished.
-        # Restore the snapshots captured before the cutover without reinstalling the already
-        # healthy core environment.
-        repair_prefix, repair_env = _pip_install_prefix(ensured_uv or updated_uv)
-        _m()._refresh_active_lazy_features(
-            repair_prefix, env=repair_env, features=active_lazy_features)
-        _m()._restore_active_tool_dependencies(
-            active_tool_dependencies, repair_prefix, env=repair_env)
-        current_checkout_complete = _repair_node_deps_on_current_checkout(
-            _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
-            pre_update_snapshot_id=pre_update_snapshot_id,
-            completion_message=(
-                "✓ Already up to date!" if upstream_checked
-                else "✓ Up to date with your fork (official repo not checked)."),
-            had_desktop_app_before_update=had_desktop_app_before_update)
     else:
+        if runtime_repaired is not None:
+            # A successful SQLite repair swaps in a venv built from uv.lock alone, so core
+            # imports pass while lazily-installed backends and ``hermes tools`` dependencies
+            # are gone (#112571). Restore the pre-cutover snapshots exactly as the pull path
+            # and the unhealthy-venv repair do; the healthy core set needs no reinstall.
+            repair_prefix, repair_env = _pip_install_prefix(repair_uv)
+            _m()._refresh_active_lazy_features(
+                repair_prefix, env=repair_env, features=active_lazy_features)
+            _m()._restore_active_tool_dependencies(
+                active_tool_dependencies, repair_prefix, env=repair_env)
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
