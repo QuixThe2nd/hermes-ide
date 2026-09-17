@@ -25,6 +25,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
+  confirmReconnectSettle,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -453,6 +454,8 @@ export function rehydrateLiveSessionStatuses(
 
     if (!working) {
       setSessionStalled(storedSessionId, false)
+      // Authoritative: the turn a reconnect reconcile downgraded blind is over.
+      confirmReconnectSettle(storedSessionId)
 
       continue
     }
@@ -504,6 +507,10 @@ export function rehydrateLiveSessionStatuses(
           // does, so the transcript matches the state.
           messages: sealOpenToolParts(existing.messages)
         })
+      } else {
+        // Already downgraded by the reconnect reconcile: its absence here is
+        // the terminal fact that reconcile lacked, so the dot lights now.
+        confirmReconnectSettle(existing?.storedSessionId)
       }
     }
   }

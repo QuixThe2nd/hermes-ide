@@ -445,6 +445,9 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
   if (next.busy && !wasWorking) {
     clearSettled(storedId)
+    // The turn is live (or a new one starts): a reconnect downgrade that was
+    // waiting for the snapshot's verdict was a socket blip, not a completion.
+    unconfirmedReconnectSettles.delete(storedId)
     // A NEW turn is starting: the read baseline guarded the PREVIOUS
     // completion's re-asserts. Dropping it here means this turn's finish
     // re-lights even if it lands within the same millisecond as the last
@@ -453,21 +456,55 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
 
-    // FOCUSED, not selected: a session finishing in the tile the user is
-    // watching is already seen, and a tile is never the primary selection.
-    if (storedId !== $focusedStoredSessionId.get()) {
-      // Re-light only genuinely new completions: if the user already viewed
-      // this session (or its family) at or after this settle moment, a
-      // re-assert of the same completion must not re-arm the dot. `-1` for
-      // "never read" (not `0`) so fake-timer tests pinned to t=0 still light.
-      const lastReadAt = $lastReadAtBySessionId.get()[storedId] ?? -1
+    // A reconnect reconcile is not a terminal event: it downgrades EVERY busy
+    // claim on the socket, live turns included, so lighting the dot here is
+    // the false green of #113029. Park the completion until the post-reconnect
+    // `session.active_list` snapshot confirms the turn is gone (or a re-assert
+    // proves it alive).
+    if (reconcilingBusyClaims) {
+      unconfirmedReconnectSettles.add(storedId)
 
-      if (Date.now() > lastReadAt) {
-        // Flags the transient atom AND persists a marker, so the green dot
-        // survives an app restart (see session-unread.ts).
-        markSessionUnreadFinished(storedId)
-      }
+      return
     }
+
+    lightUnreadCompletion(storedId)
+  }
+}
+
+/** Mark a completed turn unread unless the user is already looking at it. */
+function lightUnreadCompletion(storedId: string) {
+  // FOCUSED, not selected: a session finishing in the tile the user is
+  // watching is already seen, and a tile is never the primary selection.
+  if (storedId === $focusedStoredSessionId.get()) {
+    return
+  }
+
+  // Re-light only genuinely new completions: if the user already viewed
+  // this session (or its family) at or after this settle moment, a
+  // re-assert of the same completion must not re-arm the dot. `-1` for
+  // "never read" (not `0`) so fake-timer tests pinned to t=0 still light.
+  const lastReadAt = $lastReadAtBySessionId.get()[storedId] ?? -1
+
+  if (Date.now() > lastReadAt) {
+    // Flags the transient atom AND persists a marker, so the green dot
+    // survives an app restart (see session-unread.ts).
+    markSessionUnreadFinished(storedId)
+  }
+}
+
+/** Stored ids whose busy claim a reconnect reconcile retired without any proof
+ *  the turn ended. The authoritative post-reconnect snapshot settles each one:
+ *  `confirmReconnectSettle` when the runtime is idle or gone, a busy re-assert
+ *  (stream event or `working` row) when the turn is still live. */
+const unconfirmedReconnectSettles = new Set<string>()
+let reconcilingBusyClaims = false
+
+/** The authoritative snapshot reports this session's turn over: a completion
+ *  the reconnect reconcile downgraded blind now earns its unread dot. No-op
+ *  for sessions the reconcile never touched. */
+export function confirmReconnectSettle(storedSessionId: null | string | undefined) {
+  if (storedSessionId && unconfirmedReconnectSettles.delete(storedSessionId)) {
+    lightUnreadCompletion(storedSessionId)
   }
 }
 
@@ -590,6 +627,7 @@ export function clearAllSessionStates() {
 
   sessionWatchdogTimers.clear()
   settledExpiry.clear()
+  unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
@@ -620,8 +658,10 @@ export function clearAllSessionStates() {
  *  untouched — a blocking prompt is the one claim the user must explicitly
  *  answer, and post-reconnect refresh re-asserts or retires it via its own
  *  path. Transition side-effects run through publishSessionState, so
- *  watchdogs disarm, stall hints drop, and settle/unread bookkeeping stays
- *  consistent.
+ *  watchdogs disarm and stall hints drop — but the unread dot is deferred:
+ *  this downgrade is blind, so the completion is parked until the
+ *  post-reconnect `session.active_list` snapshot confirms the turn is gone
+ *  (`confirmReconnectSettle`) or a busy re-assert proves it alive (#113029).
  *
  *  The downgrade goes through the delegate's `retireBusyClaim` (the wiring
  *  cache's updateSessionState), not straight into this mirror: the claim has
@@ -635,25 +675,31 @@ export function clearAllSessionStates() {
 export function reconcileBusyStatesOnReconnect(scope?: string) {
   const states = $sessionStates.get()
 
-  for (const [runtimeId, state] of Object.entries(states)) {
-    if (!state || (!state.busy && !state.awaitingResponse)) {
-      continue
+  reconcilingBusyClaims = true
+
+  try {
+    for (const [runtimeId, state] of Object.entries(states)) {
+      if (!state || (!state.busy && !state.awaitingResponse)) {
+        continue
+      }
+
+      const recorded = sessionScopeByRuntimeId.get(runtimeId)
+
+      if (scope === undefined ? recorded !== undefined : recorded !== scope) {
+        continue
+      }
+
+      sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
+
+      // Re-read — the write path may have republished (and released) this entry.
+      const published = $sessionStates.get()[runtimeId]
+
+      if (published?.busy || published?.awaitingResponse) {
+        publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
+      }
     }
-
-    const recorded = sessionScopeByRuntimeId.get(runtimeId)
-
-    if (scope === undefined ? recorded !== undefined : recorded !== scope) {
-      continue
-    }
-
-    sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
-
-    // Re-read — the write path may have republished (and released) this entry.
-    const published = $sessionStates.get()[runtimeId]
-
-    if (published?.busy || published?.awaitingResponse) {
-      publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
-    }
+  } finally {
+    reconcilingBusyClaims = false
   }
 
   if (scope === undefined) {
