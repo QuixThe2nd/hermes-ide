@@ -250,9 +250,26 @@ class PluginDispatchMixin:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                self._report_hook_failure(hook_name, cb, kwargs, exc)
         return results
+
+    def _report_hook_failure(self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], exc: Exception) -> None:
+        """One WARNING per distinct (hook, callback, error); identical repeats at DEBUG.
+
+        A callback whose signature names a parameter the hook never sends (``tool_data`` instead
+        of ``tool_name``/``args``) fails identically on every tool call — ~1700 WARNING lines an
+        hour that bury real signals (#111922). The first report names the fields the hook does
+        provide so the plugin author can fix the signature.
+        """
+        callback_name = getattr(cb, "__name__", repr(cb))
+        key = (hook_name, id(cb), repr(exc))
+        if key in self._hook_failures_reported:
+            logger.debug("Hook '%s' callback %s raised again: %s", hook_name, callback_name, exc)
+            return
+        self._hook_failures_reported.add(key)
+        logger.warning(
+            "Hook '%s' callback %s raised: %s (hook provides: %s; identical failures are logged at DEBUG from now on)",
+            hook_name, callback_name, exc, ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float,

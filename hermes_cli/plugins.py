@@ -1409,6 +1409,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
+        self._hook_failures_reported: set = set()
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
         # global registries are shared across profiles while several managers coexist, so the ledger
         # is keyed per (hermes_home, plugin_id) and every inverse is identity-conditional — one
