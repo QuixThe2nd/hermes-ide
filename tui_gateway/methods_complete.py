@@ -166,7 +166,7 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
     try:
         from tools.terminal_tool import terminal_tool
         result = json.loads(terminal_tool(
-            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=10))
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3))
     except Exception:
         return []
     if result.get("error") or result.get("exit_code") not in (0, None):
@@ -178,16 +178,19 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
 def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
                        session_key: str | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
+    import posixpath
     local = _effective_terminal_backend() == "local"
-    # A non-local backend expands ``~`` itself: the gateway host's home is the wrong one.
+    # A non-local backend expands ``~`` itself (the gateway host's home is the wrong one) and its listing
+    # script speaks POSIX: from a Windows gateway host, os.path would hand it ``~\\src`` and list nothing.
+    pth = os.path if local else posixpath
     expanded = (_normalize_completion_path(path_part) if local else path_part) if path_part else "."
     if expanded == "." or not expanded or expanded.endswith("/"):
         search_dir, match = (expanded or "."), ""
     else:
-        search_dir, match = os.path.dirname(expanded) or ".", os.path.basename(expanded)
-    if not (os.path.isabs(search_dir) or search_dir.startswith("~")):
-        search_dir = os.path.join(root, search_dir)
-    search_dir = os.path.normpath(search_dir)
+        search_dir, match = pth.dirname(expanded) or ".", pth.basename(expanded)
+    if not (pth.isabs(search_dir) or search_dir.startswith("~")):
+        search_dir = pth.join(root, search_dir)
+    search_dir = pth.normpath(search_dir)
     items: list[dict] = []
     if local:
         if not os.path.isdir(search_dir):
@@ -202,13 +205,13 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
             continue
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
-        full = os.path.join(search_dir, entry)
-        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        full = pth.join(search_dir, entry)
+        rel = pth.relpath(full, root).replace(os.sep, "/")
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
         elif word.startswith("~"):
-            text = "~/" + os.path.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))
@@ -225,8 +228,9 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"items": []})
     session = _sessions.get(params.get("session_id", ""))
     local = _effective_terminal_backend() == "local"
-    # A non-local backend's cwd lives inside the target; the host cannot validate it, so take it as-is.
-    root = _completion_cwd(params) if local else _terminal_task_cwd(session)
+    # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is.
+    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
     session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
