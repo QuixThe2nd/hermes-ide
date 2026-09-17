@@ -51,14 +51,16 @@ def _auxiliary_usage(session_db, session_id: Optional[str]) -> dict[str, dict]:
         return {}
 
 
-def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict]) -> None:
+def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
+                            fallback_session_id: Optional[str] = None) -> None:
     """Store this run's auxiliary usage on *result* as the delta against the pre-turn snapshot
     (a resumed session already carries earlier runs' aux rows). Waits (bounded) for the auto-title
-    thread first: it bills from a daemon thread and can still be in flight when the turn returns."""
+    thread first: it bills from a daemon thread and can still be in flight when the turn returns.
+    Failed-turn dicts carry no ``session_id``; *fallback_session_id* keeps the delta readable then."""
     from agent.title_generator import wait_for_title_upgrades
 
     wait_for_title_upgrades()
-    after = _auxiliary_usage(session_db, result.get("session_id"))
+    after = _auxiliary_usage(session_db, result.get("session_id") or fallback_session_id)
     by_task: dict[str, dict] = {}
     for task, counters in after.items():
         prior = before.get(task, {})
@@ -563,7 +565,8 @@ def _run_agent(
         aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         if ledger:
-            _attach_auxiliary_usage(result, session_db, aux_before)
+            _attach_auxiliary_usage(result, session_db, aux_before,
+                                    fallback_session_id=agent.session_id or resume_sid)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

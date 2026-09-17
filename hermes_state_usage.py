@@ -397,6 +397,12 @@ class SessionUsageMixin:
         if not session_id:
             return {}
         chain = self._session_lineage_root_to_tip(session_id)
+        # An explicit ``/branch`` copy owns its spend: cut the walk at the nearest branch node so a
+        # resumed branch never absorbs aux rows billed to its source (hermes_state_messages does the same).
+        for i in range(len(chain) - 1, -1, -1):
+            if self._is_explicit_branch_session(chain[i]):
+                chain = chain[i:]
+                break
         rows = self._read_all(
             f"""SELECT task,
                        COALESCE(SUM(api_call_count), 0) AS api_calls,
