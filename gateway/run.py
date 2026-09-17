@@ -38073,7 +38073,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _control_server = None
     try:
         from gateway.control_socket import GatewayControlServer
-        from gateway.run_profile_reconcile import migrate_profile_identity_verb
+        from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
 
         # pause-for-update (#92091 step 2): the updater asks this gateway to
         # drain in-flight turns and exit cleanly — releasing every venv file
@@ -38131,7 +38131,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
-                           "migrate-profile-identity": migrate_profile_identity_verb(runner)})
+                           "migrate-profile-identity": migrate_profile_identity_verb(runner),
+                           "purge-profile-identity": purge_profile_identity_verb(runner)})
         if not await _control_server.start():
             _control_server = None
         else:
