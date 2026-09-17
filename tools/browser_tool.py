@@ -34,27 +34,27 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
 )
 
+
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
     harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
     profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
     Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    from tools.environments.local import hermes_subprocess_env
+    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    from tools.environments.local import served_profile_child_env
 
-    env = hermes_subprocess_env(inherit_credentials=False)
-    # NOTE(future-me): upstream base calls served_profile_child_env() here; the fork's
-    # local.py lost it (pre-2026-09-14). restore the upstream call once that function is
-    # back in tools/environments/local.py. remove when: re-synced with upstream.
-    for key in _BROWSER_PASSTHROUGH_KEYS:
-        try:
-            value = get_secret(key)
-        except UnscopedSecretError:
-            value = None  # multiplex, no scope bound: no key rather than a sibling profile's
-        if value is not None:
-            env[key] = value
     from agent.proxy_bypass import add_loopback_no_proxy
 
+    env = served_profile_child_env(inherit_credentials=False)
+    # A routed profile (multiplex, or a Desktop/dashboard backend serving ``?profile=B`` with the
+    # flag off) resolves from its bound scope only — a miss is "no key", never the launch profile's
+    # ``os.environ`` value that ``get_secret`` falls through to while multiplexing is inactive.
+    routed = serves_routed_profile()
+    scope = (current_secret_scope() or {}) if routed else None
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        value = scope.get(key) if routed else get_secret(key)
+        if value is not None:
+            env[key] = value
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
     return add_loopback_no_proxy(env)
