@@ -526,10 +526,12 @@ def continue_codex_incomplete(
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
             agent._ephemeral_reasoning_off = True
-            if agent.max_tokens:
-                agent._ephemeral_max_output_tokens = min(
-                    agent.max_tokens * (2 ** n), max(32768, agent.max_tokens)
-                )
+            # No configured cap means the provider's own ceiling was hit: the observed
+            # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
+            usage = getattr(response, "usage", None)
+            observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
+            base = agent.max_tokens or int(observed or 0) or 4096
+            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)")
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look
