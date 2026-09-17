@@ -305,18 +305,14 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _enable_prune_builtins(curator_env, monkeypatch):
-    """Flip curator.prune_builtins on for both config-reading paths."""
-    c = curator_env["curator"]
+    """Flip curator.prune_builtins on (skill_usage is the only reader now)."""
     u = curator_env["usage"]
-    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": True})
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: True)
 
 
 def _disable_prune_builtins(curator_env, monkeypatch):
-    """Flip curator.prune_builtins off for both config-reading paths."""
-    c = curator_env["curator"]
+    """Flip curator.prune_builtins off (skill_usage is the only reader now)."""
     u = curator_env["usage"]
-    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": False})
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
 
 
