@@ -1387,6 +1387,8 @@ export const en: Translations = {
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preset',
       moaAggregator: 'Aggregator',
+      moaAggregatorBilled: 'acting model · billed for the run',
+      moaReferenceHint: 'advises once per turn',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         compression: { label: 'Compression', hint: 'Context compaction' },
