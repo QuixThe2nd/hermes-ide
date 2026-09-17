@@ -314,10 +314,19 @@ def _inherit_launch_model(path) -> bool:
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):
         return False
-    model_cfg = (load_config_readonly() or {}).get("model") or {}
+    launch_cfg = load_config_readonly() or {}
+    model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path).
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    if custom:
+        from hermes_cli.config import load_config, save_config
+        with _hermes_home_scope(path):
+            cfg = load_config()
+            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
+            save_config(cfg)
     return True
 
 

@@ -590,6 +590,22 @@ def _read_config_model(profile_dir: Path) -> tuple:
     return None, None
 
 
+def launch_model_seed(source_cfg: dict) -> dict:
+    """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus,
+    when that block points at a custom ``providers:`` gateway (self-hosted / local endpoint), that
+    provider's definition — ``model.provider: my-gateway`` alone is "Unknown provider" on the first
+    turn. ``{}`` when the launch profile has no model."""
+    model_cfg = source_cfg.get("model")
+    if not model_cfg:
+        return {}
+    seed = {"model": model_cfg}
+    providers = source_cfg.get("providers")
+    name = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    if isinstance(providers, dict) and name in providers:
+        seed["providers"] = {name: providers[name]}
+    return seed
+
+
 def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
     profiles stay independent islands afterwards."""
@@ -601,9 +617,9 @@ def _seed_model_config(profile_dir: Path) -> None:
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         source = get_hermes_home() / "config.yaml"
-        model_cfg = read_user_config_raw(source).get("model") if source.is_file() else None
-        if model_cfg:
-            config_path.write_text(yaml.safe_dump({"model": model_cfg}, sort_keys=False), encoding="utf-8")
+        seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
+        if seed:
+            config_path.write_text(yaml.safe_dump(seed, sort_keys=False), encoding="utf-8")
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
