@@ -7071,10 +7071,12 @@ def _without_temperature(kwargs: dict) -> Optional[dict]:
     return {k: v for k, v in kwargs.items() if k != "temperature"} if "temperature" in kwargs else None
 
 
-def _without_max_tokens(kwargs: dict) -> Optional[dict]:
-    """Copy *kwargs* without either output cap; None when neither was sent."""
-    retry_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_tokens", "max_completion_tokens")}
-    return retry_kwargs if len(retry_kwargs) != len(kwargs) else None
+def _without_max_tokens(kwargs: dict) -> dict:
+    """Copy *kwargs* without either output cap. Unlike the other strips this never returns None: a
+    route can translate the caller's cap into a field the wire kwargs no longer show (Codex
+    Responses), and the provider's own gateway may inject one — the 400 still names ``max_tokens``
+    and the identical request completes on retry (registry class #89897/#90257)."""
+    return {k: v for k, v in kwargs.items() if k not in ("max_tokens", "max_completion_tokens")}
 
 
 def _is_max_tokens_rejection(exc: Exception, client: Any) -> bool:
