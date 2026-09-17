@@ -17,16 +17,12 @@ lifecycle in ``hermes_cli.credential_lifecycle``.
 
 import re
 import sys
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 # Environment-variable shape: what every shell and ``os.getenv`` caller treats as a variable name.
 # Case-sensitive on purpose: a lowercase bare name (``my_flag``) stays a config.yaml top-level key.
 _ENV_SHAPE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-
-_DOCS_REGISTRY = Path(__file__).resolve().parents[1] / "website" / "docs" / "reference" / "environment-variables.md"
-
 
 def is_registered_env_name(name: str) -> bool:
     """True when Hermes itself enumerates ``name``: ``OPTIONAL_ENV_VARS`` / ``_EXTRA_ENV_KEYS``, or a
@@ -45,25 +41,11 @@ def is_env_setting_key(key: str) -> bool:
     return bool(_ENV_SHAPE_RE.match(key)) or is_registered_env_name(key.upper())
 
 
-@lru_cache(maxsize=1)
-def _documented_env_names() -> Optional[frozenset]:
-    """Names in the environment-variable reference of a source checkout; None when the docs tree is
-    not installed alongside the package (then nothing can be said about an unregistered name)."""
-    try:
-        text = _DOCS_REGISTRY.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return frozenset(re.findall(r"`([A-Z][A-Z0-9_]*)`", text))
-
-
 def unknown_env_name_note(key: str) -> Optional[str]:
-    """One-line heads-up when neither the code nor the documentation knows ``key``. The value is
+    """One-line heads-up when Hermes itself does not enumerate ``key``. The value is
     still exported to the process environment from ``.env``, so a plugin or skill may read it."""
     name = key.upper()
     if is_registered_env_name(name):
-        return None
-    documented = _documented_env_names()
-    if documented is None or name in documented:
         return None
     return (f"  (note: Hermes does not read {name} itself; it is exported to the process environment "
             "from .env for plugins, skills and external tools)")
