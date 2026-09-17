@@ -194,61 +194,36 @@ pub(crate) fn strip_ansi(line: &str) -> String {
 mod tests {
     use super::*;
 
+    /// #112675: the Setup app's Live output pane has no terminal emulator, so
+    /// every escape form install.sh and its children emit into the pipe must
+    /// come out as the text a terminal would be left showing.
     #[test]
-    fn strips_sgr_color_sequences() {
-        // The colored checkmark banners from install.sh seen in #112675.
-        assert_eq!(
-            strip_ansi("\u{1b}[0;32m✓\u{1b}[0m Detected: macos (macos)"),
-            "✓ Detected: macos (macos)"
-        );
-    }
-
-    #[test]
-    fn strips_cursor_movement_and_private_modes() {
-        assert_eq!(
-            strip_ansi("\u{1b}[2K\u{1b}[1GCloning repository…"),
-            "Cloning repository…"
-        );
-        assert_eq!(strip_ansi("down\u{1b}[?25lloading"), "downloading");
-    }
-
-    #[test]
-    fn strips_osc_title_commands_with_bel_and_st_terminators() {
-        assert_eq!(
-            strip_ansi("\u{1b}]0;hermes\u{07}Installing Hermes"),
-            "Installing Hermes"
-        );
-        assert_eq!(
-            strip_ansi("\u{1b}]2;hermes\u{1b}\\Installing Hermes"),
-            "Installing Hermes"
-        );
-    }
-
-    #[test]
-    fn carriage_return_redraws_keep_the_last_frame() {
-        // curl-style progress rewrites one line in place with \r.
-        assert_eq!(strip_ansi("\r 12%\r 67%\r100%"), "100%");
-        assert_eq!(
-            strip_ansi("Resolving dependencies…\r"),
-            "Resolving dependencies…"
-        );
-        assert_eq!(strip_ansi("\r\r"), "");
-    }
-
-    #[test]
-    fn keeps_plain_and_multibyte_text_verbatim() {
-        assert_eq!(
-            strip_ansi("Installed 12 packages in 1.2s"),
-            "Installed 12 packages in 1.2s"
-        );
-        assert_eq!(strip_ansi("Ready — café ✓ 中文"), "Ready — café ✓ 中文");
-        assert_eq!(strip_ansi(""), "");
-    }
-
-    #[test]
-    fn drops_an_unterminated_sequence_cut_by_the_pipe() {
-        assert_eq!(strip_ansi("ok\u{1b}[0;3"), "ok");
-        assert_eq!(strip_ansi("ok\u{1b}"), "ok");
+    fn strip_ansi_leaves_only_the_text_a_terminal_would_show() {
+        for (raw, clean) in [
+            // SGR colour banners around the checkmarks (the reporter's screenshot).
+            (
+                "\u{1b}[0;32m✓\u{1b}[0m Detected: macos (macos)",
+                "✓ Detected: macos (macos)",
+            ),
+            // Cursor / erase / private-mode sequences.
+            ("\u{1b}[2K\u{1b}[1GCloning repository…", "Cloning repository…"),
+            ("down\u{1b}[?25lloading\u{1b}[K", "downloading"),
+            // OSC title commands, BEL- and ST-terminated.
+            ("\u{1b}]0;hermes\u{07}Installing Hermes", "Installing Hermes"),
+            ("\u{1b}]2;hermes\u{1b}\\Installing Hermes", "Installing Hermes"),
+            // \r in-place redraws collapse to the last visible frame.
+            ("\r 12%\r 67%\r100%", "100%"),
+            ("Resolving dependencies…\r", "Resolving dependencies…"),
+            ("\r\r", ""),
+            // A sequence cut by the pipe is dropped, not leaked.
+            ("ok\u{1b}[0;3", "ok"),
+            ("ok\u{1b}", "ok"),
+            // Plain and multi-byte text is untouched.
+            ("Ready — café ✓ 中文", "Ready — café ✓ 中文"),
+            ("", ""),
+        ] {
+            assert_eq!(strip_ansi(raw), clean, "input {raw:?}");
+        }
     }
 
     #[test]
