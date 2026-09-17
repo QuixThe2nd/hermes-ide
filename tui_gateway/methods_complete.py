@@ -148,7 +148,44 @@ def _at_root_items() -> list[dict]:
     return items
 
 
-def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool) -> list[dict]:
+def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple[str, bool]]:
+    """List one directory in the active terminal backend without probing the gateway host.
+
+    Completion is advisory, so an unavailable backend deliberately yields no items.  Falling back
+    to ``os.listdir`` here would be worse: it would show a plausible but wrong host filesystem.
+    """
+    import json
+    import shlex
+
+    script = (
+        'for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do '
+        '[ -e "$p" ] || [ -L "$p" ] || continue; '
+        'name=${p##*/}; [ "$name" = . ] || [ "$name" = .. ] && continue; '
+        'if [ -d "$p" ]; then kind=d; else kind=f; fi; '
+        "printf '%s\\t%s\\n' \"$name\" \"$kind\"; "
+        'done'
+    )
+    try:
+        from tools.terminal_tool import terminal_tool
+        raw = terminal_tool(
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}",
+            task_id=session_key, timeout=10,
+        )
+        result = json.loads(raw)
+    except Exception:
+        return []
+    if result.get("error") or result.get("exit_code") not in (0, None):
+        return []
+    entries: list[tuple[str, bool]] = []
+    for line in str(result.get("output") or "").splitlines():
+        name, sep, kind = line.rpartition("\t")
+        if sep and name and "/" not in name and "\x00" not in name:
+            entries.append((name, kind == "d"))
+    return entries
+
+
+def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
+                       session_key: str | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
     expanded = _normalize_completion_path(path_part) if path_part else "."
     if expanded == "." or not expanded or expanded.endswith("/"):
@@ -156,19 +193,22 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
     else:
         search_dir, match = os.path.dirname(expanded) or ".", os.path.basename(expanded)
     search_dir = search_dir if os.path.isabs(search_dir) else os.path.join(root, search_dir)
+    search_dir = os.path.normpath(search_dir)
     items: list[dict] = []
-    if not os.path.isdir(search_dir):
-        return items
-    for entry in sorted(os.listdir(search_dir)):
+    if _is_local_terminal_backend():
+        if not os.path.isdir(search_dir):
+            return items
+        entries = [(entry, os.path.isdir(os.path.join(search_dir, entry))) for entry in sorted(os.listdir(search_dir))]
+    else:
+        entries = sorted(_backend_dir_entries(search_dir, session_key))
+    for entry, is_dir in entries:
         if match and not entry.lower().startswith(match.lower()):
             continue
         if is_context and (entry in _FUZZY_FALLBACK_EXCLUDES or (not prefix_tag and entry.startswith("."))):
             continue
-        full = os.path.join(search_dir, entry)
-        is_dir = os.path.isdir(full)
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
-        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        rel = os.path.relpath(os.path.join(search_dir, entry), root).replace(os.sep, "/")
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
@@ -188,7 +228,11 @@ def _(rid, params: dict) -> dict:
     word = params.get("word", "")
     if not word:
         return _ok(rid, {"items": []})
-    root = _completion_cwd(params)
+    session = _sessions.get(params.get("session_id", ""))
+    # Remote cwd values are meaningful only inside the terminal backend; do not reject them
+    # because the gateway host cannot stat them.
+    root = _completion_cwd(params) if _is_local_terminal_backend() else _terminal_task_cwd(session)
+    session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
@@ -207,13 +251,13 @@ def _(rid, params: dict) -> dict:
     # else resolve relative to cwd (`@/Desktop` must not dead-end; `@/usr/local` still resolves).
     if (
         is_context and path_part.startswith("/") and not path_part.startswith("//")
-        and not _abs_completion_prefix_exists(path_part)):
+        and _is_local_terminal_backend() and not _abs_completion_prefix_exists(path_part)):
         path_part = path_part.lstrip("/")
     bare_word = is_context and path_part and "/" not in path_part
-    if bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
+    if _is_local_terminal_backend() and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
         items = _fuzzy_basename_items(root, path_part, prefix_tag)
     else:
-        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context)
+        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key)
     # Bare-word `@name` may be an agent mention: profiles rank ABOVE file hits.
     if bare_word and not prefix_tag:
         with contextlib.suppress(Exception):
