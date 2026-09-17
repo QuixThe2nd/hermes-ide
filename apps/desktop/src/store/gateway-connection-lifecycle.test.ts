@@ -764,6 +764,14 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
       getConnectionFor.mock.calls.slice(0, dialsBefore).filter(([args]) => args.profile === 'bot-a').length
     )
 
+    // Ambient hydration and relay/status RPCs must not undo the park either.
+    const { requestGatewayForAgent } = await import('./gateway')
+    const parkedDials = getConnectionFor.mock.calls.length
+    await expect(openGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
+    await expect(requestGatewayForAgent('local', 'bot-a', 'session.list')).rejects.toThrow(/retired/i)
+    await expect(retainGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
+    expect(getConnectionFor.mock.calls.length).toBe(parkedDials)
+
     // Parked ≠ evicted: the entry survives for its tile, and an explicit open
     // (a click on the bot) is the one thing that re-arms and redials it.
     const before = getConnectionFor.mock.calls.length

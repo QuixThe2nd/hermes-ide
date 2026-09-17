@@ -369,6 +369,11 @@ async function isAttachedSharedRemote(
 ): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
+  const parked = g.secondaries.get(registryBackendScopeKey(connectionId, key))
+
+  if (parked?.retiredByPool) {
+    rearmSecondary(parked, spawnPriority)
+  }
 
   if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
     return false
@@ -720,7 +725,11 @@ function isStalledDialError(error: unknown): boolean {
   return message.includes('timed out while waiting for a free slot')
 }
 
-function rearmSecondary(entry: Secondary): void {
+function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
+  if (entry.retiredByPool && priority !== 'foreground') {
+    throw new Error(`Backend for "${entry.profile}" was retired; open it explicitly to reconnect.`)
+  }
+
   entry.wantOpen = true
   entry.stalledDials = 0
   entry.retiredByPool = false
@@ -926,6 +935,11 @@ async function gatewayForProfile(
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
+  const parked = g.secondaries.get(key)
+
+  if (parked?.retiredByPool) {
+    rearmSecondary(parked, spawnPriority)
+  }
 
   if (key === g.primaryProfile) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
@@ -950,7 +964,7 @@ async function gatewayForProfile(
     entry.retained = true
   }
 
-  rearmSecondary(entry)
+  rearmSecondary(entry, spawnPriority)
 
   if (leaseRequest) {
     entry.activeRequests += 1
@@ -1086,7 +1100,7 @@ export async function requestGatewayForAgent<T>(
     entry.retained = true
   }
 
-  rearmSecondary(entry)
+  rearmSecondary(entry, spawnPriority)
   entry.activeRequests += 1
 
   try {
@@ -1285,7 +1299,7 @@ export async function retainGatewayForAgent(
     entry.retained = true
   }
 
-  rearmSecondary(entry)
+  rearmSecondary(entry, spawnPriority)
   entry.activeRequests += 1
 
   let released = false
@@ -1532,7 +1546,7 @@ export async function openGatewayForAgent(
 
   const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
   entry.retained = true
-  rearmSecondary(entry)
+  rearmSecondary(entry, spawnPriority)
 
   if (activationLease) {
     // Stays held after a successful open: the activation that follows releases

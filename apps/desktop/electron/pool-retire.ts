@@ -1,88 +1,23 @@
-// Cooperative retirement of a provably idle pooled backend for a foreground dial.
-//
-// The local pool caps spawned `hermes serve` children (3 by default) and a
-// child's hard slot lease lives exactly as long as the child. The renderer
-// keeps every open socket's entry keepalive-fresh (60s touch), so LRU eviction
-// and the idle reaper — both keyed off lastActiveAt — never free a slot held by
-// a bot tile that is merely pinned. Occupied is not busy: two pinned residents
-// plus one foreground resident fill the pool and the fourth foreground open
-// waits 30s for a slot that nothing will release, then times out.
-//
-// This module lets a foreground dial retire ONE resident, under these rules:
-//
-//   * Proof comes from the backend. Every candidate is probed
-//     (`/api/health/idle`: running sessions + running cron jobs + prompts
-//     waiting on a human) and only `true` is idle. `false` and `null` (an older
-//     runtime, a probe error, an unreadable ledger) are both busy. The
-//     renderer-published `activeTurn` lease is an early skip, never the proof —
-//     it cannot see cron fires or messaging turns on a pooled backend.
-//   * Admission fence. Concurrent foreground dials share one retirement; the
-//     coordinator hands the freed slot to whichever ticket queued first.
-//   * Identity is rechecked after every await (`pool.get(key) === entry`), and
-//     the candidate is re-probed immediately before SIGTERM: a turn may have
-//     started while the waiter queued.
-//   * The slot is released only by the caller's `stopBackend`, i.e. after the
-//     child has actually exited (stopPoolBackend → releaseLocalBackendSlot).
-//     Nothing here touches the lease.
-//   * `onRetiring(key)` fires before the stop so the renderer can park the
-//     scope instead of redialing into the slot it just vacated.
-//
-// Pure/DI-testable like pool-spawn-coordinator.ts and pool-stop.ts. Trigger
-// point (foreground dial at activeCount >= cap, before coordinator.request)
-// and the LRU-among-eligible selector shape are from #104871 by @bounce12340.
+import type { LocalBackendSpawnCoordinator } from './pool-spawn-coordinator'
 
 export interface PoolRetireEntry {
-  /** Renderer-published prompt-turn lease (`touchBackend(scope, { activeTurn })`). Undefined = unknown. */
+  /** An early veto only; backend admission owns the proof. */
   activeTurn?: boolean
   lastActiveAt?: null | number
   process?: unknown
 }
 
-/** true = the backend proved it is idle; false = busy; null = cannot prove (treated as busy). */
-export type IdleVerdict = boolean | null
-
 export interface PoolRetirerDeps<E extends PoolRetireEntry> {
   pool: Map<string, E>
-  /** Ask the backend itself. Must never throw; map every failure to null. */
-  probeIdle: (key: string, entry: E) => Promise<IdleVerdict>
-  /** Bounded teardown; resolves only after the child has actually exited and its slot was released. */
+  coordinator: LocalBackendSpawnCoordinator
+  prepare: (key: string, entry: E) => Promise<string | null>
+  commit: (key: string, entry: E, token: string) => Promise<boolean>
+  cancel: (key: string, entry: E, token: string) => Promise<void>
   stopBackend: (key: string) => Promise<void>
-  /** Fires before the stop so the renderer parks the scope instead of redialing. */
   onRetiring?: (key: string) => void
   log?: (message: string) => void
 }
 
-export interface PoolRetirement {
-  key: string
-  /**
-   * Final identity + idle recheck, then stop. Resolves true when the child was
-   * retired (after its real exit), false when the recheck aborted. Idempotent:
-   * every foreground dial sharing this retirement gets the same promise.
-   */
-  commit: () => Promise<boolean>
-  /** Release the fence without stopping anything (the caller failed before it could queue). */
-  abandon: () => void
-}
-
-export interface PoolRetirer {
-  /**
-   * Find a resident this foreground dial may retire. Resolves null when no
-   * candidate can prove idle (the dial falls through to the ordinary slot
-   * queue). While a retirement is being prepared or committed, every caller
-   * shares it.
-   */
-  retireForForeground: (waiterKey: string) => Promise<PoolRetirement | null>
-  /** Test/diagnostic: whether a retirement is in flight. */
-  inFlight: () => boolean
-}
-
-/**
- * Spawned residents a foreground dial may consider, least-recently-used first.
- * Entries without a child (descriptors, spawns still queued) hold no slot;
- * entries the renderer reports as mid-turn are skipped early; the waiter's own
- * key is never a candidate. Unknown activity (`activeTurn` undefined) stays
- * eligible — the backend probe decides, not the renderer.
- */
 export function selectRetirementCandidates<K, E extends PoolRetireEntry>(
   entries: Iterable<[K, E]>,
   exclude: ReadonlySet<K>
@@ -92,122 +27,145 @@ export function selectRetirementCandidates<K, E extends PoolRetireEntry>(
     .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
 }
 
-export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDeps<E>): PoolRetirer {
-  let inFlight: Promise<PoolRetirement | null> | null = null
+/** One arbiter owns foreground recovery, idle reaping and stale LRU eviction.
+ * A permit freezes backend admission; a GET snapshot never authorizes a kill.
+ * Credit: @bounce12340's occupied-not-busy diagnosis, @austinpickett's parking,
+ * @chelsealong's backend-work proof and @sharkenstein3d's shared stop boundary.
+ */
+export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDeps<E>) {
+  let serial: Promise<unknown> = Promise.resolve()
+  let scheduled = false
+  let disposed = false
+  const retiredScopes = new Set<string>()
+  let retry: ReturnType<typeof setTimeout> | undefined
+  const report = (error: unknown) => deps.log?.(`Pool retirement failed: ${String(error)}`)
 
-  const log = (message: string) => deps.log?.(message)
+  function enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const result = serial.then(work)
+    serial = result.catch(report)
 
-  // Still the same live entry, and the renderer has not leased a turn since.
-  const stillRetirable = (key: string, entry: E): boolean =>
-    deps.pool.get(key) === entry && entry.activeTurn !== true
+    return result
+  }
 
-  function makeRetirement(key: string, entry: E, release: () => void): PoolRetirement {
-    let committed: Promise<boolean> | null = null
+  const needsCapacity = () => !disposed && deps.coordinator.foregroundWaiters.size > 0 &&
+    deps.coordinator.activeCount >= deps.coordinator.limit
 
-    return {
-      key,
-      commit: () => {
-        if (committed) {
-          return committed
-        }
+  async function retire(key: string, entry: E, needed: () => boolean): Promise<boolean> {
+    const eligible = () => !disposed && deps.pool.get(key) === entry && entry.activeTurn !== true && needed()
 
-        committed = (async () => {
-          try {
-            // Re-probe right before the stop: the waiter's request() is queued
-            // by now, so whatever this proves holds for the slot handoff.
-            const verdict = await deps.probeIdle(key, entry)
+    if (!entry.process || !eligible()) {
+      return false
+    }
 
-            if (verdict !== true || !stillRetirable(key, entry)) {
-              log(`Pool retirement of "${key}" aborted: backend no longer provably idle`)
+    const token = await deps.prepare(key, entry)
 
-              return false
-            }
+    if (!token) {
+      return false
+    }
 
-            deps.onRetiring?.(key)
-            log(`Retiring provably idle profile backend "${key}" for a foreground dial`)
-            // stopBackend must SIGTERM synchronously on entry (pool-stop.ts does):
-            // no await sits between the recheck above and the signal.
-            await deps.stopBackend(key)
+    let committed = false
 
-            return true
-          } finally {
-            release()
-          }
-        })()
+    try {
+      // A different resident may have exited, the waiter withdrawn, or this
+      // key acquired a new generation while the HTTP prepare was outstanding.
+      if (!eligible()) {
+        return false
+      }
 
-        return committed
-      },
-      abandon: () => {
-        if (!committed) {
-          release()
-        }
+      committed = await deps.commit(key, entry, token)
+
+      if (!committed || deps.pool.get(key) !== entry) {
+        return false
+      }
+
+      // Commit is irreversible: admission remains closed even if capacity or
+      // renderer intent changes now. Park before signalling the exact child.
+      retiredScopes.add(key)
+      deps.onRetiring?.(key)
+      await deps.stopBackend(key)
+
+      return true
+    } finally {
+      if (!committed) {
+        await deps.cancel(key, entry, token).catch(report)
       }
     }
   }
 
-  async function prepare(waiterKey: string, release: () => void): Promise<PoolRetirement | null> {
-    const candidates = selectRetirementCandidates(deps.pool.entries(), new Set([waiterKey]))
+  async function reclaim(): Promise<void> {
+    while (needsCapacity()) {
+      let retired = false
+      const candidates = selectRetirementCandidates(deps.pool, deps.coordinator.foregroundWaiters)
 
-    for (const [key, entry] of candidates) {
-      const verdict = await deps.probeIdle(key, entry)
-
-      if (verdict !== true) {
-        log(`Pool resident "${key}" not retirable for a foreground dial (idle=${String(verdict)})`)
-
-        continue
-      }
-
-      // Identity recheck after the await: a reaper, a delete, or an exit may
-      // have replaced or removed the entry while the probe was in flight.
-      if (!stillRetirable(key, entry)) {
-        continue
-      }
-
-      return makeRetirement(key, entry, release)
-    }
-
-    return null
-  }
-
-  return {
-    retireForForeground: waiterKey => {
-      if (inFlight) {
-        return inFlight
-      }
-
-      let released = false
-      let run: Promise<PoolRetirement | null> | null = null
-
-      const release = () => {
-        if (released) {
+      for (const [key, entry] of candidates) {
+        if (!needsCapacity()) {
           return
         }
 
-        released = true
+        if (await retire(key, entry, needsCapacity)) {
+          retired = true
 
-        if (inFlight === run) {
-          inFlight = null
+          break
         }
       }
 
-      run = prepare(waiterKey, release).then(
-        retirement => {
-          if (!retirement) {
-            release()
-          }
+      if (!retired) {
+        return
+      }
+    }
+  }
 
-          return retirement
-        },
-        error => {
-          release()
-          throw error
-        }
-      )
+  function wake(): void {
+    if (scheduled || disposed) {
+      return
+    }
 
-      inFlight = run
+    clearTimeout(retry)
+    scheduled = true
+    void enqueue(reclaim).catch(report).finally(() => {
+      scheduled = false
 
-      return run
+      // Busy work may finish without a renderer touch (cron / side agents).
+      // The coordinator's existing ticket deadline bounds these retries.
+      if (needsCapacity()) {
+        retry = setTimeout(wake, 1000)
+        retry.unref?.()
+      }
+    })
+  }
+
+  const unsubscribe = deps.coordinator.onChange(wake)
+
+  return {
+    wake,
+    assertCanOpen: (key: string, priority: 'foreground' | 'background') => {
+      if (priority === 'foreground') {
+        retiredScopes.delete(key)
+      } else if (retiredScopes.has(key)) {
+        throw new Error(`Backend for "${key}" was retired; open it explicitly to reconnect.`)
+      }
     },
-    inFlight: () => inFlight !== null
+    retireIdle: (key: string, idleMs: number) => enqueue(async () => {
+      const entry = deps.pool.get(key)
+
+      return entry ? retire(key, entry, () => Date.now() - (entry.lastActiveAt || 0) > idleMs) : false
+    }),
+    evictTo: (keep: number, freshMs: number) => enqueue(async () => {
+      const retired: string[] = []
+      const overCap = () => [...deps.pool.values()].filter(entry => entry.process).length > Math.max(0, keep)
+
+      for (const [key, entry] of selectRetirementCandidates(deps.pool, deps.coordinator.foregroundWaiters)) {
+        if (await retire(key, entry, () => overCap() && Date.now() - (entry.lastActiveAt || 0) > freshMs)) {
+          retired.push(key)
+        }
+      }
+
+      return retired
+    }),
+    dispose: () => {
+      disposed = true
+      clearTimeout(retry)
+      unsubscribe()
+    },
   }
 }

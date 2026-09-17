@@ -300,9 +300,9 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { evictPoolEntries } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import { createPoolRetirer } from './pool-retire'
+import { createPoolRetirementClient } from './pool-retire-http'
 import {
   BackgroundSlotRetryBackoff,
   BackgroundSlotRetryDeferredError,
@@ -311,6 +311,7 @@ import {
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnPriority,
   type LocalBackendSpawnRequest,
+  registerLocalBackendExitFinalizer,
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
@@ -1628,6 +1629,12 @@ function logPoolSpawnFailure(label: string, error: unknown): void {
 // spawn the claim owner is about to start. Returns the cleanup that clears a
 // mark the dial never consumed.
 function applySpawnPriority(scopeKey: string, spawnPriority: LocalBackendSpawnPriority): () => void {
+  // The renderer's socket-close event may beat its parking IPC. Main owns
+  // this fence too, so that race cannot resurrect the retired generation.
+  for (const key of poolTouchKeys(scopeKey)) {
+    poolRetirer.assertCanOpen(key, spawnPriority)
+  }
+
   if (spawnPriority !== 'foreground') {
     return () => undefined
   }
@@ -11443,6 +11450,7 @@ async function ensureBackend(profile, opts: { passive?: boolean; spawnPriority?:
   localBackendLifecycle.assertCanStart()
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
+  poolRetirer.assertCanOpen(key, spawnPriority)
   const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
@@ -12420,16 +12428,7 @@ function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
 // was merely idle past the keepalive window. Descriptors are still reclaimed
 // by the idle reaper.
 async function evictLruPoolBackends(keep) {
-  return evictPoolEntries(
-    backendPool.entries(),
-    Math.max(0, keep),
-    Date.now(),
-    POOL_KEEPALIVE_FRESH_MS,
-    async profile => {
-      rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
-      await stopPoolBackend(profile)
-    }
-  )
+  return poolRetirer.evictTo(Math.max(0, keep), POOL_KEEPALIVE_FRESH_MS)
 }
 
 function startPoolIdleReaper() {
@@ -12442,8 +12441,12 @@ function startPoolIdleReaper() {
 
     for (const [profile, entry] of [...backendPool.entries()]) {
       if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
-        stopPoolBackend(profile)
+        // Remote descriptors hold no child/slot. Local children require the
+        // same admission authority as foreground and LRU reclamation.
+        const retiring = entry.process
+          ? poolRetirer.retireIdle(profile, poolIdleMs())
+          : stopPoolBackend(profile)
+        void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
 
@@ -12511,11 +12514,6 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
     async () => {
       stopBackendChild(child)
       await waitForBackendExit(child)
-
-      if (child && child.exitCode === null && child.signalCode === null) {
-        throw new Error(`Profile backend for "${poolKey}" did not exit; keeping the local slot occupied.`)
-      }
-
       releaseBackendChild(child)
     }
   )
@@ -12587,23 +12585,8 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     throw new BackgroundSlotRetryDeferredError(profile)
   }
 
-  // Trigger point (from #104871): a foreground dial against a full pool may
-  // retire ONE resident the backend proves idle. Prepare it BEFORE taking a
-  // ticket so the request below sits at the queue head when the slot frees;
-  // commit AFTER so nothing that was not already waiting can take that slot.
-  // Null (nothing provably idle) falls through to the ordinary bounded wait.
-  const retirement =
-    spawnPriority === 'foreground' && localBackendSpawnCoordinator.activeCount >= poolMaxBackends()
-      ? await poolRetirer.retireForForeground(poolKey)
-      : null
-
-  try {
-    assertPoolEntryStillOwned(poolKey, entry)
-  } catch (error) {
-    retirement?.abandon()
-    throw error
-  }
-
+  // The arbiter subscribes to the actual coordinator queue, so a later
+  // foreground promotion receives reclamation too, not just fresh starts.
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
     priority: spawnPriority
@@ -12611,12 +12594,6 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   entry.localBackendSlotKey = poolKey
   entry.localBackendSpawnRequest = spawnRequest
-
-  // The slot is released by the retired child's real exit (stopPoolBackend →
-  // releaseLocalBackendSlot), never here; this only starts the teardown.
-  void retirement?.commit().catch(error => {
-    rememberLog(`Pool retirement for "${poolKey}" failed: ${error instanceof Error ? error.message : String(error)}`)
-  })
 
   if (spawnRequest.queued) {
     rememberLog(
@@ -12742,6 +12719,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   entry.process = child
   entry.token = token
+  registerLocalBackendExitFinalizer(backendPool, poolKey, entry, () => releaseLocalBackendSlot(entry))
   // Buffer stdout+stderr from the instant of spawn (#93608): an early crash's
   // traceback must survive into the claim error and the before-ready exit
   // message instead of a bare exit code. rememberLog attaches later, after
@@ -12749,32 +12727,14 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   const outputTail = createBackendOutputTail()
   outputTail.attach(child)
 
-  // Start watching for the READY announcement BEFORE any await (#60323):
-  // stdout is already flowing into the tail, and Node streams never replay
-  // consumed chunks to late listeners — a sentinel printed while
-  // claimBackendChild runs would otherwise be lost forever, timing out a
-  // healthy backend. The tail-buffer accessor covers any residual gap.
-  const portAnnouncement = waitForDashboardPortAnnouncement(child, {
-    bufferedOutput: () => outputTail.text(),
-    describeOutputTail: () => outputTail.describe(),
-    readyFile
-  })
-
-  // Mark handled so an early rejection (child dies during the claim) can't
-  // surface as an unhandled rejection before the Promise.race below attaches.
-  portAnnouncement.catch(() => {})
-  await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
-  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
-
-  child.stdout.on('data', rememberLog)
-  child.stderr.on('data', rememberLog)
-
   let ready = false
   let rejectStart = null
 
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+  // Exit/error can now arrive while the ownership claim is still pending.
+  startFailed.catch(() => {})
 
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
@@ -12787,12 +12747,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   })
   child.once('exit', (code, signal) => {
     rememberLog(formatBackendExitLine(`Hermes backend for profile "${profile}" exited`, code, signal, outputTail))
-    releaseLocalBackendSlot(entry)
     releaseBackendChild(child)
-
-    if (backendPool.get(poolKey) === entry) {
-      backendPool.delete(poolKey)
-    }
 
     if (!ready) {
       rejectStart?.(
@@ -12803,7 +12758,23 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     }
   })
 
-  // Discover the ephemeral port the child bound to
+  // Start watching for the READY announcement BEFORE any await (#60323):
+  // stdout is already flowing into the tail, and Node streams never replay
+  // consumed chunks to late listeners — a sentinel printed while
+  // claimBackendChild runs would otherwise be lost forever, timing out a
+  // healthy backend. The tail-buffer accessor covers any residual gap.
+  const portAnnouncement = waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => outputTail.text(),
+    describeOutputTail: () => outputTail.describe(),
+    readyFile
+  })
+  portAnnouncement.catch(() => {})
+  await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
+  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
+
+  child.stdout.on('data', rememberLog)
+  child.stderr.on('data', rememberLog)
+
   const port = await Promise.race([portAnnouncement, startFailed])
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
@@ -12877,31 +12848,19 @@ const poolStopper = createPoolStopper({
   }
 })
 
-async function stopPoolBackend(profile: string) {
+function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
-  await poolStopper.stop(profile)
-  releaseLocalBackendSlot(entry)
-}
+  const stopping = releaseLocalBackendSlotAfterExit(
+    () => releaseLocalBackendSlot(entry),
+    () => poolStopper.stop(profile)
+  )
+  // Fire-and-forget callers still need diagnostics; awaiters receive the
+  // rejection, while physical ownership and the exit finalizer remain live.
+  void stopping.catch(error => {
+    rememberLog(`Profile backend "${profile}" stop failed: ${error instanceof Error ? error.message : String(error)}`)
+  })
 
-// Backend-proven idleness for cooperative retirement (pool-retire.ts). Only
-// the child's own ledgers count: `/api/health/idle` reads running sessions,
-// running cron jobs (HERMES_DESKTOP=1 runs the in-process ticker) and prompts
-// waiting on a human. A runtime predating the route 404s, a probe error or an
-// unreadable ledger reads as null; both are "busy" to the retirer.
-async function probePoolBackendIdle(entry: any): Promise<boolean | null> {
-  if (!entry?.process || !entry.port || !entry.token) {
-    return null
-  }
-
-  try {
-    const body: any = await fetchJson(`http://127.0.0.1:${entry.port}/api/health/idle`, entry.token, {
-      timeoutMs: 3_000
-    })
-
-    return body?.idle === true ? true : body?.idle === false ? false : null
-  } catch {
-    return null
-  }
+  return stopping
 }
 
 // Tell every window the pooled backend under `poolKey` is being retired so the
@@ -12917,13 +12876,15 @@ function broadcastPoolBackendRetiring(poolKey: string) {
   }
 }
 
-const poolRetirer = createPoolRetirer<any>({
+const poolRetirer = createPoolRetirer({
   pool: backendPool,
-  probeIdle: (_key, entry) => probePoolBackendIdle(entry),
+  coordinator: localBackendSpawnCoordinator,
+  ...createPoolRetirementClient(fetchJson),
   stopBackend: stopPoolBackend,
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
   await Promise.all(localProfilePoolKeys(profile).map(key => stopPoolBackend(key)))
