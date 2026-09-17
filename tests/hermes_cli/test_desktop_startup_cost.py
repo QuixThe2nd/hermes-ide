@@ -1,7 +1,6 @@
 """Startup regressions exercised against real source trees on the current host."""
 
 import argparse
-import builtins
 import os
 import subprocess
 from pathlib import Path
@@ -25,28 +24,21 @@ def _tree(tmp_path):
     return root, app, source
 
 
-def test_unchanged_desktop_hash_does_not_reopen_sources(tmp_path):
-    root, app, source = _tree(tmp_path)
+def test_desktop_hash_prunes_ignored_build_directories(tmp_path):
+    root, app, _ = _tree(tmp_path)
     ignored = app / "dist"
     ignored.mkdir()
     (ignored / "bundle.js").write_text("built output")
     expected = desktop._compute_desktop_content_hash(root)
-    original_open = builtins.open
     original_scandir = os.scandir
-    reads = []
-
-    def track(file, *args, **kwargs):
-        if isinstance(file, (str, os.PathLike)) and Path(file) == source:
-            reads.append(file)
-        return original_open(file, *args, **kwargs)
 
     def scan(directory):
         assert Path(directory) != ignored, "ignored build output must be pruned before traversal"
         return original_scandir(directory)
 
-    with patch("builtins.open", side_effect=track), patch("os.scandir", side_effect=scan):
+    (ignored / "bundle.js").write_text("different build output")
+    with patch("os.scandir", side_effect=scan):
         assert desktop._compute_desktop_content_hash(root) == expected
-    assert reads == [], "launch should use source metadata, not read every source file again"
 
 
 def test_desktop_hash_invalidates_for_edits_even_with_restored_mtime(tmp_path):
@@ -64,6 +56,41 @@ def test_desktop_hash_invalidates_for_edits_even_with_restored_mtime(tmp_path):
     added.unlink()
     assert desktop._compute_desktop_content_hash(root) == original
     (root / "package.json").write_text('{"changed": true}')
+    assert desktop._compute_desktop_content_hash(root) != original
+
+
+@pytest.mark.windows_only
+def test_desktop_hash_detects_memory_mapped_edits(tmp_path):
+    import mmap
+
+    root, _, source = _tree(tmp_path)
+    original = desktop._compute_desktop_content_hash(root)
+    with source.open("r+b") as stream:
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE) as view:
+            view[-1:] = b"2"
+            view.flush()
+    assert source.read_bytes().endswith(b"2")
+    assert desktop._compute_desktop_content_hash(root) != original
+
+
+@pytest.mark.windows_only
+def test_desktop_hash_recovers_after_a_temporary_read_lock(tmp_path):
+    import msvcrt
+
+    root, _, source = _tree(tmp_path)
+    source.write_bytes(b"")
+    original = desktop._compute_desktop_content_hash(root)
+    payload = b"export const x = 2"
+    source.write_bytes(payload)
+    with source.open("r+b") as locked:
+        msvcrt.locking(locked.fileno(), msvcrt.LK_NBLCK, len(payload))
+        try:
+            with pytest.raises(OSError):
+                source.read_bytes()
+            desktop._compute_desktop_content_hash(root)
+        finally:
+            locked.seek(0)
+            msvcrt.locking(locked.fileno(), msvcrt.LK_UNLCK, len(payload))
     assert desktop._compute_desktop_content_hash(root) != original
 
 

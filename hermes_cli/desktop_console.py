@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextlib import contextmanager
 
 logger = logging.getLogger("hermes_cli.desktop")
@@ -31,19 +32,39 @@ def desktop_console_output(*, source_mode: bool):
         yield {}
         return
 
-    import subprocess
-
-    read_fd, write_fd = os.pipe()
-
-    def drain():
+    def drain(read_fd, level):
         with os.fdopen(read_fd, "rb") as stream:
-            while data := stream.readline(8192):
-                logger.info("[desktop] %s", data.decode("utf-8", errors="replace").rstrip())
+            # Decode/redact complete records, not arbitrary pipe-read fragments.
+            # Discard an oversized line in full: even its prefix may be a secret.
+            limit = 128 * 1024
+            while data := stream.readline(limit + 1):
+                if len(data) > limit:
+                    while data and not data.endswith(b"\n"):
+                        data = stream.readline(8192)
+                    logger.log(level, "[desktop] [oversized line omitted]")
+                else:
+                    logger.log(level, "[desktop] %s", data.decode("utf-8", errors="replace").rstrip())
 
-    reader = threading.Thread(target=drain, name="desktop-console", daemon=True)
-    reader.start()
+    streams = {}
+    readers = []
     try:
-        yield {"stdout": write_fd, "stderr": subprocess.STDOUT}
+        # Keep diagnostics visible even when ordinary INFO output is disabled.
+        for name, level in (("stdout", logging.INFO), ("stderr", logging.ERROR)):
+            read_fd, write_fd = os.pipe()
+            streams[name] = write_fd
+            reader = threading.Thread(
+                target=drain, args=(read_fd, level), name=f"desktop-console-{name}", daemon=True,
+            )
+            try:
+                reader.start()
+            except BaseException:
+                os.close(read_fd)
+                raise
+            readers.append(reader)
+        yield streams
     finally:
-        os.close(write_fd)
-        reader.join(timeout=1)
+        for write_fd in streams.values():
+            os.close(write_fd)
+        deadline = time.monotonic() + 1
+        for reader in readers:
+            reader.join(timeout=max(0, deadline - time.monotonic()))

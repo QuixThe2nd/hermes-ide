@@ -37,9 +37,7 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 
 def _compute_desktop_content_hash(project_root: Path) -> str:
     """SHA-256 of ``apps/desktop/`` (minus .gitignore matches) plus root workspace config."""
-    from hermes_cli.desktop_source_cache import cached_desktop_source_hash
-    return cached_desktop_source_hash(
-        project_root, lambda: _hash_source_tree(project_root, project_root / "apps" / "desktop"))
+    return _hash_source_tree(project_root, project_root / "apps" / "desktop")
 
 
 def _desktop_stamp_path() -> Path:
