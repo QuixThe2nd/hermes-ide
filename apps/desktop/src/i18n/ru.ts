@@ -2631,6 +2631,7 @@ export const ru = defineLocale({
       enter: label => `Открыть ${label}`,
       reorder: label => `Изменить порядок ${label}`,
       toggle: (label, open) => `${open ? 'Показать' : 'Скрыть'} сеансы ${label}`,
+      showAllCount: count => `Показать все сессии (${count})`,
       back: 'Все проекты'
     },
     newSessionIn: label => `Новый сеанс в ${label}`,
