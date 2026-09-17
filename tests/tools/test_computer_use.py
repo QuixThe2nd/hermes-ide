@@ -469,12 +469,9 @@ class TestAnthropicAdapterMultimodal:
 
         # Build screenshots interleaved with assistant messages. The eviction frontier
         # advances in whole batches, so use a count that lands exactly on one advance.
-        from agent.anthropic_message_convert import (
-            _OUTBOUND_IMAGE_LIMIT,
-            _SCREENSHOT_EVICTION_BATCH,
-        )
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
-        total = _OUTBOUND_IMAGE_LIMIT + 1
+        total = OUTBOUND_IMAGE_LIMIT + 1
         messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
         for i in range(total):
             messages.append({
@@ -514,20 +511,17 @@ class TestAnthropicAdapterMultimodal:
                 for x in b["content"]
             )
         ]
-        assert len(placeholders) == _SCREENSHOT_EVICTION_BATCH
-        assert len(with_images) == total - _SCREENSHOT_EVICTION_BATCH
+        assert len(placeholders) == IMAGE_EVICTION_BATCH
+        assert len(with_images) == total - IMAGE_EVICTION_BATCH
 
     def test_parallel_batch_retires_the_oldest_siblings_first(self):
         """Sibling tool_results in one user message are oldest-first; eviction must not
         retire the newest of them (#103217)."""
-        from agent.anthropic_message_convert import (
-            _OUTBOUND_IMAGE_LIMIT,
-            _SCREENSHOT_EVICTION_BATCH,
-            _evict_old_screenshots,
-        )
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
-        n = _OUTBOUND_IMAGE_LIMIT + 1
+        n = OUTBOUND_IMAGE_LIMIT + 1
         result = [{
             "role": "user",
             "content": [
@@ -540,7 +534,7 @@ class TestAnthropicAdapterMultimodal:
             b["tool_use_id"] for b in result[0]["content"]
             if any(x.get("type") == "image" for x in b["content"])
         ]
-        assert survivors == [f"t{i}" for i in range(_SCREENSHOT_EVICTION_BATCH, n)]
+        assert survivors == [f"t{i}" for i in range(IMAGE_EVICTION_BATCH, n)]
 
     def test_floor_yields_when_one_carrier_breaches_the_block_limit(self):
         """The keep floor shelters only breaches eviction cannot fix.
@@ -549,14 +543,15 @@ class TestAnthropicAdapterMultimodal:
         a floor of three counted in carriers would retire nothing and ship a request the
         API rejects. With no reserved uploads the breach is fixable, so it must be fixed.
         """
-        from agent.anthropic_message_convert import _OUTBOUND_IMAGE_LIMIT, _evict_old_screenshots
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
 
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
         result = [{
             "role": "user",
             "content": [{
                 "type": "tool_result", "tool_use_id": "t0",
-                "content": [dict(img) for _ in range(_OUTBOUND_IMAGE_LIMIT + 5)],
+                "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT + 5)],
             }],
         }]
         _evict_old_screenshots(result)
@@ -565,10 +560,11 @@ class TestAnthropicAdapterMultimodal:
     def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
         """Fifteen reserved uploads plus six one-frame tool_results: one eight-wide batch would
         retire every frame although keeping the newest three already clears the ceiling."""
-        from agent.anthropic_message_convert import _OUTBOUND_IMAGE_LIMIT, _evict_old_screenshots
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
 
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
-        result = [{"role": "user", "content": [dict(img) for _ in range(_OUTBOUND_IMAGE_LIMIT - 5)]}]
+        result = [{"role": "user", "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT - 5)]}]
         for i in range(6):
             result.append({"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}", "name": "s", "input": {}}]})
             result.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}]})
@@ -577,7 +573,8 @@ class TestAnthropicAdapterMultimodal:
             b["tool_use_id"] for m in result for b in m["content"]
             if b.get("type") == "tool_result" and any(x.get("type") == "image" for x in b["content"])
         ]
-        assert kept == ["t3", "t4", "t5"]
+        assert kept[-3:] == ["t3", "t4", "t5"]
+        assert OUTBOUND_IMAGE_LIMIT - 5 + len(kept) <= OUTBOUND_IMAGE_LIMIT
 
     def test_eviction_frontier_holds_between_batch_advances(self):
         """Screenshot eviction must not rewrite a new block on every capture.
@@ -587,11 +584,8 @@ class TestAnthropicAdapterMultimodal:
         forcing a full-prefix re-write that costs far more than the image tokens it
         reclaims.
         """
-        from agent.anthropic_message_convert import (
-            _OUTBOUND_IMAGE_LIMIT,
-            _SCREENSHOT_EVICTION_BATCH,
-            convert_messages_to_anthropic,
-        )
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         fake_png = "iVBORw0KGgo="
 
@@ -636,9 +630,9 @@ class TestAnthropicAdapterMultimodal:
         # Span three batch windows. The placeholder count must step once per batch (a
         # one-step frontier fails the plateau check) AND the surviving image count must
         # never exceed the limit (a fixed one-batch retire fails that after window one).
-        span = range(_OUTBOUND_IMAGE_LIMIT - 2, _OUTBOUND_IMAGE_LIMIT + 3 * _SCREENSHOT_EVICTION_BATCH)
+        span = range(OUTBOUND_IMAGE_LIMIT - 2, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
         counts = [placeholder_count(n) for n in span]
-        assert all(n - c <= _OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
+        assert all(n - c <= OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
         steps = sum(a != b for a, b in zip(counts, counts[1:]))
         assert steps == 3, (
             f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "

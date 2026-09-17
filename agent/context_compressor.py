@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _is_connection_error,
@@ -1009,21 +1010,8 @@ _PRESSURE_KEEP_RECENT_MESSAGES = 3
 # Native vision_analyze / computer_use screenshots that sit inside the protected tail cannot be demoted by
 # pass 2, so they ride every later request until anti-thrash disables compression (#92699).
 _MAX_KEEP_TOOL_IMAGES = 3
-
-# Send-path eviction thresholds. The count above is the COMPACTION keep-window; the send path
-# must not use it, because evicting at 3 images retires one more message on every new image and
-# each retirement edits a row inside the Anthropic cached prefix, re-writing the whole history.
-# Mirror the provider's own constraint instead: hold images until the request would cross a real
-# API limit, then retire a BATCH, so the cost is one slower turn per batch and zero below it.
-#
-# 20 is the documented threshold at which Anthropic applies a stricter per-image dimension cap
-# (2000 px) to EVERY image in the request, counting images nested in tool_result content. Staying
-# at or below it keeps large screenshots legal. The hard ceilings are higher (100 images per
-# request on 200K-context models, 600 otherwise) but the 32 MB request-size limit usually binds
-# first, which the byte budget below guards with headroom for the text portion of the request.
-_OUTBOUND_IMAGE_LIMIT = 20
-_OUTBOUND_IMAGE_BUDGET_BYTES = 24_000_000
-_IMAGE_EVICTION_BATCH = 8
+# Compaction window only. The send path's same-valued OUTBOUND_IMAGE_FLOOR (agent/image_eviction_policy.py)
+# is a satisfiability floor with different semantics; do not merge the two.
 
 # Below this window the threshold is floored (raise-only): at 50% the incompressible
 # floor eats the reclaimed headroom and compaction re-fires every 1-2 turns.
@@ -1246,10 +1234,14 @@ def _replace_image_parts(parts: Any, placeholder: str) -> Optional[List[Any]]:
     return [{"type": "text", "text": placeholder} if _is_image_part(p) else p for p in parts]
 
 
+def _tool_result_parts(content: Any) -> Any:
+    """Part list of a tool-result body, unwrapping the ``_multimodal`` envelope."""
+    return content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
+
+
 def _tool_content_has_images(content: Any) -> bool:
     """True when a tool-result body (part list or ``_multimodal`` envelope) carries images."""
-    inner = content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
-    return _content_has_images(inner)
+    return _content_has_images(_tool_result_parts(content))
 
 
 def _strip_images_from_tool_msg(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1269,147 +1261,47 @@ def _rewritten(msg: Dict[str, Any], content: Any) -> Dict[str, Any]:
     return new_msg
 
 
-def _retire_stale_tool_result_images(
-    result: List[Dict[str, Any]],
-    keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
-) -> int:
+def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES) -> int:
     """Replace image payloads on older tool results with text placeholders.
-
-    Keeps the newest ``keep_newest`` image-bearing tool messages; user uploads untouched.
-    Compaction's pass: it commits the rewrite into the canonical transcript once, so it
-    reclaims every eligible byte. The SEND path must not call this — see
-    :func:`evict_stale_outbound_tool_images` for why a per-turn count-based window is
-    ruinous for the prompt cache. Mutates ``result`` in place; returns messages rewritten.
-    """
-    indexes = [
-        i
-        for i in range(len(result) - 1, -1, -1)
-        if isinstance(result[i], dict)
-        and result[i].get("role") == "tool"
-        and _tool_content_has_images(result[i].get("content"))
-    ]
-    retire = len(indexes) - max(keep_newest, 0)
-    if retire <= 0:
-        return 0
-
-    pruned = 0
-    for i in indexes[-retire:]:
-        new_msg = _strip_images_from_tool_msg(result[i])
+    Keeps the newest ``keep_newest`` image-bearing tool messages; user uploads untouched. Mutates
+    ``result`` in place; returns the number of messages rewritten. Compaction only: it commits the
+    rewrite into the canonical transcript once. The send path uses
+    :func:`evict_stale_outbound_tool_images` (a per-request keep-newest window rewrites the cached
+    prefix on every new image, #113517)."""
+    seen = pruned = 0
+    for i in range(len(result) - 1, -1, -1):
+        msg = result[i]
+        if not isinstance(msg, dict) or msg.get("role") != "tool" or not _tool_content_has_images(msg.get("content")):
+            continue
+        seen += 1
+        if seen <= max(keep_newest, 0):
+            continue
+        new_msg = _strip_images_from_tool_msg(msg)
         if new_msg is not None:
             result[i] = new_msg
             pruned += 1
     return pruned
 
 
-def _image_block_count(msg: Dict[str, Any]) -> int:
-    """Number of API image BLOCKS in a message.
+def _image_payload(msg: Dict[str, Any]) -> Tuple[int, int]:
+    """``(blocks, bytes)`` of image payload in a message.
 
-    The provider counts blocks, not messages: one ``tool_result`` carrying three
-    screenshots is three blocks against the per-request limit.
+    The provider counts BLOCKS: one ``tool_result`` carrying three screenshots is three against
+    the per-request limit.
     """
-    content = msg.get("content")
-    inner = content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
-    return sum(1 for p in inner if _is_image_part(p)) if isinstance(inner, list) else 0
-
-
-def _reserved_image_blocks(api_messages: List[Dict[str, Any]]) -> Tuple[int, int]:
-    """``(blocks, bytes)`` of image payload the send path counts but must never rewrite.
-
-    User uploads occupy the provider's per-request block and size budgets exactly like
-    tool screenshots, so ignoring them lets a mixed session breach either ceiling;
-    rewriting them would silently discard something the user attached by hand.
-    """
+    parts = _tool_result_parts(msg.get("content"))
+    if not isinstance(parts, list):
+        return 0, 0
     blocks = payload = 0
-    for m in api_messages:
-        if isinstance(m, dict) and m.get("role") != "tool":
-            blocks += _image_block_count(m)
-            payload += _image_payload_bytes(m)
+    for p in parts:
+        if not _is_image_part(p):
+            continue
+        blocks += 1
+        payload += len(json.dumps(p, ensure_ascii=False))
     return blocks, payload
 
 
-def _outbound_image_retire_count(
-    block_counts_newest_first: List[int],
-    sizes_newest_first: List[int],
-    *,
-    reserved_blocks: int,
-    reserved_bytes: int,
-    limit: int,
-    budget: int,
-    batch: int,
-    keep_newest: int,
-) -> int:
-    """How many of the OLDEST image-bearing tool messages to retire, in whole batches.
-
-    The send path recomputes eviction from scratch on a fresh clone every turn, so the
-    retire count must be a step function of the overshoot: a fixed ``min(batch, ...)``
-    caps total eviction at one batch forever and lets the outbound request grow past the
-    provider limit unbounded, while an exact ``count - limit`` target moves the frontier
-    on every new image and re-invalidates the cached prefix each turn. Extending by whole
-    batches keeps the request within ``limit``/``budget`` and moves the frontier once per
-    batch.
-
-    Reserved user uploads count toward BOTH ceilings; they are never rewritten, but
-    ignoring their bytes lets a handful of large uploads carry the request past the
-    provider's hard request-size limit unnoticed.
-
-    ``keep_newest`` is a SATISFIABILITY floor, not an unconditional one. It exists for the
-    case where reserved uploads alone breach the ceiling: retiring every tool screenshot
-    then cannot fix the request and would only blind the model on the frames it was just
-    asked about, which is worse than the stricter dimension cap the block limit avoids.
-    Whenever retiring tool content CAN bring the request inside the ceiling, it does so,
-    past the floor only when keeping the floor does not fit — a batch step that would blind
-    the model while the floor alone clears the ceiling is cut back to the floor. Byte
-    pressure never yields to the floor, because the request-size limit is hard and the
-    provider answers 413.
-    """
-    total = len(block_counts_newest_first)
-
-    def _blocks_fit(kept: int) -> bool:
-        return reserved_blocks + sum(block_counts_newest_first[:kept]) <= limit
-
-    def _bytes_fit(kept: int) -> bool:
-        return reserved_bytes + sum(sizes_newest_first[:kept]) <= budget
-
-    def _fits(kept: int) -> bool:
-        return _blocks_fit(kept) and _bytes_fit(kept)
-
-    if _fits(total):
-        return 0
-
-    floor = min(max(keep_newest, 0), total)
-    if not _fits(0) and _bytes_fit(floor):
-        # Reserved uploads alone breach the block ceiling: no retirement can fix it, so the
-        # newest frames stay rather than blinding the model for nothing.
-        max_retire = total - floor
-    else:
-        max_retire = total
-
-    retire = 0
-    while retire < max_retire:
-        step = min(retire + batch, max_retire)
-        if step > total - floor and _fits(floor):
-            # A whole batch would retire the frames the model was just asked about while
-            # keeping the floor already clears the ceiling; take the smaller edit instead.
-            step = total - floor
-        retire = step
-        if _fits(total - retire):
-            break
-    return retire
-
-
-def _image_payload_bytes(msg: Dict[str, Any]) -> int:
-    """Serialized size of the image parts in a tool message (0 when it carries none)."""
-    content = msg.get("content")
-    inner = content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
-    if not isinstance(inner, list):
-        return 0
-    return sum(len(json.dumps(p, ensure_ascii=False)) for p in inner if _is_image_part(p))
-
-
-def evict_stale_outbound_tool_images(
-    api_messages: List[Dict[str, Any]],
-    keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
-) -> int:
+def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     """Drop stale screenshot/vision payloads from the per-call API copy.
 
     Compression's keep-newest pass only runs when prune/compress fires, and the Anthropic
@@ -1418,39 +1310,32 @@ def evict_stale_outbound_tool_images(
     the reactive strip (#89286). Call this on the cloned ``api_messages`` list after
     sanitization (#89296). Do not pass persisted history — the rewrite is send-path only.
 
-    Eviction is driven by the PROVIDER LIMIT, not by a keep-newest count. Retiring an image
-    edits a message the provider has already cached, and Anthropic matches its prompt cache
-    on an exact byte prefix, so every retirement re-writes the whole conversation. A count
-    of N retires one more message on each new image, making every turn a full-prefix miss.
-
-    The limit is counted in API image BLOCKS, so a ``tool_result`` carrying several
-    screenshots weighs several blocks, and user uploads are counted against the ceiling
-    without ever being rewritten. ``keep_newest`` is a floor that keeps the newest tool
-    frames reachable when reserved uploads alone fill the ceiling.
+    Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
+    reserved against the ceiling but never rewritten — policy and rationale in
+    :mod:`agent.image_eviction_policy`. Returns the number of messages rewritten.
     """
-    images = [
-        (i, _image_block_count(api_messages[i]), size)
-        for i in range(len(api_messages) - 1, -1, -1)
-        if isinstance(api_messages[i], dict)
-        and api_messages[i].get("role") == "tool"
-        and (size := _image_payload_bytes(api_messages[i])) > 0
-    ]
-    reserved_blocks, reserved_bytes = _reserved_image_blocks(api_messages)
-    retire = _outbound_image_retire_count(
-        [blocks for _, blocks, _ in images],
-        [s for _, _, s in images],
-        reserved_blocks=reserved_blocks,
+    carriers: List[Tuple[int, Tuple[int, int]]] = []
+    reserved_blocks = reserved_bytes = 0
+    for i in range(len(api_messages) - 1, -1, -1):
+        msg = api_messages[i]
+        if not isinstance(msg, dict):
+            continue
+        blocks, size = _image_payload(msg)
+        if not blocks:
+            continue
+        if msg.get("role") == "tool":
+            carriers.append((i, (blocks, size)))
+        else:
+            reserved_blocks += blocks
+            reserved_bytes += size
+    retire = outbound_image_retire_count(
+        [blocks for _, (blocks, _) in carriers],
+        reserved_blocks,
+        carrier_bytes_newest_first=[size for _, (_, size) in carriers],
         reserved_bytes=reserved_bytes,
-        limit=_OUTBOUND_IMAGE_LIMIT,
-        budget=_OUTBOUND_IMAGE_BUDGET_BYTES,
-        batch=_IMAGE_EVICTION_BATCH,
-        keep_newest=keep_newest,
     )
-    if retire <= 0:
-        return 0
-
     pruned = 0
-    for i, _, _ in images[-retire:]:
+    for i, _ in carriers[len(carriers) - retire:]:
         new_msg = _strip_images_from_tool_msg(api_messages[i])
         if new_msg is not None:
             api_messages[i] = new_msg

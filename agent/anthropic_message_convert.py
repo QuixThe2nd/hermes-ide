@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.image_eviction_policy import outbound_image_retire_count
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
@@ -21,14 +22,6 @@ _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
 _CACHEABLE_TYPES = frozenset(("text", "tool_use"))
 _EMPTY_TEXT_PLACEHOLDER = "(empty)"
 _EMPTY_SCHEMA = {"type": "object", "properties": {}}
-# Screenshot eviction mirrors the API's own per-request image limit rather than a keep-newest
-# count: 20 is the documented threshold above which Anthropic imposes a stricter per-image
-# dimension cap on every image in the request, including ones nested in tool_result content.
-# Below it nothing is rewritten, so the prompt-cache prefix survives; at it, a whole batch goes
-# at once, costing one slower turn per batch instead of one per screenshot.
-_MAX_KEEP_SCREENSHOTS = 3
-_OUTBOUND_IMAGE_LIMIT = 20
-_SCREENSHOT_EVICTION_BATCH = 8
 _BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
 
 
@@ -600,18 +593,12 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
 
 
 def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
-    """Retire screenshot payloads once the request nears the API's per-request image limit.
+    """Retire screenshot payloads once the request would cross the API's per-request image limit.
 
-    Mutates ``result`` in place. Eviction is triggered by the LIMIT, not by a keep-newest
-    count: retiring an image edits a block the provider has already cached, and Anthropic
-    matches its prompt cache on an exact byte prefix, so a count-based window that retires
-    one more block per new screenshot makes every turn a full-prefix miss. Holding images
-    until the limit and then dropping a batch costs one slower turn per batch instead.
-
-    The ceiling is counted in image blocks, so a ``tool_result`` holding several
-    screenshots weighs several blocks, and user-uploaded images are reserved against the
-    limit without ever being rewritten. ``_MAX_KEEP_SCREENSHOTS`` is a satisfiability
-    floor: only when reserved uploads alone fill the ceiling do the newest frames stay.
+    Mutates ``result`` in place. This wire pass has no byte sizes, so it enforces the block
+    ceiling only; the auxiliary Anthropic client (``agent.auxiliary_client`` via
+    ``anthropic_adapter.build_anthropic_kwargs``) reaches it without the compressor's
+    send-path pass, so it must hold the invariant alone. Policy: :mod:`agent.image_eviction_policy`.
     """
     reserved = sum(
         1
@@ -623,42 +610,18 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
     # (oldest first), so the inner walk must also run newest -> oldest or a batch that
     # ends mid-message retires the newest frames instead of the oldest (#103217).
     carriers = [
-        (block, sum(1 for b in block["content"] if b.get("type") == "image"))
+        (block, sum(1 for b in block["content"] if _block_type(b) == "image"))
         for msg in reversed(result)
         for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "tool_result"
         and isinstance(block.get("content"), list)
         and _has_block_type(block["content"], {"image"})
     ]
-    total_blocks = reserved + sum(n for _, n in carriers)
-    if total_blocks <= _OUTBOUND_IMAGE_LIMIT:
-        return
-    # Extend by whole batches: this runs statelessly on every request, so a fixed one-batch
-    # retire would stop enforcing the limit after the first batch, and an exact
-    # "limit minus batch" target would move the frontier on every new screenshot.
-    # The keep floor only shelters a breach that retiring every screenshot cannot fix
-    # (reserved uploads alone over the ceiling); one tool_result carrying 25 frames is
-    # fixable and must not hide behind a floor counted in carriers.
-    floor = min(_MAX_KEEP_SCREENSHOTS, len(carriers))
-
-    def _fits(kept: int) -> bool:
-        return reserved + sum(n for _, n in carriers[:kept]) <= _OUTBOUND_IMAGE_LIMIT
-
-    max_retire = len(carriers) - floor if not _fits(0) else len(carriers)
-    retire = 0
-    while retire < max_retire:
-        step = min(retire + _SCREENSHOT_EVICTION_BATCH, max_retire)
-        if step > len(carriers) - floor and _fits(floor):
-            # A whole batch would retire the frames the model was just asked about while
-            # keeping the floor already clears the ceiling; take the smaller edit instead.
-            step = len(carriers) - floor
-        retire = step
-        if _fits(len(carriers) - retire):
-            break
-    for block, _ in carriers[-retire:] if retire else []:
+    retire = outbound_image_retire_count([n for _, n in carriers], reserved)
+    for block, _ in carriers[len(carriers) - retire:]:
         placeholder = _text_block("[screenshot removed to save context]")
         block["content"] = [
-            placeholder if b.get("type") == "image" else b for b in block["content"]
+            placeholder if _block_type(b) == "image" else b for b in block["content"]
         ]
 
 

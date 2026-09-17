@@ -12,11 +12,13 @@ import json
 
 from agent.agent_runtime_helpers import sanitize_api_messages
 from agent.context_compressor import (
-    _IMAGE_EVICTION_BATCH,
-    _MAX_KEEP_TOOL_IMAGES,
-    _OUTBOUND_IMAGE_LIMIT,
     _tool_content_has_images,
     evict_stale_outbound_tool_images,
+)
+from agent.image_eviction_policy import (
+    IMAGE_EVICTION_BATCH,
+    OUTBOUND_IMAGE_FLOOR,
+    OUTBOUND_IMAGE_LIMIT,
 )
 
 
@@ -95,21 +97,21 @@ class TestOutboundStaleVisionEviction:
 
     def test_nothing_is_evicted_below_the_provider_limit(self):
         """The common case must be append-only: no rewrite, so the cached prefix survives."""
-        history = _history_with_screenshots(_OUTBOUND_IMAGE_LIMIT)
+        history = _history_with_screenshots(OUTBOUND_IMAGE_LIMIT)
         outbound = sanitize_api_messages(history)
         assert evict_stale_outbound_tool_images(outbound) == 0
         assert _image_bearing_tool_ids(outbound) == [
-            f"call_{i}" for i in range(_OUTBOUND_IMAGE_LIMIT)
+            f"call_{i}" for i in range(OUTBOUND_IMAGE_LIMIT)
         ]
 
     def test_eviction_retires_a_batch_once_over_the_limit(self):
-        n = _OUTBOUND_IMAGE_LIMIT + 1
+        n = OUTBOUND_IMAGE_LIMIT + 1
         history = _history_with_screenshots(n)
         outbound = sanitize_api_messages(history)
         pruned = evict_stale_outbound_tool_images(outbound)
-        assert pruned == _IMAGE_EVICTION_BATCH
+        assert pruned == IMAGE_EVICTION_BATCH
         kept = _image_bearing_tool_ids(outbound)
-        assert kept == [f"call_{i}" for i in range(_IMAGE_EVICTION_BATCH, n)]
+        assert kept == [f"call_{i}" for i in range(IMAGE_EVICTION_BATCH, n)]
 
         oldest = next(m for m in outbound if m.get("tool_call_id") == "call_0")
         assert isinstance(oldest["content"], list)
@@ -138,9 +140,9 @@ class TestOutboundStaleVisionEviction:
 
         # Span three batch windows: a fixed one-batch retire holds the frontier but stops
         # enforcing the limit after the first window, which the count assertion catches.
-        span = range(_MAX_KEEP_TOOL_IMAGES + 1, _OUTBOUND_IMAGE_LIMIT + 3 * _IMAGE_EVICTION_BATCH)
+        span = range(OUTBOUND_IMAGE_FLOOR + 1, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
         kept = [surviving(n) for n in span]
-        assert all(len(k) <= _OUTBOUND_IMAGE_LIMIT for k in kept), [len(k) for k in kept]
+        assert all(len(k) <= OUTBOUND_IMAGE_LIMIT for k in kept), [len(k) for k in kept]
         frontier = [k[0] for k in kept]
         moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
         assert moves == 3, (
@@ -192,7 +194,7 @@ class TestOutboundStaleVisionEviction:
         assert evict_stale_outbound_tool_images(outbound) > 0, (
             "24 image blocks across 8 messages must trip the 20-block ceiling"
         )
-        assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT
+        assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT
 
     def test_user_uploads_count_against_the_ceiling(self):
         """Uploads occupy the provider's budget, so they must force tool eviction.
@@ -229,7 +231,7 @@ class TestOutboundStaleVisionEviction:
 
         for n_uploads in (8, 12):
             outbound = outbound_for(n_uploads)
-            assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT, (
+            assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT, (
                 f"{n_uploads} uploads + 16 screenshots left the request over the ceiling"
             )
             user = next(m for m in outbound if m.get("role") == "user")
@@ -255,7 +257,7 @@ class TestOutboundStaleVisionEviction:
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,U{k}"},
                         }
-                        for k in range(_OUTBOUND_IMAGE_LIMIT + 1)
+                        for k in range(OUTBOUND_IMAGE_LIMIT + 1)
                     ],
                 ],
             }
@@ -264,7 +266,7 @@ class TestOutboundStaleVisionEviction:
             history.extend(_image_tool(i))
         outbound = sanitize_api_messages(history)
         evict_stale_outbound_tool_images(outbound)
-        assert len(_image_bearing_tool_ids(outbound)) == _MAX_KEEP_TOOL_IMAGES
+        assert len(_image_bearing_tool_ids(outbound)) == OUTBOUND_IMAGE_FLOOR
 
     def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
         """A whole-batch retire must not take the newest frames when the floor already fits.
@@ -273,7 +275,7 @@ class TestOutboundStaleVisionEviction:
         one eight-wide batch would retire all six tool frames -- including the one the model
         was just asked about -- although keeping the newest three already clears the limit.
         """
-        uploads = _OUTBOUND_IMAGE_LIMIT - 5
+        uploads = OUTBOUND_IMAGE_LIMIT - 5
         history: list[dict] = [
             {
                 "role": "user",
@@ -290,8 +292,9 @@ class TestOutboundStaleVisionEviction:
             history.extend(_image_tool(i))
         outbound = sanitize_api_messages(history)
         evict_stale_outbound_tool_images(outbound)
-        assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT
-        assert _image_bearing_tool_ids(outbound) == [f"call_{i}" for i in range(3, 6)]
+        assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT
+        kept = _image_bearing_tool_ids(outbound)
+        assert kept[-OUTBOUND_IMAGE_FLOOR:] == [f"call_{i}" for i in range(6 - OUTBOUND_IMAGE_FLOOR, 6)]
 
     def test_byte_pressure_overrides_the_keep_newest_floor(self):
         """A hard request-size breach must not be preserved by the floor.
@@ -394,28 +397,28 @@ class TestOutboundStaleVisionEviction:
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,A{k}"},
                         }
-                        for k in range(_OUTBOUND_IMAGE_LIMIT + 5)
+                        for k in range(OUTBOUND_IMAGE_LIMIT + 5)
                     ],
                 ],
             }
         )
         outbound = sanitize_api_messages(history)
-        assert _outbound_image_blocks(outbound) > _OUTBOUND_IMAGE_LIMIT
+        assert _outbound_image_blocks(outbound) > OUTBOUND_IMAGE_LIMIT
         evict_stale_outbound_tool_images(outbound)
-        assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT, (
+        assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT, (
             "the floor sheltered a breach that retiring tool content could fix"
         )
 
     def test_does_not_rewrite_persisted_history(self):
         from agent.conversation_loop import _clone_message_for_send
 
-        n = _OUTBOUND_IMAGE_LIMIT + 1
+        n = OUTBOUND_IMAGE_LIMIT + 1
         history = _history_with_screenshots(n)
         outbound = [_clone_message_for_send(m) for m in history]
         evict_stale_outbound_tool_images(outbound)
         assert _image_bearing_tool_ids(history) == [f"call_{i}" for i in range(n)]
         assert _image_bearing_tool_ids(outbound) == [
-            f"call_{i}" for i in range(_IMAGE_EVICTION_BATCH, n)
+            f"call_{i}" for i in range(IMAGE_EVICTION_BATCH, n)
         ]
 
     def test_user_uploads_are_not_evicted(self):
@@ -431,9 +434,9 @@ class TestOutboundStaleVisionEviction:
                 ],
             }
         ]
-        for i in range(_MAX_KEEP_TOOL_IMAGES + 2):
+        for i in range(OUTBOUND_IMAGE_LIMIT):
             history.extend(_image_tool(i))
         outbound = sanitize_api_messages(history)
-        evict_stale_outbound_tool_images(outbound)
+        assert evict_stale_outbound_tool_images(outbound) > 0
         user = next(m for m in outbound if m.get("role") == "user")
         assert user["content"][1]["image_url"]["url"].endswith("USERUPLOAD")
