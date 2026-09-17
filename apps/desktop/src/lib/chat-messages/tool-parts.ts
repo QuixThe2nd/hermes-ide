@@ -391,9 +391,16 @@ export interface SettledClarifyProjection {
  * sealed with `completedAt` but no `result`, renders as "Result unavailable"),
  * instead of seeding a fresh bubble with a duplicate row (#113035).
  *
- * Newest-first: interim boundaries append bubbles, so the owner of an
- * in-flight call is the most recent message that carries the id. Idempotent
- * for duplicate completions — `upsertToolPart` overwrites the same part.
+ * Only an UNRESOLVED part (never completed: no `result` key, sealed or not)
+ * can own an event. Tool call ids are not unique across turns — llama.cpp
+ * emits one constant id for every call and Hermes' own deterministic ids
+ * repeat — so a part that already carries its completion is a finished call
+ * from an earlier turn, not the owner of the new one. Routing to it would
+ * draw the new call over the old row and leave the live turn empty.
+ *
+ * Newest-first among unresolved parts: interim boundaries append bubbles, so
+ * the owner of an in-flight call is the most recent message that carries the
+ * id without a result.
  */
 export function toolCallOwnerMessageId(
   messages: ChatMessage[],
@@ -409,7 +416,7 @@ export function toolCallOwnerMessageId(
     const message = messages[messageIndex]
 
     for (const part of message.parts) {
-      if (part.type === 'tool-call' && part.toolCallId === stableId) {
+      if (part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')) {
         return message.id
       }
     }
