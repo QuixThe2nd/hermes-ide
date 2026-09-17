@@ -175,6 +175,8 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
+  onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -511,7 +513,9 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
-host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
+host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
+                                           //   Calls made during register() are retired with the
+                                           //   plugin; elsewhere prefer ctx.onEvent (always tracked)
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway

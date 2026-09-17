@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReadDirResult } from '@/global'
 import type * as HermesModule from '@/hermes'
 
-import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
 import { emitGatewayEvent } from './events'
+import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
 import { discoverRuntimePlugins, loadRuntimePlugin, unloadRuntimePlugin, watchRuntimePlugins } from './runtime-loader'
 
 // getStatus would supply the connected backend's hermes_home — a REMOTE path in
@@ -354,7 +354,8 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
   it('disposes runtime host event subscriptions before a hot reload (#112366)', async () => {
     const restore = blobToDataUrl()
     const marker = '__runtimeEventReloadCount'
-    ;(globalThis as unknown as Record<string, number>)[marker] = 0
+    const counters = globalThis as unknown as Record<string, number | undefined>
+    counters[marker] = 0
 
     try {
       const source = `
@@ -371,14 +372,14 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
       await loadRuntimePlugin(source, 'second runtime event registration')
 
       emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
-      expect((globalThis as unknown as Record<string, number>)[marker]).toBe(1)
+      expect(counters[marker]).toBe(1)
 
       unloadRuntimePlugin('runtime-event-reload')
       emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
-      expect((globalThis as unknown as Record<string, number>)[marker]).toBe(1)
+      expect(counters[marker]).toBe(1)
     } finally {
       unloadRuntimePlugin('runtime-event-reload')
-      delete (globalThis as unknown as Record<string, number | undefined>)[marker]
+      delete counters[marker]
       restore()
     }
   })
