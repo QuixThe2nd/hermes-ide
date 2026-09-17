@@ -293,6 +293,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
   ambiguous exit-1 results use neutral notices, with details still available.
   Errors described inside returned data are not tool failures. Expanded failures
   show the actual explanation; supporting output keeps its normal text color.
+- Nested transcript scrollers keep their height caps and hand vertical scrolling
+  back to the thread at either edge (`overscroll-behavior-y: auto`), even when
+  their content fits. Only the outer thread contains vertical overscroll;
+  horizontal code/output boundaries may remain contained. Thinking previews
+  follow new tokens only while near the bottom, preserving the user's reading
+  position until they scroll back down.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
