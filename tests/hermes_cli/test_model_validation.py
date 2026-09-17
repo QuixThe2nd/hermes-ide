@@ -340,6 +340,52 @@ class TestNormalizeOpencodeBaseUrl:
         ) == "https://openrouter.ai/api"
 
 
+class TestNormalizeOpencodeBaseUrlFamilyPath:
+    """A carried-over base_url must also be healed on the FAMILY path segment, not just /v1.
+
+    Regression for #112600: ``model.base_url`` pinned to the Zen relay
+    (``https://opencode.ai/zen/v1``) survived a switch to ``opencode-go``; the relays serve
+    different model sets, so every request went to Zen and 401'd
+    (``Model mimo-v2.5 is not supported``). ``normalize_opencode_base_url`` is the one healing
+    step every resolution path funnels through, so it owns the family-path rewrite.
+    """
+
+    def test_chat_completions_go_provider_heals_a_zen_base_url(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/zen/v1"
+        ) == "https://opencode.ai/zen/go/v1"
+
+    def test_anthropic_messages_go_provider_heals_a_zen_base_url(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1"
+        ) == "https://opencode.ai/zen/go"
+
+    def test_zen_and_free_providers_heal_a_go_base_url(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # opencode-free is served on the Zen relay, so it maps back to /zen (not /zen/go).
+        for provider in ("opencode-zen", "opencode-free"):
+            assert normalize_opencode_base_url(
+                provider, "chat_completions", "https://opencode.ai/zen/go/v1"
+            ) == "https://opencode.ai/zen/v1"
+        assert normalize_opencode_base_url(
+            "opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go"
+        ) == "https://opencode.ai/zen"
+
+    def test_custom_proxy_host_and_unrelated_paths_untouched(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # A self-hosted OPENCODE_*_BASE_URL proxy has no family path to rewrite.
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1"
+        ) == "https://gateway.internal.example/zen/v1"
+        # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/api"
+        ) == "https://opencode.ai/api/v1"
+
+
 class TestAzureFoundryModelApiMode:
     """Azure Foundry deploys GPT-5.x / codex / o-series as Responses-API-only.
 

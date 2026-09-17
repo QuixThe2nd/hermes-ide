@@ -1400,6 +1400,51 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
+    """End-to-end for #112600: a ``model.base_url`` pinned to the Zen relay must follow the
+    resolved provider family. The CLI inherits that pinned override across a switch, and the Zen
+    relay does not serve Go-subscription models, so the client was built against
+    ``https://opencode.ai/zen/v1`` and every request 401'd ("Model mimo-v2.5 is not supported").
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "mimo-v2.5",
+            "base_url": "https://opencode.ai/zen/v1",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_opencode_zen_resolution_heals_a_stale_go_config_base_url(monkeypatch):
+    """The mirror direction: a Go URL must not survive a switch back to the Zen relay."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-zen",
+            "default": "deepseek-v4-flash",
+            "base_url": "https://opencode.ai/zen/go/v1",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
 # ------------------------------------------------------------------
 # fix #2562 — resolve_provider("custom") must not remap to "openrouter"
 # ------------------------------------------------------------------

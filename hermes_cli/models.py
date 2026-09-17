@@ -2362,15 +2362,45 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     return "chat_completions"
 
 
+def _heal_opencode_family_path(url: str, family: str) -> str:
+    """Rewrite a Zen/Go relay URL's FAMILY path segment (``/zen`` vs ``/zen/go``) to ``family``.
+
+    A base URL is persisted to ``model.base_url`` and carried into the next session, so a switch
+    between the two relays (e.g. Zen pinned, then a Go-only model selected) would otherwise keep
+    asking the wrong relay, which serves a different model set and 401s ("Model ... is not
+    supported"). Only ``/zen``-rooted paths on opencode.ai hosts are touched — custom
+    ``OPENCODE_*_BASE_URL`` proxies and unrelated paths pass through untouched.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return url
+    host = parsed.netloc.lower()
+    if not (host == "opencode.ai" or host.endswith(".opencode.ai")):
+        return url
+    path = parsed.path.rstrip("/")
+    if not path.startswith("/zen"):
+        return url
+    tail = path[len("/zen/go"):] if path.startswith("/zen/go") else path[len("/zen"):]
+    if tail not in ("", "/v1"):  # an unexpected shape is not a family alias — leave it alone
+        return url
+    root = "/zen/go" if family == "opencode-go" else "/zen"  # opencode-free lives on the Zen relay
+    return f"{parsed.scheme}://{parsed.netloc}{root}{tail}"
+
+
 def normalize_opencode_base_url(
     provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
     """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
     stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
     and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone."""
+    ``OPENCODE_*_BASE_URL`` proxies are left alone. The family path segment is healed the same way:
+    ``/zen`` and ``/zen/go`` are different relays serving different model sets, so a carried-over
+    URL must follow the resolved provider family (see ``_heal_opencode_family_path``)."""
     url = str(base_url or "").strip().rstrip("/")
-    if not url or opencode_provider_family(provider_id) is None:
+    family = opencode_provider_family(provider_id)
+    if not url or family is None:
         return url
+    url = _heal_opencode_family_path(url, family)
     if api_mode == "anthropic_messages":
         return re.sub(r"/v1$", "", url)
     if url.endswith("/v1"):
