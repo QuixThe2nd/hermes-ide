@@ -1539,3 +1539,41 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
     assert "did not restart running gateways" in capsys.readouterr().err
     assert update_cmd._fleet_restart_pending_marker_path().exists()
 
+
+def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeypatch, capsys):
+    """#112604 aftermath: the update pulled ``pulled``, restarted every gateway onto it, then a
+    post-restart step crashed (receipt ``failed``, empty ``fleet`` matrix). Later a manual
+    ``git pull`` moved the checkout again. The startup hint must not blame that update for a
+    restart it performed; ``hermes update``'s catch-up still owes the fleet the checkout."""
+    pre, pulled, checkout = "a" * 40, "b" * 40, "c" * 40
+    _patch_marker_sha(monkeypatch, checkout)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "failed", "exit_code": 1,
+                "stop_reason": "AttributeError: module 'hermes_cli.main_dashboard' has no attribute 'x'",
+                "pre_update": {"sha": pre}, "post_update": {"sha": pulled},
+                "gateway_restart": {
+                    "restarted_services": ["hermes-gateway"], "relaunched_profiles": [],
+                    "externally_supervised_profiles": [], "killed_pids": [], "failed_units": [],
+                    "incomplete": False, "phase_error": "",
+                },
+                "fleet": [],
+                "plan": {"runtimes": [{"kind": "gateway", "profile": "default", "code_sha": pre, "pid": 1}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": pulled, "code_version": "0.21.3", "state": "stale"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
