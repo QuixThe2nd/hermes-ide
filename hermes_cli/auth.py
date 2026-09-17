@@ -796,17 +796,10 @@ def _merge_disk_cooldown_state(
             PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
         )
 
-        # Model cooldowns are independent observations.  Merge their latest
-        # reset for every model so a writer that just cooled Sonnet cannot
-        # erase another process's Haiku cooldown.
-        memory_cooldowns = entry.get("model_cooldowns")
-        disk_cooldowns = disk_entry.get("model_cooldowns")
-        merged_cooldowns = dict(disk_cooldowns) if isinstance(disk_cooldowns, dict) else {}
-        if isinstance(memory_cooldowns, dict):
-            for model, until in memory_cooldowns.items():
-                if isinstance(until, (int, float)):
-                    previous = merged_cooldowns.get(model)
-                    merged_cooldowns[model] = max(float(until), float(previous or 0))
+        # Model cooldowns are independent observations: keep the latest reset per model so a
+        # writer that just cooled one model cannot erase another process's cooldown for another.
+        from agent.credential_pool_model_cooldowns import merge_model_cooldowns
+        merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
         merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
 
         disk_status = disk_entry.get("last_status")

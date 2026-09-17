@@ -286,8 +286,13 @@ def _anthropic_cfg_base_url(model_cfg: Dict[str, Any]) -> str:
 
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
-    token = resolve_anthropic_token(model=model) if model else resolve_anthropic_token()
+    token = resolve_anthropic_token(model=model)
     if not token:
+        # A key the pool benched for *this* model is not a missing credential; telling the
+        # user to re-authenticate would send them chasing a cooldown that lifts on its own.
+        if model and resolve_anthropic_token():
+            raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
+                            "other Claude models remain available (see `hermes auth list`).")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 
@@ -538,7 +543,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
         pool = None
     if not (pool and pool.has_credentials()):
         return None
-    entry = pool.select(model=target_model) if provider == "anthropic" and target_model else pool.select()
+    entry = pool.select(model=target_model or None)
     if entry is None:
         return None
     pool_api_key = _pool_entry_api_key(entry)

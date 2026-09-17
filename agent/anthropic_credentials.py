@@ -443,9 +443,13 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
 
 
 def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Optional[str]:
-    """Return a token unless the pool records an active cooldown for it."""
-    if not token:
-        return None
+    """Return *token* unless the pool holds an active cooldown for it on *model*.
+
+    Only model-aware callers (the API-call paths) are gated: diagnostics that
+    resolve a token without a model (usage display, model discovery) keep it.
+    """
+    if not token or not model:
+        return token or None
     try:
         from agent.credential_pool import load_pool
         if load_pool("anthropic").token_is_blocked(token, model=model):
@@ -458,7 +462,10 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
 
 
 def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
-    """Resolve an Anthropic token from all sources in priority order (see module docstring)."""
+    """Resolve an Anthropic token from all sources in priority order (see module docstring).
+
+    With *model*, a token the credential pool has benched for that model resolves to ``None``
+    instead of being handed straight back to the caller that just saw it rate-limited."""
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:

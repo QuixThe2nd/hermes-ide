@@ -1043,10 +1043,8 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
         if not matches_primary(pool):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
-        primary_model = rt.get("model")
-        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(
-            model=primary_model if isinstance(primary_model, str) and primary_model else None
-        )
+        primary_model = str(rt.get("model") or "").strip()
+        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(model=primary_model or None)
         if next_at is not None and next_at > time.time():
             if not getattr(agent, "_restore_wait_logged", False):
                 agent._restore_wait_logged = True
@@ -1071,7 +1069,7 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
 
-def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
+def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
     """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
     fallback attaches its own pool, which would trip the provider-mismatch guard on the next
     401/429: reload the primary pool, else clear it. The snapshot api_key may be stale after
@@ -1090,9 +1088,7 @@ def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, lo
             )
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
-    primary_model = rt.get("model")
-    model_kwargs = {"model": primary_model} if isinstance(primary_model, str) and primary_model else {}
-    entry = pool.select(**model_kwargs) if pool is not None and pool.has_available(**model_kwargs) else None
+    entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
     if matches_primary(entry):
@@ -1179,7 +1175,7 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
         )
         _rebind_primary_credential_pool(
-            agent, primary_provider, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
         # Older snapshots have no reasoning_config; keep the current value.
         saved_reasoning = rt.get("reasoning_config")
@@ -1919,9 +1915,8 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
-        resolved_model = getattr(agent, "model", None)
         effective_key = api_key or agent.api_key or (
-            resolve_anthropic_token(model=resolved_model) if is_native_anthropic else ""
+            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
         ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).

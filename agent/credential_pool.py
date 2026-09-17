@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
+from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 
 import logging
 import os
@@ -717,7 +718,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -783,13 +784,12 @@ class CredentialPool(CredentialPoolAdminMixin):
                 )
                 if until is not None
             ]
-            now = time.time()
             candidates.extend(
                 until
                 for entry in self._entries
                 if entry.last_status != STATUS_DEAD
-                for until in (self._model_cooldown_until(entry, model),)
-                if until is not None and until > now
+                for until in (model_cooldown_until(entry, model),)
+                if until is not None
             )
             return min(candidates) if candidates else None
 
@@ -800,18 +800,6 @@ class CredentialPool(CredentialPoolAdminMixin):
     def _is_sole_credential(self) -> bool:
         """DEAD entries never re-enter rotation, so <=1 non-DEAD entry means nothing to rotate to."""
         return sum(1 for e in self._entries if e.last_status != STATUS_DEAD) <= 1
-
-    @staticmethod
-    def _model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
-        """Return the active model cooldown relevant to this selection.
-
-        Callers without a model remain conservative: a known model cooldown
-        prevents them from reusing the credential through an unscoped route.
-        """
-        cooldowns = entry.model_cooldowns or {}
-        values = cooldowns.values() if not model else (cooldowns.get(model),)
-        active = [float(until) for until in values if isinstance(until, (int, float)) and until > time.time()]
-        return max(active) if active else None
 
     def _find(self, predicate: Callable[[PooledCredential], bool]) -> Optional[PooledCredential]:
         return next((e for e in self._entries if predicate(e)), None)
@@ -839,20 +827,6 @@ class CredentialPool(CredentialPoolAdminMixin):
                 return None
             matches = [e for e in self._entries if e.runtime_api_key == api_key_hint]
             return matches[0].id if len(matches) == 1 else None
-
-    def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
-        """Whether a known cooldown blocks *token* for this model.
-
-        This closes paths that resolve a native Anthropic token directly rather
-        than selecting it from the pool.  Unknown tokens fail open because no
-        pool row can safely attribute their cooldown.
-        """
-        with self._lock:
-            return any(
-                entry.runtime_api_key == token
-                and self._model_cooldown_until(entry, model) is not None
-                for entry in self._entries
-            )
 
     # ---- mutation primitives (self-locking) --------------------------------
 
@@ -1683,7 +1657,7 @@ class CredentialPool(CredentialPoolAdminMixin):
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
-            if self._model_cooldown_until(entry, model) is not None:
+            if model_cooldown_until(entry, model) is not None:
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
@@ -1868,28 +1842,11 @@ class CredentialPool(CredentialPoolAdminMixin):
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            # Anthropic's generic 429 does not establish account-wide quota
-            # exhaustion. Record it against the requested model only; explicit
-            # account scope, billing, auth, and payment failures remain global.
-            if (
-                self.provider == "anthropic" and status_code == 429 and model
-                and failure_reason != FAILURE_REASON_BILLING
-                and (error_context or {}).get("quota_scope") != "account"
-            ):
-                normalized = _normalize_error_context(error_context)
-                until = normalized.get("reset_at") or time.time() + EXHAUSTED_TTL_429_SECONDS
-                failed_key = entry.runtime_api_key
-                scoped_entries = [entry]
-                if failed_key:
-                    scoped_entries.extend(
-                        sibling for sibling in self._entries
-                        if sibling.id != entry.id and sibling.runtime_api_key == failed_key
-                    )
-                for scoped in scoped_entries:
-                    cooldowns = dict(scoped.model_cooldowns or {})
-                    cooldowns[model] = max(float(until), float(cooldowns.get(model, 0) or 0))
-                    self._adopt(scoped, persist=False, model_cooldowns=cooldowns)
-                self._persist()
+            if self._is_model_scoped_rate_limit(status_code, model, failure_reason):
+                # A generic Anthropic 429 is a per-model rate limit: bench this
+                # model only, the credential stays available for its siblings.
+                self._cool_down_model(entry, model, error_context)
+                logger.info("credential pool: %s rate-limited for model %s; other models stay available", _label, model)
                 self._current_id = None
                 next_entry, _pending = self._select_unlocked(refresh=False, model=model)
                 return next_entry

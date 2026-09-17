@@ -1,73 +1,70 @@
-"""Regression coverage for Anthropic model-scoped 429 cooldowns (#111769)."""
+"""A generic Anthropic 429 benches only the model that was rate-limited (#111769, #61451).
 
-from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED
+Real ``agent.credential_pool`` against a real temp auth store: one API-key credential,
+one ``mark_exhausted_and_rotate(status_code=429, model=A)``.
+"""
+import json
 
+import pytest
 
-def _pool():
-    return CredentialPool(
-        "anthropic",
-        [
-            PooledCredential(
-                provider="anthropic", id="credential", label="credential",
-                auth_type="api_key", priority=0, source="manual", access_token="key",
-            )
-        ],
-    )
+KEY = "sk-ant-api03-synthetic-test-key-0000"
+MODEL_A = "claude-sonnet-4-5"
+MODEL_B = "claude-haiku-4-5"
 
 
-def test_anthropic_429_only_cools_the_failed_model(monkeypatch):
-    pool = _pool()
-    monkeypatch.setattr("agent.credential_pool.time.time", lambda: 1_000.0)
+@pytest.fixture
+def pool(tmp_path, monkeypatch):
+    root = tmp_path / "hermes-root"
+    root.mkdir()
+    (tmp_path / "fakehome").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "fakehome"))
+    for var in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    import hermes_constants
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    (root / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [{
+        "id": "seat", "label": "seat", "auth_type": "api_key", "priority": 0,
+        "source": "manual", "access_token": KEY,
+    }]}}))
+    from agent.credential_pool import load_pool
+    return load_pool("anthropic")
+
+
+def test_generic_429_benches_only_the_rate_limited_model(pool, monkeypatch):
+    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.credential_pool import load_pool
+
+    ctx = {"message": "This request would exceed your account's rate limit. Please try again later."}
+    assert pool.mark_exhausted_and_rotate(
+        status_code=429, error_context=ctx, api_key_hint=KEY, failure_reason="rate_limit", model=MODEL_A,
+    ) is None  # a sole credential has nothing to rotate to for model A
+
+    assert pool.entries()[0].last_status is None  # credential-wide state untouched
+    assert pool.select(model=MODEL_A) is None
+    assert pool.select(model=MODEL_B) is not None
+    assert pool.select() is None  # a caller that names no model honours every active cooldown
+    assert pool.next_available_at(model=MODEL_A) is not None
+    assert pool.next_available_at(model=MODEL_B) is None
+
+    # The cooldown is persisted, so another process (and the env/borrowed token resolver,
+    # which reads the store fresh) sees the same per-model verdict.
+    fresh = load_pool("anthropic")
+    assert fresh.select(model=MODEL_A) is None and fresh.select(model=MODEL_B) is not None
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    assert resolve_anthropic_token(model=MODEL_A) is None
+    assert resolve_anthropic_token(model=MODEL_B) == KEY
+    assert resolve_anthropic_token() == KEY  # model-less diagnostics keep the key
+
+
+@pytest.mark.parametrize("status_code, failure_reason", [(401, None), (402, "billing"), (429, "billing")])
+def test_auth_and_billing_failures_stay_credential_wide(pool, status_code, failure_reason):
+    from agent.credential_pool import STATUS_EXHAUSTED
 
     pool.mark_exhausted_and_rotate(
-        status_code=429, api_key_hint="key", model="claude-sonnet-4",
+        status_code=status_code, api_key_hint=KEY, failure_reason=failure_reason, model=MODEL_A,
     )
-
-    entry = pool.entries()[0]
-    assert entry.last_status is None
-    assert pool.select(model="claude-haiku-4").id == entry.id
-    assert pool.select(model="claude-sonnet-4") is None
-    assert pool.next_available_at(model="claude-sonnet-4") == 4_600.0
-
-
-def test_anthropic_model_cooldown_expiry_restores_selection(monkeypatch):
-    pool = _pool()
-    now = [1_000.0]
-    monkeypatch.setattr("agent.credential_pool.time.time", lambda: now[0])
-    pool.mark_exhausted_and_rotate(status_code=429, api_key_hint="key", model="claude-sonnet-4")
-
-    now[0] = 4_601.0
-    assert pool.select(model="claude-sonnet-4") is pool.entries()[0]
-
-
-def test_reset_status_clears_anthropic_model_cooldown(monkeypatch):
-    pool = _pool()
-    monkeypatch.setattr("agent.credential_pool.time.time", lambda: 1_000.0)
-    pool.mark_exhausted_and_rotate(status_code=429, api_key_hint="key", model="claude-sonnet-4")
-
-    pool.reset_status("credential")
-
-    assert pool.select(model="claude-sonnet-4") is not None
-
-
-def test_persisted_model_cooldowns_merge_by_model():
-    from hermes_cli.auth import _merge_disk_cooldown_state
-
-    merged = _merge_disk_cooldown_state(
-        {"access_token": "key", "model_cooldowns": {"claude-haiku-4": 2_000.0}},
-        {"access_token": "key", "model_cooldowns": {"claude-sonnet-4": 3_000.0}},
-        "anthropic",
-    )
-
-    assert merged["model_cooldowns"] == {"claude-haiku-4": 2_000.0, "claude-sonnet-4": 3_000.0}
-
-
-def test_anthropic_401_and_billing_402_remain_credential_wide():
-    for status_code, failure_reason in ((401, None), (402, "billing")):
-        pool = _pool()
-        pool.mark_exhausted_and_rotate(
-            status_code=status_code, api_key_hint="key", model="claude-sonnet-4",
-            failure_reason=failure_reason,
-        )
-        assert pool.entries()[0].last_status == STATUS_EXHAUSTED
-        assert pool.select(model="claude-haiku-4") is None
+    assert pool.entries()[0].last_status == STATUS_EXHAUSTED
+    assert not pool.entries()[0].model_cooldowns
+    assert pool.select(model=MODEL_B) is None
