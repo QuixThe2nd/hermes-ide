@@ -1084,21 +1084,27 @@ class _RequestClientRegistry:
             self.agent._close_request_openai_client(request_client, reason=reason)
 
 
-# Silence budget for high/xhigh reasoning effort on a Codex request. GPT-5-family models at
+# Silence budget for high-or-above reasoning effort on a Codex request. GPT-5-family models at
 # high effort think server-side for 100-170s before the first substantive SSE event even on a
 # ~6KB prompt (#112909), while the token-sized tiers below hand such a prompt 12s/120s/90s; the
 # watchdog killed healthy requests three times in a row and blamed the provider. Applies as a
-# floor to the IMPLICIT defaults only -- explicit env/config values keep winning.
+# floor to the IMPLICIT defaults only -- explicit env/config values keep winning, and the stale
+# timeout's run-budget cap is applied AFTER this floor (AIAgent._compute_non_stream_stale_timeout).
 HIGH_EFFORT_SILENCE_FLOOR_SECONDS = 300.0
 
 
 def _high_effort_silence_floor(agent) -> float:
-    """``HIGH_EFFORT_SILENCE_FLOOR_SECONDS`` when the wire reasoning config is high/xhigh and enabled, else 0."""
+    """``HIGH_EFFORT_SILENCE_FLOOR_SECONDS`` when the wire reasoning config is enabled at ``high`` or any
+    stronger :data:`~agent.reasoning_effort.EFFORT_LADDER` level (xhigh/max/ultra), else 0."""
+    from agent.reasoning_effort import EFFORT_LADDER
+
     cfg = getattr(agent, "reasoning_config", None)
     if not isinstance(cfg, dict) or cfg.get("enabled") is False:
         return 0.0
     effort = str(cfg.get("effort") or "").strip().lower()
-    return HIGH_EFFORT_SILENCE_FLOOR_SECONDS if effort in {"high", "xhigh"} else 0.0
+    if effort not in EFFORT_LADDER or EFFORT_LADDER.index(effort) < EFFORT_LADDER.index("high"):
+        return 0.0
+    return HIGH_EFFORT_SILENCE_FLOOR_SECONDS
 
 
 @dataclass
@@ -1129,13 +1135,13 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS / HERMES_CODEX_TTFB_STRICT,
     HERMES_CODEX_TTFB_MAX_SECONDS, HERMES_CODEX_HARD_TIMEOUT_SECONDS.
     """
+    # The effort floor on the STALE timeout lives inside _compute_non_stream_stale_timeout so the
+    # run-budget cap still bounds it; here the floor only raises the TTFB/idle implicit defaults.
     stale_timeout = agent._compute_non_stream_stale_timeout(api_kwargs)
     codex = agent.api_mode == "codex_responses"
     openai_codex_backend = _is_openai_codex_backend(agent)
     est_tokens = estimate_request_context_tokens(api_kwargs)
     effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
-    if effort_floor and not agent._stale_timeout_is_explicit():
-        stale_timeout = max(stale_timeout, effort_floor)
     codex_floor = 0.0
     if codex and openai_codex_backend:
         # Raise the stale floor for large payloads so healthy gateway-scale

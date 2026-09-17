@@ -34,7 +34,7 @@ def _codex_agent(tmp_path: Path, monkeypatch, effort: str, *, enabled: bool = Tr
     return agent
 
 
-@pytest.mark.parametrize("effort", ["high", "xhigh"])
+@pytest.mark.parametrize("effort", ["high", "xhigh", "max", "ultra"])
 def test_high_effort_small_prompt_gets_the_silence_floor_on_all_three_fuses(tmp_path, monkeypatch, effort):
     from agent.chat_completion_helpers import HIGH_EFFORT_SILENCE_FLOOR_SECONDS, _resolve_nonstream_watchdogs
 
@@ -63,3 +63,17 @@ def test_default_effort_tiers_and_explicit_operator_values_are_untouched(tmp_pat
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "75")
     explicit = _resolve_nonstream_watchdogs(agent, _SMALL_PROMPT)
     assert (explicit.idle_timeout, explicit.ttfb_timeout, explicit.stale_timeout) == (20.0, 45.0, 75.0)
+
+
+def test_effort_floor_never_outlives_the_run_budget_cap(tmp_path, monkeypatch):
+    """A run budget (cron/kanban) caps the IMPLICIT stale timeout at half the remaining budget; the
+    high-effort floor must be applied before that cap, not override it."""
+    import time
+
+    from agent.chat_completion_helpers import _resolve_nonstream_watchdogs
+
+    agent = _codex_agent(tmp_path, monkeypatch, "high")
+    agent.run_budget_seconds = 100
+    agent._run_budget_started_at = time.time() - 5
+
+    assert _resolve_nonstream_watchdogs(agent, _SMALL_PROMPT).stale_timeout == 60.0

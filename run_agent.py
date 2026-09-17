@@ -663,14 +663,19 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
+        explicit = self._stale_timeout_is_explicit()
+        # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
+        # cap below, so the floor can never outlive the run budget.
+        if self.api_mode == "codex_responses" and not explicit:
+            timeout = max(timeout, _high_effort_silence_floor(self))
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         run_budget = getattr(self, "run_budget_seconds", None)
         started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not self._stale_timeout_is_explicit():
+        if run_budget and started and not explicit:
             remaining = float(run_budget) - (time.time() - started)
             timeout = min(timeout, max(60.0, remaining * 0.5))
         return timeout
