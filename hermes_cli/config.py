@@ -3577,12 +3577,21 @@ def set_config_value(key: str, value: str, force: bool = False):
         save_provider_env_credential(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
+    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting, unknown_env_name_note
 
     if is_env_setting_key(key):
-        # Same file the platform setup flows and /sethome write (#111848).
-        save_env_setting(key, value)
-        print(f"✓ Set {key} in {get_env_path()}")
+        # Every UPPER_SNAKE name is an environment setting: same file the platform setup flows and
+        # /sethome write, and the only one os.getenv readers see. config.yaml never gets one from
+        # here, --force included (#111848). The env writer's denylist (HERMES_YOLO_MODE, PATH, ...)
+        # therefore also refuses the config.yaml detour that used to bridge those into os.environ.
+        try:
+            save_env_setting(key, value)
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
+        print(f"✓ Set {key.upper()} in {get_env_path()}")
+        note = unknown_env_name_note(key)
+        if note:
+            print(note)
         return
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
@@ -3593,8 +3602,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     is_known, suggestion = _validate_config_key(key)
     # Unknown-key handling (#34067, #112003): an unknown path UNDER a known section can only be a
     # typo (``gateway.discord.gateway_restart_notification``), so it is refused before anything is
-    # written. Unknown TOP-LEVEL keys stay writable with a post-write notice — their scalars are
-    # bridged into os.environ for skills/external apps, so that namespace is open by design.
+    # written. Unknown lowercase TOP-LEVEL keys stay writable with a post-write notice — their
+    # scalars are bridged into os.environ for skills/external apps, so that namespace is open by
+    # design (UPPER_SNAKE names were already routed to .env above).
     if not is_known and not force and _split_key_path(key)[0] in _known_top_level_keys():
         _exit_invalid(_unknown_subkey_refusal(key, suggestion))
 
