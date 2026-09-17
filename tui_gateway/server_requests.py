@@ -109,18 +109,20 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     """
     req = ServerRequest(sid, method, params, qids=qids)
     _register(req)
-    timed_out = False
-    try:
-        timed_out = not req.event.wait(timeout)
-    finally:
-        with _lock:
-            _open.pop(req.id, None)
+    req.event.wait(timeout)
+    with _lock:
+        # The verdict is the state committed under the lock, never wait()'s return value: a
+        # response frame can land after the deadline expires and before this removal, and
+        # settlement (resolve_response / lock_answer / cancel) already popped it (#112548).
+        timed_out = _open.pop(req.id, None) is req
+        answered, result, locked = req.answered, req.result, dict(req.locked)
+    if answered:
+        return result
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return {"answers": dict(req.locked), "timed_out": True}
-        return None
-    return req.result if req.answered else None
+            return {"answers": locked, "timed_out": True}
+    return None
 
 
 def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | None], None]) -> Callable[[str], None]:
@@ -148,6 +150,9 @@ def resolve_response(frame: dict) -> bool:
     with _lock:
         req = _open.get(rid)
         if req is None:
+            # Already settled (timed out, cancelled, answered from another surface) or owned by
+            # another process; say so — a dropped answer used to vanish without a trace.
+            logger.debug("server request %s: response dropped, request no longer open", rid)
             return False
         # Removing the request and committing its outcome are one settlement.
         # ``cancel()`` also settles under this lock, so the first side to get

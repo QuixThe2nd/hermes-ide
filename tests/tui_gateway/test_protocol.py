@@ -328,6 +328,31 @@ def test_response_settlement_wins_over_a_later_cancel(capture):
     assert req.event.is_set()
 
 
+def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, monkeypatch):
+    """An answer accepted by resolve_response is never reported as a timeout (#112548): the
+    response frame can land after event.wait() gave up and before send() withdraws the request,
+    and the renderer must not get a bogus request.cancel for a card the user just answered."""
+    from tui_gateway import server_requests
+
+    cancels: list[dict] = []
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
+
+    real_wait = server_requests.threading.Event.wait
+
+    def answered_during_the_gap(event, timeout=None):
+        # Deadline expires, then the response frame lands before send() re-enters the lock.
+        expired = real_wait(event, timeout)
+        rid = next(iter(server_requests._open))
+        assert server_requests.resolve_response({"id": rid, "result": {"value": "yes"}})
+        return expired
+
+    monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
+
+    assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
+    assert cancels == []
+    assert not server_requests._open
+
+
 def test_final_clarify_lock_settlement_wins_over_a_later_cancel(capture):
     """Batch clarify's lock-based resolution follows the same first-settlement rule."""
     from tui_gateway import server_requests
