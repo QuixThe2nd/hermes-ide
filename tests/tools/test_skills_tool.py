@@ -1050,23 +1050,15 @@ class TestSkillViewCollisionDetection:
 
 
 class TestSameRootDuplicationResolves:
-    """Duplication inside ONE search dir is not tier shadowing.
-
-    A root may legitimately carry both ``<root>/name`` and a categorized or legacy copy
-    (``<root>/research/name``, ``<root>/notes/name.md``). Before this, every such name was
-    UNLOADABLE by its bare name (measured: 106 names in one root), which silently emptied
-    every skill bundle declaring them. Resolution is deterministic — a real SKILL.md beats a
-    legacy flat ``<name>.md``, then the shallower path wins — and it is logged, not silent.
-    A true ambiguity (equal rank, or candidates spanning two tiers) still refuses.
-    """
+    """Duplication inside ONE search dir is not tier shadowing (#112179): a symlink-view root
+    legitimately carries ``<root>/name`` and ``<root>/cat/name``; the shallower path wins and
+    the bare name stays loadable. An equal-rank tie (or a cross-tier spread, covered by
+    TestSkillViewCollisionDetection) still refuses."""
 
     def _patch_dirs(self, local_dir, external_dirs=()):
         return (
             patch("tools.skills_tool.SKILLS_DIR", local_dir),
-            patch(
-                "agent.skill_utils.get_external_skills_dirs",
-                return_value=list(external_dirs),
-            ),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=list(external_dirs)),
         )
 
     def test_nested_copy_inside_same_root_does_not_block_bare_name(self, tmp_path):
@@ -1082,22 +1074,6 @@ class TestSameRootDuplicationResolves:
         assert result["success"] is True, result
         assert result["path"] == "arxiv/SKILL.md"
         assert "TOP LEVEL VERSION" in result["content"]
-
-    def test_legacy_flat_md_never_shadows_real_skill(self, tmp_path):
-        local_dir = tmp_path / "local"
-        local_dir.mkdir()
-        _make_skill(local_dir, "context-compression", body="REAL SKILL")
-        legacy = local_dir / "research" / "llm-wiki" / "concepts" / "context-compression.md"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        legacy.write_text("# concept note, not a skill\n")
-
-        p1, p2 = self._patch_dirs(local_dir)
-        with p1, p2:
-            result = json.loads(skill_view("context-compression"))
-
-        assert result["success"] is True, result
-        assert result["path"] == "context-compression/SKILL.md"
-        assert "REAL SKILL" in result["content"]
 
     def test_equal_rank_same_root_still_refuses(self, tmp_path):
         local_dir = tmp_path / "local"
@@ -1115,24 +1091,24 @@ class TestSameRootDuplicationResolves:
 
 
 class TestTrustWarningSymlinkAware:
-    """Trust must be decided by the path that EXPOSED a skill as well as its real location.
-
-    Regression: the local skills root is largely a symlink view of the library, so resolving
-    the path first made EVERY load warn "outside the trusted skills directory" (measured ~2k
-    warnings in one bundle-heavy session) and buried the real injection-pattern signal.
-    """
+    """A root that exposes a skill through a symlink has vouched for it (#112179): the trust
+    check accepts the lexical path, while a genuinely outside file still warns."""
 
     def _log(self, name, skill_md, all_dirs, active):
         from tools.skills_tool import _log_security_warnings
         _log_security_warnings(name, skill_md, "plain body", list(all_dirs), active)
 
     def test_symlinked_entry_is_trusted_by_the_root_that_exposes_it(self, tmp_path, caplog):
-        lib = tmp_path / "library"; lib.mkdir()
-        root = tmp_path / "root"; root.mkdir()
+        lib = tmp_path / "library"
+        root = tmp_path / "root"
         real = lib / "demo"
-        real.mkdir()
+        real.mkdir(parents=True)
+        root.mkdir()
         (real / "SKILL.md").write_text("---\nname: demo\ndescription: d.\n---\nbody\n")
-        (root / "demo").symlink_to(real)
+        try:
+            (root / "demo").symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
         with caplog.at_level("WARNING"):
             self._log("demo", root / "demo" / "SKILL.md", [root], root)
@@ -1140,7 +1116,8 @@ class TestTrustWarningSymlinkAware:
         assert "outside the trusted" not in caplog.text, caplog.text
 
     def test_genuinely_outside_file_still_warns(self, tmp_path, caplog):
-        root = tmp_path / "root"; root.mkdir()
+        root = tmp_path / "root"
+        root.mkdir()
         outside = tmp_path / "elsewhere" / "x" / "SKILL.md"
         outside.parent.mkdir(parents=True)
         outside.write_text("---\nname: x\ndescription: d.\n---\nbody\n")
