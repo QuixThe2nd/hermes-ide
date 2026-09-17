@@ -178,7 +178,7 @@ const dispatchNow = <T>(name: string, detail: T) => {
 }
 
 /** Unique identity for the visible composer surface addressed by a submit. */
-const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
+export const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
   if (typeof document === 'undefined') {
     return null
   }

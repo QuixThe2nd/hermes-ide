@@ -49,7 +49,7 @@ export interface ChatBarProps {
   onCancel: () => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void
-  onAttachImageBlob?: (blob: Blob) => Promise<boolean | void> | boolean | void
+  onAttachImageBlob?: (blob: Blob, isCurrent?: () => boolean) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems?: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
   /** Pasted GitHub PR-comment deep link → structured review attachment.
    *  Returns true when the paste was consumed as an attachment. */

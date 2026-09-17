@@ -552,8 +552,8 @@ export function useComposerActions({
   )
 
   const attachImageBlob = useCallback(
-    async (blob: Blob) => {
-      if (blob.size === 0) {
+    async (blob: Blob, isCurrent: () => boolean = () => true) => {
+      if (blob.size === 0 || !isCurrent()) {
         return false
       }
 
@@ -563,6 +563,11 @@ export function useComposerActions({
 
       try {
         const buffer = await blob.arrayBuffer()
+
+        if (!isCurrent()) {
+          return false
+        }
+
         const data = new Uint8Array(buffer)
         const name = blob instanceof File ? blob.name : undefined
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
@@ -573,7 +578,7 @@ export function useComposerActions({
           return false
         }
 
-        return attachImagePath(savedPath)
+        return isCurrent() ? attachImagePath(savedPath) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
