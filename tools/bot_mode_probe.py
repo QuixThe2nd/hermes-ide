@@ -77,8 +77,14 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
 
     profiles = root / "profiles"
     named = _swallow(
-        lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if named_profile_is_live(c)] if profiles.is_dir() else [],
-        [])
+        lambda: [
+            (c.name, c)
+            for c in sorted(profiles.iterdir())
+            if c.name != "default" and named_profile_is_live(c)
+        ]
+        if profiles.is_dir()
+        else [],
+        [],
     return [("default", root), *named]
 
 
