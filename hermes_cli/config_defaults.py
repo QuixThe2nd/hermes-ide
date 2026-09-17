@@ -2060,7 +2060,9 @@ DEFAULT_CONFIG = {
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
     # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
     # the catalog does not know, so they never clamp known models. Unknown ids start from safe
-    # defaults (200K context, tools on, vision/reasoning off) and get patched. Provider keys: Hermes
+    # defaults (200K context, tools on) and get patched; supports_vision / supports_reasoning stay
+    # UNKNOWN (fail-open) unless the override sets them — a context_window-only entry must not turn
+    # into "text-only" and hide vision_analyze / reasoning controls (#112649). Provider keys: Hermes
     # or models.dev id; model ids match case-insensitively. Example: {"custom:my-local-vllm":
     # {"my-llava-model": {"context_window": 8192}}}
     # Semantics: 1. NOTE: an explicit model.context_length (global) and a custom_providers per-model
