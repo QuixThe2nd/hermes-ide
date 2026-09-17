@@ -194,33 +194,48 @@ export async function materializeDesktopHalf(
     }
   }
 
-  await fs.promises.mkdir(appRoot, { recursive: true })
-  const stagingRoot = await fs.promises.mkdtemp(path.join(appRoot, `.${packageName}.staging-`))
-  const stagedTarget = path.join(stagingRoot, packageName)
+  const marker: DesktopHalfMarker = {
+    package: packageName,
+    source: sourceDir,
+    sourceMtimeMs: stat.mtimeMs,
+    ...(await packageOrigin(packageDir))
+  }
+
+  await publishDesktopTree(sourceDir, target, staged =>
+    fs.promises.writeFile(path.join(staged, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+  )
+
+  return target
+}
+
+/** Copy `sourceDir` to `target` through a staging sibling (`<parent>/.<name>.staging-*`)
+ *  and rename the finished tree into place. `finalize` runs on the staged tree
+ *  before publication, so a marker is never missing from a published folder.
+ *  Directory replacement is not atomic on every platform Electron supports, but
+ *  the complete copy exists before the old one is removed, so a failure leaves
+ *  either the old folder or none — never a partial, marker-less one that a
+ *  later pass would mistake for a manual install (#112450). */
+export async function publishDesktopTree(
+  sourceDir: string,
+  target: string,
+  finalize?: (staged: string) => Promise<void>
+): Promise<void> {
+  const parent = path.dirname(target)
+  const name = path.basename(target)
+
+  await fs.promises.mkdir(parent, { recursive: true })
+  const stagingRoot = await fs.promises.mkdtemp(path.join(parent, `.${name}.staging-`))
+  const staged = path.join(stagingRoot, name)
 
   try {
-    await fs.promises.cp(sourceDir, stagedTarget, { force: true, recursive: true })
-
-    const marker: DesktopHalfMarker = {
-      package: packageName,
-      source: sourceDir,
-      sourceMtimeMs: stat.mtimeMs,
-      ...(await packageOrigin(packageDir))
-    }
-
-    await fs.promises.writeFile(path.join(stagedTarget, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
-
-    // Directory replacement is not atomic across the platforms Electron
-    // supports, but the complete, marked copy is prepared before removing an
-    // old copy. This prevents a failed copy from becoming a permanent
-    // marker-less target.
+    await fs.promises.cp(sourceDir, staged, { force: true, recursive: true })
+    await finalize?.(staged)
+    // rename() refuses to replace a non-empty directory, so the old copy goes first.
     await fs.promises.rm(target, { force: true, recursive: true })
-    await fs.promises.rename(stagedTarget, target)
+    await fs.promises.rename(staged, target)
   } finally {
     await fs.promises.rm(stagingRoot, { force: true, recursive: true })
   }
-
-  return target
 }
 
 function isMissing(error: unknown): boolean {

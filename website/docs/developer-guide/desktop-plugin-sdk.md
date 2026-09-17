@@ -724,7 +724,13 @@ carry the package, and it never appears or disappears when the user switches
 the Capabilities profile selector. The renderer never scans `plugins/` itself.
 The marker records the package name and its origin (catalog sidecar or git
 remote), which is what the **Install here** button on the Plugins page uses to
-install the agent half into another profile.
+install the agent half into another profile. The copy is staged beside the
+target and renamed into place, so an interrupted copy (a transient file lock, a
+crash mid-copy) never leaves a half-written folder behind; a leftover
+`desktop-plugins/<id>/` that has no marker and no `plugin.js` is treated as
+such damage and replaced on the next **Rescan**, while a marker-less folder
+that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
+is never overwritten.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
