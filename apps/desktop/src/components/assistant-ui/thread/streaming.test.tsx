@@ -30,6 +30,12 @@ class TestResizeObserver {
     resizeObservers.delete(this)
   }
 
+  triggerFor(target: Element, height: number) {
+    if (this.target === target) {
+      this.trigger(height)
+    }
+  }
+
   trigger(height: number) {
     if (!this.target) {
       return
@@ -641,6 +647,54 @@ describe('assistant-ui streaming renderer', () => {
     expect(settled).toContain('max-h-40')
     expect(settled).toMatch(/\boverflow-auto\b/)
     expect(settled).not.toMatch(/\boverflow-hidden\b/)
+  })
+
+  it('preserves the thinking reading position on growth and resumes following at the bottom', () => {
+    const { container, rerender } = render(
+      <RunningMessageHarness message={assistantReasoningMessage('First thought.', true)} />
+    )
+
+    const body = container.querySelector<HTMLDivElement>('[data-slot="aui_thinking-body"]')!
+    let height = 600
+    let top = 0
+
+    Object.defineProperties(body, {
+      clientHeight: { configurable: true, get: () => 160 },
+      scrollHeight: { configurable: true, get: () => height },
+      scrollTop: {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          top = Math.max(0, Math.min(value, height - body.clientHeight))
+        }
+      }
+    })
+
+    const deliverGrowth = () =>
+      act(() => {
+        for (const observer of resizeObservers) {
+          observer.triggerFor(body.firstElementChild!, height)
+        }
+      })
+
+    deliverGrowth()
+    expect(body.scrollTop).toBe(height - body.clientHeight)
+    body.scrollTop = 100
+    fireEvent.scroll(body)
+
+    rerender(<RunningMessageHarness message={assistantReasoningMessage('First thought. More reasoning.', true)} />)
+    height = 900
+    deliverGrowth()
+    expect(body.scrollTop).toBe(100)
+
+    body.scrollTop = height - body.clientHeight
+    fireEvent.scroll(body)
+    rerender(
+      <RunningMessageHarness message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)} />
+    )
+    height = 1200
+    deliverGrowth()
+    expect(body.scrollTop).toBe(height - body.clientHeight)
   })
 
   it('does not collapse a live thinking preview when the turn settles', async () => {
