@@ -468,6 +468,36 @@ def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(t
     assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
+def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp_path, monkeypatch):
+    """#89720: `hermes profile rename default Maia` writes profile.yaml ``display_name`` (no Bot Mode
+    title). The primary must then sign `Maia (@hermes)`, not `hermes (@hermes)`, and a teammate must
+    reach it as `maia` / `@maia` — the tag the Desktop roster inserts — while `@hermes` keeps resolving.
+    A Bot Mode title outranks the display_name in the signature, as in the Desktop's botFriendlyNames."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("coder",))
+    (home / "profile.yaml").write_text("display_name: Maia\n", encoding="utf-8")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
+    assert result["status"] == "sent"
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia (@hermes): ")
+
+    coder = _FakeAgent(home / "profiles" / "coder")
+    for target in ("maia", "@maia", "@hermes"):
+        result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="pong", agent=coder))
+        assert result["status"] == "sent", (target, result)
+        _mode, _dm_file, argv = _runner_parts(calls[-1]["command"])
+        assert argv[1:3] == ["-p", "default"], (target, argv)
+
+    (home / "profile.yaml").write_text(
+        "display_name: Maia\nui_meta:\n  hermes-bots:\n    title: Maia Prime\n", encoding="utf-8"
+    )
+    json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
+    _mode, dm_file, _argv = _runner_parts(calls[-1]["command"])
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia Prime (@hermes): ")
+
+
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     """A named-profile bot signs with its own handle, not @hermes."""
     calls = _capture_spawn(monkeypatch)

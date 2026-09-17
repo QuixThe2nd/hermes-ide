@@ -85,6 +85,7 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
         if profiles.is_dir()
         else [],
         [],
+    )
     return [("default", root), *named]
 
 
@@ -155,6 +156,23 @@ def _profile_role(profile_dir: Path) -> str:
     return _swallow(_role, "")
 
 
+def _friendly_names(profile_dir: Path) -> tuple[str, str]:
+    """(Bot Mode title, profile.yaml ``display_name``) for a profile, "" when unset. Never raises."""
+    def _read() -> tuple[str, str]:
+        data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
+        return (str((_bots_meta(data) or {}).get("title") or "").strip(),
+                str(data.get("display_name") or "").strip())
+
+    return _swallow(_read, ("", ""))
+
+
+def _display_name(name: str, profile_dir: Path) -> str:
+    """Human-facing sender name, in the Desktop's ``botFriendlyNames`` order: Bot Mode title,
+    then profile.yaml ``display_name`` (``hermes profile rename``), else the @handle — the
+    renamed primary signs as ``Maia (@hermes)``, not ``hermes (@hermes)`` (#89720)."""
+    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name)
+
+
 # Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
 _RESERVED_ALIASES = frozenset({"all", "everyone", "user", "default", "hermes"})
 
@@ -172,15 +190,14 @@ def alias_forms(value: str) -> set[str]:
 
 def local_alias_map(root: Path) -> dict[str, set[str]]:
     """``alias form → {folder ids}`` for every local profile's friendly names (profile.yaml
-    ``display_name`` and the Bot Mode title). Folder ids themselves are not aliases — the
-    caller matches those first — so a friendly name equal to ANOTHER folder id is visibly
-    ambiguous instead of silently winning. Never raises."""
+    ``display_name`` and the Bot Mode title). Folder ids themselves are not aliases: the
+    caller matches those first, so a target that is an exact folder id always addresses that
+    folder — a friendly name colliding with ANOTHER folder id never steals it. Ambiguity
+    (one alias form shared by several profiles) surfaces as a multi-id set. Never raises."""
     def _build() -> dict[str, set[str]]:
         aliases: dict[str, set[str]] = {}
         for name, profile_dir in _roster(root):
-            data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
-            friendly = (str(data.get("display_name") or ""), str((_bots_meta(data) or {}).get("title") or ""))
-            for form in set().union(*(alias_forms(f) for f in friendly)):
+            for form in set().union(*(alias_forms(f) for f in _friendly_names(profile_dir))):
                 aliases.setdefault(form, set()).add(name)
         return aliases
 
