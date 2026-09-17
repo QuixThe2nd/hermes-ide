@@ -133,7 +133,11 @@ describe('approval prompt store', () => {
       ['approval.received', { request_id: 'r1', session_id: 's1' }],
       ['approval.received', { request_id: 'r2', session_id: 's1' }]
     ])
-    expect(sessionApprovalRequests('s1').get().map(request => request.requestId)).toEqual(['r1', 'r2'])
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
     clearApprovalRequest('s1', 'r1')
     expect($approvalRequest.get()?.requestId).toBe('r2')
   })
@@ -144,11 +148,28 @@ describe('approval prompt store', () => {
     setApprovalRequest(first)
     setApprovalRequest(second)
     setApprovalRequest(first)
-    expect(sessionApprovalRequests('s1').get().map(request => request.requestId)).toEqual(['r1', 'r2'])
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
     let finish!: (result: unknown) => void
-    const replay = replayPendingApproval({ request: () => new Promise(resolve => { finish = resolve }) }, 's1')
+    const replay = replayPendingApproval(
+      {
+        request: () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      },
+      's1'
+    )
     clearApprovalRequest('s1', 'r1')
-    finish({ approvals: [{ command: 'first', request_id: 'r1' }, { command: 'second', request_id: 'r2' }] })
+    finish({
+      approvals: [
+        { command: 'first', request_id: 'r1' },
+        { command: 'second', request_id: 'r2' }
+      ]
+    })
     await replay
     expect(sessionApprovalRequests('s1').get()).toEqual([second])
     clearAllPrompts('s1')
