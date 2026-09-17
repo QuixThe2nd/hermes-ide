@@ -255,7 +255,8 @@ that live on one gateway.
   Remote gateways are opened only when selected; there is no periodic fleet
   polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold
-  boot.
+  boot. SSH agents are the exception: hovering never dials the tunnel or
+  starts a remote backend — only opening one does.
 - The **Capabilities** page (Skills / Tools / MCP) has a matching scope: its
   **Configuring** selector lists every `(profile, device)` agent from the
   union roster, and picking one reads and writes **that machine's** skills,
