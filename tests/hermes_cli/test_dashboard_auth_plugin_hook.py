@@ -15,7 +15,7 @@ from hermes_cli.dashboard_auth.base import (
 )
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_cli.dashboard_auth import registry as _auth_registry
-from hermes_constants import hermes_home_key
+from hermes_constants import get_process_hermes_home, hermes_home_key
 
 
 class _Stub(DashboardAuthProvider):
@@ -191,6 +191,37 @@ def test_profile_manager_cannot_replace_launch_home_auth_provider():
     assert registration is None
     assert get_provider("basic") is launch_provider
     assert "basic" not in profile_manager._ownership_ledger
+
+
+def test_profile_manager_cannot_remove_launch_home_auth_provider():
+    """Foreign unload paths only dispose registrations in their own ledger."""
+    manager, ctx = _real_ctx()
+    launch_provider = _Basic("launch-home")
+    ctx.register_dashboard_auth_provider(launch_provider)
+
+    profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
+    profile_manager = PluginManager(scope_key=profile_scope)
+
+    assert profile_manager.unload("basic") is False
+    profile_manager.unload()
+    profile_manager._evict_stale_persistent_registrations()
+
+    assert get_provider("basic") is launch_provider
+    assert "basic" in manager._ownership_ledger
+
+
+def test_profile_directory_can_be_the_process_launch_home(monkeypatch, tmp_path):
+    """A process launched directly into a profile owns dashboard auth."""
+    launch_home = tmp_path / "profiles" / "bot"
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    manager, ctx = _real_ctx()
+    provider = _Basic("profile-launch-home")
+
+    registration = ctx.register_dashboard_auth_provider(provider)
+
+    assert manager.scope_key == hermes_home_key(get_process_hermes_home())
+    assert registration is not None
+    assert get_provider("basic") is provider
 
 
 # ---------------------------------------------------------------------------
