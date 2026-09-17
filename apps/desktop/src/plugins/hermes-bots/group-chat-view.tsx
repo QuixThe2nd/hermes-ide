@@ -63,8 +63,8 @@ import {
   $groupChats,
   $groupChatWorkspace,
   $groupClarify,
-  GROUP_CHAT_MAX_MEMBERS,
   $groupNeedsYou,
+  GROUP_CHAT_MAX_MEMBERS,
   groupThreadOf,
   scheduleGroupChatServerSync,
   setGroupChatImage,
@@ -368,71 +368,137 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
   // identity rather than accidentally seating its local namesake too.
   const selectedKeys = new Set(selected.map(botRosterKey))
   const meta = $botMeta.get()
+
   for (const bot of $lastRoster.get().filter(bot => !bot.remoteSource)) {
     const enabled = selectedKeys.has(botRosterKey(bot))
     const current = botGroups(botRosterMeta(bot, meta))
+
     if (current.includes(group) !== enabled) {
       await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
     }
   }
+
   updateGroupChat(group, room => ({ ...room, members: durableGroupChatMembers(selected) }))
 }
 
-function GroupMemberPicker({ group, members, open, onClose }: {
+interface GroupMemberPickerProps {
   group: string
   members: RosterRow[]
-  open: boolean
   onClose: () => void
-}) {
-  const roster = useValue($lastRoster).filter(bot => !bot.ghost)
+  open: boolean
+}
+
+/** Room-side membership editor (#91329, #110736): the New Group Chat picker's
+ *  checklist, pre-checked with the room's current seats. Nothing is written
+ *  until Save; Cancel leaves membership untouched. */
+function GroupMemberPicker({ group, members, open, onClose }: GroupMemberPickerProps) {
+  const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const liveRoster: RosterRow[] = useValue($lastRoster)
+
+  // Current members always stay listed, even when their source is offline
+  // (ghost rows) — otherwise an offline remote member would silently drop
+  // out of the room on the next Save.
+  const roster = useMemo(() => {
+    const rows = liveRoster.filter(bot => !bot.ghost)
+    const seen = new Set(rows.map(botRosterKey))
+
+    return [...rows, ...members.filter(member => !seen.has(botRosterKey(member)))]
+  }, [liveRoster, members])
+
   const [selected, setSelected] = useState(() => new Set(members.map(botRosterKey)))
   const atCap = selected.size >= GROUP_CHAT_MAX_MEMBERS
 
-  useEffect(() => setSelected(new Set(members.map(botRosterKey))), [members, open])
+  // Re-seed from the room only when the dialog opens: `members` is rebuilt on
+  // every roster poll, so keying on it would wipe the user's picks mid-edit.
+  useEffect(() => {
+    if (open) {
+      setSelected(new Set(members.map(botRosterKey)))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const save = async () => {
     try {
-      await setGroupChatMembers(group, roster.filter(bot => selected.has(botRosterKey(bot))))
+      await setGroupChatMembers(
+        group,
+        roster.filter(bot => selected.has(botRosterKey(bot)))
+      )
       onClose()
     } catch (error) {
-      host.notify({ kind: 'error', message: String(error instanceof Error ? error.message : error) })
+      host.notify({
+        kind: 'error',
+        message: String(error instanceof Error ? error.message : error)
+      })
     }
   }
 
-  return <Dialog onOpenChange={value => !value && onClose()} open={open}>
-    <DialogContent className="max-w-md">
-      <DialogHeader>
-        <DialogTitle>Manage members</DialogTitle>
-        <DialogDescription>Select 2–{GROUP_CHAT_MAX_MEMBERS} Bots for this room.</DialogDescription>
-      </DialogHeader>
-      <div className="grid max-h-80 gap-1 overflow-y-auto">
-        {roster.map(bot => {
-          const key = botRosterKey(bot)
-          const checked = selected.has(key)
-          return <RowButton className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-(--chrome-action-hover)" key={key}
-            onClick={() => setSelected(current => {
-              const next = new Set(current)
-              if (checked) next.delete(key)
-              else if (!atCap) next.add(key)
-              return next
-            })}>
-            <span className={cn('size-3 rounded-sm border', checked && 'bg-(--ui-accent)')} />
-            <span className="min-w-0 flex-1 truncate text-left">{bot.title || bot.name}</span>
-          </RowButton>
-        })}
-      </div>
-      <DialogFooter>
-        <Button onClick={onClose} variant="ghost">Cancel</Button>
-        <Button disabled={selected.size < 2 || selected.size > GROUP_CHAT_MAX_MEMBERS} onClick={() => void save()}>Save members</Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+  return (
+    <Dialog onOpenChange={value => !value && onClose()} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Manage members</DialogTitle>
+          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots for “${group}”. The room, its history and its member sessions stay as they are.`}</DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-80 gap-0.5 overflow-y-auto" data-testid="group-member-picker">
+          {roster.map(bot => {
+            const key = botRosterKey(bot)
+            const checked = selected.has(key)
+            const disabled = !checked && atCap
+            const meta = botRosterMeta(bot, allMeta)
+
+            return (
+              <RowButton
+                aria-checked={checked}
+                className={cn(
+                  'flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-(--chrome-action-hover)',
+                  disabled && 'cursor-not-allowed opacity-50'
+                )}
+                disabled={disabled}
+                key={key}
+                onClick={() =>
+                  setSelected(current => {
+                    const next = new Set(current)
+
+                    if (checked) {
+                      next.delete(key)
+                    } else {
+                      next.add(key)
+                    }
+
+                    return next
+                  })
+                }
+                role="checkbox"
+              >
+                <Codicon className={cn(checked ? 'text-(--ui-accent)' : 'text-(--ui-text-quaternary)')} name={checked ? 'pass-filled' : 'circle-large-outline'} />
+                <div className="min-w-0 flex-1 text-left">
+                  <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
+                  <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
+                    {`@${botHandle(bot.name, bot)}${bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''}`}
+                  </div>
+                </div>
+              </RowButton>
+            )
+          })}
+        </div>
+        <DialogFooter>
+          <Button onClick={onClose} variant="secondary">
+            Cancel
+          </Button>
+          <Button disabled={selected.size < 2 || selected.size > GROUP_CHAT_MAX_MEMBERS} onClick={() => void save()}>
+            Save members
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 interface GroupChatSettingsDialogProps {
   group: string
   members?: GroupMember[]
   onClose: () => void
+  onManageMembers?: () => void
   onRenamed?: (group: string) => void
   open: boolean
 }
@@ -440,7 +506,7 @@ interface GroupChatSettingsDialogProps {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+function GroupChatSettingsDialog({ group, members, open, onClose, onManageMembers, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
@@ -507,6 +573,20 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             value={name}
           />
         </form>
+        {onManageMembers ? (
+          <Button
+            className="w-fit"
+            onClick={() => {
+              onClose()
+              onManageMembers()
+            }}
+            size="sm"
+            variant="secondary"
+          >
+            <Codicon name="organization" />
+            {`Manage members (${(members || []).length})…`}
+          </Button>
+        ) : null}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
@@ -765,8 +845,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         </Button>
       </Tip>
       <Tip label="Manage members">
-        <Button aria-label="Manage group members" className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-          onClick={() => setMemberPickerOpen(true)} size="sm" variant="ghost">
+        <Button
+          aria-label="Manage group members"
+          className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={() => setMemberPickerOpen(true)}
+          size="sm"
+          variant="ghost"
+        >
           <Codicon name="organization" />
         </Button>
       </Tip>
@@ -789,8 +874,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       ...b,
       title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
     }))
-
-  const picker = <GroupMemberPicker group={group} members={members} onClose={() => setMemberPickerOpen(false)} open={memberPickerOpen} />
 
   // Activity disclosure: quiet, collapsed by default. The collapsed row shows
   // the latest event; expanding lists the current run's events newest-first.
@@ -1301,9 +1384,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         group={group}
         members={members}
         onClose={() => setSettingsOpen(false)}
+        onManageMembers={() => setMemberPickerOpen(true)}
         open={settingsOpen}
       />
-      {picker}
+      <GroupMemberPicker group={group} members={members} onClose={() => setMemberPickerOpen(false)} open={memberPickerOpen} />
       <ConfirmDialog
         busyLabel={b.group.disbanding}
         confirmLabel={b.group.disbandAction}
