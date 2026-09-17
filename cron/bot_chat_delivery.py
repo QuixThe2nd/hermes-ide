@@ -36,8 +36,9 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     for path in root.glob("*.json"):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            # Keep damaged receipts as evidence; never replay them or block peers.
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Keep damaged or unreadable receipts as evidence; never replay them or block peers
+            # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).
             logger.error("Unreadable deferred Bot Chat receipt %s: %s", path, exc)
             continue
         records.append((path, record))
