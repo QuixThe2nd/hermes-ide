@@ -107,6 +107,27 @@ type BotsMessages = {
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
+    /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */
+    pinToTop: string
+    unpin: string
+    pinnedToast: (name: string) => string
+    unpinnedToast: (name: string) => string
+    hide: string
+    unhide: string
+    hiddenToast: (name: string) => string
+    unhiddenToast: (name: string) => string
+    groupsMenu: (groups: string) => string
+    manageGroups: string
+    metadataLoadFailed: string
+    loadFailed: string
+    groupsLoadFailed: string
+    thisDevice: string
+    /** Roster badge tooltips per attention class; `attentionFallback` when the class is unknown. */
+    attentionFallback: string
+    attentionProviderAuth: string
+    attentionQuota: string
+    attentionMissingConfig: string
+    attentionBlocked: string
     duplicate: string
     duplicateFailed: string
     deleteTitle: string
@@ -340,6 +361,25 @@ const en: BotsMessages = {
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
     openBotChat: 'Open Bot Chat',
+    pinToTop: 'Pin to top',
+    unpin: 'Unpin',
+    pinnedToast: name => `${name} pinned to top`,
+    unpinnedToast: name => `${name} unpinned`,
+    hide: 'Hide',
+    unhide: 'Unhide',
+    hiddenToast: name => `${name} hidden — use the eye button in the Bots header to see hidden bots`,
+    unhiddenToast: name => `${name} is back in the roster`,
+    groupsMenu: groups => `Groups: ${groups}…`,
+    manageGroups: 'Manage groups…',
+    metadataLoadFailed: 'Could not load bot metadata',
+    loadFailed: 'Could not load bot',
+    groupsLoadFailed: 'Could not load bot groups',
+    thisDevice: 'This device',
+    attentionFallback: 'Needs attention',
+    attentionProviderAuth: 'Sign in again for this profile',
+    attentionQuota: 'Quota or balance exhausted',
+    attentionMissingConfig: 'Provider not configured — run hermes model',
+    attentionBlocked: 'Bot is blocked — see its last message',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',
@@ -561,6 +601,25 @@ const ja: BotsMessages = {
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
+    pinToTop: '先頭にピン留め',
+    unpin: 'ピン留めを解除',
+    pinnedToast: name => `${name}を先頭にピン留めしました`,
+    unpinnedToast: name => `${name}のピン留めを解除しました`,
+    hide: '非表示',
+    unhide: '再表示',
+    hiddenToast: name => `${name}を非表示にしました — Botsヘッダーの目のボタンで非表示のボットを表示できます`,
+    unhiddenToast: name => `${name}が一覧に戻りました`,
+    groupsMenu: groups => `グループ: ${groups}…`,
+    manageGroups: 'グループを管理…',
+    metadataLoadFailed: 'ボットのメタデータを読み込めませんでした',
+    loadFailed: 'ボットを読み込めませんでした',
+    groupsLoadFailed: 'ボットのグループを読み込めませんでした',
+    thisDevice: 'このデバイス',
+    attentionFallback: '要対応',
+    attentionProviderAuth: 'このプロファイルで再度サインインしてください',
+    attentionQuota: 'クォータまたは残高が不足しています',
+    attentionMissingConfig: 'プロバイダーが未設定です — hermes model を実行してください',
+    attentionBlocked: 'ボットがブロックされています — 最後のメッセージを確認してください',
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
     deleteTitle: 'ボットとプロファイルを削除しますか？',
@@ -778,6 +837,25 @@ const zh: BotsMessages = {
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
+    pinToTop: '置顶',
+    unpin: '取消置顶',
+    pinnedToast: name => `已将 ${name} 置顶`,
+    unpinnedToast: name => `已取消置顶 ${name}`,
+    hide: '隐藏',
+    unhide: '取消隐藏',
+    hiddenToast: name => `已隐藏 ${name} — 点击机器人标题栏的眼睛按钮可查看隐藏的机器人`,
+    unhiddenToast: name => `${name} 已回到列表`,
+    groupsMenu: groups => `群聊：${groups}…`,
+    manageGroups: '管理群聊…',
+    metadataLoadFailed: '无法加载机器人元数据',
+    loadFailed: '无法加载机器人',
+    groupsLoadFailed: '无法加载机器人的群聊',
+    thisDevice: '本设备',
+    attentionFallback: '需要处理',
+    attentionProviderAuth: '请为此配置档案重新登录',
+    attentionQuota: '配额或余额已用尽',
+    attentionMissingConfig: '未配置提供商 — 请运行 hermes model',
+    attentionBlocked: '机器人已被阻止 — 请查看其最后一条消息',
     duplicate: '复制',
     duplicateFailed: '复制失败',
     deleteTitle: '删除机器人和配置档案？',
@@ -994,6 +1072,25 @@ const zhHant: BotsMessages = {
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
+    pinToTop: '釘選到頂端',
+    unpin: '取消釘選',
+    pinnedToast: name => `已將 ${name} 釘選到頂端`,
+    unpinnedToast: name => `已取消釘選 ${name}`,
+    hide: '隱藏',
+    unhide: '取消隱藏',
+    hiddenToast: name => `已隱藏 ${name} — 點擊機器人標題列的眼睛按鈕可查看隱藏的機器人`,
+    unhiddenToast: name => `${name} 已回到名單`,
+    groupsMenu: groups => `群組：${groups}…`,
+    manageGroups: '管理群組…',
+    metadataLoadFailed: '無法載入機器人中繼資料',
+    loadFailed: '無法載入機器人',
+    groupsLoadFailed: '無法載入機器人的群組',
+    thisDevice: '本裝置',
+    attentionFallback: '需要處理',
+    attentionProviderAuth: '請為此設定檔重新登入',
+    attentionQuota: '配額或餘額已用盡',
+    attentionMissingConfig: '未設定供應商 — 請執行 hermes model',
+    attentionBlocked: '機器人已被封鎖 — 請查看其最後一則訊息',
     duplicate: '複製',
     duplicateFailed: '複製失敗',
     deleteTitle: '刪除機器人和設定檔？',

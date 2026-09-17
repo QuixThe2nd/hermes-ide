@@ -16,8 +16,8 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BotRow, GroupRow } from './bot-row'
 import { $groupChats } from './group-chat'
@@ -27,7 +27,7 @@ import type { GroupMember, RosterRow } from './types'
 // Which shipped bundle the rendered rows resolve their strings against. `en`
 // matches the literals this file once carried, so a case that has to prove a
 // string comes from the catalog reads the same row under `ja`.
-const locale = vi.hoisted(() => ({ current: 'en' as 'en' | 'ja' }))
+const locale = vi.hoisted(() => ({ current: 'en' as 'en' | 'ja' | 'zh' }))
 
 const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfile, warmAgent, warmProfile } =
   vi.hoisted(() => ({
@@ -202,6 +202,28 @@ describe('context-menu mutations hydrate the alias first', () => {
 
     expect(route.profile).toBe('worker')
     expect(params).toMatchObject({ name: 'backend-worker', ui_meta: { 'hermes-bots': { pinned: false } } })
+  })
+})
+
+describe('the bot row context menu speaks the active language', () => {
+  afterEach(() => {
+    locale.current = 'en'
+  })
+
+  it('renders the pin/hide toggles and the groups entry from the catalog, not English literals', async () => {
+    // Regression guard for the roster menu items that stayed hardcoded after
+    // the bundle landed: under `zh` no English label may survive.
+    locale.current = 'zh'
+    fireEvent.contextMenu(renderRow({ name: 'worker', connectionId: 'local' }))
+
+    const menu = await screen.findByRole('menu')
+
+    expect(within(menu).getByText('置顶')).toBeTruthy()
+    expect(within(menu).getByText('隐藏')).toBeTruthy()
+    expect(within(menu).getByText('管理群聊…')).toBeTruthy()
+    expect(within(menu).queryByText('Pin to top')).toBeNull()
+    expect(within(menu).queryByText('Hide')).toBeNull()
+    expect(within(menu).queryByText('Manage groups…')).toBeNull()
   })
 })
 

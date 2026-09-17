@@ -43,8 +43,8 @@ import {
   $botAttention,
   $botMeta,
   $lastRoster,
-  BOT_ATTENTION_HINTS,
   botActivitySession,
+  botAttentionHint,
   botHandle,
   botRosterKey,
   botSelectionKey,
@@ -189,7 +189,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   )
 
   const handle = botHandle(bot.name, bot)
-  const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
+  const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? b.bot.thisDevice : '')
   const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
 
   const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
@@ -287,7 +287,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             </Tip>
           </div>
           {attention ? (
-            <Tip label={BOT_ATTENTION_HINTS[attention.reason] || 'Needs attention'}>
+            <Tip label={botAttentionHint(attention.reason)}>
               <Codicon
                 aria-label={b.roster.needsAttention}
                 className="shrink-0 text-[0.6875rem] text-amber-600 dark:text-amber-300"
@@ -332,13 +332,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'info',
-                  message: `${displayName(bot, current)} ${pinned ? 'unpinned' : 'pinned to top'}`
+                  message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
                 })
               })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
           }}
         >
-          {pinned ? 'Unpin' : 'Pin to top'}
+          {pinned ? b.bot.unpin : b.bot.pinToTop}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {
@@ -356,21 +356,21 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 host.notify({
                   kind: 'info',
                   message: hidden
-                    ? `${displayName(bot, current)} is back in the roster`
-                    : `${displayName(bot, current)} hidden — use the eye button in the Bots header to see hidden bots`
+                    ? b.bot.unhiddenToast(displayName(bot, current))
+                    : b.bot.hiddenToast(displayName(bot, current))
                 })
               })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
           }}
         >
-          {hidden ? 'Unhide' : 'Hide'}
+          {hidden ? b.bot.unhide : b.bot.hide}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
             void ensureBotMetadata(bot)
               .then(() => onEdit(bot))
-              .catch(error => host.notifyError?.(error, 'Could not load bot'))
+              .catch(error => host.notifyError?.(error, b.bot.loadFailed))
           }
         >
           {b.bot.editMenu}
@@ -379,10 +379,10 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           onSelect={() =>
             void ensureBotMetadata(bot)
               .then(() => onGroup(bot))
-              .catch(error => host.notifyError?.(error, 'Could not load bot groups'))
+              .catch(error => host.notifyError?.(error, b.bot.groupsLoadFailed))
           }
         >
-          {groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'}
+          {groups.length ? b.bot.groupsMenu(groups.join(', ')) : b.bot.manageGroups}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {

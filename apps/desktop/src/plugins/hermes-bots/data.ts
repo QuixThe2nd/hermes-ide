@@ -8,6 +8,7 @@
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
 
+import { botsText } from './i18n'
 import { displayName } from './labels'
 import {
   aliasIdentityFor,
@@ -62,12 +63,18 @@ const BOT_ATTENTION_CLASSES: ReadonlySet<string> = new Set<AttentionClass>([
   'missing_config'
 ])
 
-/** One-line user hint per attention class (roster badge tooltip). */
-export const BOT_ATTENTION_HINTS: Record<string, string> = {
-  provider_auth_or_access: 'Sign in again for this profile',
-  provider_quota_limit: 'Quota or balance exhausted',
-  missing_config: 'Provider not configured — run hermes model',
-  agent_blocked: 'Bot is blocked — see its last message'
+/** One-line user hint per attention class (roster badge tooltip), in the
+ *  active locale; unknown classes fall back to the generic hint. */
+export function botAttentionHint(reason: string): string {
+  const text = botsText().bot
+  const hints: Record<string, string> = {
+    provider_auth_or_access: text.attentionProviderAuth,
+    provider_quota_limit: text.attentionQuota,
+    missing_config: text.attentionMissingConfig,
+    agent_blocked: text.attentionBlocked
+  }
+
+  return hints[reason] || text.attentionFallback
 }
 
 /** Map an error (a #93091 reason code or raw error text) to an attention
