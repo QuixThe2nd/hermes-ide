@@ -4,6 +4,9 @@ The classic CLI shares ONE agent object across sessions: a switch ends the curre
 repoints ``agent.session_id`` (``_sync_agent_to_session``), so a still-running turn would flush its
 remaining messages onto the switched-to session. ``/handoff`` already refuses mid-turn for the same
 reason; these commands must match it. See #112137.
+
+``/new`` is intentionally NOT guarded: ``new_session`` flushes the in-flight turn to the old session
+before rotating (flush-then-rotate, #47202), so nothing lands on the wrong row.
 """
 
 import pytest
