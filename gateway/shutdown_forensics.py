@@ -148,8 +148,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
-    # Unix-only; AttributeError on Windows if this path is ever reached.
-    with contextlib.suppress(OSError, AttributeError):
+    with contextlib.suppress(OSError):  # tighten logs created 0644 by earlier releases
         os.fchmod(fd, 0o600)
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
