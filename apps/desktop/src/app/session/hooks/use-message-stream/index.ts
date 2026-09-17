@@ -114,6 +114,11 @@ export function useMessageStream({
 
           const reconciledId = opts.eventTarget?.(state) ?? null
           const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
+          // The event landed on a bubble that is NOT the live stream (sealed
+          // by interim commentary, a mid-turn user message, or turn settle).
+          // It is a patch to history: the bubble keeps its own pending bit
+          // and the turn's stream bookkeeping is neither consulted nor changed.
+          const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -136,20 +141,23 @@ export function useMessageStream({
                 ? {
                     ...m,
                     parts: transform(m.parts, m),
-                    pending: opts.pending ? opts.pending(m) : true
+                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
                   }
                 : m
             )
           }
 
+          if (patchesSealedBubble) {
+            // Later deltas must not append into the bubble the late event
+            // just updated, and a late event from an earlier phase must not
+            // clear the wait state of the turn now in flight.
+            return { ...state, messages: nextMessages }
+          }
+
           return {
             ...state,
             messages: nextMessages,
-            // A reconciled target keeps the stream bookkeeping untouched:
-            // the live stream (if any) keeps its own id, and a sealed one
-            // stays sealed — later deltas must not append into the bubble
-            // the late event just updated.
-            streamId: reconciledId ? state.streamId : streamId,
+            streamId,
             sawAssistantPayload: true,
             awaitingResponse: false
           }
@@ -499,13 +507,15 @@ export function useMessageStream({
         () => upsertToolPart([], payload, phase, occurredAt),
         {
           pending: m => phase !== 'complete' || (m.pending ?? false),
-          // A completion belongs to the bubble that owns the call, not to
+          // A tool event belongs to the bubble that owns the call, not to
           // whatever is streaming now. Long tools (browser scrapes run
-          // minutes) outlive the interim commentary boundary that seals
-          // their bubble: without this lookup the completion seeds a new
-          // bubble with a duplicate row while the sealed one keeps reading
-          // "Result unavailable" forever (#113035).
-          eventTarget: state => (phase === 'complete' ? toolCallOwnerMessageId(state.messages, payload) : null)
+          // minutes) outlive the boundary that seals their bubble (interim
+          // commentary, a message typed mid-turn, turn settle): without this
+          // lookup a completion seeds a new bubble with a duplicate row while
+          // the sealed one keeps reading "Result unavailable", and a running
+          // event for the same id seeds a second live row with its own timer
+          // under the user's message (#113035). Both phases route by id.
+          eventTarget: state => toolCallOwnerMessageId(state.messages, payload)
         },
         occurredAt
       )

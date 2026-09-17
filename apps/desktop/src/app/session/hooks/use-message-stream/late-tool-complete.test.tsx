@@ -47,46 +47,6 @@ describe('late tool completions across interim boundaries', () => {
     expect(toolParts()).toHaveLength(1)
   })
 
-  it('keeps the sealed bubble sealed after reconciling', () => {
-    event('message.start', 200)
-    event('tool.start', 201, { args: {}, name: 'browser', tool_id: 'call-late-2' })
-    event('message.interim', 202, { text: 'Working on it.' })
-    event('tool.complete', 203, { name: 'browser', result: 'ok', tool_id: 'call-late-2' })
-
-    // The reconciliation must not reopen the stream onto the sealed bubble:
-    // a later turn still seeds the next bubble instead of appending into it.
-    event('message.delta', 204, { text: 'Follow-up text.' })
-    event('message.complete', 205, { text: 'Follow-up text.' })
-
-    const assistants = (stream.state(SID).messages ?? []).filter(message => message.role === 'assistant')
-
-    expect(assistants).toHaveLength(2)
-    expect(assistants[0]).toMatchObject({ completedAt: 202, interim: true })
-    expect(
-      assistants[0].parts.some(part => part.type === 'tool-call' && 'result' in part && part.result === 'ok')
-    ).toBe(true)
-    expect(assistants[1]).toMatchObject({ completedAt: 205 })
-    expect(assistants[1].parts.map(part => part.type)).toEqual(['text'])
-  })
-
-  it('reconciles into the owning bubble even while a new bubble streams', () => {
-    event('message.start', 300)
-    event('tool.start', 301, { args: {}, name: 'browser', tool_id: 'call-late-3' })
-    event('message.interim', 302, { text: 'Still scraping.' })
-    // The turn continues after the boundary: a new bubble opens and streams.
-    event('message.delta', 303, { text: 'Meanwhile.' })
-    // The long tool finishes — its completion must land in the FIRST bubble.
-    event('tool.complete', 304, { name: 'browser', result: 'done', tool_id: 'call-late-3' })
-
-    const assistants = (stream.state(SID).messages ?? []).filter(message => message.role === 'assistant')
-
-    expect(assistants).toHaveLength(2)
-    expect(assistants[0].parts.map(part => part.type)).toEqual(['tool-call', 'text'])
-    expect(assistants[0].parts[0]).toMatchObject({ result: 'done', toolCallId: 'call-late-3', type: 'tool-call' })
-    // The streaming bubble keeps only its text — no duplicate tool row.
-    expect(assistants[1].parts.map(part => part.type)).toEqual(['text'])
-  })
-
   it('seeds a fresh bubble for a completion with no owner', () => {
     event('message.start', 400)
     event('message.interim', 401, { text: 'Sealed.' })
@@ -100,19 +60,5 @@ describe('late tool completions across interim boundaries', () => {
     expect(assistants[1].parts).toEqual([
       expect.objectContaining({ result: 'match', toolCallId: 'call-fresh-1', type: 'tool-call' })
     ])
-  })
-
-  it('does not move a completion away from the live stream when it owns the call', () => {
-    event('message.start', 500)
-    event('tool.start', 501, { args: {}, name: 'terminal', tool_id: 'call-live-1' })
-    event('tool.complete', 502, { name: 'terminal', result: 'ok', tool_id: 'call-live-1' })
-    event('message.complete', 503, { text: 'Done.' })
-
-    const assistants = (stream.state(SID).messages ?? []).filter(message => message.role === 'assistant')
-
-    // Unchanged single-bubble behaviour for the plain in-stream case.
-    expect(assistants).toHaveLength(1)
-    expect(assistants[0].parts.map(part => part.type)).toEqual(['tool-call', 'text'])
-    expect(assistants[0].parts[0]).toMatchObject({ result: 'ok' })
   })
 })

@@ -357,6 +357,13 @@ export function upsertToolPart(
 
   if (index === -1) {
     next.push(base)
+  } else if (phase === 'running' && prev?.type === 'tool-call' && prev.completedAt !== undefined && prev.result === undefined) {
+    // A settle-time seal (interim boundary, mid-turn user message, lost
+    // completion) closed this call without a result. A running event for the
+    // same id says the tool is still executing, so the row goes live again
+    // instead of reading "Result unavailable" over a ticking sibling.
+    const { completedAt: _completedAt, ...unsealed } = next[index] as Extract<ChatMessagePart, { type: 'tool-call' }>
+    next[index] = { ...unsealed, ...base }
   } else {
     next[index] = { ...next[index], ...base }
   }
