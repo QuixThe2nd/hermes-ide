@@ -46,9 +46,13 @@ export interface CanonicalSession {
 }
 
 export interface SessionPreview {
+  /** Stored session id — what `host.openSession` takes. */
+  id?: string
   /** Unix seconds, not milliseconds. */
   last_active?: number
+  message_count?: number
   preview?: string
+  title?: string
 }
 
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */

@@ -62,6 +62,7 @@ import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-b
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
+import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import {
@@ -413,6 +414,12 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           }}
         >
           {b.bot.newChatWith}
+        </ContextMenuItem>
+        {/* Click-to-latest (#93054): the freshest listed session — a cron run,
+            a delegated job, a side thread — without moving the row click off
+            the canonical Bot Chat. */}
+        <ContextMenuItem disabled={!botRecentSession(bot)} onSelect={() => void openBotRecentSession(bot)}>
+          Open recent session
         </ContextMenuItem>
         <ContextMenuSeparator />
         {/* Filing. Membership is one field on the bot's meta (`sectionId`), so
