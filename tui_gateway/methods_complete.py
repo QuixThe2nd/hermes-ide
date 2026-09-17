@@ -149,58 +149,52 @@ def _at_root_items() -> list[dict]:
 
 
 def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple[str, bool]]:
-    """List one directory in the active terminal backend without probing the gateway host.
+    """``(name, is_dir)`` entries of one directory inside the active non-local terminal backend.
 
-    Completion is advisory, so an unavailable backend deliberately yields no items.  Falling back
-    to ``os.listdir`` here would be worse: it would show a plausible but wrong host filesystem.
+    Runs in the session's own backend (``task_id`` = session key), so relative paths and ``~`` resolve
+    where the agent's commands do. Completion is advisory: an unreachable backend yields nothing —
+    falling back to the gateway host would show a plausible but wrong tree (#112963).
     """
     import json
     import shlex
 
     script = (
-        'for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do '
-        '[ -e "$p" ] || [ -L "$p" ] || continue; '
-        'name=${p##*/}; [ "$name" = . ] || [ "$name" = .. ] && continue; '
-        'if [ -d "$p" ]; then kind=d; else kind=f; fi; '
-        "printf '%s\\t%s\\n' \"$name\" \"$kind\"; "
-        'done'
+        'd=$1; case $d in "~") d=$HOME;; "~/"*) d=$HOME${d#?};; esac; [ -d "$d" ] || exit 0; '
+        'for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
+        'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
     )
     try:
         from tools.terminal_tool import terminal_tool
-        raw = terminal_tool(
-            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}",
-            task_id=session_key, timeout=10,
-        )
-        result = json.loads(raw)
+        result = json.loads(terminal_tool(
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=10))
     except Exception:
         return []
     if result.get("error") or result.get("exit_code") not in (0, None):
         return []
-    entries: list[tuple[str, bool]] = []
-    for line in str(result.get("output") or "").splitlines():
-        name, sep, kind = line.rpartition("\t")
-        if sep and name and "/" not in name and "\x00" not in name:
-            entries.append((name, kind == "d"))
-    return entries
+    entries = [(line.rstrip("/"), line.endswith("/")) for line in str(result.get("output") or "").splitlines()]
+    return sorted((name, is_dir) for name, is_dir in entries if name and "/" not in name)
 
 
 def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
                        session_key: str | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
-    expanded = _normalize_completion_path(path_part) if path_part else "."
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend expands ``~`` itself: the gateway host's home is the wrong one.
+    expanded = (_normalize_completion_path(path_part) if local else path_part) if path_part else "."
     if expanded == "." or not expanded or expanded.endswith("/"):
         search_dir, match = (expanded or "."), ""
     else:
         search_dir, match = os.path.dirname(expanded) or ".", os.path.basename(expanded)
-    search_dir = search_dir if os.path.isabs(search_dir) else os.path.join(root, search_dir)
+    if not (os.path.isabs(search_dir) or search_dir.startswith("~")):
+        search_dir = os.path.join(root, search_dir)
     search_dir = os.path.normpath(search_dir)
     items: list[dict] = []
-    if _is_local_terminal_backend():
+    if local:
         if not os.path.isdir(search_dir):
             return items
         entries = [(entry, os.path.isdir(os.path.join(search_dir, entry))) for entry in sorted(os.listdir(search_dir))]
     else:
-        entries = sorted(_backend_dir_entries(search_dir, session_key))
+        entries = _backend_dir_entries(search_dir, session_key)
     for entry, is_dir in entries:
         if match and not entry.lower().startswith(match.lower()):
             continue
@@ -208,12 +202,13 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
             continue
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
-        rel = os.path.relpath(os.path.join(search_dir, entry), root).replace(os.sep, "/")
+        full = os.path.join(search_dir, entry)
+        rel = os.path.relpath(full, root).replace(os.sep, "/")
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
         elif word.startswith("~"):
-            text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
+            text = "~/" + os.path.relpath(full, os.path.expanduser("~") if local else "~") + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))
@@ -229,9 +224,9 @@ def _(rid, params: dict) -> dict:
     if not word:
         return _ok(rid, {"items": []})
     session = _sessions.get(params.get("session_id", ""))
-    # Remote cwd values are meaningful only inside the terminal backend; do not reject them
-    # because the gateway host cannot stat them.
-    root = _completion_cwd(params) if _is_local_terminal_backend() else _terminal_task_cwd(session)
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend's cwd lives inside the target; the host cannot validate it, so take it as-is.
+    root = _completion_cwd(params) if local else _terminal_task_cwd(session)
     session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
@@ -249,12 +244,13 @@ def _(rid, params: dict) -> dict:
         prefix_tag, path_part = "", query
     # `@/foo` usually means "foo, from here": absolute only when that prefix exists,
     # else resolve relative to cwd (`@/Desktop` must not dead-end; `@/usr/local` still resolves).
+    # Host probes (this one and the fuzzy repo walk) say nothing about a non-local backend's tree.
     if (
         is_context and path_part.startswith("/") and not path_part.startswith("//")
-        and _is_local_terminal_backend() and not _abs_completion_prefix_exists(path_part)):
+        and local and not _abs_completion_prefix_exists(path_part)):
         path_part = path_part.lstrip("/")
     bare_word = is_context and path_part and "/" not in path_part
-    if _is_local_terminal_backend() and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
+    if local and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
         items = _fuzzy_basename_items(root, path_part, prefix_tag)
     else:
         items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key)
