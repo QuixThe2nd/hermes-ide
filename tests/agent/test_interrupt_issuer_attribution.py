@@ -56,3 +56,43 @@ def test_human_stops_have_no_system_issuer():
         assert interrupt_issuer(agent) is None
     finally:
         set_interrupt(False)
+
+
+def test_gateway_lifecycle_producers_name_a_system_issuer():
+    """Gateway stop, session eviction and an abandoned SSE run are system stops: none of them may fall
+    through to the reason-less default that books ``interrupted_by_user`` (#112647)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.platforms.api_server import _abandon_agent_task
+    from gateway.run_agent_cache import GatewayAgentCacheMixin
+    from gateway.run_inbound import GatewayInboundMixin
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    try:
+        stopping_agent = _bare_agent()
+        runner = SimpleNamespace(
+            _running_agents={"k": stopping_agent}, _interrupt_api_server_runs=lambda reason: 0,
+            _interrupt_deferred_agent_workers=lambda reason: 0,
+        )
+        GatewayShutdownMixin._interrupt_running_agents(runner, "Gateway shutting down")
+        assert interrupt_issuer(stopping_agent) == "gateway_shutdown"
+
+        evicted_agent = _bare_agent()
+        runner = SimpleNamespace(
+            _peek_session_state=lambda key: SimpleNamespace(turn=SimpleNamespace(agent=evicted_agent)),
+            _invalidate_session_run_generation=lambda key, reason="": 1,
+            _drop_turn_slot=lambda key, run_generation=None: None,
+        )
+        runner._interrupt_running_turn = (
+            lambda *a, **kw: GatewayAgentCacheMixin._interrupt_running_turn(runner, *a, **kw)
+        )
+        GatewayInboundMixin._hm_evict_running_agent(runner, "k", "history_reset")
+        assert interrupt_issuer(evicted_agent) == "session_evicted"
+
+        sse_agent = _bare_agent()
+        asyncio.run(_abandon_agent_task(
+            [sse_agent], SimpleNamespace(done=lambda: True), "SSE client disconnected", await_cancel=False))
+        assert interrupt_issuer(sse_agent) == "sse_client_disconnected"
+    finally:
+        set_interrupt(False)

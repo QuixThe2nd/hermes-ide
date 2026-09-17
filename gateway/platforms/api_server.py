@@ -669,7 +669,8 @@ async def _abandon_agent_task(
     agent = agent_ref[0] if agent_ref else None
     if agent is not None:
         with suppress(Exception):
-            request_hard_interrupt(agent, reason)
+            # The abandoning client/server is the issuer, not the user (#112647).
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()
@@ -1213,7 +1214,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         interrupted = 0
         for agent in agents.values():
             try:
-                if request_hard_interrupt(agent, reason):
+                if request_hard_interrupt(agent, reason, tool_reason="gateway shutdown"):
                     interrupted += 1
             except Exception as exc:
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)

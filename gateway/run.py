@@ -4644,6 +4644,9 @@ _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
 # ``tool_reason`` for the inactivity timeout: attributes the stop to the gateway watchdog (#112647).
 _INTERRUPT_TOOL_REASON_TIMEOUT = "gateway inactivity watchdog"
 _INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
+# ``tool_reason`` for eviction / shutdown: these stops are system-issued, not user stops (#112647).
+_INTERRUPT_TOOL_REASON_EVICTED = "session evicted"
+_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
