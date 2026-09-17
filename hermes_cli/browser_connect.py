@@ -406,9 +406,18 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
     try:
         if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
             deadline = time.monotonic() + _AUTH_BACKUP_DEADLINE_S
+            last_remaining: list[int | None] = [None]
 
-            def check_deadline(_status: int, _remaining: int, _total: int) -> None:
+            def check_deadline(_status: int, remaining: int, total: int) -> None:
+                # A held write lock makes every step fail with ``remaining`` unchanged; a
+                # large DB on a slow disk keeps shrinking it. Only the former is "locked" —
+                # the all-locked message tells the user to quit the browser.
+                before = total if last_remaining[0] is None else last_remaining[0]
+                last_remaining[0] = remaining
                 if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
+                    if remaining < before:
+                        raise TimeoutError(f"SQLite backup exceeded {_AUTH_BACKUP_DEADLINE_S:g}s "
+                                           "while still making progress")
                     raise TimeoutError(_AUTH_DB_LOCKED)
 
             # SQLite must coordinate both ends: immutable ignores committed source WAL,

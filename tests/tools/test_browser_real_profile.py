@@ -1136,6 +1136,21 @@ class TestWindowsLockedProfileCopy:
         finally:
             source.close()
 
+    def test_copy_auth_file_slow_but_progressing_backup_is_not_called_locked(self, tmp_path, monkeypatch):
+        """A large DB on a slow disk that is still copying pages past the deadline must not
+        get the lock wording (whose all-locked message tells the user to quit the browser)."""
+        import sqlite3
+        import hermes_cli.browser_connect as bc
+        src = str(tmp_path / "Web Data")
+        con = sqlite3.connect(src)
+        con.execute("create table t(x)")
+        con.executemany("insert into t values(?)", ((b"x" * 4000,) for _ in range(600)))  # > 256 pages
+        con.commit(); con.close()
+        monkeypatch.setattr(bc, "_AUTH_BACKUP_DEADLINE_S", -1.0)  # first callback is already past due
+        reason = bc._copy_auth_file(src, str(tmp_path / "out" / "Web Data"))
+        assert reason and reason != bc._AUTH_DB_LOCKED
+        assert "write lock" not in reason and "exceeded" in reason
+
     def test_copy_auth_file_plain_for_non_db(self, tmp_path):
         import hermes_cli.browser_connect as bc
         src = str(tmp_path / "Preferences"); open(src, "w").write('{"k":1}')
