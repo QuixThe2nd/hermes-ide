@@ -291,8 +291,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
             if get_model_capabilities is not None and slug:
                 try:
                     meta = get_model_capabilities(slug, model)
-                    if meta is not None:
-                        reasoning = bool(meta.supports_reasoning)
+                    if meta is not None and meta.supports_reasoning is not None:
+                        reasoning = meta.supports_reasoning
                 except Exception:
                     reasoning = True
 
