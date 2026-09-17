@@ -712,9 +712,11 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     """Evaluate every achievement definition against a scan result. Used by ``compute_all``
     for finished scans AND by the background progress callback for in-flight snapshots;
     ``is_partial=True`` skips persisting ``state.json`` unlocks — an "unlock time" from
-    half a scan could be invalidated by a later session."""
+    half a scan could be invalidated by a later session. Persisted unlocks are still read
+    for partials: the background scan publishes them to the cache, so an earned badge would
+    otherwise render as locked for the whole rescan (#112273)."""
     aggregate = scan.get("aggregate", {})
-    state = load_state() if not is_partial else {"unlocks": {}}
+    state = load_state()
     unlocks = state.setdefault("unlocks", {})
     now = int(time.time())
     evaluated = []

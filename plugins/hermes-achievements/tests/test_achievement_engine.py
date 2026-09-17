@@ -67,15 +67,19 @@ class AchievementEngineTests(unittest.TestCase):
             "threshold_metric": "total_terminal_calls",
             "tiers": [{"name": "Copper", "threshold": 40}],
         }
-        with TemporaryDirectory() as data_dir, patch.object(plugin_api, "ACHIEVEMENTS", [definition]), patch.object(plugin_api, "_data_dir", return_value=Path(data_dir)):
+        with TemporaryDirectory() as data_dir, patch.object(plugin_api, "ACHIEVEMENTS", [definition]), patch.object(plugin_api, "_data_dir", return_value=Path(data_dir)), patch.object(plugin_api, "get_hermes_home", return_value=Path(data_dir)):
             unlocked = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 40}, "sessions": []})
             rescanned = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 39}, "sessions": []})
             partial = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 39}, "sessions": []}, is_partial=True)
+            persisted = plugin_api.load_state()["unlocks"]
 
         self.assertTrue(unlocked["achievements"][0]["unlocked"])
         self.assertTrue(rescanned["achievements"][0]["unlocked"])
         self.assertEqual(rescanned["achievements"][0]["state"], "unlocked")
-        self.assertFalse(partial["achievements"][0]["unlocked"])
+        # In-flight snapshots are published to the cache during rescans: the floor applies there too.
+        self.assertTrue(partial["achievements"][0]["unlocked"])
+        self.assertEqual(partial["unlocked_count"], 1)
+        self.assertEqual(list(persisted), ["durable_unlock"])
 
     def test_secret_achievement_stays_hidden_without_progress(self):
         definition = {
@@ -197,7 +201,7 @@ class CompactionScanTests(unittest.TestCase):
         import hermes_state
         from hermes_state import SessionDB
 
-        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"):
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
             db = SessionDB(Path(tmp) / "state.db")
             try:
                 db.create_session("s1", "cli", model="m")
