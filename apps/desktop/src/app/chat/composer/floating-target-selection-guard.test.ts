@@ -1,47 +1,51 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { registerFloatingComposer } from './floating-target'
 
+/** Transcript text, the owner's composer host, and a chat surface holding a
+ * focusable control — the three pieces the window-level focus-follow reads. */
 function mount() {
   const transcript = document.createElement('div')
-  transcript.id = 'transcript'
   transcript.textContent = 'some transcript text to select'
   document.body.appendChild(transcript)
 
   const host = document.createElement('div')
   host.dataset.composerOwner = 'surface-1'
-
   const editor = document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.tabIndex = -1
   host.appendChild(editor)
   document.body.appendChild(host)
 
-  return { transcript, editor }
+  const surface = document.createElement('div')
+  surface.dataset.chatSurface = ''
+  surface.dataset.composerSurfaceId = 'surface-1'
+  const button = document.createElement('button')
+  surface.appendChild(button)
+  document.body.appendChild(surface)
+
+  return { button, editor, transcript }
 }
 
-function selectRange(el: HTMLElement) {
-  const selection = window.getSelection()!
-  const text = el.firstChild!
+function selectTranscript(el: HTMLElement) {
   const range = document.createRange()
-  range.setStart(text, 0)
-  range.setEnd(text, text.textContent!.length - 1)
+  range.selectNodeContents(el)
+  const selection = window.getSelection()!
   selection.removeAllRanges()
   selection.addRange(range)
 }
 
+/** Button-up movement: the gesture that follows every mouse text selection. */
 function movePointerOver(target: Element) {
-  target.dispatchEvent(
-    new PointerEvent('pointermove', {
-      bubbles: true,
-      cancelable: true,
-      clientX: 43,
-      clientY: 44,
-    })
-  )
+  target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 0, clientX: 43, clientY: 44 }))
 }
 
-describe('floating-target pointer selection guard', () => {
+/** Selecting transcript text and then moving the mouse (or a programmatic
+ * focus inside the chat surface) used to drop the selection: the floating
+ * composer's focus-follow moved focus into the editor and replaced the ranges
+ * with a caret (#112934). */
+describe('floating composer focus-follow vs transcript selection', () => {
   let unregister: (() => void) | undefined
 
   afterEach(() => {
@@ -51,30 +55,31 @@ describe('floating-target pointer selection guard', () => {
     window.getSelection()?.removeAllRanges()
   })
 
-  it('preserves a non-collapsed transcript selection on pointermove over a composer surface', () => {
-    const { transcript, editor } = mount()
+  it('never steals a non-collapsed transcript selection, on pointermove or focusin', () => {
+    const { button, editor, transcript } = mount()
     unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
 
-    selectRange(transcript)
-    const before = window.getSelection()!
-    expect(before.rangeCount).toBe(1)
-    expect(before.anchorNode).toBe(transcript.firstChild)
-
+    selectTranscript(transcript)
     movePointerOver(editor)
 
-    const after = window.getSelection()!
-    expect(after.rangeCount).toBe(1)
-    expect(after.anchorNode).toBe(transcript.firstChild)
+    const selection = window.getSelection()!
+    expect(selection.isCollapsed).toBe(false)
+    expect(transcript.contains(selection.anchorNode)).toBe(true)
+    expect(document.activeElement).not.toBe(editor)
+
+    // jsdom's own focusing steps collapse the selection afterwards, so the
+    // observable invariant here is that focus was not redirected into the editor.
+    button.focus()
+    expect(document.activeElement).toBe(button)
   })
 
-  it('still focuses the composer when nothing is selected outside it', () => {
+  it('still focuses the composer on pointermove when nothing is selected outside it', () => {
     const { editor } = mount()
     unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
 
     expect(window.getSelection()!.rangeCount).toBe(0)
     movePointerOver(editor)
 
-    // Focus ran: the composer editor became the active element.
     expect(document.activeElement).toBe(editor)
   })
 })

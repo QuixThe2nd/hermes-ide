@@ -47,10 +47,12 @@ function selectionOutsideComposer(): boolean {
   return !anchorEl?.closest('[data-slot="composer-rich-input"]')
 }
 
+/** Every focus-follow branch (pointermove and focusin) funnels here, so the
+ * selection guard lives at this chokepoint rather than at one call site. */
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
-  if (!owner) {
+  if (!owner || selectionOutsideComposer()) {
     return
   }
 
@@ -150,7 +152,7 @@ function trackPointer(event: PointerEvent) {
     active.dataset.slot === 'composer-rich-input' &&
     active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
 
-  if (event.type === 'pointermove' && !alreadyTyping && !selectionOutsideComposer()) {
+  if (event.type === 'pointermove' && !alreadyTyping) {
     focusSelectedComposer()
   }
 }
