@@ -264,6 +264,59 @@ class TestUpdateManagedPythonEnvIsolation:
 
 
 class TestCmdUpdateBranchFallback:
+    def test_current_checkout_restores_optional_dependencies_after_runtime_repair(
+        self, monkeypatch
+    ):
+        """A SQLite venv replacement must retain lazy and Hermes Tools installs."""
+        from hermes_cli.managed_uv import RuntimeRepairResult
+        from hermes_cli import main as hm
+
+        lazy_features = ["telegram", "hindsight", "edge-tts", "bedrock"]
+        tool_dependencies = ["browser"]
+        restored = []
+
+        monkeypatch.setattr(
+            update_cmd, "_venv_core_imports_healthy", lambda: (True, "core imports healthy")
+        )
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(
+            update_cmd, "_pip_install_prefix", lambda _uv: (["uv", "pip"], {"VIRTUAL_ENV": "venv"})
+        )
+        monkeypatch.setattr(
+            hm, "_refresh_active_lazy_features",
+            lambda prefix, *, env, features: restored.append(("lazy", prefix, env, features)),
+        )
+        monkeypatch.setattr(
+            hm, "_restore_active_tool_dependencies",
+            lambda dependencies, prefix, *, env: restored.append(("tools", prefix, env, dependencies)),
+        )
+        monkeypatch.setattr(
+            update_cmd, "_repair_node_deps_on_current_checkout", lambda *args, **kwargs: True
+        )
+
+        def repair(*, repair_observer):
+            repair_observer(RuntimeRepairResult("repaired"))
+            return "uv"
+
+        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", repair)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", repair)
+
+        assert update_cmd._repair_current_checkout(
+            assume_yes=True,
+            gateway_mode=False,
+            pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False,
+            active_lazy_features=lazy_features,
+            active_tool_dependencies=tool_dependencies,
+            upstream_checked=True,
+            _windows_gateway_resume=None,
+        )
+
+        assert restored == [
+            ("lazy", ["uv", "pip"], {"VIRTUAL_ENV": "venv"}, lazy_features),
+            ("tools", ["uv", "pip"], {"VIRTUAL_ENV": "venv"}, tool_dependencies),
+        ]
+
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
 
