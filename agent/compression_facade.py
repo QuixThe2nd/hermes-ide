@@ -6,8 +6,9 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 """
 
 import contextlib
-import logging
 import copy
+import functools
+import logging
 import threading
 
 from agent.session_activity import ActivityProvenance
@@ -113,7 +114,7 @@ def _run_under_progress_timeout(
     returns the snapshot unchanged, so the ORIGINAL list is handed back to keep identity semantics."""
     from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
 
-    def _snapshot_worker(fence=None):
+    def _snapshot_worker(fence=None, *, same_turn_fallback_recovery=False):
         # #76354 review F3: the pooled worker must NEVER share the caller's live transcript. Plugin/legacy
         # context engines are allowed to mutate their input list in place; after a host timeout the worker
         # stays alive, so a shared list would let a late engine rewrite the live conversation (roles,
@@ -123,23 +124,16 @@ def _run_under_progress_timeout(
         # on timeout/cancel); durable SessionDB mutation is already gated behind the commit fence inside
         # compress_context.
         snapshot = copy.deepcopy(messages)
-        result_msgs, result_prompt = run(fence, target_messages=snapshot)
-        return (messages if result_msgs is snapshot else result_msgs), result_prompt
-
-    def _same_turn_fallback_worker(fence=None):
-        """Run the pinned fallback as recovery for the just-stalled attempt.
-
-        ``_report_compression_timeout`` records the primary route's cooldown
-        only after the retry returns.  The primary worker can still record its
-        own cooldown while unwinding, however, so the retry must explicitly
-        bypass that one guard.  It does not clear the cooldown and leaves the
-        structural breakers in force.
-        """
-        snapshot = copy.deepcopy(messages)
         result_msgs, result_prompt = run(
-            fence, target_messages=snapshot, same_turn_fallback_recovery=True,
+            fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
         )
         return (messages if result_msgs is snapshot else result_msgs), result_prompt
+
+    # The stall-fallback retry is the same recovery attempt as the stalled primary, but the cancelled primary
+    # worker records its stall_interrupted cooldown while unwinding — racing the retry's automatic gate
+    # (#112387). The retry therefore bypasses ONLY the summary-failure cooldown (never clears it; the
+    # structural breakers stay in force), exactly like provider-proven overflow recovery.
+    _same_turn_fallback_worker = functools.partial(_snapshot_worker, same_turn_fallback_recovery=True)
 
     timeout_cause = {"total_exhausted": False, "progress_observed": False}
 

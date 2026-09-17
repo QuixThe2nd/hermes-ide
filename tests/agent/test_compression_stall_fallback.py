@@ -29,7 +29,6 @@ from agent.context_compressor import (
     pin_summary_route,
     take_pinned_summary_route,
 )
-from agent.compression_facade import CompressionFacadeMixin
 from agent.conversation_compression import (
     CompressionCommitFence,
     resolve_compression_fallback_route,
@@ -231,51 +230,68 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
     assert len(timeouts) == 1, "the degrade must be reported exactly once"
 
 
-class _FacadeStallAgent(CompressionFacadeMixin):
-    """Small facade host for the cooldown-bypass handoff contract."""
+def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_path, monkeypatch):
+    """The cancelled primary worker persists ``stall_interrupted`` while the fallback retry is already
+    running; that cooldown must not no-op the retry (#112387). Real AIAgent, real ``compress_context``
+    and facade timeout wrap; only the summary route (``compress``) is stubbed: the primary route stalls
+    silently until the host cancels its fence, the pinned fallback route returns a real compressed list."""
+    import os
+    import time
+    from pathlib import Path
 
-    session_id = "STALL_FALLBACK_FACADE"
-    _cached_system_prompt = "cached-prompt"
+    import agent.conversation_compression as cc
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from hermes_state import SessionDB
 
-    def _conversation_root_id(self):
-        return None
+    session_id = "STALL_FALLBACK_SAME_TURN"
+    db = SessionDB(db_path=Path(tmp_path) / "state.db")
+    db.create_session(session_id, source="cli")
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
 
+        agent = AIAgent(
+            api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+            session_db=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+        )
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    compressor = agent.context_compressor
+    compressor.threshold_tokens = 1_000
+    original = [{"role": "user", "content": f"m{i} " + "x" * 400} for i in range(20)]
+    live = list(original)
+    routes = []
 
-def test_facade_marks_stall_fallback_as_same_turn_recovery(monkeypatch):
-    """A primary timeout records its cooldown before the fallback worker runs.
-
-    The retry is still part of that same recovery attempt, so it must reach
-    ``compress_context`` with the narrow cooldown bypass.  A normal automatic
-    attempt remains subject to the cooldown on the next turn.
-    """
-    agent = _FacadeStallAgent()
-    original = [{"role": "user", "content": "keep-me"}]
-    calls = []
-
-    def _compress_context(_agent, messages, _system_message, *, commit_fence, bypass_cooldown=False, **_kwargs):
+    def fake_compress(messages, **kwargs):
         route = take_pinned_summary_route()
-        calls.append((route, bypass_cooldown))
+        routes.append((route["label"] if route else None, kwargs.get("bypass_cooldown", False)))
         if route is None:
-            while not commit_fence.is_cancelled:
-                threading.Event().wait(0.001)
-            return messages, "primary-cancelled"
-        if not bypass_cooldown:
-            return messages, "cooldown-blocked"
-        return [{"role": "user", "content": "fallback summary"}], "fallback-prompt"
+            cancelled = getattr(compressor, "_compression_cancelled_check", None)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (callable(cancelled) and cancelled()):
+                time.sleep(0.0005)
+            raise AuxiliaryExplicitCancellation()
+        return [{"role": "user", "content": "summary of earlier turns"}, original[-1]]
 
-    monkeypatch.setattr("agent.conversation_compression.compress_context", _compress_context)
-    monkeypatch.setattr(
-        "agent.conversation_compression.resolve_context_compression_timeouts", lambda: (0.02, 1.0)
-    )
+    compressor.compress = fake_compress
+    real_route = cc.resolve_compression_fallback_route
 
+    def route_after_primary_unwound():
+        # Pin the race outcome from the report: the primary persisted its backoff before the retry ran.
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and compressor._summary_failure_cooldown_until <= time.monotonic():
+            time.sleep(0.001)
+        return real_route()
+
+    monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.4, 4.0))
+    monkeypatch.setattr(cc, "resolve_compression_fallback_route", route_after_primary_unwound)
     with _patch_chain([CHAIN_ENTRY]):
-        messages, prompt = agent._compress_context(original, "system")
+        out_msgs, _prompt = agent._compress_context(live, "sys", approx_tokens=50_000)
 
-    assert calls[0] == (None, False)
-    assert calls[1][0] is not None
-    assert calls[1][1] is True
-    assert messages == [{"role": "user", "content": "fallback summary"}]
-    assert prompt == "fallback-prompt"
+    assert [r[0] for r in routes] == [None, "fallback_chain[0](custom)"]
+    assert routes[1][1] is True, "the same-turn retry must bypass the cooldown the primary just armed"
+    assert len(out_msgs) == 2 and out_msgs is not live
+    assert getattr(agent, "_last_compression_timed_out", None) is not True
 
 
 # ---------------------------------------------------------------------------
