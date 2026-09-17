@@ -20,7 +20,7 @@ from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
-from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
+from tui_gateway.server import _CRASH_LOG, _err, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,13 @@ def main():
             continue
 
         method = req.get("method") if isinstance(req, dict) else None
-        resp = dispatch(req)
+        try:
+            resp = dispatch(req)
+        except Exception as exc:
+            # Pool-routed handlers already turn failures into this response; keep an
+            # inline handler from taking down the stdio reader before it can reply.
+            logger.exception("inline RPC handler failed for method=%r", method)
+            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
         if resp is not None:
             _write_or_exit(
                 resp, f"response write failed for method={method!r} (broken stdout pipe)")
