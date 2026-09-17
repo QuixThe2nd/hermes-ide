@@ -1537,26 +1537,31 @@ def _sum_skill_manage(name, args, content, content_len, line_count):
         action = _str_arg(args, "action", "?")
         op_name = _str_arg(args, "name", "?")
         summary = f"[skill_manage] {action} {op_name}"
-    payload = _json_dict(content)
-    error = payload.get("error")
-    if error:
-        summary += f" FAILED: {str(error)[:80]}"
-    return f"{summary} ({content_len:,} chars)"
+    return f"{summary}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
 def _sum_skills_list(name, args, content, content_len, line_count):
-    # `skills_list` takes category/query, not a top-level `name` — the count
+    # `skills_list` takes only `category`, not a top-level `name` — the count
     # from the payload is what identifies the call after compression.
     category = _str_arg(args, "category")
     scope = f" category={category}" if category else ""
     payload = _json_dict(content)
     count = payload.get("count")
     listed = f" {count} skills" if isinstance(count, int) else ""
-    summary = f"[skills_list]{scope}{listed}"
+    return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _skill_result_failure_suffix(content: str) -> str:
+    """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
+    The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
+    failed batch compresses into the same line as a success and the post-compaction agent chases the
+    stub text as the error (#112710). Bounded to one line so the stub stays a stub."""
+    payload = _json_dict(content)
     error = payload.get("error")
-    if error:
-        summary += f" FAILED: {str(error)[:80]}"
-    return f"{summary} ({content_len:,} chars)"
+    if not error and payload.get("success") is not False:
+        return ""
+    preview = " ".join(str(error).split())[:80] if error else ""
+    return f" FAILED: {preview}" if preview else " FAILED"
 
 
 def _sum_template(template: str, **defaults):
