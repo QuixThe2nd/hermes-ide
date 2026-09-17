@@ -400,15 +400,16 @@ export interface PluginNewChatOptions {
 // its own profile's badge: a newer wake may have replaced the badge with a
 // different profile, and the stale listener must not wipe the winner's.
 //
-// The gate is not guaranteed to fire. `.listen()` is change-only, and the very
-// condition that routes a wake here — a shared-remote connection serving every
-// profile through the primary socket — is also the condition under which
-// $activeGatewayProfile NEVER becomes this profile (the reason the paint-first
-// bypass exists at all). On that path the listener is dead on arrival, so the
-// badge outlives the wake it describes and strands a permanent
-// "Syncing <profile>…" spinner with no timeout and no user-reachable
-// dismissal; only a full app restart clears it. Cap the wait so the badge can
-// never outlive the work.
+// The gate is not guaranteed to fire. `.listen()` is change-only, and a wake
+// is routed here precisely because $activeGatewayProfile did not match at
+// resolve time. ensureGatewayProfile does publish the target on a
+// shared-primary connection, but when the activation did NOT land it publishes
+// the route the registry actually settled on instead — so on that path the
+// atom may never become this profile and the listener never fires. Without a
+// cap the badge would outlive the wake it describes and strand a permanent
+// "Syncing <profile>…" spinner with no user-reachable dismissal; only a full
+// app restart would clear it. Cap the wait so the badge can never outlive the
+// work.
 function beginHydrationBackgroundSync(profile: string): void {
   $hydrationSyncProfile.set(profile)
 
