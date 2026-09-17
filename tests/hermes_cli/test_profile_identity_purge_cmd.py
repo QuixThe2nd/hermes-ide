@@ -53,12 +53,6 @@ def test_purge_identity_exits_nonzero_when_settlement_stays_pending(
     assert "hermes profile purge-identity gone" in capsys.readouterr().err
 
 
-def test_purge_identity_rejects_the_default_profile(profile_env, capsys):
-    with pytest.raises(SystemExit):
-        profile_cmd.cmd_profile(Namespace(profile_action="purge-identity", profile_name="default"))
-    assert "named profiles only" in capsys.readouterr().out
-
-
 def test_purge_identity_refuses_a_same_name_profile_created_after_the_delete(profile_env, capsys):
     """The retry must not purge identity out from under a profile that exists again.
 

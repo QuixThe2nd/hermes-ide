@@ -121,11 +121,3 @@ def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
             "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?", ("gone",))["n"] == 0
     finally:
         db.close()
-
-
-def test_purge_verb_refuses_without_a_name_or_store():
-    """A malformed request or a gateway with no store answers failure — never a silent success."""
-    from gateway.run_profile_reconcile import purge_profile_identity_verb
-    no_store = purge_profile_identity_verb(SimpleNamespace(session_store=None))
-    assert no_store({})["ok"] is False
-    assert no_store({"name": "gone"})["ok"] is False

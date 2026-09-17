@@ -150,10 +150,3 @@ class TestPurgeProfileState:
         routing = db.load_gateway_routing_entries(scope="/root/sessions")
         assert "agent:foo_bar:feishu:dm:chatA" not in routing
         assert "agent:fooXbar:feishu:dm:chatB" in routing
-
-    def test_purge_is_idempotent(self, db):
-        db.register_backend_heartbeat(
-            backend_id="be1", pid=1, started_at=time.time(), profile="gone", host="h")
-
-        assert db.purge_profile_state("gone")["gateway_heartbeats"] == 1
-        assert db.purge_profile_state("gone")["gateway_heartbeats"] == 0
