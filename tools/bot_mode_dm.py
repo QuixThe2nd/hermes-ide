@@ -167,16 +167,19 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
         tools = getattr(agent, "tools", None)
-        if tools and any(
+        present = bool(tools) and any(
             isinstance(t, dict) and t.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
             for t in tools
-        ):
-            return True
-        if not message_agent_authorized(agent):
-            return False
-        if agent.tools is None:
-            agent.tools = []
-        agent.tools.append(message_agent_tool_schema())
+        )
+        if not present:
+            if not message_agent_authorized(agent):
+                return False
+            if agent.tools is None:
+                agent.tools = []
+            agent.tools.append(message_agent_tool_schema())
+        # Success means BOTH halves hold: a tool-surface rebuild (compaction, MCP refresh)
+        # can keep the schema while valid_tool_names is republished without it, and an
+        # advertised-but-nondispatchable tool sends the model hunting for shellouts (#96105).
         valid = getattr(agent, "valid_tool_names", None)
         if isinstance(valid, set):
             valid.add(MESSAGE_AGENT_TOOL_NAME)
