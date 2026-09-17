@@ -133,5 +133,8 @@ describe('SettingsProfileScope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'JordyV' }))
     // The label changed, the identity did not: the override stores the slug.
     expect($settingsScopeOverride.get()).toBe('coder')
+    // The "applies to" note names the target the way its chip does.
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('JordyV')
+    expect(document.querySelector('[role="status"]')?.textContent).not.toContain('coder')
   })
 })

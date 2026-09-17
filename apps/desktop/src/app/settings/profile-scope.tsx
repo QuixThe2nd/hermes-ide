@@ -45,6 +45,11 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   const selected = useStore($settingsScopeProfile)
   const editingNonDefault = useStore($settingsScopeEditsNonDefault)
   const profiles = useStore($profiles)
+  // The note names the edit target with the same presentation label as its
+  // chip (Bot title → display_name → slug); the slug alone can name a bot the
+  // user has never seen called that.
+  const selectedLabel = profiles.find(profile => normalizeProfileKey(profile.name) === selected)
+  const selectedName = selectedLabel ? profileLabel(selectedLabel) : selected
 
   // Refresh lazily so a profile created elsewhere shows up; the cached list
   // paints immediately. Best-effort — a failure keeps the cached roster.
@@ -85,7 +90,7 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           data-scope-loud={editingNonDefault ? 'true' : undefined}
           role="status"
         >
-          {scope.editsProfile(selected)}
+          {scope.editsProfile(selectedName)}
         </p>
       ) : null}
     </div>
