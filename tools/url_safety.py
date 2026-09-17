@@ -121,6 +121,16 @@ _MAX_SSRF_CONNECT_IPS = 8
 # ipaddress — must be blocked explicitly (Tailscale/WireGuard, cloud internal nets).
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
+# none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
+# so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
+# hosts dialable. Such entries are dropped with a warning instead.
+_FAKE_IP_UNDECLARABLE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/32", "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",  # unspecified/loopback/RFC 1918
+    "169.254.0.0/16", "100.64.0.0/10",  # link-local, CGNAT
+    "::/128", "::1/128", "fc00::/7", "fe80::/10",  # unspecified, loopback, ULA, link-local
+))
+
 # Global toggle cache (process lifetime; see _global_allow_private_urls).
 _allow_private_resolved, _cached_allow_private = False, False
 _fake_ip_resolved, _cached_fake_ip_ranges = False, ()
@@ -184,9 +194,15 @@ def _resolve_fake_ip_ranges() -> tuple:
     networks = []
     for entry in entries:
         try:
-            networks.append(ipaddress.ip_network(str(entry).strip(), strict=False))
+            net = ipaddress.ip_network(str(entry).strip(), strict=False)
         except ValueError:
             logger.warning("Ignoring unparseable security.fake_ip_ranges entry: %r", entry)
+            continue
+        clash = next((r for r in _FAKE_IP_UNDECLARABLE_NETWORKS if r.version == net.version and net.overlaps(r)), None)
+        if clash is not None:
+            logger.warning("Ignoring security.fake_ip_ranges entry %r: it overlaps %s, which stays blocked", entry, clash)
+            continue
+        networks.append(net)
     return tuple(networks)
 
 

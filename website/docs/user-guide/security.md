@@ -765,7 +765,10 @@ security:
 Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
 exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which
 resolves the real target itself), and loopback, RFC 1918, link-local, CGNAT and cloud-metadata
-destinations stay blocked.
+destinations stay blocked — an entry that overlaps one of those classes (including `0.0.0.0/0`
+or `::/0`) is ignored with a warning rather than widening the guard. On a host with a cloud
+browser provider, the declared sentinel also stops counting as private for
+`browser.auto_local_for_private_urls`, so those pages keep going to the cloud browser.
 
 ### Tirith Pre-Exec Security Scanning
 

@@ -534,3 +534,31 @@ class TestDeclaredFakeIpSentinelRanges:
         _reset_allow_private_cache()
         with patch("hermes_cli.config.read_raw_config", lambda: {}), _resolves_to("198.18.0.23"):
             assert is_safe_url("https://example.com/file.jpg") is False
+
+    @pytest.mark.parametrize(
+        ("declared", "ip"),
+        [
+            (["10.0.0.0/8"], "10.0.0.5"),  # RFC 1918
+            (["127.0.0.0/8"], "127.0.0.1"),  # loopback
+            (["100.64.0.0/10"], "100.64.0.1"),  # CGNAT
+            (["fc00::/7"], "fd00::1"),  # ULA
+            (["0.0.0.0/0"], "192.168.1.1"),  # catch-all overlaps the unspecified address
+            (["::/0"], "::1"),  # v6 catch-all overlaps the unspecified address
+        ],
+    )
+    def test_declaration_cannot_excuse_reserved_classes(self, monkeypatch, declared, ip):
+        # A declared block is trusted like allow_private_urls, so it must not be able to name
+        # loopback/RFC 1918/CGNAT/ULA/unspecified space — those classes stay blocked no matter
+        # what the config says; the overlapping entry is dropped, it does not widen the guard.
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"security": {"fake_ip_ranges": declared + ["198.18.0.0/15"]}},
+        )
+        _reset_allow_private_cache()
+        try:
+            with _resolves_to(ip):
+                assert is_safe_url("https://example.com/") is False
+            with _resolves_to("198.18.1.125"):  # the legitimate sibling declaration still works
+                assert is_safe_url("https://example.com/") is True
+        finally:
+            _reset_allow_private_cache()
