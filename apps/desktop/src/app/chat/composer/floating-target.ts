@@ -4,7 +4,7 @@ import { $activeTreeGroup, $hoveredTreeGroup, noteActiveTreeGroup } from '@/comp
 import { $composerPopout } from '@/store/composer-popout'
 
 import { $floatingComposerOwner, type FloatingComposerOwner } from './floating-state'
-import { focusComposerInput, markActiveComposer } from './focus'
+import { EDIT_COMPOSER_ROOT, focusComposerInput, markActiveComposer } from './focus'
 import { placeCaretEnd } from './rich-editor'
 
 const surfaces = new Map<string, Omit<FloatingComposerOwner, 'id'>>()
@@ -14,6 +14,13 @@ let pointer: { x: number; y: number } | null = null
 let pointerDownTarget: Element | null = null
 let keyboardNavigation = false
 let reconcileQueued = false
+
+/** The inline message edit lives in the transcript, outside every composer
+ * host, and takes focus programmatically when a bubble is clicked. That focus
+ * is the user's choice, not a delayed callback to redirect: stealing it hands
+ * the caret back to the pane composer, and the edit's blur guard then cancels
+ * the edit ~80ms after it opened (#112935). */
+const inInlineEdit = (el: Element | null) => Boolean(el?.closest(EDIT_COMPOSER_ROOT))
 
 function rememberCaret(editor: EventTarget | null) {
   const selection = window.getSelection()
@@ -153,7 +160,7 @@ function trackPointer(event: PointerEvent) {
     active.dataset.slot === 'composer-rich-input' &&
     active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
 
-  if (event.type === 'pointermove' && !alreadyTyping) {
+  if (event.type === 'pointermove' && !alreadyTyping && !inInlineEdit(active)) {
     focusSelectedComposer()
   }
 }
@@ -181,9 +188,10 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
-  // A delayed focus/restore isn't a navigation gesture. A clicked control or
-  // keyboard Tab still keeps its normal focus, without redirecting to the input.
-  if (keyboardNavigation || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  // A delayed focus/restore isn't a navigation gesture. A clicked control,
+  // keyboard Tab, or the inline edit opened by a bubble click still keeps its
+  // normal focus, without redirecting to the input.
+  if (keyboardNavigation || inInlineEdit(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
     flushSync(() => selectSurface(id))
   } else {
     // A refused redirect leaves focus where it landed: that element's focusin

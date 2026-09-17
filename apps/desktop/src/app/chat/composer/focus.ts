@@ -53,7 +53,7 @@ const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
 /** Inline edit composer root — mounted only while a user bubble is being edited. */
-const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
+export const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
 
 /** Attribute-safe selector fragment. jsdom (vitest) does not ship `CSS.escape`. */
 const cssEscape = (value: string): string => {
