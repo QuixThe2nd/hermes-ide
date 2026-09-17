@@ -28,7 +28,11 @@ These terms describe different parts of Hermes:
 
 - **Bot Mode bot** is a profile presented as a named entry in the desktop's
   [Bot Mode](./bot-mode.md) roster, with an avatar and a persistent Bot Chat.
-  The same profile remains accessible from the CLI.
+  The same profile remains accessible from the CLI. Every Bot is a profile, but
+  not every profile is a Bot: a profile becomes a Bot when Bot Mode stores its
+  roster presentation (title, avatar, section, hidden state) in the profile's
+  metadata and pins its canonical Bot Chat. A profile you only ever drive from
+  the CLI, Docker, or a gateway and never add to the roster stays a plain profile.
 
 - **Messaging bot** is an account on a platform such as Telegram, Discord, or
   Slack, connected to Hermes through the gateway. Its
