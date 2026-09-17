@@ -238,12 +238,33 @@ def _config_profile_scope(profile: Optional[str]):
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
     """
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+
+    process_home = get_process_hermes_home()
     if _is_current_profile(profile):
-        yield None
-        return
-    profile_dir = _resolve_profile_dir(profile.strip())
-    with _hermes_home_scope(profile_dir):
-        yield None if profile_dir.resolve() == get_process_hermes_home().resolve() else profile_dir
+        profile_dir, scoped = None, None  # the dashboard's own profile: no home override
+    else:
+        profile_dir = _resolve_profile_dir(profile.strip())
+        scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
+    if scoped is not None:
+        activate_multi_profile_hosting()
+        hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
+        secrets = build_profile_secret_scope(scoped)
+    else:
+        # The dashboard's own profile: its launch-env scope (live env + .env while single-profile, so
+        # systemd / op-run injection keeps resolving; frozen at activation afterwards). Bound even
+        # before any secondary is served so the request's credential source is decided HERE: a
+        # concurrent first ``?profile=B`` request flips ``get_secret`` to fail closed mid-request,
+        # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
+        secrets = launch_secret_scope(process_home)
+    with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
+        token = set_secret_scope(secrets)
+        try:
+            yield scoped
+        finally:
+            reset_secret_scope(token)
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with
