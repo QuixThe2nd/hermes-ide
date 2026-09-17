@@ -596,26 +596,39 @@ describe('useDesktopIntegrations', () => {
       deepLink({ kind: 'plugin', name: 'install', params })
 
       expect($pluginInstallRequest.get()).toMatchObject({
-        repo: params.repo, catalogName: params.catalog_name, sha: params.sha, enable: true, force: false
+        repo: params.repo,
+        catalogName: params.catalog_name,
+        sha: params.sha,
+        enable: true,
+        force: false
       })
       expect(navigate).not.toHaveBeenCalled()
     })
 
     it('requires skill confirmation, preserves the request scope, and uses the hub pipeline', async () => {
       const api = vi.fn(async (request: { path: string }) => {
-        if (request.path === '/api/skills/hub/install') return { name: 'skill-link-test' }
+        if (request.path === '/api/skills/hub/install') {
+          return { name: 'skill-link-test' }
+        }
+
         if (request.path.startsWith('/api/actions/skill-link-test/')) {
           return { name: 'skill-link-test', running: false, exit_code: 0, lines: ['Installed'], pid: 123 }
         }
+
         return {}
       })
+
       desktopWindow.hermesDesktop = { ...desktopWindow.hermesDesktop, api } as unknown as Window['hermesDesktop']
       const deepLink = listen()
       const installs = () => api.mock.calls.filter(([r]) => r.path === '/api/skills/hub/install')
       const identifier = 'skills-sh/owner/repo/skill'
       const payload = { kind: 'skill', name: 'install', params: { identifier } }
 
-      for (const [connection, profile] of [['server-a', 'research'], ['server-b', 'work'], ['server-a', 'research']]) {
+      for (const [connection, profile] of [
+        ['server-a', 'research'],
+        ['server-b', 'work'],
+        ['server-a', 'research']
+      ]) {
         setApiRequestConnection(connection)
         setApiRequestProfile(profile)
         api.mockClear()
@@ -630,11 +643,21 @@ describe('useDesktopIntegrations', () => {
         act(() => deepLink(payload))
         await act(async () => settleConfirm(true))
         await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
-        expect(installs()).toEqual([[{
-          connectionId: connection, profile, path: '/api/skills/hub/install', method: 'POST', body: { identifier }
-        }]])
+        expect(installs()).toEqual([
+          [
+            {
+              connectionId: connection,
+              profile,
+              path: '/api/skills/hub/install',
+              method: 'POST',
+              body: { identifier }
+            }
+          ]
+        ])
         expect(api).toHaveBeenCalledWith({
-          connectionId: connection, profile, path: '/api/actions/skill-link-test/status?lines=200'
+          connectionId: connection,
+          profile,
+          path: '/api/actions/skill-link-test/status?lines=200'
         })
       }
 

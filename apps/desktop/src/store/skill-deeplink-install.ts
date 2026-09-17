@@ -11,6 +11,7 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
   const profile = getApiRequestProfile()
   const scope: ProfileScope = { connectionId, profile }
   const destination = [connectionId, profile || 'default'].filter(Boolean).join(' / ')
+
   const confirmed = await confirm({
     title: translateNow('skills.hub.policyAsk'),
     description: `${identifier}

@@ -32,7 +32,6 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -745,10 +744,10 @@ export function SkillsView({
 
   const profileScopeSelector =
     scopeOptions.length > 1 ? (
-      <div
-        className="flex min-w-0 items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2"
-      >
-        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{mode === 'plugins' ? t.skills.plugins.halfAgent : t.skills.configuringProfile}</span>
+      <div className="flex min-w-0 items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
+        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">
+          {mode === 'plugins' ? t.skills.plugins.halfAgent : t.skills.configuringProfile}
+        </span>
         <Select onValueChange={changeScope} value={scopeSelectValue}>
           <SelectTrigger className="h-7 w-56 text-xs">
             <SelectValue />
@@ -774,7 +773,13 @@ export function SkillsView({
       // searching it is noise.
       searchHidden={mode === 'mcp'}
       searchHints={searchHints}
-      searchPlaceholder={mode === 'plugins' ? t.catalog.searchPlugins : mode === 'skills' ? t.catalog.searchSkills : t.skills.searchToolsets}
+      searchPlaceholder={
+        mode === 'plugins'
+          ? t.catalog.searchPlugins
+          : mode === 'skills'
+            ? t.catalog.searchSkills
+            : t.skills.searchToolsets
+      }
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
@@ -790,7 +795,13 @@ export function SkillsView({
         {profileScopeSelector}
         {(mode === 'skills' || mode === 'plugins') && (
           <CapabilityTabs
-            actions={mode === 'skills' ? <UpdateSkillsButton profile={scopeProfile} /> : <PluginActions profile={scopeProfile} />}
+            actions={
+              mode === 'skills' ? (
+                <UpdateSkillsButton profile={scopeProfile} />
+              ) : (
+                <PluginActions profile={scopeProfile} />
+              )
+            }
             onChange={setCapabilityView}
             value={capabilityView}
           />
@@ -804,11 +815,11 @@ export function SkillsView({
               // reloads the agent list.
               <PluginsTab
                 key={`plugins-${scopeKey}`}
+                onQueryChange={setQuery}
                 profile={scopeProfile}
+                query={query}
                 scopeLabel={scopeLabel}
                 view={capabilityView}
-                query={query}
-                onQueryChange={setQuery}
               />
             ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
@@ -818,7 +829,13 @@ export function SkillsView({
               // apply on that backend's next session).
               <McpTab gateway={crossBackendScope ? null : gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
             ) : mode === 'skills' && capabilityView === 'browse' ? (
-              <SkillCatalog installedNames={installedSkillNames} key={scopeKey} profile={scopeProfile} query={query} onQueryChange={setQuery} />
+              <SkillCatalog
+                installedNames={installedSkillNames}
+                key={scopeKey}
+                onQueryChange={setQuery}
+                profile={scopeProfile}
+                query={query}
+              />
             ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
               <PanelEmpty
                 action={
