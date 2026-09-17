@@ -42,7 +42,8 @@ function selectionOutsideComposer(): boolean {
     return false
   }
 
-  const anchorEl = selection.anchorNode instanceof Node ? selection.anchorNode.parentElement : null
+  const { anchorNode } = selection
+  const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null
 
   return !anchorEl?.closest('[data-slot="composer-rich-input"]')
 }
@@ -185,6 +186,12 @@ function trackFocus(event: FocusEvent) {
   if (keyboardNavigation || (pointerDownTarget && target.contains(pointerDownTarget))) {
     flushSync(() => selectSurface(id))
   } else {
+    // A refused redirect leaves focus where it landed: that element's focusin
+    // must still reach React and other root listeners.
+    if (selectionOutsideComposer()) {
+      return
+    }
+
     event.stopImmediatePropagation()
     const owner = $floatingComposerOwner.get()
 

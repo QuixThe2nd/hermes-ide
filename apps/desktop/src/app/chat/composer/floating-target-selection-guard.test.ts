@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerFloatingComposer } from './floating-target'
 
@@ -68,9 +68,14 @@ describe('floating composer focus-follow vs transcript selection', () => {
     expect(document.activeElement).not.toBe(editor)
 
     // jsdom's own focusing steps collapse the selection afterwards, so the
-    // observable invariant here is that focus was not redirected into the editor.
+    // observable invariant here is that focus was not redirected into the editor
+    // and the refused redirect did not swallow the button's focusin from root listeners.
+    const focusin = vi.fn()
+    document.addEventListener('focusin', focusin)
     button.focus()
+    document.removeEventListener('focusin', focusin)
     expect(document.activeElement).toBe(button)
+    expect(focusin).toHaveBeenCalledTimes(1)
   })
 
   it('still focuses the composer on pointermove when nothing is selected outside it', () => {

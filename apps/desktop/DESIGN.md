@@ -335,7 +335,8 @@ so glass and message-bubble transparency do not reveal scrolling text.
   queues stay session-owned. Docking restores the individual pane composers.
   In either placement, moving into a chat pane gives its editor typing focus
   immediately and preserves its caret. Layout-only hover events and delayed
-  focus callbacks cannot replace that choice. Movement within the same pane
+  focus callbacks cannot replace that choice, and a live transcript selection
+  is never cleared by focus-follow. Movement within the same pane
   must not flush React; deliberate Tab navigation and clicked controls still work.
   Active dictation or voice conversation pins the recipient until capture ends,
   keeping the microphone's stop controls and shortcut attached to its owner.
