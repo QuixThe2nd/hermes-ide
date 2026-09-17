@@ -2227,7 +2227,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
         """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts."""
         stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
-        self._record_compression_failure_cooldown(float(_next_timeout_cooldown(self)), stamped)
+        seconds = float(_next_timeout_cooldown(self))
+        # The first rung (60s) is shorter than the default idle stall window (120s): the next oversized turn
+        # re-entered the same silent route ~1 min after burning the full window (#112420). A stall cooldown
+        # can never be shorter than the window that just failed to show progress.
+        with contextlib.suppress(Exception):
+            from agent.conversation_compression import resolve_context_compression_timeouts
+            idle, _ceiling = resolve_context_compression_timeouts()
+            seconds = max(seconds, float(idle))
+        self._record_compression_failure_cooldown(seconds, stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # Fence check BEFORE cooldown-clear: a late cancelled worker must not undo the host's timeout cooldown.

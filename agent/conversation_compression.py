@@ -1314,11 +1314,15 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     else:
         new_system_prompt = agent._cached_system_prompt = rebuilt_system_prompt
         if cached_system_prompt is not None:
-            logger.info(
+            # The rebuild itself stays mandatory; only the first drift per session is INFO — a long session
+            # compacting many times logged this on every compact (19x/day in #112420).
+            log = logger.debug if getattr(agent, "_compaction_prompt_drift_logged", False) is True else logger.info
+            log(
                 "Compaction rebuilt a drifted system prompt (session=%s, %d -> %d chars): builder output changed "
                 "since the stored snapshot (update, config change, or memory/skills growth)",
                 agent.session_id or "none", len(cached_system_prompt), len(new_system_prompt),
             )
+            agent._compaction_prompt_drift_logged = True
     return new_system_prompt
 
 
