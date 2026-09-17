@@ -2135,7 +2135,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_is_fork",
         "_orphaned_desktop_backend_pids", "_park_stashed_changes",
         "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
-        "_print_parked_branch_skip_warning",
+        "_print_parked_branch_skip_warning", "_reapply_plugin_python_dependencies",
         "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
         "_relaunch_stopped_serves",
