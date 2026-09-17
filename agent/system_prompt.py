@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
@@ -286,7 +287,7 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
     # fallback paths must also limit task protocol guidance to dispatcher workers.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and os.environ.get("HERMES_KANBAN_TASK") and "kanban_show" in names:
+    if _kanban_guidance is None and "kanban_show" in names and owned_kanban_task():
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,
