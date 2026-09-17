@@ -53,6 +53,13 @@ def outbound_image_retire_count(
     and a fixed one-batch retire stops enforcing the limit after the first batch. So the count
     advances in quanta until the request fits.
 
+    The quantum is ``batch`` capped at ``window - floor``, where ``window`` is how many newest
+    carriers fit under the ceiling. A quantum wider than that would step past the newest frames
+    on every advance; cutting each step back to exactly ``total - floor`` instead makes the
+    retire count track ``total`` again — the per-image frontier this policy exists to avoid,
+    visible whenever a tool result carries several images or uploads fill most of the ceiling.
+    Holding for ``window - floor`` turns per advance is the most the floor allows.
+
     The floor is a SATISFIABILITY floor: it shelters the newest frames only when reserved
     uploads alone breach the block ceiling (no retirement can fix that), and never under byte
     pressure — the request-size limit is hard and the provider answers 413.
@@ -78,14 +85,12 @@ def outbound_image_retire_count(
     max_retire = total - floor if not _fits(0) and _bytes_fit(floor) else total
     if max_retire <= 0:
         return 0
+    window = max(k for k in range(total + 1) if _fits(k)) if _fits(0) else 0
+    quantum = max(1, min(batch, window - floor))
+
     retire = 0
     while retire < max_retire:
-        step = min(retire + batch, max_retire)
-        if step > total - floor and _fits(floor):
-            # A whole batch would retire the frames the model was just asked about while
-            # keeping the floor already clears the ceiling; take the smaller edit instead.
-            step = total - floor
-        retire = step
+        retire = min(retire + quantum, max_retire)
         if _fits(total - retire):
             break
     return retire

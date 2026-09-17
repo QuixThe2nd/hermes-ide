@@ -150,6 +150,60 @@ class TestOutboundStaleVisionEviction:
             "each move rewrites a cached row and restarts the prefix"
         )
 
+    def test_frontier_holds_when_tool_results_carry_several_images(self):
+        """Heavy carriers must still advance the frontier in steps, never per image.
+
+        With three images per tool result, an eight-carrier batch is wider than the
+        fit window, so a step cut back to exactly ``total - floor`` tracks the total
+        and rewrites a cached row on every turn. The quantum must shrink to the window
+        instead: the frontier may move at most once per (window - floor) turns.
+        """
+        from agent.conversation_loop import _clone_message_for_send
+
+        def surviving(n: int) -> list:
+            history: list[dict] = [{"role": "user", "content": "start"}]
+            for i in range(n):
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call_{i}",
+                                "type": "function",
+                                "function": {"name": "vision_analyze", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                )
+                history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"call_{i}",
+                        "content": [
+                            {"type": "text", "text": f"shot {i}"},
+                            *[
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,A{i}{k}"}}
+                                for k in range(3)
+                            ],
+                        ],
+                    }
+                )
+            msgs = [_clone_message_for_send(m) for m in history]
+            evict_stale_outbound_tool_images(msgs)
+            assert _outbound_image_blocks(msgs) <= OUTBOUND_IMAGE_LIMIT
+            return _image_bearing_tool_ids(msgs)
+
+        window = OUTBOUND_IMAGE_LIMIT // 3
+        span = range(window + 1, window + 1 + 4 * (window - OUTBOUND_IMAGE_FLOOR))
+        frontier = [surviving(n)[0] for n in span]
+        moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
+        assert moves <= len(span) // (window - OUTBOUND_IMAGE_FLOOR), (
+            f"frontier moved {moves} times over {len(span)} turns (frontier={frontier}); "
+            "a per-image frontier rewrites the cached prefix every turn"
+        )
+        assert all(len(k) >= OUTBOUND_IMAGE_FLOOR for k in (surviving(n) for n in span))
+
     def test_multi_image_tool_results_count_as_blocks(self):
         """The provider limit counts image BLOCKS, not tool messages.
 
