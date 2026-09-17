@@ -1671,13 +1671,19 @@ class TestOneShotDispatchClaim:
 
 
 class TestBuildJobPromptSilentHint:
-    """Verify _build_job_prompt always injects [SILENT] guidance."""
+    """Verify _build_job_prompt injects cron response control guidance."""
 
     def test_hint_always_present(self):
         job = {"prompt": "Check for updates"}
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
         assert "Check for updates" in result
+
+    def test_failure_marker_guidance_is_present(self):
+        result = _build_job_prompt({"prompt": "Check delegated work"})
+
+        assert "[CRON_FAILURE]" in result
+        assert "first line by itself" in result
 
 
 class TestBuildJobPromptRecursionGuard:

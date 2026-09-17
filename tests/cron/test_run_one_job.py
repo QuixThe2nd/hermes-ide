@@ -78,6 +78,41 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
+def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch):
+    """A delegated-child failure reported by the agent is not a healthy cron run."""
+    calls = _patch_pipeline(
+        monkeypatch,
+        final="[CRON_FAILURE]\nThe delegated child could not finish the report.",
+    )
+
+    ok = s.run_one_job({"id": "declared-failure", "name": "delegate", "deliver": "telegram"})
+
+    assert ok is True
+    assert [call[0] for call in calls] == ["run_job", "save", "deliver", "mark"]
+    assert calls[-1] == ("mark", "declared-failure", False)
+
+
+def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
+    """Only the exact first line is control text; quoted markers remain report content."""
+    calls = _patch_pipeline(
+        monkeypatch,
+        final="The child documentation says [CRON_FAILURE], but this run recovered.",
+    )
+
+    s.run_one_job({"id": "quoted-marker", "name": "delegate", "deliver": "telegram"})
+
+    assert calls[-1] == ("mark", "quoted-marker", True)
+
+
+def test_run_one_job_no_agent_does_not_interpret_failure_marker(monkeypatch):
+    """Script-only jobs do not opt into agent response control tokens."""
+    calls = _patch_pipeline(monkeypatch, final="[CRON_FAILURE]\nscript output")
+
+    s.run_one_job({"id": "script-only", "name": "script", "no_agent": True, "deliver": "telegram"})
+
+    assert calls[-1] == ("mark", "script-only", True)
+
+
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     """An exception escaping the run body must not become a silent error row."""
     delivered = []
@@ -383,5 +418,4 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_delivery["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
-
 
