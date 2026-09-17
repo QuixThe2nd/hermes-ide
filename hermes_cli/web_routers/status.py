@@ -117,6 +117,16 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
+@router.get("/api/health/idle")
+async def get_health_idle(request: Request):
+    """Backend-proven idleness for the Desktop pool's cooperative retirement (token-gated, unlike
+    ``/api/health``: whether a turn is running is activity recon). ``idle`` is True/False/None —
+    None means "cannot prove", which the Desktop treats as busy."""
+    from hermes_cli.web_server_idle_proof import idle_proof
+    _require_token(request)
+    return {"ok": True, **idle_proof()}
+
+
 # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
 # Platform enum's normalized values: built-in members plus plugin directory names
 # (lowercased), which allow hyphens as well as underscores (e.g. ``reviewer:foo-bar``).
