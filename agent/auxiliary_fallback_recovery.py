@@ -12,7 +12,10 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 def _parameter_ladder(first_err: Exception, client: Any, kwargs: Dict[str, Any], *,
                       task: Optional[str], tag: str):
     from agent.auxiliary_client import _LadderRoute, _ladder_parameter_rungs
-    route = _LadderRoute(client, task, tag, bool(tag), "", "", None, None, None, None, None, None, None)
+    # Keyword construction: the route tuple grows with every new ladder rung (a positional 13-tuple
+    # broke the moment a sibling PR added ``timeout``); fields this ladder never reads stay None.
+    route = _LadderRoute(**{**dict.fromkeys(_LadderRoute._fields), "client": client, "task": task,
+                            "tag": tag, "async_mode": bool(tag), "base_info": "", "resolved_provider": ""})
     max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
     resp, err, _ = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if err is None:
