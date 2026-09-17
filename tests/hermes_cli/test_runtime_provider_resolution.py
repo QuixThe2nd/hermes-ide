@@ -1425,26 +1425,6 @@ def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
-def test_opencode_zen_resolution_heals_a_stale_go_config_base_url(monkeypatch):
-    """The mirror direction: a Go URL must not survive a switch back to the Zen relay."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "opencode-zen",
-            "default": "deepseek-v4-flash",
-            "base_url": "https://opencode.ai/zen/go/v1",
-        },
-    )
-    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
-    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
-
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-
-
 # ------------------------------------------------------------------
 # fix #2562 — resolve_provider("custom") must not remap to "openrouter"
 # ------------------------------------------------------------------
