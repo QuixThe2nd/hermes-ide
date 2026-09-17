@@ -712,8 +712,15 @@ def _repair_current_checkout(
             # are gone (#112571). Restore the pre-cutover snapshots exactly as the pull path
             # and the unhealthy-venv repair do; the healthy core set needs no reinstall.
             repair_prefix, repair_env = _pip_install_prefix(repair_uv)
-            _m()._refresh_active_lazy_features(
-                repair_prefix, env=repair_env, features=active_lazy_features)
+            # Same marker discipline as the pull path: an interrupted or failed lazy restore
+            # must leave the breadcrumb so the next `hermes` run finishes the repair.
+            _write_lazy_refresh_incomplete_marker()
+            if _m()._refresh_active_lazy_features(
+                    repair_prefix, env=repair_env, features=active_lazy_features):
+                _m()._clear_lazy_refresh_incomplete_marker()
+            else:
+                print("  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
+                      "to finish import-based venv repair.")
             _m()._restore_active_tool_dependencies(
                 active_tool_dependencies, repair_prefix, env=repair_env)
         current_checkout_complete = _repair_node_deps_on_current_checkout(
