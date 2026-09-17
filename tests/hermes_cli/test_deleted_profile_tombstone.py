@@ -188,6 +188,35 @@ class TestDeletedProfileTombstone:
         assert "worker" not in backfilled
         assert not (profile_dir / ".env").exists()
 
+    def test_marker_less_shell_is_not_a_profile(self, profile_env):
+        """A ``profiles/<name>`` dir with no identity file (a pre-tombstone ghost shell left by a
+        cron ticker, or a stray infrastructure dir) is not listed, served, or seeded with the
+        default install's ``.env`` — that seeding is what legitimised ghosts on ``hermes update``
+        (#95188 path D, #94823, #99392). ``profile create`` may take the name back."""
+        default_env = profile_env / ".hermes" / ".env"
+        default_env.write_text("OPENAI_API_KEY=sk-real\n", encoding="utf-8")
+        shell = profile_env / ".hermes" / "profiles" / "ghost"
+        (shell / "cron").mkdir(parents=True)
+        (shell / "cron" / "ticker_heartbeat").write_text("1\n", encoding="utf-8")
+        legacy = profile_env / ".hermes" / "profiles" / "legacy"
+        legacy.mkdir()
+        (legacy / "state.db").write_bytes(b"")
+
+        assert backfill_profile_envs(quiet=True) == ["legacy"]
+        assert not (shell / ".env").exists()
+        assert _named_homes(profile_env) == ["legacy"]
+        assert [name for name, _ in profiles_to_serve(True)] == ["default", "legacy"]
+        # ``hermes --profile ghost serve`` (a stale Desktop boot target) must not start a backend
+        # in the shell — its ensure_hermes_home() would rebuild the full profile tree.
+        assert not profile_exists("ghost")
+        with pytest.raises(FileNotFoundError):
+            resolve_profile_env("ghost")
+        assert Path(resolve_profile_env("legacy")) == legacy
+
+        recreated = create_profile("ghost", no_alias=True, no_skills=True)
+        assert recreated == shell and (shell / ".env").exists()
+        assert "ghost" in _named_homes(profile_env)
+
     def test_create_after_delete_replaces_empty_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         _delete("worker")

@@ -18,7 +18,8 @@ from typing import Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted,
+    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_has_identity,
+    named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
@@ -312,7 +313,7 @@ def profile_exists(name: str) -> bool:
         return False
     if canon == "default":
         return True
-    return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
+    return named_profile_is_live(profile_dir)
 
 
 def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
@@ -332,7 +333,12 @@ def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
 
 
 def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
-    """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones."""
+    """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones.
+
+    A dir is a profile only when it carries an identity marker (``named_profile_has_identity``):
+    cron/logging side-effects and pre-tombstone ghost shells leave marker-less dirs that must
+    not be listed, served, ticked, or ``.env``-seeded — that seeding is what turned a ghost
+    shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392)."""
     profiles_root = _get_profiles_root()
     if not profiles_root.is_dir():
         return []
@@ -341,6 +347,7 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
         if entry.is_dir()
         and entry.name != "default"
         and _PROFILE_ID_RE.match(entry.name)
+        and named_profile_has_identity(entry)
         and not (live_only and named_profile_is_deleted(entry))
     ]
 
@@ -994,11 +1001,10 @@ def create_profile(
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists() and named_profile_is_deleted(profile_dir):
-        # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
-        # leftover is not a shell — fail closed, no rmtree.
-        if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
-            raise _profile_exists_error(canon)
+    if profile_dir.exists() and not named_profile_has_identity(profile_dir):
+        # An identity-less shell (post-delete mkdir, pre-tombstone ghost) is invisible to
+        # ``profile list`` and may be replaced. Identity files mean the leftover is not a shell —
+        # fail closed, no rmtree.
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise _profile_exists_error(canon)
@@ -2100,7 +2106,7 @@ def resolve_profile_env(profile_name: str) -> str:
     if canon == "default":
         return str(root)
     profile_dir = root / "profiles" / canon
-    if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
+    if not named_profile_is_live(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
 
