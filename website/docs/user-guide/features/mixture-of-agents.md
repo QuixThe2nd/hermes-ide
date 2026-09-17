@@ -245,3 +245,4 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
+- A preset can be a fallback entry (`fallback_providers: [{provider: moa, model: <preset>}]`). When the primary fails, Hermes activates the preset itself — references and aggregator, with `moa://local` as the virtual endpoint — the same way `/model <preset> --provider moa` does. The entry is skipped when the preset does not resolve or its aggregator has no credentials.

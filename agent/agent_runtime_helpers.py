@@ -1893,15 +1893,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
     if new_norm == "moa":
-        from agent.moa_loop import build_moa_facade
+        from agent.moa_loop import bind_moa_runtime
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
-        # is applied inside the fan-out. Pin api_mode so the loop never dispatches
-        # client.responses.create against the facade (matches agent_init.py).
-        agent.api_mode = "chat_completions"
-        agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = "moa://local"
-        agent._client_kwargs = {}
-        agent.client = build_moa_facade(agent, agent.model)
+        # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
+        # client.responses.create against the facade (same pins as agent_init / fallback).
+        bind_moa_runtime(agent, agent.model, api_key)
         return
     if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock wires authenticate through boto3, never through the generic

@@ -1912,18 +1912,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
                 continue
-            try:
-                from hermes_cli.model_normalize import normalize_model_for_provider
-                fb_model = normalize_model_for_provider(fb_model, fb_provider)
-            except Exception as _norm_err:
-                logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
+            if fb_provider == "moa":
+                # A MoA entry means the preset itself, exactly like ``provider: moa`` in config or
+                # ``/model <preset> --provider moa``. The chokepoint's client is the preset's
+                # aggregator: it only proves the preset resolves and the aggregator has credentials.
+                # Installing it as the acting client with the virtual identity is a hybrid nobody
+                # handles (#112525: preset name sent as model id → 404; #112623: every
+                # ``provider == "moa"`` guard and key misfires and the next rebuild swaps in the
+                # facade anyway). Bind the facade with the same pins every other MoA build site uses.
+                fb_base_url, fb_api_mode = "moa://local", "chat_completions"
+            else:
+                try:
+                    from hermes_cli.model_normalize import normalize_model_for_provider
+                    fb_model = normalize_model_for_provider(fb_model, fb_provider)
+                except Exception as _norm_err:
+                    logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
-            fb_base_url = str(fb_client.base_url)
-            from hermes_cli.providers import is_actual_route
-            if is_actual_route(fb_provider, fb_base_url):
-                fb_api_mode = "chat_completions"
-            elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-                fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+                fb_base_url = str(fb_client.base_url)
+                from hermes_cli.providers import is_actual_route
+                if is_actual_route(fb_provider, fb_base_url):
+                    fb_api_mode = "chat_completions"
+                elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+                    fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 
@@ -1940,8 +1950,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._fallback_activated = True
 
             _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
-            from agent.client_lifecycle import _swap_fallback_clients
-            _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
+            if fb_provider == "moa":
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, fb_model)
+            else:
+                from agent.client_lifecycle import _swap_fallback_clients
+                _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
 
             from agent.agent_runtime_helpers import sync_credential_pool_entry_id
             sync_credential_pool_entry_id(agent)

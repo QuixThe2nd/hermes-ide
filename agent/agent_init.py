@@ -770,9 +770,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
 def _init_moa_client(agent, api_key):
     """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import build_moa_facade
-    agent.api_mode = "chat_completions"
-
+    from agent.moa_loop import bind_moa_runtime
     # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
     # shows each reference's answer before the aggregator acts. Display-only; shared with
     # fallback-restore so a restored facade keeps emitting.
@@ -782,10 +780,7 @@ def _init_moa_client(agent, api_key):
     # facade emits "moa.reference", "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
     # through the same callback the tool lifecycle uses. Best-effort and cache-safe — display-only events,
     # they never touch the message history. See #53802.
-    agent.client = build_moa_facade(agent, agent.model)
-    agent._client_kwargs = {}
-    agent.api_key = api_key or "moa-virtual-provider"
-    agent.base_url = "moa://local"
+    bind_moa_runtime(agent, agent.model, api_key)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
 
@@ -833,11 +828,12 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     return client_kwargs
 
 
-def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str, Any]:
+def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
     Falls through to the init-time fallback chain, then raises with the missing-key /
-    no-provider diagnostic.
+    no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
+    already bound and there is no OpenAI client to construct.
     """
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
@@ -867,9 +863,16 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
             continue
         if _fb_client is not None:
+            agent._fallback_activated = True
+            if str(_fb["provider"]).strip().lower() == "moa":
+                # The chokepoint handed back the preset's aggregator client, which only proves the
+                # preset resolves and its aggregator has credentials. A MoA entry means the preset
+                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, _fb["model"])
+                return None
             agent.provider = _fb["provider"]
             agent.model = _fb_model or _fb["model"]
-            agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
@@ -932,6 +935,10 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+        if client_kwargs is None:  # init-time fallback bound the MoA facade
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+            return
     from hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"

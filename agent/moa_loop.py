@@ -1581,3 +1581,20 @@ def tool_stage_reporter(
         )
 
     return report
+
+
+def bind_moa_runtime(agent, preset_name: Any, api_key: Any = None) -> None:
+    """Make ``agent`` act as the MoA preset: pin the virtual runtime fields and install the facade.
+
+    Every site that puts an agent onto ``provider: moa`` (init, ``/model`` switch, fallback
+    activation) must pin the same fields — the facade speaks only chat.completions, has no HTTP
+    endpoint and no OpenAI client kwargs — or the next dispatch/rebuild reaches a real wire with a
+    virtual identity (``moa://local`` 404, or the preset name sent as a model id).
+    """
+    agent.model = str(preset_name or "default")
+    agent.provider = agent.requested_provider = "moa"
+    agent.api_mode = "chat_completions"
+    agent.api_key = api_key or "moa-virtual-provider"
+    agent.base_url = "moa://local"
+    agent._client_kwargs = {}
+    agent.client = build_moa_facade(agent, agent.model)
