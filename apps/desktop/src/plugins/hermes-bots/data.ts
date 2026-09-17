@@ -18,6 +18,7 @@ import {
   botWorkspaceOwnerKey,
   indexAliasRoutes,
   requestForBot,
+  resolveBotConnectionRoute,
   setBotsWorkspaceOwner
 } from './routing'
 import { getPluginCtx, ID } from './shared'
@@ -1080,10 +1081,12 @@ export function botSelectionKey(bot: Partial<RosterRow> | null | undefined): str
 /* eslint-enable no-redeclare */
 
 export function isDefaultBot(bot: Partial<RosterRow> | null | undefined): boolean {
-  const route = botConnectionRoute(bot)
+  // Render-path read (bot-row context menu, hidden-bots selection over the whole roster):
+  // an orphaned row (connection deleted) resolves by its own name instead of throwing.
+  const resolved = resolveBotConnectionRoute(bot)
 
   return (
-    String(route?.profile || bot?.name || '')
+    String(resolved.route?.profile || bot?.name || '')
       .trim()
       .toLowerCase() === 'default'
   )
@@ -1223,9 +1226,15 @@ export function botMetaKey(bot: RosterRow): string
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined
 
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined {
-  const route = botConnectionRoute(bot)
+  // Passive meta lookup, read while painting: branch on the typed status like botRosterMeta does.
+  // An orphaned row (connection deleted) keys by its degraded roster key rather than throwing.
+  const resolved = resolveBotConnectionRoute(bot)
 
-  return route ? botRouteKey(route) : bot?.name
+  if (resolved.status === 'owner_removed') {
+    return botRosterKey(bot)
+  }
+
+  return resolved.route ? botRouteKey(resolved.route) : bot?.name
 }
 /* eslint-enable no-redeclare */
 
