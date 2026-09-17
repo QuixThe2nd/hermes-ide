@@ -144,3 +144,52 @@ class TestMaintainPackHealth:
         from cli import _maintain_pack_health
 
         _maintain_pack_health(str(tmp_path / "not-a-repo"))  # must not raise
+
+
+class TestRepackStampede:
+    """Regression for the Sep 2026 shared-clone incident: every ``hermes -w`` launch started its
+    own full repack, and a timed-out repack left ``pack-objects`` running for days."""
+
+    def test_one_repack_per_clone_per_interval(self, repo, monkeypatch):
+        from hermes_cli import worktree_ops
+
+        monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", 0)
+        runs: list = []
+        monkeypatch.setattr(worktree_ops, "_run_bounded_repack", lambda root: runs.append(root))
+
+        for _ in range(3):  # three concurrent-ish launches sharing the clone
+            worktree_ops._maintain_pack_health(str(repo))
+        assert runs == [str(repo)], "N launches inside the interval must produce exactly one repack"
+
+        # A stale stamp (older than the interval) hands the slot to the next launch.
+        monkeypatch.setattr(worktree_ops, "_REPACK_MIN_INTERVAL", 0)
+        worktree_ops._maintain_pack_health(str(repo))
+        assert len(runs) == 2
+
+    @pytest.mark.linux_only
+    def test_timeout_kills_the_whole_repack_tree(self, tmp_path, monkeypatch):
+        import os
+        import time
+
+        from hermes_cli import worktree_ops
+
+        # A stand-in ``git`` that forks a long-lived grandchild, the way repack forks pack-objects.
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        pidfile = tmp_path / "grandchild.pid"
+        shim = shim_dir / "git"
+        shim.write_text(f"#!/bin/sh\nsleep 300 &\necho $! > {pidfile}\nwait\n")
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setattr(worktree_ops, "_REPACK_TIMEOUT", 1)
+
+        worktree_ops._run_bounded_repack(str(tmp_path))
+
+        grandchild = int(pidfile.read_text().strip())
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not Path(f"/proc/{grandchild}").exists():
+                return
+            time.sleep(0.05)
+        subprocess.run(["kill", "-9", str(grandchild)], check=False)
+        pytest.fail("pack-objects stand-in survived the repack timeout")
