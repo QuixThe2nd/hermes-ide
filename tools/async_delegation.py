@@ -813,6 +813,9 @@ def _dispatch(
         "inline_result": None,
         "inline_claimed": False,
         "runner_tid": None,
+        # Durable finalization can run on the one unscoped stale-monitor thread;
+        # retain the dispatching profile so that thread updates the same state.db.
+        "_profile_home": str(get_hermes_home()),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -1079,11 +1082,19 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         if result.get(_k):
             evt[_k] = result[_k]
     _stamp_event_provenance(evt, record)
+    token = None
     try:
+        profile_home = record.get("_profile_home")
+        if profile_home:
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            token = set_hermes_home_override(profile_home)
         _persist_completion(evt, result)
     except Exception as exc:  # noqa: BLE001 — a lost durable row is recoverable; a lost result + leaked slot is not
         logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
                      "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
