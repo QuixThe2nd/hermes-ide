@@ -74,3 +74,24 @@ def test_unrelated_400_does_not_strip_reasoning_fields():
     with pytest.raises(RuntimeError, match="Invalid value"):
         _call(False, client)
     assert client.chat.completions.create.call_count == 1
+
+
+def test_model_gating_400_naming_a_thinking_model_still_reaches_the_fallback_chain():
+    """A route-gating 400 whose text merely contains a reasoning token inside the model id
+    ("kimi-k2-thinking is not supported when using this account") is not a field rejection: no
+    strip-retry is spent on it and the configured fallback chain is consulted exactly as on main."""
+    client = MagicMock()
+    client.base_url = "https://relay.example/v1"
+    client.chat.completions.create.side_effect = RuntimeError(
+        "Error code: 400 - The model kimi-k2-thinking is not supported when using this account")
+    fb_client = MagicMock()
+    fb_client.chat.completions.create.return_value = {"fb": True}
+    p1, p2, p3, _p4 = _custom_route_patches(client)
+    with p1, p2, p3, patch("agent.auxiliary_client._try_configured_fallback_chain",
+                           return_value=(fb_client, "fallback-model", "fallback")) as fallback:
+        result = call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}],
+                          reasoning_config={"enabled": False})
+
+    assert result == {"fb": True}
+    assert client.chat.completions.create.call_count == 1  # no wasted reasoning-strip retry
+    assert fallback.called

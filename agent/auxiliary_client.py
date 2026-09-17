@@ -3235,7 +3235,19 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
-    return any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think"))
+    if not any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think")):
+        return False
+    # The reasoning token must be a standalone wire-field name: not a model-id segment ("The model
+    # kimi-k2-thinking is not supported when using this account" is route gating that belongs to the
+    # provider-fallback rung) and not the adjective in "... not supported with reasoning models".
+    return _REASONING_FIELD_TOKEN.search(str(exc).lower()) is not None
+
+
+# Reasoning wire-field names (the ``_PROFILE_REASONING_KEYS`` controls minus ``verbosity``), longest first.
+_REASONING_FIELD_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
 
 
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
@@ -7010,7 +7022,11 @@ def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
+            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
+            # Parameter rungs chain (temperature-strip retry 400s on reasoning_effort / response_format),
+            # and a route-gating 400 after a strip still reaches the provider-fallback rung.
+            or _is_reasoning_field_rejection(exc) or _is_structured_output_rejection(exc)
+            or _is_model_incompatible_error(exc))
 
 
 def _credential_rung_accepts(exc: Exception) -> bool:
