@@ -191,43 +191,6 @@ def test_candidate_list_marks_cron_referenced_skills(curator_env, monkeypatch):
     assert "cron=no" in plain_line
 
 
-def test_candidate_list_excludes_disabled_skills(curator_env, monkeypatch):
-    """The review fork must not be asked to inspect skills skill_view rejects."""
-    c = curator_env["curator"]
-    monkeypatch.setattr(c.skill_usage, "curated_report", lambda: [
-        {"name": "global-disabled", "state": "active"},
-        {"name": "platform-disabled", "state": "active"},
-        {"name": "enabled", "state": "active"},
-    ])
-    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"platform-disabled"})
-    monkeypatch.setattr(
-        c, "get_disabled_skill_names", lambda: {"global-disabled", "platform-disabled"},
-        raising=False,
-    )
-
-    listing = c._render_candidate_list()
-
-    assert "global-disabled" not in listing
-    assert "platform-disabled" not in listing
-    assert "enabled" in listing
-
-
-def test_candidate_list_keeps_candidates_when_disabled_resolution_fails(curator_env, monkeypatch):
-    """Unreadable config must not make the curator silently skip all work."""
-    c = curator_env["curator"]
-    monkeypatch.setattr(c.skill_usage, "curated_report", lambda: [
-        {"name": "enabled", "state": "active"},
-    ])
-    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: set())
-
-    def _broken_disabled_resolver():
-        raise OSError("config unavailable")
-
-    monkeypatch.setattr(c, "get_disabled_skill_names", _broken_disabled_resolver, raising=False)
-
-    assert "enabled" in c._render_candidate_list()
-
-
 def _write_cron_job(home: Path, skill_ref: str, monkeypatch):
     """Write a real jobs.json referencing *skill_ref* and reload ``cron.jobs``.
 
@@ -358,35 +321,46 @@ def _disable_prune_builtins(curator_env, monkeypatch):
 
 
 def _write_bundled_and_agent(curator_env, u):
-    """One bundled built-in + one agent-created skill under the test home."""
+    """One bundled built-in, one ``skills.disabled`` agent skill and one plain agent-created skill under the test home."""
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "bundled-fixture")
+    _write_skill(skills_dir, "disabled-fixture")
     _write_skill(skills_dir, "agent-fixture")
     (skills_dir / ".bundled_manifest").write_text(
         "bundled-fixture:deadbeef\n", encoding="utf-8",
     )
+    (curator_env["home"] / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - disabled-fixture\n", encoding="utf-8",
+    )
+    u.mark_agent_created("disabled-fixture")
     u.mark_agent_created("agent-fixture")
     return skills_dir
 
 
-def test_llm_candidate_list_omits_bundled_when_prune_builtins_on(
+def test_llm_candidate_list_omits_bundled_and_disabled_skills(
     curator_env, monkeypatch,
 ):
-    """prune_builtins makes built-ins archive-eligible, not LLM rewrite targets.
+    """The LLM pass is only offered candidates it can act on (#111608, #113013).
 
-    ``curated_report()`` includes bundled skills when the flag is on so the
-    deterministic walk can archive them. The consolidation prompt must not
-    list those same names: every background ``skill_manage`` write to a
-    bundled skill is refused, and enough refusals abort the rest of the pass.
+    Bundled skills: ``prune_builtins`` makes them archive-eligible for the
+    deterministic walk, but every background ``skill_manage`` write to one is
+    refused. Disabled skills: ``skill_view`` — the fork's only read path —
+    refuses them. Either way the fork loops on refusals until the
+    same-tool-failure halt ends the run with zero findings. The aging pass
+    (``list_agent_created_skill_names``) must still see both.
     """
     c = curator_env["curator"]
     u = curator_env["usage"]
     _write_bundled_and_agent(curator_env, u)
     _enable_prune_builtins(curator_env, monkeypatch)
 
+    aging = set(u.list_agent_created_skill_names())
+    assert {"bundled-fixture", "disabled-fixture", "agent-fixture"} <= aging
+
     listing = c._render_candidate_list()
     assert "agent-fixture" in listing
     assert "bundled-fixture" not in listing
+    assert "disabled-fixture" not in listing
 
 
 def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
@@ -397,10 +371,11 @@ def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
     ``PRUNE-BUILTINS MODE IS ON`` used to tell the model bundled skills were
     in the candidate list and may be archived by the LLM. Archival is the
     deterministic pass's job; the LLM pass must not be asked to mutate them.
+    When nothing actionable remains the fork is skipped outright.
     """
     c = curator_env["curator"]
     u = curator_env["usage"]
-    _write_bundled_and_agent(curator_env, u)
+    skills_dir = _write_bundled_and_agent(curator_env, u)
     _enable_prune_builtins(curator_env, monkeypatch)
 
     captured = {}
@@ -416,7 +391,15 @@ def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
     prompt = captured["prompt"]
     assert "agent-fixture" in prompt
     assert "bundled-fixture" not in prompt
+    assert "disabled-fixture" not in prompt
     assert "PRUNE-BUILTINS MODE IS ON" not in prompt
+
+    # Only bundled + disabled candidates left: no fork at all.
+    import shutil
+    shutil.rmtree(skills_dir / "agent-fixture")
+    captured.clear()
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+    assert "prompt" not in captured
 
 
 def test_prune_builtins_still_archives_bundled_via_deterministic_pass(
