@@ -2,7 +2,11 @@
 
 The Python backing the install is shared by every Hermes profile because the checkout's ``venv``
 is shared. Runtime repair therefore uses an install-scoped store under
-``<checkout>/.hermes-runtime/python``. A vulnerable interpreter is never reinstalled in place.
+``<checkout>/.hermes-runtime/python``. A vulnerable interpreter is never reinstalled in place: a
+new immutable Python generation is provisioned and a relocatable sibling venv built and smoke-tested
+from it. POSIX installs cut over with same-filesystem directory renames; Windows installs
+atomically repoint the live venv's ``pyvenv.cfg`` at the new generation instead, because the
+updater itself executes from that venv and Windows refuses to rename it.
 """
 
 from __future__ import annotations
@@ -754,6 +758,72 @@ def _cut_over_candidate(
         raise
 
 
+def _replace_file_atomically(path: Path, data: bytes) -> None:
+    """Replace *path* from a same-directory temporary file."""
+    token = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    temporary = path.with_name(f".{path.name}.runtime-{token}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _cut_over_windows_runtime_config(
+    candidate: Path,
+    *,
+    live: Path,
+) -> tuple[bool, bool, SQLiteRuntimeInfo | None, str]:
+    """Repoint a live Windows venv without renaming its locked directory.
+
+    ``venv\\Scripts\\python.exe`` is a launcher that reads ``home`` from ``pyvenv.cfg`` on every
+    start, so replacing that text file redirects every fresh process to the candidate generation
+    while the updater keeps executing from the directory Windows refuses to rename (#93032).
+
+
+    The second return value reports whether the live config still references the candidate
+    generation. Callers must preserve that generation if a failed smoke test could not restore
+    the original config.
+    """
+    live_config = live / "pyvenv.cfg"
+    candidate_config = candidate / "pyvenv.cfg"
+    try:
+        original = live_config.read_bytes()
+        replacement = candidate_config.read_bytes()
+    except OSError as exc:
+        return False, False, None, f"could not read venv runtime config: {exc}"
+
+    try:
+        _replace_file_atomically(live_config, replacement)
+    except OSError as exc:
+        return False, False, None, f"could not repoint the existing venv: {exc}"
+
+    try:
+        healthy, detail, info = _smoke_candidate_venv(live)
+    except Exception as exc:
+        healthy, detail, info = False, f"candidate smoke raised: {exc}", None
+    if healthy:
+        return True, True, info, ""
+
+    try:
+        _replace_file_atomically(live_config, original)
+    except OSError as rollback_error:
+        return (
+            False,
+            True,
+            info,
+            "post-cutover smoke failed "
+            f"({detail}); runtime-config rollback failed ({rollback_error})",
+        )
+    return False, False, info, f"post-cutover smoke failed: {detail}"
+
+
 def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
     """Acquire an OS-held install lock that is released on process exit."""
     runtime_root.mkdir(parents=True, exist_ok=True)
@@ -791,6 +861,10 @@ def _release_repair_lock(lock: _RepairLock) -> None:
     finally:
         with contextlib.suppress(OSError):
             os.close(lock.fd)
+
+
+
+
 
 
 def _windows_runtime_holders() -> tuple[bool, str]:
@@ -941,6 +1015,8 @@ def _result(
     return RuntimeRepairResult(status, detail, sqlite_before=current.sqlite_version_string, **extra)
 
 
+
+
 def _repair_windows_preflight(
     root: Path, live: Path, current: SQLiteRuntimeInfo) -> RuntimeRepairResult | None:
     """Defer the repair when Windows holders make the venv rename impossible; else ``None``."""
@@ -1004,12 +1080,19 @@ def _repair_under_lock(
             "failed", current, str(exc),
             sqlite_after=candidate_info.sqlite_version_string)
 
-    cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
-        candidate, project_root=root, live=live)
+    backup = None
+    generation_in_use = False
+    if platform.system() == "Windows":
+        cut_over, generation_in_use, final_info, cutover_detail = _cut_over_windows_runtime_config(
+            candidate, live=live)
+    else:
+        cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
+            candidate, project_root=root, live=live)
     if not cut_over:
         if backup is None:
             _remove_tree(candidate, boundary=runtime_root)
-            _remove_tree(generation, boundary=managed_python_install_dir(root))
+            if not generation_in_use:
+                _remove_tree(generation, boundary=managed_python_install_dir(root))
         return _result(
             "failed", current, cutover_detail,
             sqlite_after=final_info.sqlite_version_string if final_info is not None else "",
@@ -1020,16 +1103,21 @@ def _repair_under_lock(
         f"(SQLite {current.sqlite_version_string} → {final_version})")
     if backup is not None and backup.exists():
         _remove_tree(backup, boundary=root)
+    elif backup is None:
+        # Windows: the live venv now points at the generation; the staging venv is spent.
+        _remove_tree(candidate, boundary=runtime_root)
     return _result("repaired", current, sqlite_after=final_version, backup_venv=backup)
 
 
 def repair_vulnerable_runtime(
     uv_bin: str, *, project_root: Path | None = None, venv_dir: Path | None = None
 ) -> RuntimeRepairResult:
-    """Replace a vulnerable install venv without mutating it in place.
+    """Replace a vulnerable install venv without mutating its packages in place.
 
-    Every failure before cutover leaves the live venv untouched. Rename or post-cutover smoke
-    failures restore the parked venv synchronously.
+    Every failure before cutover leaves the live venv untouched. POSIX cuts over with directory
+    renames and restores the parked venv synchronously on failure; Windows repoints the live
+    venv's ``pyvenv.cfg`` instead (the updater runs from that venv, so the directory can never
+    be renamed) and restores the original config on a failed smoke.
     """
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
     live = Path(venv_dir) if venv_dir is not None else _default_live_venv(root)
