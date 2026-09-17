@@ -347,6 +347,9 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                     _core._server_connecting.discard(_server_key(_sn))
                     _core._server_connect_errors.setdefault(
                         _server_key(_sn), f"Connection attempt {how} during discovery")
+                    # Its attempt is still running on the MCP loop; without a cooldown the next
+                    # reconcile tick would spawn a second one beside it.
+                    _record_connect_failure(_sn)
         raise
     finally:
         if _was_interrupted:
@@ -493,7 +496,8 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     """Bring the live server set in step with ``mcp_servers`` as it is on disk NOW: tear down
     servers that were removed from config or set ``enabled: false`` (a parked server keeps
     self-probing forever otherwise — for hours after the user deleted its entry), then connect
-    anything newly configured via :func:`discover_mcp_tools`. Scoped to the current registry
+    anything enabled that is not live via :func:`discover_mcp_tools` — newly configured, or one
+    whose earlier connect failed and whose cooldown has lapsed. Scoped to the current registry
     scope (one multiplexed profile's config prunes only its own connections). A lazily registered
     (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
     is reported under ``"pending"`` so the caller retries. Returns
@@ -517,27 +521,15 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
         known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
                  if owner == scope and (key in _core._servers or key in _core._server_connecting)}
         known |= {_key_name(key) for key in _core._lazy_server_configs}
-    added = sorted(wanted - known)
+    # A configured server that is not live is retried here — this is the only reviver for one whose
+    # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
+    # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
+    # waiting when another process holds it) and logs a failed pass, every tick, for nothing.
+    added = sorted(name for name in wanted - known if not _connect_cooldown_active(name))
     if added:
         discover_mcp_tools()
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
             "pending": sorted(connecting - wanted)}
-
-
-def mcp_servers_missing_from_live() -> List[str]:
-    """Names this scope's config enables that are neither live nor mid-connect — the set
-    :func:`reconcile_mcp_servers_with_config` would connect, computed without connecting anything
-    (the mtime-cached config read plus one locked set compare). Lets a caller reconcile on DRIFT and
-    not only on a config EDIT: a server whose first connect failed never reached ``_servers``, and
-    nothing retries it on its own — a parked server self-probes, one that never connected cannot."""
-    servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
-    scope = _core._mcp_registry_scope()
-    with _core._lock:
-        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
-                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
-        known |= {_key_name(key) for key in _core._lazy_server_configs}
-    return sorted(wanted - known)
 
 
 def _forget_lazy_server(key) -> None:

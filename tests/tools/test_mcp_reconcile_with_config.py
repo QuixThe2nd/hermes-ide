@@ -85,3 +85,46 @@ def test_disabled_lazy_and_connecting_entries(monkeypatch, tmp_path):
             mcp_tool._server_connecting.discard("notion")
             mcp_tool._lazy_server_configs.pop("asana", None)
             mcp_tool._lazy_server_tool_names.pop("asana", None)
+
+
+def test_reconcile_retries_failed_first_connect_only_after_cooldown(monkeypatch, tmp_path):
+    """A configured server whose first connect failed is absent from ``_servers`` for good — no
+    task exists to park and self-probe — so the reconcile is its only reviver (#112445). It must
+    not enter discovery while the per-server connect cooldown is active (that takes the cross-process
+    discovery lock and logs a failed pass every tick), and must retry once the cooldown lapsed; a
+    discovery-pass timeout stamps that cooldown too, else the next tick spawns a second attempt
+    beside the one still running on the MCP loop."""
+    from tools import mcp_tool
+    from tools import mcp_tool_config as _config
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_loop as _loop
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"ghost": {"url": "https://x/mcp"}})
+    discovered: list = []
+    monkeypatch.setattr(disc, "discover_mcp_tools", lambda *a, **k: discovered.append(1) or [])
+    try:
+        disc._note_connect_failure("ghost", RuntimeError("connection refused"))
+        assert disc.reconcile_mcp_servers_with_config()["added"] == [] and not discovered, \
+            "inside the cooldown nothing is attempted"
+        with mcp_tool._lock:
+            mcp_tool._server_connect_retry_after.clear()
+        assert disc.reconcile_mcp_servers_with_config()["added"] == ["ghost"]
+        assert discovered == [1], "cooldown lapsed: the never-connected server goes through discovery"
+
+        def _timeout(*a, **k):
+            raise TimeoutError("discovery bound")
+
+        monkeypatch.setattr(_loop, "_run_on_mcp_loop", _timeout)
+        with mcp_tool._lock:
+            mcp_tool._server_connecting.add("ghost")
+        with pytest.raises(TimeoutError):
+            disc._run_discovery_pass({"ghost": {"url": "https://x/mcp"}})
+        assert disc._connect_cooldown_active("ghost"), "a timed-out pass stamps the cooldown"
+        assert "ghost" not in mcp_tool._server_connecting
+    finally:
+        with mcp_tool._lock:
+            for store in (mcp_tool._server_connect_errors, mcp_tool._server_connect_failures,
+                          mcp_tool._server_connect_retry_after, mcp_tool._server_scope_keys):
+                store.pop("ghost", None)
+            mcp_tool._server_connecting.discard("ghost")
