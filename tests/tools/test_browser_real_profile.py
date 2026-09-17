@@ -1066,7 +1066,7 @@ class TestWindowsLockedProfileCopy:
         src = str(tmp_path / "Cookies")
         con = sqlite3.connect(src); con.execute("create table cookies(x)"); con.execute("insert into cookies values(1)"); con.commit(); con.close()
         dst = str(tmp_path / "out" / "Cookies")
-        assert bc._copy_auth_file(src, dst) is True
+        assert bc._copy_auth_file(src, dst) is None
         assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
 
     @pytest.mark.parametrize("locked", ["source", "destination"])
@@ -1093,14 +1093,14 @@ class TestWindowsLockedProfileCopy:
                  str(src), str(dst)],
                 capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
             assert result.returncode == 0, result.stderr
-            assert result.stdout.strip() == "False"
+            assert result.stdout.strip() == bc._AUTH_DB_LOCKED
         finally:
             holder.rollback()
             holder.close()
         with sqlite3.connect(dst) as conn:
             assert conn.execute("select x from cookies").fetchall() == [(99,)]
         conn.close()
-        assert bc._copy_auth_file(str(src), str(dst)) is True
+        assert bc._copy_auth_file(str(src), str(dst)) is None
         with sqlite3.connect(dst) as conn:
             assert conn.execute("select x from cookies").fetchall() == [(7,)]
         conn.close()
@@ -1129,7 +1129,7 @@ class TestWindowsLockedProfileCopy:
              str(dst)], check=True, timeout=15, stdin=subprocess.DEVNULL)
         assert os.path.exists(str(dst) + "-wal")
         try:
-            assert bc._copy_auth_file(str(src), str(dst)) is True
+            assert bc._copy_auth_file(str(src), str(dst)) is None
             with sqlite3.connect(dst) as conn:
                 assert conn.execute("select x from cookies").fetchall() == [(8,)]
             conn.close()
@@ -1140,7 +1140,7 @@ class TestWindowsLockedProfileCopy:
         import hermes_cli.browser_connect as bc
         src = str(tmp_path / "Preferences"); open(src, "w").write('{"k":1}')
         dst = str(tmp_path / "out" / "Preferences")
-        assert bc._copy_auth_file(src, dst) is True
+        assert bc._copy_auth_file(src, dst) is None
         assert open(dst).read() == '{"k":1}'
 
     def test_fail_closed_when_db_unreadable(self, tmp_path, monkeypatch):
@@ -1157,7 +1157,7 @@ class TestWindowsLockedProfileCopy:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         # Force both sqlite-backup and raw copy to fail for the DB.
         monkeypatch.setattr(bc, "_copy_auth_file",
-                            lambda s, d: False if os.path.basename(s) in bc._SQLITE_AUTH_DBS else True)
+                            lambda s, d: "file is not a database" if os.path.basename(s) in bc._SQLITE_AUTH_DBS else None)
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err and "login data" in err.lower() and "close" in err.lower()
