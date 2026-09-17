@@ -61,3 +61,18 @@ def test_without_the_marker_or_an_unanswered_tail_nothing_is_adopted(monkeypatch
     answered = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "done"}]
     agent, seen = _quiet_turn(monkeypatch, list(answered), "1")
     assert seen["history"] == answered and not hasattr(agent, "_pending_cli_user_message")
+
+
+def test_rerun_adopts_the_dm_behind_the_failed_attempts_tool_scaffolding(monkeypatch):
+    """A 503 after a tool round persisted user + assistant(tool_calls) + tool before the failure text,
+    and the dispatcher retries it. The DM is still unanswered: the re-run adopts it and drops the
+    failed attempt's scaffolding from the in-memory turn instead of appending a second copy."""
+    tail = {"role": "user", "content": "hello"}
+    scaffolding = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function",
+                                                                "function": {"name": "t", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+    ]
+    agent, seen = _quiet_turn(monkeypatch, [{"role": "assistant", "content": "earlier"}, tail, *scaffolding], "1")
+    assert seen["history"] == [{"role": "assistant", "content": "earlier"}]
+    assert agent._pending_cli_user_message is tail and tail[_DB_PERSISTED_MARKER] is True
