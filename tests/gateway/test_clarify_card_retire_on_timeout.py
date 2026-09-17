@@ -108,6 +108,7 @@ def test_real_answer_starting_with_a_bracket_is_not_mistaken_for_a_sentinel():
     assert response == "[A] staging"
     assert adapter.retired == []
     assert labels == ["Clarify send failed to schedule"]
+    assert adapter.resumed == 1  # a lone card re-arms typing the moment it is answered
 
 
 # --- Batches: one card per question, stop at the first unanswered one -----
@@ -120,10 +121,10 @@ _THREE_QUESTIONS = [{"qid": f"q{i}", "question": q, "choices": ["a", "b"]}
 @pytest.mark.parametrize("answers,asked,payload,resumed", [
     # Nobody answers question 1: the batch ends there instead of re-asking — every further
     # question used to cost another full clarify_timeout — and reports the walk-away.
-    ((), ["One?"], {"answers": {}, "timed_out": True}, 0),
+    ((), ["One?"], {"answers": {}, "timed_out": True, "notice": "[user did not respond within 0m]"}, 0),
     # Answers already given survive; the unanswered question is not invented.
     (("use postgres",), ["One?", "Two?"],
-     {"answers": {"q0": "use postgres"}, "timed_out": True}, 0),
+     {"answers": {"q0": "use postgres"}, "timed_out": True, "notice": "[user did not respond within 0m]"}, 0),
     # A fully answered batch re-arms typing once, at the end: between two cards the re-arm
     # would only open a bubble the next question's boundary finalizes.
     (("one", "two", "three"), ["One?", "Two?", "Three?"],
@@ -139,20 +140,28 @@ def test_batch_routing(answers, asked, payload, resumed):
         assert len(adapter.retired) == 1  # the card that expired is retired
 
 
-def test_single_question_still_rearms_after_an_answer():
-    """The re-arm deferral is batch-only: one card re-arms the moment it is answered."""
-    adapter = _CardAdapter()
-    response, _labels = _run_clarify(adapter, answer="blue")
-    assert (response, adapter.resumed) == ("blue", 1)
+class _UndeliverableAdapter(_CardAdapter):
+    """Telegram's ``_send_prompt`` shape when the Bot API rejects the card."""
+
+    async def send_clarify(self, **kwargs):
+        self.asked.append(kwargs["question"])
+        return SendResult(success=False, error="Bad Request: chat not found")
 
 
-def test_clarify_tool_batch_route_answers_and_stops_together():
-    """End to end: the tool sees blank answers + ``timed_out``, where the legacy loop stored
-    the timeout sentinel as each question's answer and never set the flag."""
-    adapter = _CardAdapter()
+@pytest.mark.parametrize("adapter_cls,notice", [
+    (_CardAdapter, "[user did not respond within 0m]"),
+    # #112684: an undelivered card must not read as user inactivity — the delivery
+    # sentinel rides along instead of being stored as the question's "answer".
+    (_UndeliverableAdapter, "[clarify prompt could not be delivered]"),
+])
+def test_clarify_tool_batch_route_answers_and_stops_together(adapter_cls, notice):
+    """End to end: the tool sees blank answers + ``timed_out`` + the surface's notice, where the
+    legacy loop stored the sentinel as each question's answer and never set the flag."""
+    adapter = adapter_cls()
     raw, _labels = _run_clarify(
         adapter, questions=_THREE_QUESTIONS[:2], via_tool=True)
     assert adapter.asked == ["One?"]
     result = json.loads(raw)
     assert result["timed_out"] is True
+    assert result["notice"] == notice
     assert [r["user_response"] for r in result["responses"]] == ["", ""]

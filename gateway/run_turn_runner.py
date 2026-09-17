@@ -1315,17 +1315,20 @@ class TurnRunner:
         Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
         the last question — between two cards it only opens a bubble the next boundary closes."""
         answers: Dict[str, Any] = {}
-        timed_out = False
+        payload: Dict[str, Any] = {"answers": answers, "timed_out": False}
         last = len(questions) - 1
         for index, entry in enumerate(questions):
             raw, answered = self._ask_clarify_question(
                 entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
                 rearm=index == last)
             if not answered:
-                timed_out = True
+                # The surface's own no-answer text ("could not be delivered", "did not respond
+                # within Nm") rides along as ``notice``: blank answers alone read as user
+                # inactivity, which is the misreport #112684 describes for an undelivered card.
+                payload.update(timed_out=True, notice=raw)
                 break
             answers[entry.get("qid") or f"q{index}"] = raw
-        return json.dumps({"answers": answers, "timed_out": timed_out}, ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False)
 
     def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
