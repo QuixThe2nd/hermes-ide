@@ -1287,7 +1287,8 @@ def _image_payload(msg: Dict[str, Any]) -> Tuple[int, int]:
     """``(blocks, bytes)`` of image payload in a message.
 
     The provider counts BLOCKS: one ``tool_result`` carrying three screenshots is three against
-    the per-request limit.
+    the per-request limit. Bytes are the data-URL / base64 length — the payload is ASCII and the
+    JSON framing around it is noise against a 24 MB budget, so no per-request re-serialization.
     """
     parts = _tool_result_parts(msg.get("content"))
     if not isinstance(parts, list):
@@ -1297,7 +1298,14 @@ def _image_payload(msg: Dict[str, Any]) -> Tuple[int, int]:
         if not _is_image_part(p):
             continue
         blocks += 1
-        payload += len(json.dumps(p, ensure_ascii=False))
+        image_url = p.get("image_url")
+        source = p.get("source")
+        data = (
+            (image_url.get("url") if isinstance(image_url, dict) else image_url)
+            or (source.get("data") if isinstance(source, dict) else None)
+            or ""
+        )
+        payload += len(data) if isinstance(data, str) else 0
     return blocks, payload
 
 
