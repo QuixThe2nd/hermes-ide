@@ -162,8 +162,8 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 def _platform_enablement(
     platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
-) -> tuple[bool, bool]:
-    """(enabled, configured). Profile-scoped: derive from the profile's
+) -> tuple[bool, bool, dict | None]:
+    """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
     config.yaml + .env only — load_gateway_config()'s env-override layer reads
     os.environ and would leak the root install's tokens into the profile's state."""
     required = entry["required_env"]
@@ -172,12 +172,14 @@ def _platform_enablement(
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
+            hc = plat_cfg.get("home_channel")
             # Setup writes credentials without a platforms entry; explicit disable wins.
             raw_enabled = plat_cfg.get("enabled")
             enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            home_channel = hc if isinstance(hc, dict) else None
         except Exception:
-            enabled = False
-        return enabled, configured
+            enabled, home_channel = False, None
+        return enabled, configured, home_channel
     try:
         from gateway.config import Platform, load_gateway_config
 
@@ -186,10 +188,11 @@ def _platform_enablement(
         platform_config = gateway_config.platforms.get(platform)
         enabled = bool(platform_config and platform_config.enabled)
         configured = bool(platform_config and gateway_config._is_platform_connected(platform, platform_config))
+        home_channel = platform_config.home_channel.to_dict() if platform_config and platform_config.home_channel else None
     except Exception:
-        enabled = False
+        enabled, home_channel = False, None
         configured = all(env_on_disk.get(key) or os.getenv(key, "") for key in required)
-    return enabled, configured
+    return enabled, configured, home_channel
 
 
 def _messaging_platform_payload(
@@ -233,7 +236,7 @@ def _messaging_platform_payload(
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
 
-    enabled, configured = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -256,7 +259,7 @@ def _messaging_platform_payload(
         "docs_url": entry["docs_url"], "enabled": enabled, "configured": configured,
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
-        "env_vars": env_vars,
+        "home_channel": home_channel, "env_vars": env_vars,
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -265,6 +268,7 @@ def _messaging_platform_payload(
         payload["whatsapp_setup"] = {
             "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
             "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
+            "home_channel_set": bool(home_channel),
         }
     return payload
 
@@ -803,7 +807,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
     secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, load_gateway_config
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
 
     if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
@@ -821,11 +825,12 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     if target in ("default", "custom"):
         return None
 
-    # The flag that matters is the one the shared gateway reads at startup: the DEFAULT
-    # profile's config (plus the process-wide GATEWAY_MULTIPLEX_PROFILES override).
-    with _config_profile_scope("default"):
-        if not load_gateway_config().multiplex_profiles:
-            return None
+    # The flag that matters is the one the shared gateway settled at startup: its served record when
+    # it runs, else the DEFAULT profile's explicit config (plus the process-wide
+    # GATEWAY_MULTIPLEX_PROFILES override). An unset flag is decided by the gateway, not guessed here.
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    if not default_gateway_multiplexes():
+        return None
 
     return (
         f"Cannot enable '{platform_id}' on profile '{target}': gateway.multiplex_profiles is on and the "

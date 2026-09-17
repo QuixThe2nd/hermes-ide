@@ -3266,24 +3266,19 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":
-    """Load gateway config for the process-level GatewayRunner.
+    """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
+    settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
+    still runs per-profile gateways standalone). Multiplexed: reload under the default profile's
+    ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret scope;
+    unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
+    ``profiles/<name>/.env``. Off -> identical to ``load_gateway_config()``.
 
-    When ``gateway.multiplex_profiles`` is off, this is identical to
-    ``load_gateway_config()`` (legacy single-profile path).
-
-    When multiplexing is on, reload under the default/active profile's
-    ``_profile_runtime_scope`` so platform tokens in that profile's ``.env``
-    resolve through the secret scope — the same path secondary profiles use
-    in ``_start_one_profile_adapters``. Without this, primary startup calls
-    ``load_gateway_config()`` unscoped: ``_getenv`` falls through to
-    ``os.environ``, which often has no ``TELEGRAM_BOT_TOKEN`` once the token
-    lives only under ``profiles/<name>/.env`` (#64674).
-
-    Single-profile gateways never set ``multiplex_profiles``, so they keep the
-    unscoped load and are unaffected.
+    See #64674.
     """
+    from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
-    if not getattr(cfg, "multiplex_profiles", False):
+    log_multiplex_decision(resolve_multiplex_mode(cfg))
+    if not cfg.multiplex_profiles:
         return cfg
     try:
         home = get_hermes_home()
@@ -3291,15 +3286,12 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
         return cfg
     try:
         with _profile_runtime_scope(Path(home)):
-            return load_gateway_config()
+            scoped = load_gateway_config()
     except Exception:
-        logger.debug(
-            "multiplex default-scope config reload failed; using unscoped load",
-            exc_info=True,
-        )
+        logger.debug("multiplex default-scope config reload failed; using unscoped load", exc_info=True)
         return cfg
-
-
+    scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
+    return scoped
 async def _discover_gateway_mcp_tools(config: object) -> None:
     """Run startup MCP discovery for every profile this gateway serves.
 
@@ -10027,10 +10019,11 @@ class GatewayRunner(
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
-        # When multiplex_profiles is on, load under the default profile secret
-        # scope so bot tokens in that profile's .env resolve the same way
-        # secondary profiles do (#64674). Explicit config= injection (tests)
-        # is left untouched.
+        # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
+        # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
+        # See #64674.
+        # An injected config (tests, ``gateway run --config``) is taken verbatim: an unset flag there
+        # stays None (= standalone); only the loaded path runs the boot-time default-on guard.
         self.config = config if config is not None else load_gateway_config_for_runner()
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
@@ -37535,6 +37528,83 @@ def _looks_like_profile_conflict_from_cmdline(command: str, our_home) -> bool:
 
 
 
+# NOTE(future-me): restored from upstream a10bbf95bb during fork-sync merge 2026-09-17.
+# The fork's 2026-09-15 mega-merge dropped this helper while keeping the fork's own
+# test_multiplex_phase0.py::test_cron_shared_adapter_owner_is_the_launch_profile pin,
+# which failed with AttributeError on pristine tip. start_gateway still uses its inline
+# cron+housekeeping block; this graft is inert until a future merge switches the call
+# site to the helper. remove when: start_gateway calls this helper (then drop the block).
+def _start_gateway_start_cron_and_housekeeping(runner):
+    """Start the cron scheduler thread + gateway housekeeping thread; returns
+    ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
+    # The event loop is passed so cron delivery can use live adapters (E2EE support).
+    from cron.scheduler_provider import (
+        InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
+    cron_stop = threading.Event()
+    multiplex_cron = bool(getattr(runner.config, "multiplex_profiles", False))
+    cron_provider = scheduler_for_profile_mode(
+        resolve_cron_scheduler(), multiplex_profiles=multiplex_cron)
+    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+
+    # Multiplex: tell the ticker which profile homes to tick (else secondary profiles' jobs never
+    # run, #69377), including a ``--profile <name>`` multiplexer's OWN store.
+    if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
+        try:
+            profile_homes = _cron_tick_profile_homes(runner.config)
+            if profile_homes:
+                # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
+                # the multiplexer runs gets its jobs fired without a restart (hot-serve).
+                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
+                # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
+                cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+                # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
+                # name); naming it keeps the ticker from routing a secondary's cron through that bot
+                # and lets a named multiplexer's own jobs reuse its live adapters.
+                cron_start_kwargs["default_profile"] = runner._primary_profile_name
+                logger.info(
+                    "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
+                    [p[0] if isinstance(p, tuple) else p for p in profile_homes])
+        except Exception as exc:
+            logger.warning("Could not resolve profile homes for multiplex cron: %s", exc)
+
+    # Only the in-process ticker polls local due jobs, so only it gets the external-drain dispatch gate.
+    if isinstance(cron_provider, InProcessCronScheduler):
+        cron_start_kwargs["can_dispatch"] = lambda: not (
+            runner._draining or runner._external_drain_active)
+    # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
+    from cron.scheduler_thread import SupervisedTickerThread
+    cron_thread = SupervisedTickerThread(
+        cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
+    cron_thread.start()
+
+    # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
+    # API_SERVER_KEY missing) every fire fails while manual runs work — misread as a job bug. Say it ONCE.
+    if not isinstance(cron_provider, InProcessCronScheduler):
+        try:
+            _has_api_server = Platform.API_SERVER in (runner.adapters or {})
+        except Exception:
+            _has_api_server = True  # never let the tell break startup
+        if not _has_api_server:
+            logger.warning(
+                "Cron provider '%s' is active but the api_server adapter is "
+                "NOT running in this gateway — scheduled fires arrive over "
+                "loopback HTTP and will all fail (jobs only run when "
+                "triggered manually). Most common cause: API_SERVER_KEY is "
+                "missing from this gateway process's environment. Restart "
+                "the gateway through its supervisor (`hermes gateway "
+                "restart`) so the profile env loads.",
+                getattr(cron_provider, "name", "external"))
+
+    # Gateway-only housekeeping runs independently of the cron provider; shares cron_stop for shutdown.
+    housekeeping_thread = threading.Thread(
+        target=_start_gateway_housekeeping, args=(cron_stop,),
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
+                "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
+        daemon=True, name="gateway-housekeeping")
+    housekeeping_thread.start()
+    return cron_stop, cron_provider, cron_thread, housekeeping_thread
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -38405,6 +38475,9 @@ def main():
         with open(args.config, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
+        # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
+        from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+        log_multiplex_decision(resolve_multiplex_mode(config))
     
     # start_gateway() performs the full graceful teardown (adapters
     # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
