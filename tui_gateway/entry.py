@@ -33,6 +33,27 @@ _mcp_discovery_thread = None
 _mcp_discovery_enabled = False
 
 
+def _close_rpc_stdin_on_exec() -> None:
+    """Keep stdio RPC requests out of children launched by the gateway.
+
+    The TUI's stdin is the Node-to-Python JSON-RPC socketpair.  Standard
+    descriptors survive subprocess execution unless they are explicitly
+    close-on-exec, so a dependency that launches a child without ``stdin=``
+    could otherwise consume a request before this process reads it.
+
+    Windows does not provide the POSIX FD_CLOEXEC contract used here; retain
+    its existing descriptor behavior rather than changing its launch paths.
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.set_inheritable(sys.stdin.fileno(), False)
+    except (OSError, ValueError):
+        # Embedded launchers can supply a stream without an inheritable file
+        # descriptor. Keep gateway startup available when no guard is possible.
+        logger.debug("could not mark TUI RPC stdin close-on-exec", exc_info=True)
+
+
 def _install_sidecar_publisher() -> None:
     """Mirror every dispatcher emit to the dashboard sidebar via WS when set (best-effort)."""
     url = os.environ.get("HERMES_TUI_SIDECAR_URL")
@@ -237,6 +258,7 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
