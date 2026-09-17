@@ -2334,6 +2334,20 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> bool:
+    """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
+
+    A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
+    (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
+    next gateway turn lost the assistant's answer and replayed user->user."""
+    return (
+        role == "assistant"
+        and not content
+        and isinstance(msg.get("api_content"), str)
+        and bool(msg.get("api_content"))
+    )
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -2394,7 +2408,7 @@ def _build_gateway_agent_history(
         if has_tool_calls or has_tool_call_id or is_tool_message:
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
-        elif content:
+        elif content or _has_replayable_sidecar(role, content, msg):
             # Strip gateway-injected auto-continue notes that were persisted
             # as part of user messages during interrupted turns.  Keep the
             # user's real text after the note, but never replay the recovery

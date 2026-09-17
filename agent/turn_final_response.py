@@ -171,6 +171,10 @@ def finish_text_response(
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+        if _promoted:
+            # Same sidecar as the final row: the wire copy must carry the promoted text, not only
+            # ``reasoning_content``, or the continuation replays an empty assistant turn.
+            interim_msg["api_content"] = final_response
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE})
