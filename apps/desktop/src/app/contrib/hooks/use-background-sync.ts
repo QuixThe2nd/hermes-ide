@@ -63,10 +63,7 @@ function visibleRowMatchesOwner(
   return rowConnection === ownerConnection
 }
 
-/** Verified owner of the ACTIVE transcript: the tile bound to this stored
- *  (+ runtime) id, else a unique hint that the same tile corroborates.
- *  A unique hint alone is not verified — visible rows must still override a
- *  stale leftover hint. */
+/** Only a bound tile's explicit route can override visible session ownership. */
 function preferredActiveTranscriptOwner(
   storedSessionId: string,
   runtimeSessionId?: null | string
@@ -77,13 +74,7 @@ function preferredActiveTranscriptOwner(
     ? tiles.find(tile => tile.runtimeId === runtimeId)
     : tiles.length === 1 ? tiles[0] : undefined
 
-  if (activeTile?.ownerRoute) {
-    return activeTile.ownerRoute
-  }
-
-  const uniqueHint = getSessionOwnerHint(storedSessionId)
-
-  return uniqueHint && activeTile ? uniqueHint : undefined
+  return activeTile?.ownerRoute
 }
 
 /** Profile/connection scope used to read an active transcript from storage. */
