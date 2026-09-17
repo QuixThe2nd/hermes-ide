@@ -216,7 +216,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
+import { envTokenRejected, githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -3312,9 +3312,35 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
 // GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call
 // from the anonymous 60/hour-per-IP budget to the token's 5,000/hour one; the
 // header shape is otherwise unchanged. Read per request, never stored.
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+//
+// A token GitHub rejects (401: expired, revoked, malformed) must not turn a
+// check that worked anonymously into a hard failure, so the call is retried
+// once without it; the rejection is logged once per process.
+let warnedRejectedGitHubToken = false
+
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
   const token = githubTokenFromEnv(process.env)
 
+  try {
+    return await fetchGitHubApiOnce(url, accept, token)
+  } catch (error) {
+    if (!envTokenRejected(error)) {
+      throw error
+    }
+
+    if (!warnedRejectedGitHubToken) {
+      warnedRejectedGitHubToken = true
+      rememberLog(
+        '[updates] api.github.com rejected the GITHUB_TOKEN / GH_TOKEN from the environment (HTTP 401); ' +
+          'retrying the update check anonymously'
+      )
+    }
+
+    return fetchGitHubApiOnce(url, accept, null)
+  }
+}
+
+function fetchGitHubApiOnce(url, accept, token) {
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,

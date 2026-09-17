@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
+import { envTokenRejected, githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
 
 // The exact headers the anonymous update check sends today; the change must
 // leave this shape byte-identical when no token is configured.
@@ -31,4 +31,14 @@ test('anonymous sends no Authorization key at all; a token adds the `token` sche
   // The caller's base object is a constant; mutating it would leak the token
   // into every later request that builds from it.
   assert.equal('Authorization' in UPDATE_CHECK_HEADERS, false)
+})
+
+test('only an authenticated 401 counts as the env token being rejected', () => {
+  // The anonymous-retry gate: a stale GITHUB_TOKEN must fall back to the
+  // anonymous request that worked before the token was wired in.
+  assert.equal(envTokenRejected({ statusCode: 401, authenticated: true }), true)
+  assert.equal(envTokenRejected({ statusCode: 401, authenticated: false }), false)
+  assert.equal(envTokenRejected({ statusCode: 403, authenticated: true }), false)
+  assert.equal(envTokenRejected({ statusCode: 429, authenticated: true }), false)
+  assert.equal(envTokenRejected(null), false)
 })

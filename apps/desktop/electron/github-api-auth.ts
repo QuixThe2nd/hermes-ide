@@ -43,3 +43,14 @@ export function githubApiHeaders(base: Record<string, string>, token?: string | 
 
   return headers
 }
+
+/**
+ * True when api.github.com rejected the env token itself (HTTP 401 on an
+ * authenticated call). A stale or revoked GITHUB_TOKEN must not fail the
+ * update check closed — the caller retries anonymously, which is exactly what
+ * worked before the token was wired in. Anonymous 401s and every other status
+ * are not the token's fault and are surfaced as-is.
+ */
+export function envTokenRejected(error: { statusCode?: number; authenticated?: boolean } | null | undefined): boolean {
+  return error?.statusCode === 401 && error?.authenticated === true
+}
