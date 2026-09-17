@@ -124,7 +124,8 @@ def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
             f"Modal backend selected but no direct Modal credentials/config {found}.")
 
 
-# --- Environment builders. Signature: (*, env_type, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
+# --- Environment builders. Signature: (*, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
+# (env_type is only forwarded to the plugin-registry fallback, not to the built-in builders.)
 def _build_local_env(*, cwd, timeout, **_):
     return _LocalEnvironment(cwd=cwd, timeout=timeout)
 
