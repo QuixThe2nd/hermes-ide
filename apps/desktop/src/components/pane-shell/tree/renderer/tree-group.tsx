@@ -696,17 +696,22 @@ export function TreeGroup({
               </PaneTabStrip>
             </ZoneMenu>
           ) : null}
+          {/* Tabs sharing the titlebar band are all `no-drag` and the strip's
+              list scrolls, so a crowded strip can cover every draggable pixel
+              (#112964). Keep one fixed handle OUTSIDE the list. When the tabs
+              drop below the controls the band above them is free — the handle
+              stays flexible and the whole row moves the window. */}
           {topEdge && (
             <div
               aria-hidden="true"
               className={cn(
                 'self-start [-webkit-app-region:drag]',
-                headerVisible ? 'shrink-0' : 'min-w-0 flex-1'
+                headerVisible && tabsInTitlebar ? 'shrink-0' : 'min-w-0 flex-1'
               )}
               data-window-drag-handle=""
               style={{
                 height: TITLEBAR_HEIGHT,
-                width: headerVisible ? TITLEBAR_DRAG_HANDLE_WIDTH : undefined
+                width: headerVisible && tabsInTitlebar ? TITLEBAR_DRAG_HANDLE_WIDTH : undefined
               }}
             />
           )}
