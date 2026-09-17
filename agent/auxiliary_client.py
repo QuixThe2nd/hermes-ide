@@ -7038,8 +7038,11 @@ def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
 
 def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
-    chains with the stripped kwargs; re-raise anything those chains won't handle."""
+    chains with the stripped kwargs; re-raise anything those chains won't handle.
+    A 429 on the retry is the credential/provider-fallback rungs' job, so it falls
+    through too (the pre-ladder max_tokens rung accepted rate limits)."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
+            or _is_rate_limit_error(exc)
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
             # Parameter rungs chain in any order (a reasoning-strip retry can 400 on temperature,
             # a temperature-strip retry on max_tokens), and a route-gating 400 after a strip still

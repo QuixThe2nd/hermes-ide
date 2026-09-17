@@ -78,3 +78,28 @@ def test_fallback_candidate_recovers_from_rejected_temperature():
     assert resp.choices[0].message.content == "ok"
     sent = [c.kwargs for c in client.chat.completions.create.call_args_list]
     assert [("temperature" in k) for k in sent] == [True, False]
+
+
+def test_rate_limit_after_parameter_strip_falls_through_to_later_rungs():
+    """A 429 on the stripped retry belongs to the credential/provider-fallback rungs; the
+    parameter rungs must hand it on with the stripped kwargs, not raise out of the ladder."""
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.example/v1/chat/completions")
+    rate_limited = openai.RateLimitError(
+        "Error code: 429 - Rate limit exceeded", body=None,
+        response=httpx.Response(429, request=request, json={"error": {"message": "Rate limit exceeded"}}))
+    client = MagicMock(base_url="https://api.example/v1")
+    client.chat.completions.create.side_effect = rate_limited
+    route = _LadderRoute(**{**dict.fromkeys(_LadderRoute._fields), "client": client, "task": "title_generation",
+                            "tag": "", "async_mode": False, "base_info": "", "resolved_provider": ""})
+    kwargs = {"model": "m", "messages": [], "max_tokens": 64}
+    first_err = _Bad400("Error code: 400 - Unsupported parameter: 'max_tokens' is not supported with this model.")
+
+    resp, err, final_kwargs = _drive_ladder(
+        _ladder_parameter_rungs(first_err, route, kwargs, 64),
+        lambda step: step.args[0].chat.completions.create(**step.args[1]))
+
+    assert resp is None and err is rate_limited
+    assert "max_tokens" not in final_kwargs
