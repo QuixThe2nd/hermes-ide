@@ -305,7 +305,9 @@ def test_handler_normalizes_blank_path_to_current_directory(monkeypatch, target,
     assert captured["path"] == "."
 
 
-def test_handler_preserves_nonblank_path(monkeypatch):
+@pytest.mark.parametrize("raw_path", ["src", 5, ["src"]])
+def test_handler_preserves_nonblank_path(monkeypatch, raw_path):
+    """Only None/blank normalise to '.'; a wrong-typed path reaches search_tool's own error path."""
     captured = {}
 
     def fake_search_tool(**kwargs):
@@ -314,9 +316,9 @@ def test_handler_preserves_nonblank_path(monkeypatch):
 
     monkeypatch.setattr("tools.file_tools.search_tool", fake_search_tool)
 
-    registry.dispatch("search_files", {"pattern": "needle", "path": "src"})
+    registry.dispatch("search_files", {"pattern": "needle", "path": raw_path})
 
-    assert captured["path"] == "src"
+    assert captured["path"] == raw_path
 
 
 def test_repeated_search_key_distinguishes_order(monkeypatch):
