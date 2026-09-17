@@ -1794,7 +1794,8 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
     kill = kill or os.kill
     for pid in survivors:
         logger.warning(
-            "Gateway PID %s did not exit within %.0fs of SIGTERM — sending "
+            "Gateway PID %s did not exit within %.0fs of the stop request (SIGTERM, or the planned-stop "
+            "marker on Windows) — sending "
             "SIGKILL. A kill during a WAL checkpoint can corrupt state.db; "
             "the next start will run an integrity check.",
             pid, _ORPHAN_EXIT_GRACE_SECONDS,
