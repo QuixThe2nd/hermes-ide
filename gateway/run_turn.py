@@ -2130,12 +2130,18 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
 
     def _profile_scope_for_source(self, source: SessionSource):
-        """``_profile_runtime_scope`` for ``source``'s profile when multiplexing, else a no-op context.
+        """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.
 
         Under multiplexing config/skills/memory resolve to the source profile's home AND credentials
-        come from its secret scope (never process-global ``os.environ``)."""
+        come from its secret scope (never process-global ``os.environ``). Hosted-room activity can
+        activate the same process-wide credential guard for a standalone gateway, which must bind
+        its default profile rather than leave a later credential read unscoped."""
+        from agent.secret_scope import is_multiplex_active
         from gateway.run import _profile_runtime_scope
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        if (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            or is_multiplex_active()
+        ):
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
         return nullcontext()
 
