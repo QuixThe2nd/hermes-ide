@@ -1838,14 +1838,18 @@ def stop_profile_gateway() -> bool:
         # Windows maps SIGTERM to TerminateProcess. The marker watcher is the
         # gateway's graceful-stop IPC, so wait for it before force-killing a
         # wedged process.
+        from gateway.status import get_process_start_time
         from hermes_cli.gateway_windows import (
             _drain_gateway_pid,
             _force_terminate_known_gateway_pids,
             _windows_stop_drain_timeout,
         )
 
+        # Capture identity BEFORE the drain (as _escalate_wedged_gateway does): if the PID is
+        # recycled during the wait, terminate_pid's start-time mismatch refuses the taskkill.
+        expected_start_time = get_process_start_time(pid)
         if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
-            _force_terminate_known_gateway_pids([pid])
+            _force_terminate_known_gateway_pids({pid: expected_start_time})
     else:
         _mark_planned_stop(pid)
         try:

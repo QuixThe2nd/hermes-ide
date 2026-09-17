@@ -570,6 +570,7 @@ class TestStopProfileGateway:
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
         monkeypatch.setattr(gateway, "is_windows", lambda: True)
         monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
         monkeypatch.setattr(
             gateway_windows,
             "_drain_gateway_pid",
@@ -586,7 +587,45 @@ class TestStopProfileGateway:
         monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
 
         assert gateway.stop_profile_gateway() is True
-        assert calls == [("drain", pid, 7.0), ("force", [pid])]
+        assert calls == [("drain", pid, 7.0), ("force", {pid: 100})]
+
+    def test_windows_stop_force_kill_carries_pre_drain_identity(self, monkeypatch):
+        """The post-drain taskkill must be guarded by the start time captured BEFORE the <=30 s drain:
+        a PID recycled during the wait shows a different start time, so ``terminate_pid``'s mismatch
+        refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
+        self-comparison."""
+        import gateway.status as status
+        import hermes_cli.gateway_windows as gateway_windows
+
+        pid = 4242
+        calls = []
+        clock = {"now": 0.0}
+        alive = {"value": True}
+
+        monkeypatch.setattr(gateway_windows.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(
+            gateway_windows.time, "sleep", lambda _s: clock.__setitem__("now", clock["now"] + 10.0)
+        )
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(status, "get_running_pid", lambda: pid if alive["value"] else None)
+        monkeypatch.setattr(status, "write_planned_stop_marker", lambda target: None)
+        monkeypatch.setattr(status, "_pid_exists", lambda target: alive["value"])
+        # The original gateway (start time 100) exits during the drain and its PID is recycled (999).
+        monkeypatch.setattr(
+            status, "get_process_start_time", lambda target: 100 if clock["now"] < 7.0 else 999
+        )
+
+        def _terminate(target, force=False, expected_start_time=None):
+            calls.append((target, force, expected_start_time))
+            alive["value"] = False
+
+        monkeypatch.setattr(status, "terminate_pid", _terminate)
+        monkeypatch.setattr(status, "remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls == [(pid, True, 100)]
 
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
