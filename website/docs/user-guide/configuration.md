@@ -1363,7 +1363,8 @@ If you do not want Hermes to auto-generate titles after the first exchange, set
 
 To keep the instant derived title (the first line of your opening message) but never
 spend a model call upgrading it, set `auxiliary.title_generation.model_upgrade_enabled: false`.
-No background `auto-title` thread starts and no title-model request is sent; `enabled: false`
+No background `auto-title` thread starts and no automatic title-model request is sent; the
+explicit repair command `hermes sessions retitle-skills` still calls the model. `enabled: false`
 still disables both stages.
 
 ### Stream-only endpoints

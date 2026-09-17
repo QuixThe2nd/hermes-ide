@@ -305,9 +305,6 @@ def generate_title(
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
-    if not _model_title_upgrade_enabled():
-        logger.debug("Model title upgrade skipped: auxiliary.title_generation.model_upgrade_enabled=false")
-        return None
     try:
         if runtime_validator is not None and not runtime_validator():
             logger.debug("Title generation skipped: runtime validator returned False")

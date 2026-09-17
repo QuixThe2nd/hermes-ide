@@ -448,6 +448,14 @@ class TestMaybeAutoTitle:
         assert db.get_session_title_source("sess-1") == "derived"
         thread.assert_not_called()
         call_llm.assert_not_called()
+        # The toggle only silences the automatic upgrade: an explicit ``generate_title`` call
+        # (``hermes sessions retitle-skills``) still asks the model.
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = '{"title": "Repair startup memory routing"}'
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.title_generator.call_llm", return_value=resp):
+            assert generate_title("repair startup memory routing") == "Repair startup memory routing"
 
     def test_enabled_false_still_disables_derived_and_model_titles(self, tmp_path):
         db = SessionDB(tmp_path / "state.db")
