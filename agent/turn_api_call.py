@@ -15,7 +15,9 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
+from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 from agent.message_metadata import append_message
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_repetition_dominated
 from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -185,7 +187,12 @@ def handle_api_interrupt(
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
-    if _partial:
+    if _partial and is_repetition_dominated(_partial):
+        # The interrupted row is replayed next turn; looped bytes there re-seed the loop
+        # (#112764). Keep the neutral placeholder the sanitizer would heal to anyway.
+        append_message(messages, {"role": "assistant", "content": _INTERRUPTED_PLACEHOLDER})
+        final_response = REPETITION_LOOP_INTERRUPTED
+    elif _partial:
         append_message(messages, {"role": "assistant", "content": _partial})
         final_response = _partial
     else:

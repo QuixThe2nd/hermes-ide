@@ -70,7 +70,7 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_repetition_dominated
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
@@ -353,11 +353,14 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     empty-response storms); the interruption scaffold is replay text carried only in the user
     correction's ``api_content``; an on-screen-empty placeholder is ``display_kind=hidden``."""
     visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
-    if is_repetition_dominated(visible):
-        visible = ""
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
-    if visible:
+    if is_repetition_dominated(visible):
+        # Same guard as the truncated-continuation path: the looped bytes must reach neither the
+        # replayed correction nor the placeholder below (empty ``visible`` takes the hidden shape).
+        checkpoint_parts.append(REPETITION_LOOP_INTERRUPTED)
+        visible = ""
+    elif visible:
         checkpoint_parts += ["Visible response before the interruption:", visible]
     checkpoint = "\n\n".join(checkpoint_parts)
     correction = f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"

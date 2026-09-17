@@ -193,8 +193,11 @@ class TestActiveTurnRedirect:
 
 class TestActiveTurnRedirectCheckpoint:
     def test_repetition_dominated_partial_is_not_replayed(self):
-        """A looped partial must not seed the correction's next API request."""
+        """A looped partial must not seed the correction's next API request (#112764): neither
+        the replayed correction nor the alternation placeholder carries the bytes; the model
+        is told the reply degenerated instead."""
         from agent.conversation_loop import _apply_active_turn_redirect
+        from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
 
         repeated = ("The same degenerate partial response keeps repeating without progress.\n" * 10)
         agent = _bare_agent()
@@ -203,9 +206,15 @@ class TestActiveTurnRedirectCheckpoint:
 
         _apply_active_turn_redirect(agent, messages, "Change course.")
 
-        replayed = messages[-1]["api_content"]
+        placeholder, correction = messages[-2], messages[-1]
+        replayed = correction["api_content"]
         assert repeated not in replayed
         assert "Visible response before the interruption:" not in replayed
+        assert REPETITION_LOOP_INTERRUPTED in replayed
+        assert placeholder["role"] == "assistant"
+        assert placeholder["display_kind"] == "hidden"
+        assert repeated not in (placeholder.get("content") or "")
+        assert repeated not in (placeholder.get("api_content") or "")
 
     def test_ordinary_partial_remains_replayable(self):
         """Useful interrupted text remains available to the corrected request."""

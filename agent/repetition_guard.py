@@ -22,6 +22,12 @@ _MIN_REPEAT_COUNT = 5
 # "Repetition-dominated" = repeated windows cover at least this fraction.
 _DOMINANCE_RATIO = 0.5
 
+# What an interrupt checkpoint says INSTEAD of a repetition-dominated partial. Replaying the
+# looped bytes (as the redirect's api_content or as the interrupted assistant row) re-seeds the
+# loop on the next request and the corruption survives restarts (#112764); the model only needs
+# to know the reply degenerated and was cut off.
+REPETITION_LOOP_INTERRUPTED = "[the reply degenerated into a repetition loop and was interrupted]"
+
 
 def is_repetition_dominated(text: str) -> bool:
     """True when a single 60+ char substring recurs often enough to cover at least half
