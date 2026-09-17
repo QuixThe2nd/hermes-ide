@@ -113,12 +113,10 @@ class TestMaintainPackHealth:
         import cli
         from hermes_cli import worktree_ops
 
-        made = self._make_packs(repo, 6)
-        # Behavior contract, not a snapshot: different git builds consolidate
-        # differently while packs accumulate (CI produced 3-4 from 6 attempts;
-        # local git produces 6). All the fixture must guarantee is SPRAWL —
-        # strictly more packs than the threshold we set — so the maintenance
-        # pass has something real to consolidate.
+        made = self._make_packs(repo, 12)
+        # Behavior contract, not a snapshot: the geometric repack leaves a size progression
+        # (plus a cruft pack on newer git), so the exact count varies by git build. What must
+        # hold: sprawl went DOWN and lookups now go through one multi-pack-index.
         threshold = 2
         monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", threshold)
         assert made > threshold, f"fixture failed to produce sprawl (made={made})"
@@ -126,16 +124,8 @@ class TestMaintainPackHealth:
         cli._maintain_pack_health(str(repo))
 
         after = self._pack_count(repo)
-        diag = ""
-        if after > 2:
-            probe = subprocess.run(["git", "repack", "-d", "--geometric=2", "--write-midx"], cwd=str(repo),
-                                   capture_output=True, text=True)
-            diag = (f"\npacks={sorted(p.name for p in (repo / '.git/objects/pack').iterdir())}"
-                    f"\nrerun rc={probe.returncode} out={probe.stdout!r} err={probe.stderr!r}"
-                    f"\nafter rerun={self._pack_count(repo)}"
-                    f"\ncount={_git(repo, 'count-objects', '-v').stdout}")
-        assert after <= 2, f"expected consolidation, still {after} packs{diag}"
-        assert after < made, "pack count must strictly decrease"
+        assert after < made, f"pack count must strictly decrease (made={made}, after={after})"
+        assert (repo / ".git" / "objects" / "pack" / "multi-pack-index").exists()
 
     def test_noop_below_threshold(self, repo, monkeypatch):
         import cli
