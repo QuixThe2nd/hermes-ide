@@ -73,9 +73,9 @@ function preferredActiveTranscriptOwner(
 ): SessionProfileRoute | undefined {
   const runtimeId = runtimeSessionId ?? $activeSessionId.get()
   const tiles = $sessionTiles.get().filter(tile => tile.storedSessionId === storedSessionId)
-  const activeTile =
-    (runtimeId ? tiles.find(tile => tile.runtimeId === runtimeId) : undefined) ??
-    (tiles.length === 1 ? tiles[0] : undefined)
+  const activeTile = runtimeId
+    ? tiles.find(tile => tile.runtimeId === runtimeId)
+    : tiles.length === 1 ? tiles[0] : undefined
 
   if (activeTile?.ownerRoute) {
     return activeTile.ownerRoute
