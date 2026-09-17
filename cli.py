@@ -4109,28 +4109,30 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
+# ``failure_reason`` values that say nothing about the task itself: the provider or the
+# account is walled, so a Kanban worker signals "try later" instead of "I failed".
+_QUOTA_WALL_REASONS = frozenset({"rate_limit", "upstream_rate_limit", "billing", "overloaded"})
+
+
 def _single_query_exit_code(result) -> int:
-    """Map a one-shot turn result onto a process exit code.
+    """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
-    0 success, 1 failure, and ``KANBAN_RATE_LIMIT_EXIT_CODE`` (EX_TEMPFAIL) when a
-    Kanban worker failed purely because the provider rate-limited or the account hit a
-    billing/quota wall. The dispatcher's reap classifier maps that sentinel to a
-    ``rate_limited`` exit and releases the task back to ``ready`` WITHOUT counting a
-    failure, so a multi-day quota window cannot trip the circuit breaker and
-    permanently block the card.
-
-    Shared by both one-shot paths. It previously lived inline in the ``-Q`` path only,
-    which is how the ``-q`` path — the one the Kanban dispatcher actually spawns —
-    ended up with no exit contract at all.
+    0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
+    partway (`partial`, `completed: False`) or never ran at all (credentials / agent init
+    failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
+    failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
+    (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
+    WITHOUT counting a failure, so a quota window cannot trip the circuit breaker.
     """
-    if not (isinstance(result, dict) and result.get("failed")):
+    if not isinstance(result, dict):
+        return 1
+    if result.get("interrupted"):
+        return 130
+    if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
-        try:
-            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
-            return KANBAN_RATE_LIMIT_EXIT_CODE
-        except Exception:
-            return 1
+    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in _QUOTA_WALL_REASONS:
+        from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+        return KANBAN_RATE_LIMIT_EXIT_CODE
     return 1
 
 
@@ -4543,14 +4545,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
-        # A dispatcher-spawned Kanban worker must report its outcome in its exit code.
-        # This path fell through to an implicit 0 for every outcome, and the reaper
-        # reads rc=0 with the task still `running` as a protocol violation: a provider
-        # quota wall was re-dispatched straight back into the same wall until the
-        # violation budget auto-blocked the card. Plain `-q` runs by a person are
-        # unaffected: they still exit 0.
-        if os.environ.get("HERMES_KANBAN_TASK"):
-            sys.exit(_single_query_exit_code(getattr(cli, "_last_turn_result", None)))
+        # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
+        # the exit code. This path used to fall through to an implicit 0 for every outcome.
+        sys.exit(_single_query_exit_code(cli._last_turn_result))
     finally:
         _finalize_single_query(cli)
 
