@@ -12,7 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
@@ -696,11 +696,18 @@ export function TreeGroup({
               </PaneTabStrip>
             </ZoneMenu>
           ) : null}
-          {topEdge && (!headerVisible || tabsBelowControls) && (
+          {topEdge && (
             <div
-              className="min-w-0 flex-1 self-start [-webkit-app-region:drag]"
+              aria-hidden="true"
+              className={cn(
+                'self-start [-webkit-app-region:drag]',
+                headerVisible ? 'shrink-0' : 'min-w-0 flex-1'
+              )}
               data-window-drag-handle=""
-              style={{ height: TITLEBAR_HEIGHT }}
+              style={{
+                height: TITLEBAR_HEIGHT,
+                width: headerVisible ? TITLEBAR_DRAG_HANDLE_WIDTH : undefined
+              }}
             />
           )}
           {topEdge && (

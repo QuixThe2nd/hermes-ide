@@ -53,10 +53,61 @@ afterEach(() => {
   root = null
   container = null
   disposePane = null
+  globalThis.document.querySelectorAll('[data-titlebar-cluster]').forEach(element => element.remove())
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 describe('TreeGroup', () => {
+  it('keeps a fixed native drag handle beside crowded top-edge tabs', () => {
+    const paneIds = ['terminal', 'terminal-2', 'terminal-3', 'terminal-4', 'terminal-5']
+
+    const disposers = paneIds.map(id =>
+      registry.register({
+        area: 'panes',
+        data: { placement: 'main' },
+        id,
+        render: () => <div>{id}</div>,
+        title: id
+      })
+    )
+
+    disposePane = () => disposers.forEach(dispose => dispose())
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    )
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      if (this.matches('[data-titlebar-cluster="left"]')) {
+        return { left: 0, right: 100 } as DOMRect
+      }
+
+      if (this.matches('[data-titlebar-cluster="right"]')) {
+        return { left: 700, right: 800 } as DOMRect
+      }
+
+      return { left: 0, right: 800, width: 800 } as DOMRect
+    })
+    const leftControls = globalThis.document.createElement('div')
+    leftControls.dataset.titlebarCluster = 'left'
+    const rightControls = globalThis.document.createElement('div')
+    rightControls.dataset.titlebarCluster = 'right'
+    globalThis.document.body.append(leftControls, rightControls)
+
+    render(<TreeGroup leftEdge node={{ ...terminalGroup(false), panes: paneIds }} rightEdge topEdge />)
+
+    const handle = container!.querySelector<HTMLElement>('[data-window-drag-handle]')!
+    expect(container!.querySelectorAll('[data-tree-tab]').length).toBe(paneIds.length)
+    expect(handle).toBeTruthy()
+    expect(handle.style.width).not.toBe('')
+    expect(handle.className).toContain('shrink-0')
+  })
+
   it('keeps a top-edge strip inside its panel and yields native drag while moving a pane', () => {
     disposePane = registry.register({
       area: 'panes',

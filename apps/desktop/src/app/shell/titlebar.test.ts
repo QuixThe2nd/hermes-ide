@@ -4,6 +4,7 @@ import {
   MACOS_TAHOE_DARWIN_MAJOR,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_CONTROL_SIZE,
+  TITLEBAR_DRAG_HANDLE_WIDTH,
   TITLEBAR_EDGE_INSET,
   TITLEBAR_FALLBACK_WINDOW_BUTTON_X,
   TITLEBAR_ICON_SIZE,
@@ -20,6 +21,10 @@ describe('titlebar sizing', () => {
     expect(TITLEBAR_CONTROL_SIZE).toBe(24)
     expect(TITLEBAR_ICON_SIZE).toBe(13.9)
     expect(titlebarIconSizeCss()).toBe('13.9px')
+  })
+
+  it('reserves a fixed native drag target beside titlebar tabs', () => {
+    expect(TITLEBAR_DRAG_HANDLE_WIDTH).toBe(48)
   })
 
   it('reserves width from abutting hit targets only', () => {
