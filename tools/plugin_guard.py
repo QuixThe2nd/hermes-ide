@@ -19,7 +19,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v2"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v4"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -88,6 +88,15 @@ DOC_PROSE_DEMOTIONS = {
     "hardcoded_secret": "high",
 }
 
+# A root-level ``if __name__ == "__main__":`` block is the module's own self-test harness:
+# ``plugins_loader`` imports plugins and never runs them as scripts, so a sample credential
+# quoted there is a fixture, not a shipped secret — the test-tree reasoning applied where a
+# root-level runtime file has no ``tests/`` to hold it (#112139). Narrower than the
+# test-tree cap because the block is still directly executable code: only the generic
+# sample-token pattern is demoted; destructive/persistence/exfil findings and the
+# provider-signature patterns (``sk-``, ``AKIA``, ``ghp_`` ...) keep full severity there.
+MAIN_GUARD_DEMOTIONS = {"hardcoded_secret": "high"}
+
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
 MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
@@ -134,7 +143,7 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     """
     try:
         tree = ast.parse(file_path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, UnicodeDecodeError):
+    except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
         return set()
     lines: set[int] = set()
     for node in ast.walk(tree):
@@ -162,8 +171,6 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
         )
         if is_doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
             f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
-        if f.pattern_id == "hardcoded_secret" and f.line in main_guard_lines:
-            f.severity = "high"
         if in_test_tree and f.severity == "critical":
             f.severity = "high"
         if (
@@ -171,6 +178,14 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
             and f.severity in _COMMENT_SEVERITY_CAP
         ):
             f.severity = _COMMENT_SEVERITY_CAP[f.severity]
+        # Last and critical-only: a one-step cap that can never re-raise a finding an
+        # earlier remap already lowered.
+        if (
+            f.pattern_id in MAIN_GUARD_DEMOTIONS
+            and f.severity == "critical"
+            and f.line in main_guard_lines
+        ):
+            f.severity = MAIN_GUARD_DEMOTIONS[f.pattern_id]
         out.append(f)
     return out
 
