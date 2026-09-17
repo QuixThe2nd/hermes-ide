@@ -207,10 +207,20 @@ def _cleanup_worktree_workspace(
         worktree_path = wp.resolve(strict=False)
         try:
             cwd = Path.cwd().resolve(strict=False)
-            if cwd == worktree_path or cwd.is_relative_to(worktree_path):
-                os.chdir(repo_root)
         except OSError:
-            return  # Cannot leave the worktree safely — preserve it.
+            # cwd was already deleted (a scratch-kind child's own workspace is
+            # rmtree'd before this deferred parent cleanup runs, #33774). A
+            # dead cwd cannot hold the worktree open, so leaving it is safe.
+            cwd = None
+        if cwd is None or cwd == worktree_path or cwd.is_relative_to(worktree_path):
+            try:
+                os.chdir(repo_root)
+            except OSError as exc:
+                _kb._log.warning(
+                    "Preserving worktree for task %s: cannot leave %s for %s: %s",
+                    task_id, cwd or "<deleted cwd>", repo_root, exc,
+                )
+                return
         # No --force: git's own dirty guard re-verifies at removal time, so if
         # the tree became dirty since our check (TOCTOU) removal fails safe.
         result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)

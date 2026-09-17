@@ -114,6 +114,23 @@ def test_cleanup_leaves_a_worktree_cwd_before_removal(
     assert not wt.exists()
 
 
+def test_cleanup_proceeds_when_cwd_was_deleted(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferred parent cleanup (#33774) runs after the child's scratch cwd was
+    rmtree'd; a dead cwd must not preserve a clean, pushed worktree."""
+    wt = _make_worktree(repo, "t_deadcwd113073")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
+    scratch.rmdir()
+
+    kbw._cleanup_worktree_workspace("t_deadcwd113073", str(wt))
+
+    assert not wt.exists()
+    assert not _branch_exists(repo, "wt/t_deadcwd113073")
+
+
 def test_cleanup_retries_worktree_removal_once(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
