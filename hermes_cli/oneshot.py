@@ -31,6 +31,55 @@ _USAGE_KEYS = (
     "model", "provider", "session_id", "completed",
 )
 
+# Counters summed per auxiliary task (vision, compression, title_generation, ...) into the
+# ``auxiliary`` block of the report. The main-loop keys above stay main-loop-only (backward
+# compatible); ``total_including_auxiliary`` carries the grand total pipelines bill on (#112848).
+_AUX_COUNTERS = (
+    "api_calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+    "reasoning_tokens", "estimated_cost_usd",
+)
+
+
+def _auxiliary_usage(session_db, session_id: Optional[str]) -> dict[str, dict]:
+    """Per-task aux usage recorded for *session_id*'s lineage (``{}`` without a store / session)."""
+    if session_db is None or not session_id:
+        return {}
+    try:
+        return session_db.auxiliary_usage_by_task(session_id)
+    except Exception:
+        logging.debug("oneshot: auxiliary usage read failed", exc_info=True)
+        return {}
+
+
+def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict]) -> None:
+    """Store this run's auxiliary usage on *result* as the delta against the pre-turn snapshot
+    (a resumed session already carries earlier runs' aux rows). Waits (bounded) for the auto-title
+    thread first: it bills from a daemon thread and can still be in flight when the turn returns."""
+    from agent.title_generator import wait_for_title_upgrades
+
+    wait_for_title_upgrades()
+    after = _auxiliary_usage(session_db, result.get("session_id"))
+    by_task: dict[str, dict] = {}
+    for task, counters in after.items():
+        prior = before.get(task, {})
+        delta = {key: (counters.get(key) or 0) - (prior.get(key) or 0) for key in _AUX_COUNTERS}
+        if any(delta.values()):
+            by_task[task] = delta
+    result["auxiliary_usage"] = by_task
+
+
+def _auxiliary_report(report: dict, by_task: dict[str, dict]) -> None:
+    """Add the ``auxiliary`` breakdown and ``total_including_auxiliary`` to the ledger."""
+    totals = {key: sum(t.get(key) or 0 for t in by_task.values()) for key in _AUX_COUNTERS}
+    totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
+    report["auxiliary"] = {**totals, "by_task": by_task}
+    main_cost = report.get("estimated_cost_usd")
+    report["total_including_auxiliary"] = {
+        "estimated_cost_usd": None if main_cost is None else main_cost + totals["estimated_cost_usd"],
+        "total_tokens": (report.get("total_tokens") or 0) + totals["total_tokens"],
+        "api_calls": (report.get("api_calls") or 0) + totals["api_calls"],
+    }
+
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     """Split repeated/comma-separated toolset flags into a clean list (``None`` when empty)."""
@@ -151,6 +200,8 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         report = {key: result.get(key) for key in _USAGE_KEYS}
         report["failed"] = bool(result.get("failed")) or failure is not None
         report["service_tier"] = result.get("service_tier")
+        if isinstance(result.get("auxiliary_usage"), dict):
+            _auxiliary_report(report, result["auxiliary_usage"])
         if failure is not None:
             report["failure"] = failure
         out = Path(path).expanduser()
@@ -231,6 +282,7 @@ def run_oneshot(
                 skills=skills,
                 resume=resume,
                 reasoning=reasoning,
+                ledger=bool(usage_file),
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -424,9 +476,11 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    ledger: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
-    ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
+    ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
+    ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
     from hermes_cli.config import load_config
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
@@ -506,7 +560,10 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
+        aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        if ledger:
+            _attach_auxiliary_usage(result, session_db, aux_before)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)
