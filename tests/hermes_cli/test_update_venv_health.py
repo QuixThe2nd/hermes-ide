@@ -121,8 +121,10 @@ def test_detect_venv_python_prefetches_only_cheap_process_fields(_winp, tmp_path
 
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_detect_venv_python_matches_uv_default_dotvenv(_winp, tmp_path):
+    """#112958: the venv-prefix arm must see a uv-default ``.venv`` interpreter. A kernel-runner child has
+    no ``hermes_cli.main`` in its cmdline, so only that arm can match it — the guard was blind to it."""
     venv_py = str(tmp_path / ".venv" / "Scripts" / "python.exe")
-    holder = _proc(104, venv_py, "python.exe", [venv_py, "-m", "hermes_cli.main", "serve"])
+    holder = _proc(104, venv_py, "python.exe", [venv_py, str(tmp_path / "tools" / "hermes_kernel_runner.py")])
     me = MagicMock()
     me.parents.return_value = []
     fake_psutil = types.SimpleNamespace(

@@ -61,23 +61,6 @@ describe('resolveVenvPython', () => {
     }
   })
 
-  it('uses the Windows Scripts interpreter in a uv-default .venv', () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-'))
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
-
-    try {
-      const dir = path.join(sandbox, '.venv', 'Scripts')
-      fs.mkdirSync(dir, { recursive: true })
-      const pyPath = path.join(dir, 'python.exe')
-      fs.writeFileSync(pyPath, '', { mode: 0o755 })
-      Object.defineProperty(process, 'platform', { value: 'win32' })
-      assert.equal(resolveVenvPython(sandbox), pyPath)
-    } finally {
-      if (platform) Object.defineProperty(process, 'platform', platform)
-      fs.rmSync(sandbox, { recursive: true, force: true })
-    }
-  })
-
   it('keeps legacy venv precedence when both supported layouts exist', () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-'))
 

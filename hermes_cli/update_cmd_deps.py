@@ -951,7 +951,7 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
     See #83529.
     """
-    foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    foreign = _venv_foreign_owned_paths(project_venv_dir(project_root) or Path(project_root) / "venv")
     if not foreign:
         return
     print("\n✗ Update stopped: this install's venv contains files owned by another user.")
