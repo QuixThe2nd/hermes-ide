@@ -121,7 +121,7 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 
 你在**设置 → Connections** 中注册的每一个 gateway——本地、远程 URL、SSH、Hermes Cloud、docker——都是 Desktop 持续保持打开的一条常驻连接，Bot 模式会自动利用这些连接来发消息。无需额外配置：
 
-- **花名册会自行同步。** 只要 Desktop 在运行，它就会定期告诉每个已连接的 gateway，*其他*连接上都有哪些 agent。每个 Bot Chat 的队友花名册随即会列出它们（"在其他已连接机器上的队友"），包含名称、角色以及所在的机器——当 agent 出现、消失或被重命名时，这份花名册也会刷新（能力纪元）。
+- **花名册会自行同步。** 只要 Desktop 在运行，它就会定期告诉每个已连接的 gateway，*其他*连接上都有哪些 agent。每个 Bot Chat 的队友花名册随即会列出它们（"在其他已连接机器上的队友"），包含名称、角色以及所在的机器——当 agent 出现、消失或被重命名时，这份花名册也会刷新（能力版本）。
 - **`message_agent` 可以直接触达它们。** 你笔记本上的 Bot 可以用 `message_agent(target="moxie", …)` 给云端 agent 发消息，和给本地队友发消息完全一样。如果同一个 handle 在多台机器上都存在，用 `target="moxie@<connection>"` 消除歧义（这个工具的报错信息会告诉 Bot 确切的写法）。投递走的是 Desktop：发送方的 gateway 把消息入队，Desktop 把它中继到目标连接自己的 gateway，目标 Bot 在它自己的规范 Bot Chat 中运行一轮，回复以本地私信同样使用的那种后台完成通知的形式返回给发送方。
 - **Desktop 是信使。** 只要一台同时认识两个连接的 Desktop 在运行，跨连接投递就能工作（它持有 socket 和凭据——gateway 之间彼此看不到对方的认证信息）。如果 Desktop 在投递途中被关闭，发送方的 Bot 会被告知回复没有送达，而不是被无限期挂起。若需要完全不经过 Desktop 的、永远在线的机器对机器消息，请注册一个 peer（见下方 `hermes peer`）——这两条路径可以共存。
 
@@ -138,7 +138,7 @@ hermes peer dm spark/researcher < /tmp/dm.txt   # 多路复用 peer 上的指定
 
 `hermes peer dm` 会通过该 peer 已有的 API server，把消息投递进远程 agent 的规范 Bot Chat，在那里运行一轮 agent，并把回复打印到 stdout——这正是本地 `hermes -p <bot> chat` 命令的跨机器对应版本。
 
-一旦注册了 peer，教给每个 Bot Chat 的消息协议（`agent.bot_mode_protocol`）就会自动包含 peer 花名册，`message_agent` 也可以直接接受 peer 目标——`message_agent(target="spark/researcher", …)`，或用 `target="spark"` 指向该 peer 的主 agent——这样**你的 Bot 会自己了解到**其他机器上存在队友，以及如何触达它们。注册或移除一个 peer 会在下一条消息时刷新每个 Bot Chat 的协议（能力纪元）。
+一旦注册了 peer，教给每个 Bot Chat 的消息协议（`agent.bot_mode_protocol`）就会自动包含 peer 花名册，`message_agent` 也可以直接接受 peer 目标——`message_agent(target="spark/researcher", …)`，或用 `target="spark"` 指向该 peer 的主 agent——这样**你的 Bot 会自己了解到**其他机器上存在队友，以及如何触达它们。注册或移除一个 peer 会在下一条消息时刷新每个 Bot Chat 的协议（能力版本）。
 
 前提条件：peer 所在机器运行 `api_server` gateway 平台，并配置了强密码的 `API_SERVER_KEY`；能否触达取决于你的网络（局域网、Tailscale、VPN）。这个 key 是一项凭据，保存在 `~/.hermes/.env` 中的 `HERMES_PEER_<NAME>_KEY` 下；peer 的名称/URL 保存在 `config.yaml` 的 `bot_peers` 下。
 
