@@ -402,10 +402,11 @@ def match_runtime_outcomes(
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
-    ``unaccounted``. A Desktop-supervised serve still alive is ``deferred`` instead: the restart phase
-    is forbidden to restart it out from under the app (it hosts the live Desktop chats), so it is
-    handed back to its supervisor and surfaced — never counted as a missed restart the updater could
-    have discharged. See #111494.
+    ``unaccounted``. A Desktop-supervised serve is ``deferred`` only when that probe confirmed its
+    pre-update incarnation is still alive: the restart phase is forbidden to restart it out from under
+    the app (it hosts the live Desktop chats), so it is handed back to its supervisor and surfaced.
+    Without that evidence it remains ``unaccounted``, rather than claiming the app owns an unknown
+    incarnation. See #111494.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
@@ -431,9 +432,11 @@ def match_runtime_outcomes(
                     # dashboard cleanup respawn / the Desktop app).
                     return "restarted"
                 if r.supervisor == "desktop":
-                    # Still alive on pre-update code, but the Desktop app owns it and the restart phase
-                    # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
-                    return "deferred"
+                    if stale_serves is not None:
+                        # Still alive on pre-update code, but the Desktop app owns it and the restart phase
+                        # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
+                        return "deferred"
+                    return "unaccounted"
                 if stale_serves is not None:
                     return "unaccounted"
                 return "restarted" if any(_serve_unit_matches_profile(r.profile, s) for s in restarted_set) else "unaccounted"
