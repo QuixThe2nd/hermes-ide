@@ -320,11 +320,16 @@ def generate_title(
         "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
     )
     try:
+        # Use the provider's default temperature instead of forcing 0.3.
+        # Some models (e.g. GPT-5.6) only accept their server-side default
+        # and reject explicit temperature values, causing the daemon title
+        # thread to fail with "Unsupported value: 'temperature'".
+        # See: #72351, #51083, #51157
         response = call_llm(
             task="title_generation",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
             # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
+            max_tokens=64, temperature=None, timeout=timeout, main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
             # The module contract above promises thinking-disabled operation,
             # but nothing enforced it: with the aux default reasoning_effort
