@@ -153,7 +153,9 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     import cron.scheduler as scheduler
 
     payload = tmp_path / "payload.json"
-    ack = tmp_path / "ready.json"
+    ack = tmp_path / "exec-1.ready"
+    stderr_capture = tmp_path / "exec-1.stderr"
+    stderr_capture.write_text("", encoding="utf-8")
     payload.write_text(
         json.dumps({
             "job": {"id": "job-1", "execution_id": "exec-1"},
@@ -187,6 +189,9 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert observed_homes == [expected_home, expected_home]
     assert ack.exists()
     assert not payload.exists()
+    # Post-ack the worker owns the stderr capture: a gateway that restarted mid-run
+    # would otherwise leave one orphan per surviving run.
+    assert not stderr_capture.exists()
 
 
 def test_external_worker_refuses_to_run_without_durable_ownership(

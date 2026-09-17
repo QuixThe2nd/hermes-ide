@@ -3312,7 +3312,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
             stderr_tail = external_worker_stderr_tail(stderr_path)
             stderr_path.unlink(missing_ok=True)
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
-                # systemd-run itself failed (stderr is DEVNULL): name the cause, not the exit code.
+                # systemd-run itself failed before any worker ran, so the captured stderr
+                # holds nothing useful: name the cause, not the exit code.
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "
                     f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
@@ -3415,6 +3416,11 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
                 else:
                     os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
+                # Post-ack the gateway never reads the stderr capture (it only
+                # serves the pre-ack death report) and may not outlive this run
+                # in the restart-safe topology, so the worker removes its own.
+                with contextlib.suppress(OSError):
+                    ack_path.with_suffix(".stderr").unlink(missing_ok=True)
     finally:
         reset_secret_scope(secret_token)
         set_multiplex_active(previous_multiplex)
@@ -4212,8 +4218,10 @@ if __name__ == "__main__":
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
-        # The gateway spawns this worker with stdout/stderr on DEVNULL; without
-        # a handler every adoption/ack failure below would be invisible.
+        # The gateway spawns this worker with stdout on DEVNULL and stderr on a
+        # capture file it only reads back if we die before the ack; without a
+        # log handler every adoption/ack failure below would otherwise be
+        # invisible to the persistent log.
         try:
             from hermes_logging import setup_logging
 
