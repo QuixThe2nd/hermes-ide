@@ -92,10 +92,23 @@ test('clicking an approval choice in a group room submits it (#91706)', async ()
   await groupComposer.fill(`@programmer ${APPROVAL_COMMAND_TRIGGER}`)
   await groupComposer.press('Enter')
 
-  // The member's gated terminal command surfaces as an approval card in the room.
-  const once = page.getByRole('button', { name: 'once', exact: true })
-  await expect(once).toBeVisible({ timeout: 90_000 })
-  await expect(page.getByText(/wants to run a command/)).toBeVisible()
+  // The member's gated terminal command surfaces as an approval card in the
+  // ROOM. Assert inside the room's own card: the same approval also reaches
+  // the Desktop's session-level approval surface, and a build that switches
+  // tabs on it would otherwise fail here on visibility instead of on the
+  // contract below (the click must be the submit).
+  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+  const card = page.getByText(/wants to run a command/).locator('xpath=..')
+  const once = card.getByRole('button', { name: 'once', exact: true })
+
+  await expect(async () => {
+    if ((await groupTab.getAttribute('aria-selected')) !== 'true') {
+      await groupTab.click()
+    }
+
+    await expect(card).toBeVisible({ timeout: 5_000 })
+  }).toPass({ timeout: 90_000 })
+  await expect(once).toBeVisible()
   console.log('APPROVAL CARD: visible; responds so far =', await page.evaluate(() => (window as any).__approvalResponds.length))
   await page.screenshot({ path: test.info().outputPath('approval-card.png') })
 
@@ -104,7 +117,7 @@ test('clicking an approval choice in a group room submits it (#91706)', async ()
   // One approval.respond leaves the Desktop for the click itself — no second
   // "Respond" click required (there is none to click for approvals).
   await expect.poll(() => page.evaluate(() => (window as any).__approvalResponds.length), { timeout: 15_000 }).toBe(1)
-  await expect(page.getByRole('button', { name: 'Respond', exact: true })).toHaveCount(0)
+  await expect(card.getByRole('button', { name: 'Respond', exact: true })).toHaveCount(0)
   expect(await page.evaluate(() => (window as any).__approvalResponds[0])).toContain('once')
 
   // The blocked member resumes: the command runs and its reply lands in the room.
