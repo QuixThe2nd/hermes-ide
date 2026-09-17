@@ -3681,6 +3681,7 @@ export interface AgentPluginRow {
   catalog_tier?: string | null
   installed_sha?: string | null
   catalog_sha?: string | null
+  catalog_version?: string | null
   update_available?: boolean | null
   pinned_sha?: string | null
 }

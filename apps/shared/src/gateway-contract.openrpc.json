@@ -4145,6 +4145,18 @@
             "default": null,
             "title": "Catalog Sha"
           },
+          "catalog_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Version"
+          },
           "update_available": {
             "anyOf": [
               {
