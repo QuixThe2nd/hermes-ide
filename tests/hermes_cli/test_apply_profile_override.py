@@ -34,6 +34,7 @@ def _run_apply_profile_override(
 
     if active_profile and active_profile != "default":
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / active_profile / "config.yaml").write_text("{}\n")  # identity marker
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if hermes_home is not None:
@@ -162,8 +163,9 @@ class TestSupervisedChildIgnoresStickyProfile:
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
         (hermes_root / "active_profile").write_text("briefer")
-        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
-        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+        for name in ("briefer", "coder"):
+            (hermes_root / "profiles" / name).mkdir(parents=True, exist_ok=True)
+            (hermes_root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)

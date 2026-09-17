@@ -1609,10 +1609,10 @@ class TestResolveProfileEnvSpelling:
         never fall back to the platform default.
         """
         root = tmp_path / "configured-root"
-        (root / "profiles" / "beta").mkdir(parents=True)
-        (root / "profiles" / "coder").mkdir(parents=True)
         custom = tmp_path / "custom-hermes"
-        (custom / "profiles" / "beta").mkdir(parents=True)
+        for profile_dir in (root / "profiles" / "beta", root / "profiles" / "coder", custom / "profiles" / "beta"):
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text("{}\n")  # identity marker: a bare dir does not resolve
         cases = [
             (root, "coder", root / "profiles" / "coder"),
             (root / "profiles" / "alpha", "beta", root / "profiles" / "beta"),
