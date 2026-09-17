@@ -233,6 +233,9 @@ class _Heartbeat:
         # activity_ts) all froze; thresholds differ idle vs in-tool.
         self.last_seen = {"iter": 0, "tool": None, "ts": None, "stale": 0}
         self.handle = None
+        # Set on the stale verdict; ``await_child`` waits on it (its worker's done-callback
+        # sets it too) so a wedged child ends the wait instead of only ending the heartbeat.
+        self.settled = threading.Event()
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -271,10 +274,12 @@ class _Heartbeat:
                 last_seen["stale"] += 1
             if last_seen["stale"] >= (_HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE):
                 logger.warning(
-                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — stopping heartbeat",
+                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — abandoning its wait",
                     task_index, last_seen["stale"], child_tool or "<none>",
                 )
-                return False  # stop touching parent, let gateway timeout fire
+                # A finite/-Q turn has no gateway watchdog behind this; the wait itself must end (#109749).
+                self.settled.set()
+                return False
             if child_tool:
                 desc = f"delegate_task: subagent running {child_tool} (iteration {child_iter}/{child_max})"
             elif child_summary.get("last_activity_desc", ""):
@@ -631,6 +636,7 @@ class _ChildRun:
     goal: str
     subagent_id: Optional[str]
     child_progress_cb: Any
+    heartbeat: Any = None
     child_start: float = field(default_factory=time.monotonic)
     worktree_info: Optional[Dict[str, str]] = None
     child_task_id: str = ""
@@ -739,8 +745,17 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
+        # Without the second, a worker wedged after its final answer holds a finite (-Q / Bot Chat
+        # one-shot) turn — and its session lease — forever, since that runtime has no gateway
+        # inactivity watchdog (#109749).
+        settled = self.heartbeat.settled if self.heartbeat is not None else threading.Event()
+        future.add_done_callback(lambda _f: settled.set())
         try:
-            return future.result(timeout=child_timeout), None, False
+            settled.wait(timeout=child_timeout)
+            if not future.done():
+                raise FuturesTimeoutError()
+            return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
         finally:
@@ -770,6 +785,11 @@ class _ChildRun:
                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
         if not is_timeout:
             _err = str(exc)
+        elif child_timeout is None:
+            _err = (
+                f"Subagent stopped making progress after {child_api_calls} API call(s) (heartbeat stale "
+                f"threshold) — the pending worker was abandoned."
+            )
         elif before_first_call:
             _err = (
                 f"Subagent timed out after {child_timeout}s without making any API call — the child never reached its "

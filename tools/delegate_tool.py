@@ -2800,6 +2800,10 @@ def _run_single_child(
     _last_seen_activity_ts = [None]  # type: list
     _stale_count = [0]
     _heartbeat_handle = [None]  # type: list
+    # Set on the stale verdict or when the worker finishes; the sync wait below
+    # waits on it so a wedged child ends the wait instead of only ending the
+    # heartbeat (#109749).
+    _settled = [threading.Event()]
 
     def _heartbeat_tick():
         if parent_agent is None:
@@ -2853,12 +2857,14 @@ def _run_single_child(
             if _stale_count[0] >= stale_limit:
                 logger.warning(
                     "Subagent %d appears stale (no progress for %d "
-                    "heartbeat cycles, tool=%s) — stopping heartbeat",
+                    "heartbeat cycles, tool=%s) — abandoning its wait",
                     task_index,
                     _stale_count[0],
                     child_tool or "<none>",
                 )
-                return False  # stop touching parent, let gateway timeout fire
+                # A finite/-Q turn has no gateway watchdog behind this; the wait itself must end (#109749).
+                _settled[0].set()
+                return False
 
             if child_tool:
                 desc = (
@@ -3129,8 +3135,20 @@ def _run_single_child(
             _child_context.run,
             _run_with_thread_capture,
         )
+        # Worker completion releases the sync wait too (mirrors upstream's
+        # settled done-callback); without it a timeout-less wait would ignore
+        # a finished worker and only wake on the stale verdict.
+        _child_future.add_done_callback(lambda _f: _settled[0].set())
+        _stale_ended = False
         try:
-            result = _child_future.result(timeout=child_timeout)
+            # One wait covers both ways out: the worker finishing, or the
+            # heartbeat's stale verdict ending the wait (#109749).
+            _settled[0].wait(timeout=child_timeout)
+            if not _child_future.done():
+                if child_timeout is None:
+                    _stale_ended = True
+                raise FuturesTimeoutError()
+            result = _child_future.result()
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
@@ -3200,7 +3218,12 @@ def _run_single_child(
                     pass
 
             if is_timeout:
-                if child_api_calls == 0:
+                if _stale_ended:
+                    _err = (
+                        f"Subagent stopped making progress after {child_api_calls} API call(s) "
+                        "(heartbeat stale threshold) — the pending worker was abandoned."
+                    )
+                elif child_api_calls == 0:
                     _err = (
                         f"Subagent timed out after {child_timeout}s without "
                         f"making any API call — the child never reached its "
