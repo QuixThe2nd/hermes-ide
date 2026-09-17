@@ -5,6 +5,8 @@ art).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from hermes_cli.dashboard_auth import clear_providers, get_provider
@@ -169,6 +171,26 @@ def test_auth_provider_re_register_rotates_in_place():
     # The superseded handle is identity-conditional: disposing it is a no-op.
     stale.dispose()
     assert get_provider("basic") is new
+
+
+def test_profile_manager_cannot_replace_launch_home_auth_provider():
+    """Profile plugin discovery must not rotate the dashboard's auth gate."""
+    manager, ctx = _real_ctx()
+    launch_provider = _Basic("launch-home")
+    ctx.register_dashboard_auth_provider(launch_provider)
+
+    profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
+    profile_manager = PluginManager(scope_key=profile_scope)
+    profile_ctx = PluginContext(
+        PluginManifest(name="basic", version="0.0.1", kind="backend"),
+        manager=profile_manager,
+    )
+
+    registration = profile_ctx.register_dashboard_auth_provider(_Basic("profile"))
+
+    assert registration is None
+    assert get_provider("basic") is launch_provider
+    assert "basic" not in profile_manager._ownership_ledger
 
 
 # ---------------------------------------------------------------------------

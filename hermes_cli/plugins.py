@@ -28,7 +28,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
@@ -950,6 +950,18 @@ class PluginContext:
         from hermes_cli.dashboard_auth import DashboardAuthProvider
         from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
+            return
+        launch_scope = hermes_home_key(get_process_hermes_home())
+        if self._manager.scope_key != launch_scope:
+            logger.warning(
+                "Plugin '%s' tried to register dashboard-auth provider %r "
+                "from profile scope %s; ignoring it because dashboard auth "
+                "is owned by launch scope %s.",
+                self.manifest.name,
+                provider.name,
+                self._manager.scope_key,
+                launch_scope,
+            )
             return
         registry_name = provider.name
         # The auth registry is process-global (lifetime = web server). Disposing it on a routine
