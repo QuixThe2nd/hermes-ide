@@ -55,7 +55,7 @@ category: memory            # desktop | memory | platform | web | tools | voice 
 requires_hermes: ">=0.19"   # optional
 docs_url: ""                # optional
 version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
-image: ""                   # optional https image on a GitHub host, e.g.
+image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 capabilities:

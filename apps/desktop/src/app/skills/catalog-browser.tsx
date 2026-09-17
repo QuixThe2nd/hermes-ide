@@ -149,7 +149,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         {selected.imageUrl && (
           <img
             alt=""
-            className="block aspect-[16/7] w-full rounded-md border border-(--ui-border) object-cover"
+            className="block aspect-[2/1] w-full rounded-md border border-(--ui-border) object-cover"
             decoding="async"
             loading="lazy"
             onError={e => { e.currentTarget.style.display = 'none' }}
