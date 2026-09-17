@@ -2670,6 +2670,12 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._fire_stream_delta(text)
         self.deltas_were_sent["yes"] = True
 
+    def _visible_text_delivered(self) -> bool:
+        """True when visible assistant text actually reached a stream consumer this attempt
+        (``_fire_stream_delta`` records only scrubbed, delivered text; ``deltas_were_sent``
+        flips on any content delta, including whitespace/think-only ones nobody saw)."""
+        return bool((getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip())
+
     def _emit_reasoning(self, text: str) -> None:
         self._fire_first_delta()
         self.agent._fire_reasoning_delta(text)
@@ -3231,11 +3237,26 @@ class _StreamingCall(StreamingWaitMonitor):
             return True
 
         if self.deltas_were_sent["yes"]:
+            _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
+            if not _partial_tool_in_flight and not self._visible_text_delivered():
+                # Deltas fired but nothing visible reached a consumer (whitespace/think-only
+                # deltas, or no display consumer at all) and no tool call is in flight: from
+                # the user's and the model's point of view NOTHING was delivered. The
+                # "partial delivery" stub would be EMPTY and the loop would ask the model to
+                # continue from nowhere, so it repeats the lost step (#112419). Classify as an
+                # undelivered failure instead: same-prefix retry, then the main loop's
+                # fallback/backoff — there is no text to duplicate.
+                logger.warning(
+                    "Stream died after deltas but before any visible text was delivered (0 chars, "
+                    "no tool call in flight); treating as an undelivered stream failure: %s", e)
+                self._quiet(self.agent._reset_stream_delivery_tracking)
+                self.deltas_were_sent["yes"] = False
+                self.first_delta_fired["done"] = False
+        if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
             # retry TRANSIENT errors (a "reconnecting" marker + duplicated
             # preamble beats a failed action; no tool has executed yet).
-            _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
             if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
                 logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
                 self.result["error"] = e
@@ -3434,8 +3455,10 @@ class _StreamingCall(StreamingWaitMonitor):
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the
         continuation machinery; tool_calls=None blocks executing incomplete calls.
-        Content may be EMPTY on purpose — the loop skips appending an empty stub and
-        only sends the nudge (placeholder text leaked into the stitched response)."""
+        Content may be EMPTY (dropped tool call, overflow) — the loop skips appending an
+        empty stub and only sends the nudge (placeholder text leaked into the stitched
+        response). A text-only death with 0 visible chars never gets here: the error
+        handler reclassifies it as undelivered (#112419)."""
         error = self.result["error"]
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
         _partial_names = list(self.result.get("partial_tool_names") or [])
