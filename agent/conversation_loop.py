@@ -70,6 +70,7 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
+from agent.repetition_guard import is_repetition_dominated
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
@@ -352,6 +353,8 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     empty-response storms); the interruption scaffold is replay text carried only in the user
     correction's ``api_content``; an on-screen-empty placeholder is ``display_kind=hidden``."""
     visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
+    if is_repetition_dominated(visible):
+        visible = ""
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
     if visible:

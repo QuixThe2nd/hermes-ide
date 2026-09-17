@@ -192,6 +192,34 @@ class TestActiveTurnRedirect:
 
 
 class TestActiveTurnRedirectCheckpoint:
+    def test_repetition_dominated_partial_is_not_replayed(self):
+        """A looped partial must not seed the correction's next API request."""
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        repeated = ("The same degenerate partial response keeps repeating without progress.\n" * 10)
+        agent = _bare_agent()
+        agent._current_streamed_assistant_text = repeated
+        messages = [{"role": "user", "content": "start"}]
+
+        _apply_active_turn_redirect(agent, messages, "Change course.")
+
+        replayed = messages[-1]["api_content"]
+        assert repeated not in replayed
+        assert "Visible response before the interruption:" not in replayed
+
+    def test_ordinary_partial_remains_replayable(self):
+        """Useful interrupted text remains available to the corrected request."""
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        visible = "I found the migration entry point and was about to inspect it."
+        agent = _bare_agent()
+        agent._current_streamed_assistant_text = visible
+        messages = [{"role": "user", "content": "start"}]
+
+        _apply_active_turn_redirect(agent, messages, "Change course.")
+
+        assert visible in messages[-1]["api_content"]
+
     def test_assistant_tail_puts_correction_last(self):
         from agent.conversation_loop import _apply_active_turn_redirect
 
