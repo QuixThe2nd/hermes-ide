@@ -516,6 +516,39 @@ class TestSkillManageDispatcher:
         assert "rolled back" not in result["error"] and not sibling_created
         assert bare["success"] is False and "file_content" not in bare["error"]
 
+    @pytest.mark.parametrize("op", [
+        {"action": "patch", "old_string": "body"},
+        {"action": "patch", "old_string": "body", "new_string": "x", "content": "# whole"},
+    ])
+    def test_patch_shape_misses_are_rejected_before_any_sibling_applies(self, tmp_path, op):
+        """A patch missing new_string, or mixing content with old_string/new_string, is a shape
+        miss like the misfiled text slot: decided in _validate_batch_ops, so op[0] is never
+        created and rolled back."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = json.loads(skill_manage(action="", name="", operations=[
+                {"name": "sibling", "action": "create", "content": VALID_SKILL_CONTENT},
+                {"name": "my-skill", **op}]))
+            sibling_created = _find_skill("sibling") is not None
+
+        assert result["success"] is False
+        assert "operations[1]" in result["error"]
+        assert "rolled back" not in result["error"] and not sibling_created
+
+    def test_batch_delete_forwards_absorbed_into_to_consolidation_guard(self, tmp_path):
+        """Curator consolidation emits ``[{action: delete, name, absorbed_into: umbrella}]`` through
+        the operations[] shape; the guard must see that umbrella, not None (which fail-closes)."""
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._curator_consolidation_delete_guard",
+                   return_value=None) as guard:
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = json.loads(skill_manage(action="", name="", operations=[
+                {"name": "narrow", "action": "delete", "absorbed_into": "umbrella"}]))
+
+        assert result["success"] is True, result
+        guard.assert_called_once_with("narrow", "umbrella")
+
     def test_unmatched_old_string_with_stray_key_is_not_steered_to_a_rewrite(self, tmp_path):
         """#112677 — the misplaced-text note belongs to argument-shape misses only. A patch whose
         real problem is an unmatched old_string used to get "move that text to ... 'content'

@@ -33,6 +33,9 @@ _PATCH_NEEDS_OLD_STRING = (
     "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
     "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
     "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+_PATCH_NEEDS_NEW_STRING = "new_string is required for 'patch'. Use an empty string to delete matched text."
+_PATCH_EITHER_OR = ("Pass EITHER content (full SKILL.md rewrite) OR old_string/new_string "
+                    "(targeted replacement), not both.")
 # Text-slot keys a model confuses: key -> the action that reads it. A 27B model that just
 # used write_file's file_content re-emits it on create/patch and then replays the identical
 # payload when the error only says the right key is "required" — the hint has to name where
@@ -67,8 +70,15 @@ def _op_shape_error(action: str, args: dict):
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args.get(arg)):
             return message + _misplaced_text_hint(action, args)
-    if action == "patch" and not args.get("old_string") and not args.get("content"):
-        return _PATCH_NEEDS_OLD_STRING + _misplaced_text_hint(action, args)
+    if action == "patch":
+        # Every patch shape miss is decided here, not in the handler, so a batch never applies
+        # op[0] only to roll it back over op[1]'s missing new_string or content+old_string mix.
+        if args.get("content") and (args.get("old_string") or args.get("new_string") is not None):
+            return _PATCH_EITHER_OR
+        if not args.get("old_string") and not args.get("content"):
+            return _PATCH_NEEDS_OLD_STRING + _misplaced_text_hint(action, args)
+        if not args.get("content") and args.get("new_string") is None:
+            return _PATCH_NEEDS_NEW_STRING
     return None
 
 

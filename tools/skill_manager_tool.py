@@ -32,7 +32,8 @@ from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
     _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
-from tools.skill_manager_batch import _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch
+from tools.skill_manager_batch import (
+    _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -463,7 +464,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     if not old_string:
         return _err(_PATCH_NEEDS_OLD_STRING)
     if new_string is None:
-        return _err("new_string is required for 'patch'. Use an empty string to delete matched text.")
+        return _err(_PATCH_NEEDS_NEW_STRING)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
     skill_dir, guard = _locate_for_write(name, "patch")
@@ -692,8 +693,7 @@ def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
-        return tool_error("Pass EITHER content (full SKILL.md rewrite) OR "
-                          "old_string/new_string (targeted replacement), not both.", success=False)
+        return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
@@ -894,12 +894,17 @@ SKILL_MANAGE_SCHEMA = {
                     _op_schema("remove_file", {
                         "file_path": {"type": "string", "description": "Supporting file (write_file's shape)."},
                     }, ("file_path",)),
-                    _op_schema("delete", {}, ()),
+                    # `absorbed_into` stays in the delete shape: with additionalProperties:false a
+                    # grammar-constrained backend would otherwise strip it and the curator's
+                    # consolidation delete guard would fail-close every consolidation.
+                    _op_schema("delete", {
+                        "absorbed_into": {"type": "string",
+                                          "description": "Curator consolidation only: umbrella skill "
+                                                         "that absorbed this one (must exist)."},
+                    }, ()),
                 ]},
             },
-            # Also accepted, never advertised: the legacy flat single-op fields, and
-            # `absorbed_into` on delete ops (curator-only vocabulary; the curator's
-            # prompt documents it and the delete guard's error re-teaches it).
+            # Also accepted, never advertised: the legacy flat single-op fields.
         },
         "required": ["operations"],
     },

@@ -75,10 +75,6 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         self.assertIn("skill_view()", desc)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def _fits(op, branch):
     """Plain-Python reading of one per-action branch (required + enum + additionalProperties:
     false) so the test does not need a JSON-Schema validator."""
@@ -113,3 +109,13 @@ class TestSkillManagePerActionShapes(unittest.TestCase):
                    {"name": "s", "action": "remove_file", "file_path": "references/a.md"},
                    {"name": "s", "action": "delete"}):
             self.assertEqual(len(self._matches(op)), 1, op)
+
+    def test_curator_consolidation_delete_keeps_absorbed_into(self):
+        """The curator's consolidation delete carries ``absorbed_into=<umbrella>``; with
+        additionalProperties:false a grammar-constrained backend refuses any key the delete
+        branch does not advertise, and the delete guard then fail-closes every consolidation."""
+        self.assertEqual(len(self._matches({"name": "s", "action": "delete", "absorbed_into": "umbrella"})), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
