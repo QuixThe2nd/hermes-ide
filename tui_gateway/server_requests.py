@@ -149,23 +149,25 @@ def resolve_response(frame: dict) -> bool:
         req = _open.get(rid)
         if req is None:
             return False
-        if req.on_result is not None:
-            _open.pop(rid, None)
-    if "error" in frame:
-        logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
-        req.result, req.answered = None, False
-    else:
-        result = frame.get("result")
-        req.result = result if isinstance(result, dict) else {}
-        if req.qids and "answers" in req.result:
-            # Batch clarify: answers locked early via clarify.lock belong to the final set even when
-            # the closing response only carries the tail the user answered last.
-            answers = req.result.get("answers")
-            merged = dict(req.locked)
-            if isinstance(answers, dict):
-                merged.update(answers)
-            req.result = {**req.result, "answers": merged}
-        req.answered = True
+        # Removing the request and committing its outcome are one settlement.
+        # ``cancel()`` also settles under this lock, so the first side to get
+        # here wins instead of a later cancellation overwriting a response.
+        _open.pop(rid, None)
+        if "error" in frame:
+            logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
+            req.result, req.answered = None, False
+        else:
+            result = frame.get("result")
+            req.result = result if isinstance(result, dict) else {}
+            if req.qids and "answers" in req.result:
+                # Batch clarify: answers locked early via clarify.lock belong to the final set even when
+                # the closing response only carries the tail the user answered last.
+                answers = req.result.get("answers")
+                merged = dict(req.locked)
+                if isinstance(answers, dict):
+                    merged.update(answers)
+                req.result = {**req.result, "answers": merged}
+            req.answered = True
     if req.on_result is not None:
         req.on_result(req.result)
     req.event.set()
@@ -186,6 +188,7 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
             req.result, req.answered = {"answers": dict(req.locked)}, True
+            _open.pop(request_id, None)
     if not remaining:
         req.event.set()
     return remaining
@@ -199,8 +202,8 @@ def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
         targets = [req for req in _open.values() if sid is None or req.sid == sid]
         for req in targets:
             _open.pop(req.id, None)
+            req.result, req.answered = None, False
     for req in targets:
-        req.result, req.answered = None, False
         if req.on_result is not None:
             req.on_result(None)
         req.event.set()

@@ -313,6 +313,53 @@ def test_server_request_round_trip_uses_response_frame(capture):
         assert not server_requests._open
 
 
+def test_response_settlement_wins_over_a_later_cancel(capture):
+    """A response and cancellation may race; the first settlement owns the result."""
+    from tui_gateway import server_requests
+
+    req = server_requests.ServerRequest("s1", "sudo", {})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    assert server_requests.resolve_response({"id": req.id, "result": {"value": "yes"}})
+    assert server_requests.cancel("s1") == 0
+    assert req.answered is True
+    assert req.result == {"value": "yes"}
+    assert req.event.is_set()
+
+
+def test_final_clarify_lock_settlement_wins_over_a_later_cancel(capture):
+    """Batch clarify's lock-based resolution follows the same first-settlement rule."""
+    from tui_gateway import server_requests
+
+    req = server_requests.ServerRequest("s1", "clarify", {}, qids=["q1"])
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    assert server_requests.lock_answer(req.id, "q1", "yes") == []
+    assert server_requests.cancel("s1") == 0
+    assert req.answered is True
+    assert req.result == {"answers": {"q1": "yes"}}
+    assert req.event.is_set()
+
+
+def test_server_request_error_response_fails_fast(capture):
+    """A shared-channel client without a handler answers -32601 instead of waiting for the deadline."""
+    from tui_gateway import server_requests
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+        daemon=True,
+    )
+    thread.start()
+    req = _wait_open(server_requests)
+    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert box["result"] is None
+
+
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
