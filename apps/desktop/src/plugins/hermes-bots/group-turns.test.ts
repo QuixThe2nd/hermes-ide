@@ -303,6 +303,32 @@ describe('session-gone classification', () => {
     )
     expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
   })
+
+  // #92760 silent stall (#95103): the gateway RETAINS a failed turn under
+  // `inflight` as `{ status: 'error', … }` so reconnecting clients can rebuild
+  // the error. Read as "busy", that tombstone kept sliding the deadline to the
+  // 20-minute cap and the member looked like it was thinking forever.
+  it('surfaces a retained failed turn immediately instead of waiting on it as live work', async () => {
+    // Each clock read jumps a minute: a loop that keeps extending the deadline
+    // hits the hard cap in a bounded number of polls instead of spinning.
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+    const room = await loadRoom({ retainedErrorAfterSubmit: 'No usable credentials found', turn: () => [] })
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(
+        'No usable credentials found'
+      )
+      // The submit itself succeeded once; no timed-out/stranded marker was left behind.
+      expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
+      expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
+      expect(room.turns.groupSessionBusy({ inflight: { status: 'error' }, running: false })).toBe(false)
+      expect(room.turns.groupSessionBusy({ inflight: { status: 'streaming' }, running: false })).toBe(true)
+      expect(room.turns.groupSessionBusy({ inflight: true })).toBe(true)
+    } finally {
+      clock.mockRestore()
+    }
+  })
 })
 
 describe('per-turn socket lease', () => {

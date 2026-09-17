@@ -351,6 +351,15 @@ const TASK_PANEL_RESUME_SCRIPT: ScriptedTurn[] = [
   },
 ]
 
+/**
+ * A marker that makes the mock answer the completion with a non-retryable
+ * provider failure (401 invalid key). The gateway then fails the member's
+ * turn and RETAINS it under `session.resume.inflight` as `{ status: 'error' }`
+ * — the tombstone a Bot Mode room must read as "finished", not "still busy".
+ */
+export const PROVIDER_FAILURE_TRIGGER = 'E2E_PROVIDER_FAILURE_TRIGGER'
+export const PROVIDER_FAILURE_MESSAGE = 'E2E invalid_api_key: the mock refused this completion on purpose'
+
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
   toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
@@ -385,6 +394,38 @@ function includesBatchClarifyTrigger(value: unknown): boolean {
 
   if (value && typeof value === 'object') {
     return Object.values(value).some(includesBatchClarifyTrigger)
+  }
+
+  return false
+}
+
+/**
+ * A marker that makes the mock run a recursive delete through the real
+ * `terminal` tool. Under `approvals: mode: "manual"` the backend parks the
+ * turn behind a command-approval prompt (once/session/always/deny), which is
+ * how a Bot Mode group room gets its approval card. The path is a scratch
+ * directory so an approved run is harmless; once the tool result is in the
+ * history the mock falls through to the canned reply.
+ */
+export const APPROVAL_COMMAND_TRIGGER = 'E2E_APPROVAL_COMMAND_TRIGGER'
+export const APPROVAL_COMMAND = 'rm -rf /tmp/hermes-e2e-approval-probe'
+
+const APPROVAL_COMMAND_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'terminal', args: { command: APPROVAL_COMMAND } }],
+}
+
+function includesApprovalCommandTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(APPROVAL_COMMAND_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesApprovalCommandTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesApprovalCommandTrigger)
   }
 
   return false
@@ -576,6 +617,23 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          if (includesApprovalCommandTrigger(parsed.messages)) {
+            // First completion scripts the gated command; once its tool
+            // result is in the history, fall through to the canned reply.
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+
+            if (!hasToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
+              }
+
+              return
+            }
+          }
+
           if (includesBatchClarifyTrigger(parsed.messages)) {
             // Only the FIRST completion of the conversation scripts the batch
             // clarify. The trigger text stays in message history, so once the
@@ -601,6 +659,13 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
             }
+
+            return
+          }
+
+          if (userText.includes(PROVIDER_FAILURE_TRIGGER)) {
+            res.writeHead(401, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: PROVIDER_FAILURE_MESSAGE, type: 'invalid_request_error' } }))
 
             return
           }

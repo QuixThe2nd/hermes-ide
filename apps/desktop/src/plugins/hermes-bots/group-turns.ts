@@ -8,6 +8,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
+import { noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -104,7 +105,10 @@ interface GroupPendingApproval {
 /** The `session.resume` fields the room engine reads off a member's hidden
  *  per-group session. */
 interface GroupSessionSnapshot {
-  inflight?: boolean
+  /** `true`/`false` on older gateways; current ones replay the in-flight turn
+   *  object, which after a failure is RETAINED as `{ status: 'error', … }`
+   *  (`_fail_inflight_turn`) so a reconnecting client can rebuild the error. */
+  inflight?: boolean | { error?: string; status?: string }
   message_count?: number
   messages?: GroupTurnTranscriptMessage[]
   /** Still-open server→client requests (`server_requests.open_requests`); the
@@ -114,6 +118,33 @@ interface GroupSessionSnapshot {
   running?: boolean
   session_id?: string
   session_key?: string
+}
+
+/** The error message of a RETAINED failed turn, else null. The gateway keeps
+ *  `{ status: 'error', error }` under `inflight` after a turn dies so a
+ *  reconnecting client can rebuild the error bubble; it is a tombstone of
+ *  finished work, not live work (`prompt_turn.py` itself treats it as a
+ *  stale leftover when the next turn starts). */
+export function retainedGroupTurnError(state: GroupSessionSnapshot | null | undefined): null | string {
+  const inflight = state?.inflight
+
+  if (inflight && typeof inflight === 'object' && inflight.status === 'error') {
+    return String(inflight.error || 'turn failed')
+  }
+
+  return null
+}
+
+/** Is the member's session still doing work this turn should wait for?
+ *  Reading a retained failure as busy kept a dead turn's deadline sliding to
+ *  the 20-minute hard cap and left its stranded marker harvestable forever
+ *  (#92760 silent stall, diagnosed in #95103). */
+export function groupSessionBusy(state: GroupSessionSnapshot | null | undefined): boolean {
+  if (state?.running) {
+    return true
+  }
+
+  return Boolean(state?.inflight) && retainedGroupTurnError(state) === null
 }
 
 /** A member's per-group session, resolved for one turn. */
@@ -871,7 +902,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     }
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
-    const busy = Boolean(state?.inflight || state?.running)
+    const busy = groupSessionBusy(state)
     // A clarify blocking inside the member's session is a question for the
     // HUMAN (#90694) — mirror it into the room store so a card renders, and
     // hold the turn open: the member isn't stalling, it's waiting on us.
@@ -889,6 +920,15 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
         })
 
         return replyText
+      }
+
+      // Our prompt landed and the turn died on it: surface the gateway's
+      // retained error through the failed-turn path (activity row + roster
+      // badge) instead of reading the silence as a pass.
+      const failure = retainedGroupTurnError(state)
+
+      if (failure !== null) {
+        throw new Error(failure)
       }
 
       recordGroupActivity(context.group, {
@@ -1077,7 +1117,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     // Pending prompts are authoritative even while the session is running.
     const awaitingUser = syncGroupClarify(group, member, strandedThread, state)
 
-    if (state?.inflight || state?.running || awaitingUser) {
+    if (groupSessionBusy(state) || awaitingUser) {
       return
     }
 
@@ -1099,6 +1139,21 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     }
 
     const reply = pickGroupTurnReply(messages, strandedBefore)
+
+    if (reply === null) {
+      // The late turn died instead of answering: say so where the user looks
+      // (activity row + roster badge) rather than consuming the marker silently.
+      const failure = retainedGroupTurnError(state)
+
+      if (failure !== null) {
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: member.name,
+          thread: strandedThread
+        })
+        noteBotAttention(memberKey, failure)
+      }
+    }
 
     if (reply && !isGroupPassText(reply)) {
       recordGroupActivity(group, {

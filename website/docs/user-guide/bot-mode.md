@@ -95,10 +95,17 @@ Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name
 Messages sent during a member turn queue behind the active room drive, including
 replies in the same thread. They do not interrupt that member or mark unseen
 messages as read. Stop cancels queued continuations and holds the members until
-resumed. A quiet room watches timed-out members for another 21 minutes after the
+resumed: @mention a held member, or address the whole room (`@all …` /
+`@everyone …`, any wording) to release everyone — `@all resume` is not a
+required incantation. `stop`, `halt` or `pause` holds a member only when the
+word sits next to its @mention (`stop @bot`, `@bot please pause`); the same word
+elsewhere in the sentence is ordinary prose, so a German `halt` no longer
+silences the bot it was sent to. A quiet room watches timed-out members for another 21 minutes after the
 foreground wait ends; this observation window does not extend the turn itself.
 Unresolved member failures remain visible in the collapsed Activity summary after
-the room settles. Expand Activity for the turn sequence; re-address the member to
+the room settles — including a turn the member's backend itself failed (bad
+credentials, provider errors), which is reported the moment the gateway
+reports it instead of looking like twenty minutes of thinking. Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 
@@ -126,7 +133,7 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **One visible conversation.** Public messages and each member's reply stay readable in arrival order, with the speaker's name and timestamp. Starting another topic does not collapse earlier replies. **Reply in thread** continues that topic without reordering the room; **Activity** is a secondary status view, not a replacement for messages. Private Bot Chats remain separate.
 - Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
 - Teammates can hand off to the primary Bot with `@hermes`, including in older saved rooms; Bots on other gateways keep their device-qualified tags (for example, `@default-vera`).
-- Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens. Pending questions and command approvals also light that badge; resolving the last prompt clears only prompt attention, not an independent mention. Prompts follow a renamed room, while disbanding retires them even if a member's in-flight poll arrives later.
+- Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens. Pending questions and command approvals also light that badge; resolving the last prompt clears only prompt attention, not an independent mention. A command approval in the room answers on the click itself — `once`, `session`, `always` or `deny` sends at once, with no second button to find. Prompts follow a renamed room, while disbanding retires them even if a member's in-flight poll arrives later.
 - Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
 - Each member keeps its own persistent room session, so room context survives like any other conversation.
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
