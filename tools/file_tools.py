@@ -1332,8 +1332,10 @@ def _handle_search_files(args, **kw):
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    # The schema documents path='.'; a present-but-blank (or JSON null) value
+    # is not a missing key for dict.get, so apply the default here (#112424).
     path = args.get("path", ".")
-    if isinstance(path, str) and not path.strip():
+    if not isinstance(path, str) or not path.strip():
         path = "."
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=path,

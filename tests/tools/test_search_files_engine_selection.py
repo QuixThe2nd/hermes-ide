@@ -288,8 +288,9 @@ def test_handler_forwards_modified_order(monkeypatch):
 
 
 @pytest.mark.parametrize("target", ["content", "files"])
-@pytest.mark.parametrize("blank_path", ["", " \t "])
+@pytest.mark.parametrize("blank_path", ["", " \t ", None])
 def test_handler_normalizes_blank_path_to_current_directory(monkeypatch, target, blank_path):
+    """#112424: a present-but-blank (or null) path must fall back to the documented '.' default."""
     captured = {}
 
     def fake_search_tool(**kwargs):
