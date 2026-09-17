@@ -200,10 +200,13 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
-def recover_pending_to_db(session_db=None) -> int:
+def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
+    ``session_resolver`` (optional ``session_key -> session_id``, e.g.
+    ``SessionStore.peek_session_id``) is required for real flush files: adapter ``MessageEvent``
+    objects carry no ``session_id``, so without it every recovery lands in the skip branch.
     Returns the number of messages recovered.
     """
     flush_files = sorted(_get_flush_dir().glob("*.json"))
@@ -220,7 +223,7 @@ def recover_pending_to_db(session_db=None) -> int:
             # Agent-history snapshots are for manual operator recovery, not automatic DB insertion.
             if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                 continue
-            if _recover_one_payload(session_db, path, payload):
+            if _recover_one_payload(session_db, path, payload, session_resolver=session_resolver):
                 recovered += 1
                 path.unlink(missing_ok=True)
     finally:
@@ -258,7 +261,8 @@ def _resolve_session_id_for_key(session_db, session_key: str) -> str:
     return str(row[0]) if row else ""
 
 
-def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> bool:
+def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
+                         session_resolver=None) -> bool:
     """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id — replay directly
     # (#78182). This handles spool files that were never drained before a restart.
@@ -281,10 +285,15 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> boo
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id. MessageEvent slots carry it in the serialised data; plain-string
-    # slots (runner-level _pending_messages) do not, so fall back to resolving the newest
+    # needs the real session_id. Real payloads lack it — the injected resolver supplies it;
+    # plain-string slots (runner-level _pending_messages) fall back to resolving the newest
     # session row for the routing key.
     session_id = data.get("session_id", "")
+    if not session_id and session_resolver is not None:
+        try:
+            session_id = session_resolver(session_key) or ""
+        except Exception:
+            session_id = ""
     if not session_id:
         session_id = _resolve_session_id_for_key(session_db, session_key)
     if not session_id:
