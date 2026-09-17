@@ -745,7 +745,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     return (seated.length ? seated : members).map(b => ({
       ...b,
-      title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
+      title: botRosterMeta(b, allMeta)?.title || b.title || ''
     }))
   }
 
