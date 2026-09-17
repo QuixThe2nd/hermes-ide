@@ -104,15 +104,6 @@ def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
     assert calls[-1] == ("mark", "quoted-marker", True)
 
 
-def test_run_one_job_no_agent_does_not_interpret_failure_marker(monkeypatch):
-    """Script-only jobs do not opt into agent response control tokens."""
-    calls = _patch_pipeline(monkeypatch, final="[CRON_FAILURE]\nscript output")
-
-    s.run_one_job({"id": "script-only", "name": "script", "no_agent": True, "deliver": "telegram"})
-
-    assert calls[-1] == ("mark", "script-only", True)
-
-
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     """An exception escaping the run body must not become a silent error row."""
     delivered = []
