@@ -17,6 +17,7 @@ import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -749,6 +750,16 @@ function MarkdownTextSurface({
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   isRunning: boolean
   text: string
+}
+
+/** Render raw assistant-style message text through the complete Desktop text
+ * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
+ * so the canonical link component can route them to inline players/previews.
+ * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
+ * outside a session — a Bot Mode group room — has no session to own artifact
+ * versions. */
+export function MessageTextContent({ text }: { text: string }) {
+  return <MarkdownTextContent disableArtifacts isRunning={false} text={renderMediaTags(text)} />
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
