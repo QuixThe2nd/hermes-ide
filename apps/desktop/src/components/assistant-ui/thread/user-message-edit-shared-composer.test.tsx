@@ -87,8 +87,8 @@ async function openEdit() {
 
   await act(async () => {
     fireEvent.pointerDown(bubble, { button: 0 })
-    // The bubble click blurs the pane composer: on macOS a <button> never
-    // takes mouse focus; elsewhere it does and then unmounts with the bubble.
+    // jsdom does not move focus on a synthetic pointerdown; the explicit blur
+    // stands in for Chromium's mousedown focus leaving the pane composer.
     main.blur()
     fireEvent.pointerUp(bubble, { button: 0 })
     fireEvent.click(bubble)
