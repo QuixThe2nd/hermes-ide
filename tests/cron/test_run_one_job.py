@@ -92,6 +92,22 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
     assert calls[-1] == ("mark", "declared-failure", False)
 
 
+def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
+    """The agent's own evidence reaches the operator as written, not re-diagnosed by the
+    provider-error heuristics (a child that "timed out" is not a model-service timeout)."""
+    delivered = []
+    evidence = "The export subagent timed out after 30 minutes waiting on the database."
+    _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+    monkeypatch.setattr(
+        s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
+
+    s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
+
+    assert len(delivered) == 1
+    assert evidence.rstrip(".") in delivered[0]
+    assert "model service" not in delivered[0]
+
+
 def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
     """Only the exact first line is control text; quoted markers remain report content."""
     calls = _patch_pipeline(
