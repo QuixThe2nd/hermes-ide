@@ -57,7 +57,8 @@ def _session_source_for_agent(platform: Optional[str]) -> str:
     except Exception:
         get_session_env = os.environ.get
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
-    if source in _UI_TRANSPORT_SOURCES and get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1":
+    if (source in _UI_TRANSPORT_SOURCES and get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+            and get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") != "1"):
         source = ""
     return source or platform or "cli"
 
