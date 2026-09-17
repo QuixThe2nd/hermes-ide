@@ -152,6 +152,16 @@ def _auto_title_enabled() -> bool:
         return True
 
 
+def _model_title_upgrade_enabled() -> bool:
+    """Distinct from ``enabled``: keep the instant derived title, skip the background model call (#85194)."""
+    try:
+        from utils import is_truthy_value
+        return is_truthy_value(_title_config().get("model_upgrade_enabled"), default=True)
+    except Exception:
+        logger.debug("Failed to read title_generation.model_upgrade_enabled", exc_info=True)
+        return True
+
+
 def strip_control_wrappers(text: str) -> str:
     """Remove leading control wrappers (nested too) so a slash-command turn reduces to the prose the user typed."""
     current = (text or "").strip()
@@ -294,6 +304,9 @@ def generate_title(
     """
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
+        return None
+    if not _model_title_upgrade_enabled():
+        logger.debug("Model title upgrade skipped: auxiliary.title_generation.model_upgrade_enabled=false")
         return None
     try:
         if runtime_validator is not None and not runtime_validator():
@@ -539,6 +552,9 @@ def maybe_auto_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
+    if not _model_title_upgrade_enabled():
+        logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
+        return
     # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.

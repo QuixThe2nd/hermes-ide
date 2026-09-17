@@ -862,6 +862,7 @@ prompt_caching:
 #   # Automatic session title generation after the first exchange
 #   title_generation:
 #     enabled: true          # set false to disable auto-title generation
+#     model_upgrade_enabled: true  # set false to keep the instant derived title and skip the model call
 #     provider: "auto"
 #     model: ""
 #     timeout: 30
