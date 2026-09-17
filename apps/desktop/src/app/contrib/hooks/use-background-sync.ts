@@ -485,6 +485,7 @@ export function rehydrateLiveSessionStatuses(
       const existing = $sessionStates.get()[runtimeSessionId]
 
       if (existing !== stateAtRequest[runtimeSessionId]) {
+        seen.add(runtimeSessionId)
         continue
       }
 
