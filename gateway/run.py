@@ -30937,6 +30937,8 @@ class GatewayRunner(
         self,
         source,
         reply_to_message_id: Optional[str] = None,
+        *,
+        allow_source_message_id_fallback: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         metadata = self._thread_metadata_for_target(
@@ -30944,7 +30946,11 @@ class GatewayRunner(
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
-            reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
+            reply_to_message_id=(
+                reply_to_message_id if reply_to_message_id is not None
+                else (getattr(source, "message_id", None) if allow_source_message_id_fallback else None)
+            ),
+            allow_telegram_dm_topic_reply_fallback=allow_source_message_id_fallback,
         )
         if getattr(source, "platform", None) == Platform.SLACK:
             # Per-turn egress identity (R3-5, connector PR gateway-gateway#210).
@@ -30986,18 +30992,19 @@ class GatewayRunner(
         chat_type: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         adapter: Optional[Any] = None,
+        allow_telegram_dm_topic_reply_fallback: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if self._is_telegram_dm_topic_target(
+        if (allow_telegram_dm_topic_reply_fallback and self._is_telegram_dm_topic_target(
             platform,
             chat_id,
             thread_id,
             chat_type=chat_type,
             adapter=adapter,
-        ):
+        )):
             metadata["telegram_dm_topic_reply_fallback"] = True
             # Telegram DM topic lanes need direct_messages_topic_id in metadata
             # so synthetic/queued messages (goal continuations, status notices)
