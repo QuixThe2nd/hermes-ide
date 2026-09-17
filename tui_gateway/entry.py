@@ -315,8 +315,14 @@ def main():
         except Exception as exc:
             # Pool-routed handlers already turn failures into this response; keep an
             # inline handler from taking down the stdio reader before it can reply.
-            logger.exception("inline RPC handler failed for method=%r", method)
-            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+            rid = req.get("id") if isinstance(req, dict) else None
+            logger.exception("inline RPC handler failed for method=%r id=%r", method, rid)
+            # The crash log is where "gateway exited" forensics start; a survived crash
+            # must leave the same trail or the degraded reply looks like a client bug.
+            _append_crash_log(
+                f"inline dispatch crash · {time.strftime('%Y-%m-%d %H:%M:%S')} · method={method!r}",
+                lambda f: f.write(traceback.format_exc()))
+            resp = _err(rid, -32000, f"handler error: {exc}")
         if resp is not None:
             _write_or_exit(
                 resp, f"response write failed for method={method!r} (broken stdout pipe)")

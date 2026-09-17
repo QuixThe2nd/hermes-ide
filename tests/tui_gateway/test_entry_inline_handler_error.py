@@ -1,8 +1,14 @@
-"""Regression coverage for stdio inline-handler failures (#112816)."""
+"""Regression coverage for stdio inline-handler failures (#112816).
+
+``entry.main()`` used to call ``dispatch(req)`` bare, so an exception from an
+inline (non-pool) handler unwound the read loop and killed the gateway child,
+losing the in-flight reply and wedging the TUI until a restart.
+"""
 
 from __future__ import annotations
 
 import io
+import json
 
 from tui_gateway import entry
 
@@ -10,7 +16,8 @@ from tui_gateway import entry
 def test_main_reports_inline_handler_error_and_keeps_reading(monkeypatch):
     """A failed inline request must not prevent the next request from replying."""
     replies: list[dict] = []
-    requests = iter((
+    breadcrumbs: list[str] = []
+    stdin_text = "".join(json.dumps(req) + "\n" for req in (
         {"jsonrpc": "2.0", "id": "broken", "method": "clipboard.save"},
         {"jsonrpc": "2.0", "id": "next", "method": "ping"},
     ))
@@ -23,8 +30,8 @@ def test_main_reports_inline_handler_error_and_keeps_reading(monkeypatch):
     monkeypatch.setattr(entry.server, "_ensure_skin_watcher", lambda: None)
     monkeypatch.setattr(entry, "handle_spurious_eof", lambda *_args: False)
     monkeypatch.setattr(entry, "write_json", lambda payload: replies.append(payload) or True)
-    monkeypatch.setattr(entry.sys, "stdin", io.StringIO("first\nsecond\n"))
-    monkeypatch.setattr(entry.json, "loads", lambda _line: next(requests))
+    monkeypatch.setattr(entry, "_append_crash_log", lambda header, dump=None: breadcrumbs.append(header))
+    monkeypatch.setattr(entry.sys, "stdin", io.StringIO(stdin_text))
 
     def dispatch(req):
         if req["id"] == "broken":
@@ -41,3 +48,5 @@ def test_main_reports_inline_handler_error_and_keeps_reading(monkeypatch):
         "error": {"code": -32000, "message": "handler error: clipboard backend is unavailable"},
     }
     assert replies[2] == {"jsonrpc": "2.0", "id": "next", "result": {"ok": True}}
+    # Forensics: the survived crash leaves the same crash-log trail a fatal one would.
+    assert len(breadcrumbs) == 1 and "clipboard.save" in breadcrumbs[0]
