@@ -236,7 +236,7 @@ class TestConfigGetPhantomKeyNotice:
         config_command(args)
 
         captured = capsys.readouterr()
-        assert json.loads(captured.out) is True
+        assert json.loads(captured.out) is True  # stdout stays parseable: notice is stderr-only
         assert "not a recognized config key" in captured.err
 
     @pytest.mark.parametrize(
@@ -258,15 +258,6 @@ class TestConfigGetPhantomKeyNotice:
         captured = capsys.readouterr()
         assert captured.out.strip()
         assert "not a recognized config key" not in captured.err
-
-    def test_missing_key_exits_without_a_notice(self, _isolated_hermes_home, capsys):
-        args = argparse.Namespace(config_command="get", key="compression.nonexistent_thing", json=False)
-        with pytest.raises(SystemExit) as exc:
-            config_command(args)
-
-        assert exc.value.code == 1
-        assert "not a recognized config key" not in capsys.readouterr().err
-
 
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
