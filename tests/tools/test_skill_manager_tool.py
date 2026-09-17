@@ -498,19 +498,36 @@ class TestSkillManageDispatcher:
                                                                     destination):
         """#112677 — a batch op whose SKILL.md text sits in another action's key must be told
         WHICH key it used and where to move it; the bare "X is required" error made a local
-        model replay the identical payload until the tool-loop guardrail tripped. The batch
-        still rolls back (atomicity unchanged), and a plain missing-content op gets no note."""
+        model replay the identical payload until the tool-loop guardrail tripped. The misfiled
+        op is rejected before any sibling is applied (no rollback needed), and a plain
+        missing-content op gets no note."""
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
-            result = json.loads(skill_manage(action="", name="",
-                                             operations=[{"name": "my-skill", **op}]))
+            result = json.loads(skill_manage(action="", name="", operations=[
+                {"name": "sibling", "action": "create", "content": VALID_SKILL_CONTENT},
+                {"name": "my-skill", **op}]))
             bare = json.loads(skill_manage(action="", name="",
                                            operations=[{"name": "other", "action": "create"}]))
+            sibling_created = _find_skill("sibling") is not None
 
         assert result["success"] is False
+        assert "operations[1]" in result["error"]
         assert f"'{stray_key}'" in result["error"] and destination in result["error"]
-        assert "rolled back" in result["error"]
+        assert "rolled back" not in result["error"] and not sibling_created
         assert bare["success"] is False and "file_content" not in bare["error"]
+
+    def test_unmatched_old_string_with_stray_key_is_not_steered_to_a_rewrite(self, tmp_path):
+        """#112677 — the misplaced-text note belongs to argument-shape misses only. A patch whose
+        real problem is an unmatched old_string used to get "move that text to ... 'content'
+        (full rewrite)" appended, steering the model toward the whole-file rewrite the patch
+        error itself warns against."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = json.loads(skill_manage(action="patch", name="my-skill", old_string="NOT IN FILE",
+                                             new_string="x", file_content="stray"))
+
+        assert result["success"] is False
+        assert "move that text" not in result["error"]
 
     def test_write_file_given_content_names_the_reverse_misplacement(self, tmp_path):
         """#112677 — the reverse direction: create's `content` sent to write_file. Checked on the

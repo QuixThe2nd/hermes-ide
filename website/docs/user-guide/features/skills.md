@@ -652,13 +652,20 @@ than 60 reference files). They warn; they never block a write.
 |--------|---------|------------|
 | `create` | New skill from scratch | `name`, `content` (full SKILL.md), optional `category` |
 | `patch` | Targeted fixes (preferred) | `name`, `old_string`, `new_string` |
-| `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
+| `patch` with `content` | Major structural rewrites (replaces the whole SKILL.md; `edit` is the legacy alias) | `name`, `content` |
 | `delete` | Remove a skill entirely | `name` |
 | `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
 | `remove_file` | Remove a supporting file | `name`, `file_path` |
 
+Each action is advertised as its own shape: the text slot belongs to one action only
+(`content` → create / full rewrite, `new_string` → targeted patch, `file_content` →
+write_file). An op that carries another action's slot — e.g. `file_content` on a
+`create` — is invalid against the tool schema (grammar-constrained local backends never
+emit it) and, if it arrives anyway, is rejected **before any op in the batch is
+applied**, with an error naming the key the text sits in and where to move it.
+
 :::tip
-The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
+The targeted `patch` is preferred for updates — it's more token-efficient than a full rewrite because only the changed text appears in the tool call.
 :::
 
 ### Gating agent skill writes (`skills.write_approval`)
