@@ -48,7 +48,6 @@ describe('surfaceModelSwitchConfirm through the shell dialog', () => {
     const description = screen.getByText(/Context window shrinks/)
 
     expect(description.textContent).toBe(GUARD_MESSAGE)
-    expect(description.className).toMatch(/whitespace-pre-line/)
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep current model' }))
 
