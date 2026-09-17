@@ -3187,6 +3187,8 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
         "doesn't support", "is deprecated for this model",
         "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
+        # Strict pydantic-validated gateways (Fireworks) name the unknown field this way (#109774).
+        "extra inputs are not permitted",
     ))
 
 
@@ -3885,8 +3887,13 @@ def _call_fallback_candidate_sync(
             ),
             task,
         )
+    from agent.auxiliary_fallback_recovery import send_with_parameter_rungs
+
+    def _send_recovering(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        return send_with_parameter_rungs(
+            lambda c, kw: _send(c, kw, dest), client, request_kwargs, task=task)
     try:
-        return _send(fb_client, fb_kwargs, destination)
+        return _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3896,7 +3903,7 @@ def _call_fallback_candidate_sync(
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return _send(*retry)
+                return _send_recovering(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
@@ -3924,8 +3931,13 @@ async def _call_fallback_candidate_async(
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
             task,
         )
+    from agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
+
+    async def _send_recovering(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        return await send_with_parameter_rungs_async(
+            lambda c, kw: _send(c, kw, dest), client, request_kwargs, task=task)
     try:
-        return await _send(fb_client, fb_kwargs, destination)
+        return await _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3935,7 +3947,7 @@ async def _call_fallback_candidate_async(
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return await _send(*retry)
+                return await _send_recovering(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
@@ -7029,8 +7041,10 @@ def _param_rung_accepts(exc: Exception) -> bool:
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
-            # Parameter rungs chain (temperature-strip retry 400s on reasoning_effort / response_format),
-            # and a route-gating 400 after a strip still reaches the provider-fallback rung.
+            # Parameter rungs chain in any order (a reasoning-strip retry can 400 on temperature,
+            # a temperature-strip retry on max_tokens), and a route-gating 400 after a strip still
+            # reaches the provider-fallback rung.
+            or _is_unsupported_parameter_error(exc, "temperature")
             or _is_reasoning_field_rejection(exc) or _is_structured_output_rejection(exc)
             or _is_model_incompatible_error(exc))
 
@@ -7049,61 +7063,70 @@ _LadderRoute = NamedTuple("_LadderRoute", [
 ])
 
 
+def _without_temperature(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without ``temperature``; None when it was not sent."""
+    return {k: v for k, v in kwargs.items() if k != "temperature"} if "temperature" in kwargs else None
+
+
+def _without_max_tokens(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without either output cap; None when neither was sent."""
+    retry_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_tokens", "max_completion_tokens")}
+    return retry_kwargs if len(retry_kwargs) != len(kwargs) else None
+
+
+def _is_max_tokens_rejection(exc: Exception, client: Any) -> bool:
+    err_str = str(exc)
+    # ZAI vision models reject max_tokens with code 1210 and a message that never
+    # mentions "max_tokens", so detect it explicitly.
+    is_zai_param_error = "1210" in err_str and "bigmodel" in str(getattr(client, "base_url", ""))
+    return ("max_tokens" in err_str or "unsupported_parameter" in err_str
+            or _is_unsupported_parameter_error(exc, "max_tokens") or is_zai_param_error)
+
+
+def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
+    """Ordered ``(matches, strip, log message)`` parameter rungs; ``strip`` returns None when the
+    field was not on the wire, so an unchanged request is never re-sent."""
+    return (
+        (lambda exc: _is_unsupported_parameter_error(exc, "temperature"), _without_temperature,
+         "provider rejected temperature; retrying without it"),
+        (_is_structured_output_rejection, _without_structured_output_format,
+         "provider rejected the structured-output format field; retrying without it "
+         "(schema enforcement degrades to prompt compliance)"),
+        # A chat-only model on an OpenAI-compatible relay rejects the profile's thinking-off encoding
+        # (top-level ``reasoning_effort: none``), and strict-schema gateways reject the generic
+        # ``extra_body.reasoning`` fallback outright (#109774); the caller only wanted "no thinking",
+        # so retry with every reasoning field omitted and let the route default apply (#112781).
+        (_is_reasoning_field_rejection, _without_reasoning_fields,
+         "provider rejected the reasoning field; retrying without it (route default applies)"),
+        (lambda exc: max_tokens is not None and _is_max_tokens_rejection(exc, client), _without_max_tokens,
+         "provider rejected the output cap; retrying without it"),
+    )
+
+
 def _ladder_parameter_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], max_tokens: Optional[int],
 ):
-    """Rungs 1-4: retry without temperature / structured-output format / reasoning field / max_tokens.
+    """Parameter rungs: retry without temperature / structured-output format / reasoning field /
+    max_tokens. Rungs chain in whichever order the provider raises them (reasoning models reject
+    temperature AND max_tokens; a reasoning-strip retry can then trip temperature, #78273), each
+    field stripped at most once, so a request with N rejected fields recovers in N retries.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
     client, task, tag = route.client, route.task, route.tag
-    if "temperature" in kwargs and _is_unsupported_parameter_error(first_err, "temperature"):
-        retry_kwargs = {k: v for k, v in kwargs.items() if k != "temperature"}
-        logger.info("Auxiliary %s%s: provider rejected temperature; retrying once without it",
-                    task or "call", tag)
+    rungs = list(_parameter_rungs(client, max_tokens))
+    while rungs:
+        hit = next(((matches, strip, message) for matches, strip, message in rungs
+                    if matches(first_err) and strip(kwargs) is not None), None)
+        if hit is None:
+            break
+        rungs.remove(hit)
+        matches, strip, message = hit
+        retry_kwargs = strip(kwargs)
+        logger.info("Auxiliary %s%s: %s: %s", task or "call", tag, message, first_err)
         resp, first_err = yield from _rung(
             _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
         if first_err is None:
             return resp, None, retry_kwargs
         kwargs = retry_kwargs
-    if _is_structured_output_rejection(first_err):
-        retry_kwargs = _without_structured_output_format(kwargs)
-        if retry_kwargs is not None:
-            logger.info("Auxiliary %s%s: provider rejected the structured-output "
-                        "format field; retrying once without it (schema "
-                        "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
-            resp, first_err = yield from _rung(
-                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
-            if first_err is None:
-                return resp, None, retry_kwargs
-            kwargs = retry_kwargs
-    # A chat-only model on an OpenAI-compatible relay rejects the profile's thinking-off encoding
-    # (top-level ``reasoning_effort: none``); the caller only wanted "no thinking", which is what
-    # such a model does anyway, so retry once with every reasoning field omitted (#112781).
-    if _is_reasoning_field_rejection(first_err):
-        retry_kwargs = _without_reasoning_fields(kwargs)
-        if retry_kwargs is not None:
-            logger.info("Auxiliary %s%s: provider rejected the reasoning field; retrying once "
-                        "without it (route default applies): %s", task or "call", tag, first_err)
-            resp, first_err = yield from _rung(
-                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
-            if first_err is None:
-                return resp, None, retry_kwargs
-            kwargs = retry_kwargs
-    err_str = str(first_err)
-    # ZAI vision models reject max_tokens with code 1210 and a message that never
-    # mentions "max_tokens", so detect it explicitly.
-    _is_zai_param_error = "1210" in err_str and "bigmodel" in str(getattr(client, "base_url", ""))
-    if max_tokens is not None and (
-        "max_tokens" in err_str or "unsupported_parameter" in err_str
-        or _is_unsupported_parameter_error(first_err, "max_tokens") or _is_zai_param_error
-    ):
-        kwargs.pop("max_tokens", None)
-        kwargs.pop("max_completion_tokens", None)
-        resp, first_err = yield from _rung(
-            _LadderStep("call", (client, kwargs)),
-            lambda exc: _is_payment_error(exc) or _is_connection_error(exc) or _is_rate_limit_error(exc),
-        )
-        if first_err is None:
-            return resp, None, kwargs
     return None, first_err, kwargs
 
 
