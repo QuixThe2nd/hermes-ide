@@ -1170,10 +1170,6 @@ def _run_summary_dispatch(
         _install_compression_cancelled_check(
             agent.context_compressor, lambda: commit_fence.is_cancelled, attempt_generation
         )
-    # From here this attempt is doing real summary work: publish it as the working
-    # attempt so later no-op entry claims (lock sit-outs on other paths) cannot
-    # supersede the candidate this run produces.
-    _mark_compressor_working_attempt(agent.context_compressor, attempt_generation)
 
     def _compression_cancel_requested() -> bool:
         return bool(
@@ -1195,6 +1191,10 @@ def _run_summary_dispatch(
                 aux_progress_hook(_progress_hook), aux_stream_deadline(_host_stream_deadline),
                 aux_interrupt_protection(cancel_check=_compression_cancel_requested),
             ):
+                # This attempt is now doing real summary work: publish it as the working attempt so later
+                # no-op entry claims (lock sit-outs, gates, the cancelled-fence skip above) cannot supersede
+                # the candidate this run produces (#112482).
+                _mark_compressor_working_attempt(agent.context_compressor, attempt_generation)
                 compressed = compress_fn(messages, **compress_kwargs)
                 # Freeze a hard stop that arrived after the last provider attempt but before session state rotates.
                 if hard_cancel_event is not None and hard_cancel_event.is_set():
