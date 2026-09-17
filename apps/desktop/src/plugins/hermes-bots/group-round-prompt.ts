@@ -1,4 +1,4 @@
-import { botHandle } from './data'
+import { botMentionTag } from './data'
 import { groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
@@ -96,14 +96,14 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
 
   const peerNames = peers
     .map(m => {
-      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
+      const handle = m.title ? `${m.title} (@${botMentionTag(m)})` : `@${botMentionTag(m)}`
 
       return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
     })
     .join(', ')
 
   return [
-    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    `[Group chat: "${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
     'New messages in the room since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),
