@@ -1157,11 +1157,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       {moa && currentMoaPreset && (
         <section>
           <SectionHeading icon={Cpu} title={m.moaTitle} />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model — it runs every step of the tool loop, and almost all of the run's cost is billed to its
-            provider. References only advise once per user turn.
-          </p>
+          <p className="mb-2 text-xs text-muted-foreground">{m.moaDescription}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>

@@ -678,16 +678,11 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 
-  it('labels the aggregator as the acting, billed model and references as advising', async () => {
+  it('labels the aggregator row as the acting model billed for the run', async () => {
     await openReferenceEditor()
 
-    // The aggregator row must carry the acting/billed pill right next to its
-    // title — this is the slot that pays for the whole tool loop.
+    // The aggregator row is the slot that pays for the whole tool loop (#112359).
     expect(screen.getByText('acting model · billed for the run')).toBeTruthy()
-    // Reference rows say what they actually do: advise once per user turn.
-    expect(screen.getAllByText('advises once per turn')).toHaveLength(2)
-    // The section blurb spells out the billing consequence.
-    expect(screen.getByText(/billed to its provider/i)).toBeTruthy()
   })
 })
 

@@ -1386,6 +1386,8 @@ export const en: Translations = {
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preset',
+      moaDescription:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn.',
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'acting model · billed for the run',
       moaReferenceHint: 'advises once per turn',

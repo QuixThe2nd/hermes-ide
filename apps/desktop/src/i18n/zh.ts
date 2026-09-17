@@ -1581,6 +1581,8 @@ export const zh = defineLocale({
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
       moaTitle: '混合智能体（Mixture of Agents）',
       moaPreset: '预设',
+      moaDescription:
+        '配置以「混合智能体」提供商下模型形式出现的命名预设。聚合模型是执行模型——它运行工具循环的每一步，整个运行几乎全部费用都计入其提供商。参考模型每轮用户消息仅提供一次建议。',
       moaAggregator: '聚合模型',
       moaAggregatorBilled: '执行模型 · 整个运行在此计费',
       moaReferenceHint: '每轮仅建议一次',
