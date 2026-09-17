@@ -1874,6 +1874,37 @@ class TestIndexMissFallback:
         assert source_counts == {"hermes-index": 1}
         assert skills_sh.calls == 0 and github.calls == 0
 
+    def test_provider_filter_miss_skips_registries_without_provider_data(self):
+        # `--source nvidia` selects like "all"; the fallback registries carry no
+        # extra.provider so re-asking them is guaranteed-empty and only burns budget.
+        index, skills_sh, github = self._sources([])
+        clawhub = _FakeSource("clawhub", sleep=5)
+
+        started = time.monotonic()
+        results, source_counts, timed_out = parallel_search_sources(
+            [index, skills_sh, clawhub, github], query="foo", source_filter="nvidia", overall_timeout=5.0)
+
+        assert time.monotonic() - started < 1.0
+        assert results == [] and timed_out == []
+        assert source_counts == {"hermes-index": 0}
+        assert skills_sh.calls == 0 and clawhub.calls == 0
+
+    def test_fallback_pass_has_its_own_short_budget(self, monkeypatch):
+        # A slow registry (ClawHub takes minutes) must not stall a miss for the
+        # callers' full 30 s overall_timeout when the index answered instantly.
+        monkeypatch.setattr("tools.skills_hub_search._INDEX_MISS_FALLBACK_BUDGET", 0.3, raising=False)
+        index, skills_sh, github = self._sources([])
+        clawhub = _FakeSource("clawhub", sleep=5)
+
+        started = time.monotonic()
+        results, source_counts, timed_out = parallel_search_sources(
+            [index, skills_sh, clawhub, github], query="humanizar", overall_timeout=30.0)
+
+        assert time.monotonic() - started < 2.0
+        assert [r.identifier for r in results] == ["skills-sh/humanizar"]
+        assert source_counts == {"hermes-index": 0, "skills-sh": 1}
+        assert timed_out == ["clawhub"]
+
 
 # ---------------------------------------------------------------------------
 # _load_hermes_index — centralized index fetch (Browse-hub landing / search)

@@ -88,6 +88,10 @@ _API_SOURCE_IDS = frozenset({"github", "skills-sh", "clawhub", "lobehub", "well-
 # live on skills.sh may not be in it yet. GitHub stays out — one miss (a typo)
 # would burn an unauthenticated user's whole hourly GitHub budget.
 _INDEX_MISS_FALLBACK_IDS = _API_SOURCE_IDS - {"github"}
+# Cap on the fallback pass. ClawHub can take minutes; without its own budget
+# every unfiltered miss (a typo) would stall CLI/TUI/dashboard for the callers'
+# full 30 s ``overall_timeout`` where the index alone answered instantly.
+_INDEX_MISS_FALLBACK_BUDGET = 8.0
 
 
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
@@ -149,15 +153,20 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
 
 def _index_miss_fallback_sources(
     sources: List[SkillSource], active: List[SkillSource], query: str, source_counts: Dict[str, int],
+    provider_filter: str = "",
 ) -> List[SkillSource]:
     """Registries to consult after the index stood in for them and found nothing.
 
     Empty for a browse (no query), when the index was not consulted (no skip
-    happened), or when it returned matches.
+    happened), when it returned matches, or when it did not answer at all
+    (timed out: no budget is left and the registries would only be blamed as
+    late without being asked). Also empty under a provider filter
+    (``--source nvidia``): the fallback registries carry no ``extra.provider``,
+    so their results would all be cut and the calls would only burn budget.
     """
-    if not query.strip() or not any(src.source_id() == "hermes-index" for src in active):
+    if not query.strip() or provider_filter or not any(src.source_id() == "hermes-index" for src in active):
         return []
-    if source_counts.get("hermes-index"):
+    if source_counts.get("hermes-index") != 0:
         return []
     return [src for src in sources if src.source_id() in _INDEX_MISS_FALLBACK_IDS and src not in active]
 
@@ -222,8 +231,10 @@ def parallel_search_sources(
 
     When the centralized index stood in for the external registries and found
     nothing for a non-empty query, those registries are queried within the
-    same ``overall_timeout`` so every caller (CLI, TUI gateway, dashboard)
-    still finds skills the index has not picked up yet.
+    same ``overall_timeout`` — capped at ``_INDEX_MISS_FALLBACK_BUDGET`` so a
+    slow registry cannot turn an instant index miss into a 30 s stall — so
+    every caller (CLI, TUI gateway, dashboard) still finds skills the index
+    has not picked up yet.
     """
     per_source_limits = per_source_limits or {}
     active = _select_active_sources(sources, source_filter)
@@ -237,9 +248,10 @@ def parallel_search_sources(
     deadline = time.monotonic() + overall_timeout
     _fan_out(active, query, per_source_limits, provider_filter, deadline, on_source_done,
              all_results, source_counts, timed_out_ids)
-    fallback = _index_miss_fallback_sources(sources, active, query, source_counts)
+    fallback = _index_miss_fallback_sources(sources, active, query, source_counts, provider_filter)
     if fallback:
-        _fan_out(fallback, query, per_source_limits, provider_filter, deadline, on_source_done,
+        fallback_deadline = min(deadline, time.monotonic() + _INDEX_MISS_FALLBACK_BUDGET)
+        _fan_out(fallback, query, per_source_limits, provider_filter, fallback_deadline, on_source_done,
                  all_results, source_counts, timed_out_ids)
     return all_results, source_counts, timed_out_ids
 
