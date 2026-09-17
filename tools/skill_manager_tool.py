@@ -736,13 +736,15 @@ _TEXT_SLOT_OWNER = {"content": "create (and a full-rewrite patch)",
 _TEXT_SLOT_FOR = {
     "create": (("content",), "'content'"),
     "edit": (("content",), "'content'"),
-    "patch": (("content", "new_string"), "'content' (full rewrite) or old_string/new_string (targeted)"),
+    "patch": (("content", "new_string"), "old_string/new_string (targeted) or 'content' (full rewrite, last resort)"),
     "write_file": (("file_content",), "'file_content'")}
 
 
 def _misplaced_text_hint(action: str, args: Dict[str, Any]) -> str:
     """Sentence naming the text-slot key(s) this op carries that ``action`` never reads, or ''."""
-    reads, destination = _TEXT_SLOT_FOR.get(action, ((), ""))
+    if action not in _TEXT_SLOT_FOR:
+        return ""  # delete/remove_file/unknown: no text slot, so no destination to point at
+    reads, destination = _TEXT_SLOT_FOR[action]
     stray = [k for k in _TEXT_SLOT_OWNER if k not in reads and args.get(k) is not None]
     if not stray:
         return ""
