@@ -422,7 +422,9 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
 
 
 def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
-    """Return manifest directories covered by the root npm lockfile."""
+    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
+    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
+    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
     owners = {Path(".")}
     try:
         import json
@@ -440,7 +442,11 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
 
 
 def _discard_lockfile_churn(git_cmd, repo_root):
-    """Restore npm lockfile churn unless its owning manifest is dirty."""
+    """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
+    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
+    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
+    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
+    with its sibling manifest. Best-effort."""
     from hermes_cli.update_cmd import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
