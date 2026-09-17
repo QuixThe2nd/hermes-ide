@@ -702,6 +702,8 @@ in the pending JSON file). Memory writes have the same gate under
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.
 
+Unfiltered searches (CLI, TUI, and the dashboard) are answered from a cached centralized index that covers the external registries. That index is rebuilt periodically, so when it has no match for your query Hermes also asks `skills.sh`, ClawHub, LobeHub and well-known endpoints directly within the same search budget — a skill published minutes ago still shows up. Custom GitHub taps are not part of that fallback (search them with `--source github`, or via the index once it catches up).
+
 ### Common commands
 
 ```bash
