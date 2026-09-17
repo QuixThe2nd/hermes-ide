@@ -982,18 +982,20 @@ export function DeliverCheckboxes({
 
   const options = [
     ...targets,
-    ...selected
-      .filter(target => !knownIds.has(target))
-      .map(target => ({ id: target, name: target }))
+    ...selected.filter(target => !knownIds.has(target)).map(target => ({ id: target, name: target }))
   ]
 
   // Free-text portion: every selected target that is not a checkbox preset.
   // Rewriting it rewrites exactly that portion — checked presets survive, and
   // unknown tokens keep their preserved checkboxes above while typed.
   const customValue = selected.filter(target => !knownIds.has(target)).join(',')
+
   const onCustomChange = (next: string) => {
     const presets = selected.filter(target => knownIds.has(target))
-    const customs = next.split(',').map(part => part.trim()).filter(Boolean)
+    const customs = next
+      .split(',')
+      .map(part => part.trim())
+      .filter(Boolean)
     onChange([...new Set([...presets, ...customs])].join(','))
   }
 
