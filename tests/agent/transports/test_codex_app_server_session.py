@@ -791,9 +791,9 @@ class TestSessionRetirement:
         assert not any(method == "turn/interrupt" for method, _ in client.requests)
         assert any("no events for" in rec.getMessage() for rec in caplog.records)
 
-    def test_post_tool_watchdog_resets_on_further_activity(self):
-        """A tool completion followed by an agent message should NOT trip
-        the watchdog — further activity = codex still alive."""
+    def test_post_tool_activity_clears_the_quiet_timer_and_never_retires(self):
+        """A tool completion followed by an agent message completes normally: further activity clears
+        the post-tool quiet timer, and even when it expires it only warns, never retires."""
         client = FakeClient()
         client.queue_notification(
             "item/completed",
@@ -805,7 +805,7 @@ class TestSessionRetirement:
             },
             threadId="t", turnId="tu1",
         )
-        # Non-tool activity immediately after — resets watchdog.
+        # Non-tool activity immediately after — clears the quiet timer.
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "tool finished"},
@@ -821,7 +821,7 @@ class TestSessionRetirement:
             notification_poll_timeout=0.01,
             post_tool_quiet_timeout=0.05,
         )
-        # Tool ran, then text reset the watchdog, then turn/completed.
+        # Tool ran, then text cleared the quiet timer, then turn/completed.
         # Should NOT be a retirement case.
         assert r.tool_iterations == 1
         assert r.final_text == "tool finished"
