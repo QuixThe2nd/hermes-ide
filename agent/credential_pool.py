@@ -1450,7 +1450,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # re-seed the revoked credentials, and drop singleton-seeded
             # entries from the pool (mirrors the Nous quarantine path).
             if getattr(auth_mod, terminal_fn_name)(exc):
-                logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
+                # WARNING, not debug: this is the moment a login is lost. At the default log level a
+                # silent quarantine looked like "I logged in once and Hermes keeps failing" (#113023).
+                logger.warning(
+                    "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
+                    "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})
                 return None
@@ -1469,7 +1473,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
                 return entry
             if auth_mod._is_terminal_nous_refresh_error(exc):
-                logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                logger.warning(
+                    "Nous refresh token is terminally invalid (%s); clearing local token state. "
+                    "Re-run 'hermes auth add nous' to sign in again.", exc)
                 self._clear_terminal_nous_state(entry, exc)
                 self._quarantine_sources(
                     entry,
