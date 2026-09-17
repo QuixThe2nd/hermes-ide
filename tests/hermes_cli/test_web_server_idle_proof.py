@@ -75,6 +75,26 @@ def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
     assert idle_proof()["idle"] is True
 
 
+def test_queued_prompts_and_unwinding_workers_are_not_idle(monkeypatch):
+    from tui_gateway import server
+
+    session = {"running": False, "history_lock": threading.RLock()}
+    monkeypatch.setitem(server._sessions, "queued-retirement", session)
+    server._enqueue_prompt(session, "accepted follow-up", None)
+    assert idle_proof()["idle"] is False
+    session.pop("queued_prompt")
+    release = threading.Event()
+    thread = threading.Thread(target=lambda: release.wait(10), daemon=True)
+    session["_run_thread"] = thread
+    thread.start()
+    try:
+        assert idle_proof()["idle"] is False
+    finally:
+        release.set()
+        thread.join(10)
+    assert idle_proof()["idle"] is True
+
+
 # ---------------------------------------------------------------------------
 # Live children: three real desktop-shaped ``serve`` processes, one held busy
 # ---------------------------------------------------------------------------

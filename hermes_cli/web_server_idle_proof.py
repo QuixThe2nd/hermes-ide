@@ -1,17 +1,10 @@
-"""Backend-proven idleness for a Desktop-pooled ``hermes serve`` child.
+"""Diagnostic work snapshot for a Desktop-pooled ``hermes serve`` child.
 
-The Desktop caps local pooled backends (3 by default) and keeps a hard slot lease for the lifetime
-of each child. Its renderer refreshes ``lastActiveAt`` every 60s for every open socket, so a
-bot-tile-pinned resident is "fresh" forever even when it is doing nothing — occupied is not busy.
-When a foreground open finds the pool full, the Desktop may retire one resident, but only one the
-BACKEND itself can prove idle. The renderer's own turn bookkeeping cannot see cron fires
-(``HERMES_DESKTOP=1`` runs the in-process ticker), messaging-platform turns served by a pooled
-backend, or a session blocked on an approval, so it is never the proof.
-
-:func:`idle_proof` reads the same ledgers the SSH idle-exit watchdog trusts
-(:func:`hermes_cli.web_server_idle_exit.turn_in_flight`: running gateway sessions plus running cron
-jobs) and adds the human-input ledgers (open server→client requests, unresolved gateway approvals).
-It fails closed: anything it cannot read yields ``idle: None`` and the Desktop must not retire.
+Reads process admission, session/worker, delegation, cron and human-input ledgers. Unreadable
+state is indeterminate, never idle. This snapshot alone is NOT permission to retire: only
+``backend_retirement.RetirementFence.prepare`` freezes admission before taking the snapshot,
+and only a confirmed commit permits the client to stop that exact backend generation.
+The separate messaging gateway process owns its own lifecycle and drain protocol.
 """
 
 from __future__ import annotations
