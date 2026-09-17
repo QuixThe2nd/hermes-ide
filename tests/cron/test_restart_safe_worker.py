@@ -407,6 +407,28 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._running_worker_pids == {"job-cold": 4321}
 
 
+def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
+    """A worker that exits before acknowledging used to report only ``exit 1`` because its stderr
+    went to DEVNULL (#112729); the dispatch error must carry the worker's own traceback and the
+    capture file must not outlive the attempt."""
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", lambda execution_id: {"id": execution_id})
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
+            "direct", [sys.executable, "-c", "import cron_module_that_does_not_exist"]),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        scheduler._launch_external_cron_worker({"id": "job-1", "execution_id": "exec-1", "prompt": "work"})
+    assert "exit 1" in str(excinfo.value)
+    assert "No module named 'cron_module_that_does_not_exist'" in str(excinfo.value)
+    assert not list((tmp_path / "cron" / "external-workers").glob("exec-1.*"))
+
+
 def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatch):
     import cron.scheduler as scheduler
 
