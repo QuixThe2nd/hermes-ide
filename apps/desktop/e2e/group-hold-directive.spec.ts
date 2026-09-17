@@ -122,7 +122,10 @@ test('@all with a task re-engages a room the user stopped (#97740)', async () =>
   await groupComposer.fill('@programmer LANE_H_FIRST')
   await groupComposer.press('Enter')
   await fixture!.mock.waitForHeldCompletion()
-  await page.getByRole('button', { name: 'Stop', exact: true }).click()
+  await expect(async () => {
+    await showRoom(page)
+    await page.getByRole('button', { name: 'Stop', exact: true }).click({ timeout: 5_000 })
+  }).toPass({ timeout: 60_000 })
   fixture!.mock.releaseHeldStream()
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
   // Stop holds every member durably.
