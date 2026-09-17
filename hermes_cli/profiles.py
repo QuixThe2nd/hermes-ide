@@ -353,11 +353,13 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
 
 
 def list_profile_names() -> List[str]:
-    """Cheap name-only listing (``default`` + profile dirs). Unlike :func:`list_profiles` this
-    reads NO per-profile config — safe for hot paths (cron target listings, create validation)."""
+    """Cheap name-only listing (``default`` + LIVE profile dirs). Unlike :func:`list_profiles` this
+    reads NO per-profile config — safe for hot paths (cron target listings, create validation).
+    Tombstoned shells are skipped like everywhere else: a stale process that re-mkdirs a deleted
+    profile's directory must not resurface it as a ``bot-chat:<name>`` cron target."""
     names = ["default"]
     with contextlib.suppress(OSError):
-        names.extend(entry.name for entry in _iter_named_profile_dirs(live_only=False))
+        names.extend(entry.name for entry in _iter_named_profile_dirs())
     return names
 
 

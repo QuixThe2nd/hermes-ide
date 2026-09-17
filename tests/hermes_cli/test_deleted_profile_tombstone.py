@@ -13,11 +13,13 @@ from unittest.mock import patch
 
 import pytest
 
+from cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
 from hermes_cli.config import ensure_hermes_home
 from hermes_cli.profiles import (
     backfill_profile_envs,
     create_profile,
     delete_profile,
+    list_profile_names,
     list_profiles,
     profile_exists,
     profiles_to_serve,
@@ -122,6 +124,11 @@ class TestDeletedProfileTombstone:
         assert "worker" not in _named_homes(profile_env)
         served = [name for name, _ in profiles_to_serve(True)]
         assert "worker" not in served
+        # The name-only hot path (cron Bot Chat targets, kanban profile hints)
+        # honors the same tombstone: a recreated shell must not resurface as a
+        # `bot-chat:worker` delivery target.
+        assert "worker" not in list_profile_names()
+        assert f"{BOT_CHAT_PLATFORM}:worker" not in [t["id"] for t in cron_delivery_targets()]
 
     def test_tombstoned_home_is_not_bootstrapped(self, profile_env, monkeypatch):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
