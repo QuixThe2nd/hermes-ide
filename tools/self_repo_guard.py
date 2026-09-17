@@ -45,7 +45,7 @@ _WRAPPER_OPTIONS_WITH_ARG: dict[str, frozenset[str]] = {
         "-p", "--prompt", "-R", "--chroot", "-T", "--command-timeout", "-u", "--user"}),
     "env": frozenset({"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"}),
     "command": _NO_OPTIONS, "builtin": _NO_OPTIONS, "nohup": _NO_OPTIONS, "setsid": _NO_OPTIONS,
-    "exec": frozenset({"-a"}),
+    "exec": frozenset({"-a"}), "nice": frozenset({"-n", "--adjustment"}),
     "time": frozenset({"-f", "--format", "-o", "--output"})}
 _MAX_RECURSION = 4
 # git global options that consume the next argument (-C/--work-tree/-c are acted on).
@@ -95,14 +95,16 @@ def _executable_name(value: str) -> str:
 
 
 def _shell_words_at(command: str, start: int) -> list[str]:
-    """Deobfuscated words of the simple command at ``start`` (stops at a newline or a trailing
-    ``# comment``; max 64)."""
+    """Deobfuscated words of the simple command at ``start`` (stops at a newline, a redirection
+    or a trailing ``# comment``; max 64). The fd prefix of ``2>/dev/null`` / ``2>&1`` belongs to
+    the redirection, not to the command's operands."""
     words: list[str] = []
     cursor = start
     for _ in range(64):
         word_start, word_end, raw_word = _read_shell_word(command, cursor)
         if word_start == word_end or (words and "\n" in command[cursor:word_start]) or (
-                _is_shell_comment_start(command, word_start)):
+                _is_shell_comment_start(command, word_start)) or (
+                raw_word.isdigit() and command[word_end : word_end + 1] in ("<", ">")):
             break
         words.append(_deobfuscate_shell_word_for_detection(raw_word))
         cursor = word_end
@@ -249,6 +251,8 @@ def _pipeline_end(masked: str, opener: int) -> int:
                 return index
             continue
         if char in ";&|":
+            if char == "&" and (masked[index - 1] in "<>" or masked.startswith("&>", index)):
+                continue  # `2>&1` / `>&2` / `&>file` redirect fds: not a list operator
             if char == "|" and not masked.startswith("||", index):
                 after_pipe = True
             elif level == 0 and depth == 0 and masked[index - 1] != "|":  # `|&` is a pipe

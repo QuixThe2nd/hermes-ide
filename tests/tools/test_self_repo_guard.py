@@ -168,6 +168,25 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect(command, repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # `2>&1` is an fd redirect, not a `&` list operator ending the pipeline before bash.
+            ("cat <<'EOF' 2>&1 | bash\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' &>/dev/null | bash\ngit checkout main\nEOF\n", True),
+            # The fd number of a redirect is not a script operand: bash is still bare.
+            ("cat <<'EOF' | bash 2>/dev/null\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' | bash 2>&1\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' | bash >/dev/null\ngit checkout main\nEOF\n", True),
+            # A real script operand keeps the body as data; a plain redirect is a file write.
+            ("cat <<'EOF' | bash run.sh 2>/dev/null\ngit checkout main\nEOF\n", False),
+            ("cat <<'EOF' > notes.md\ngit checkout main\nEOF\n", False),
+        ],
+    )
+    def test_fd_redirects_around_heredoc_pipe(self, repo, command, expected):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is expected
+
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
