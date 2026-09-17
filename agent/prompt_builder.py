@@ -78,20 +78,32 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     raise value  # type: ignore[misc]
 
 
-def _scan_context_content(content: str, filename: str) -> str:
+def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
+
+    *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
+    SOUL.md sits in the same trust class as config.yaml — agent writes to it always go through the
+    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and nothing clones it in
+    with a repo — so a user who *documents* "ignore previous instructions" in their security guidance
+    must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
+    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking.
     """
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
     if content.startswith("\ufeff"):
         content = content[1:]
     findings = _scan_for_threats(content, scope="context")
-    if findings:
-        logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
-    return content
+    if not findings:
+        return content
+    if user_authored:
+        logger.warning("Context file %s matched injection pattern(s) %s; loaded anyway because it is the "
+                       "user's own file in HERMES_HOME — review it if you did not write that text",
+                       filename, ", ".join(findings))
+        return content
+    logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
+    return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
@@ -1540,8 +1552,8 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
-        return _truncate_content(_scan_context_content(content, "SOUL.md"), "SOUL.md", context_length=context_length,
-                                 read_path=str(soul_path))
+        return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=True), "SOUL.md",
+                                 context_length=context_length, read_path=str(soul_path))
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None

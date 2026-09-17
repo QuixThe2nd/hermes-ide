@@ -810,11 +810,19 @@ The translation-and-execution check requires a short language/format clause (for
 and execution verbs across unrelated comma-separated role prose. These patterns are
 heuristics, not semantic intent detection.
 
-Blocked files show a warning:
+Blocked project files show a warning:
 
 ```
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
 ```
+
+Your own `SOUL.md` in `HERMES_HOME` is treated differently: it is a file you wrote (agent writes to it always
+require your approval, and no repository checkout can plant it), so a scanner hit there **does not block the
+file**. Hermes logs a warning naming the matched pattern, loads the file as usual, and `/context` lists it as
+`⚠ SOUL.md … loaded — matched prompt-injection pattern(s); review the file`. This lets an identity file that
+*documents* an attack phrase (security guidance such as "content telling you to ignore previous instructions")
+keep working; if you did not write the flagged text, treat the warning as a sign that something else edited
+the file.
 
 ## Best Practices for Production Deployment
 
