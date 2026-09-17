@@ -531,10 +531,12 @@ _FLEET_ROW_LINES = {
     "down": "  ✗ {profile} — DOWN (gateway was running before the update; pid {pid} is gone and nothing replaced it)",
 }
 _FLEET_ROW_UNKNOWN = "  ? {profile} (pid {pid}) — version unknown (gateway predates version stamping; restart to enable)"
-# A gateway this update relaunched that had not published its code identity when the settle window
-# closed (#112634): it was just restarted on the new code, so "restart to enable" would be wrong.
+# A gateway pid the pre-update snapshot did not know that had not published its code identity when
+# the settle window closed (#112634): most likely the successor this update relaunched, still
+# booting, so "restart to enable" would be wrong — but the poll never observed the restart itself,
+# so the copy does not claim one.
 _FLEET_ROW_IDENTITY_PENDING = (
-    "  ? {profile} (pid {pid}) — restarted by this update, code identity not published yet"
+    "  ? {profile} (pid {pid}) — new pid since the update, code identity not published yet"
     " — re-check with `hermes gateway status`"
 )
 
