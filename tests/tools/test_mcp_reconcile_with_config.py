@@ -128,3 +128,32 @@ def test_reconcile_retries_failed_first_connect_only_after_cooldown(monkeypatch,
                           mcp_tool._server_connect_retry_after, mcp_tool._server_scope_keys):
                 store.pop("ghost", None)
             mcp_tool._server_connecting.discard("ghost")
+
+
+def test_reconcile_counts_adopted_shared_connection_as_live(monkeypatch, tmp_path):
+    """Multiplexed gateway: profile B adopted profile A's live connection to ``x`` (the key sits under
+    owner A with B in ``_server_tool_scopes``). ``x`` IS live for B — the same resolution
+    ``_select_new_servers`` uses — so the every-tick reconcile must not re-enter discovery and log
+    ``added=['x']`` forever for a server that already serves this profile."""
+    from tools import mcp_tool
+    from tools import mcp_tool_config as _config
+    from tools import mcp_tool_discovery as disc
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"x": {"url": "https://x/mcp"}})
+    monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: "B")
+    discovered: list = []
+    monkeypatch.setattr(disc, "discover_mcp_tools", lambda *a, **k: discovered.append(1) or [])
+    with mcp_tool._lock:
+        mcp_tool._servers[("A", "x")] = object()
+        mcp_tool._server_scope_keys[("A", "x")] = "A"
+        mcp_tool._server_tool_scopes[("A", "x")] = {"A", "B"}
+    try:
+        for _ in range(3):
+            assert disc.reconcile_mcp_servers_with_config() == {"removed": [], "added": [], "pending": []}
+        assert not discovered, "an adopted shared connection is live for this scope; nothing to add"
+    finally:
+        with mcp_tool._lock:
+            mcp_tool._servers.pop(("A", "x"), None)
+            mcp_tool._server_scope_keys.pop(("A", "x"), None)
+            mcp_tool._server_tool_scopes.pop(("A", "x"), None)

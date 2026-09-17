@@ -518,9 +518,13 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     for key in lazy:
         _forget_lazy_server(key)
     with _core._lock:
-        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
-                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
-        known |= {_key_name(key) for key in _core._lazy_server_configs}
+        # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
+        # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
+        # case, so a multiplexed profile would re-enter discovery (cross-process lock) and log
+        # "added" every tick forever for a server that is already serving it.
+        known = {name for name in wanted
+                 if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                 or key in _core._server_connecting or key in _core._lazy_server_configs}
     # A configured server that is not live is retried here — this is the only reviver for one whose
     # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
     # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
