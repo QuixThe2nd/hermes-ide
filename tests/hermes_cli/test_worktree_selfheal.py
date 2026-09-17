@@ -126,7 +126,15 @@ class TestMaintainPackHealth:
         cli._maintain_pack_health(str(repo))
 
         after = self._pack_count(repo)
-        assert after <= 2, f"expected consolidation, still {after} packs"
+        diag = ""
+        if after > 2:
+            probe = subprocess.run(["git", "repack", "-d", "--geometric=2", "--write-midx"], cwd=str(repo),
+                                   capture_output=True, text=True)
+            diag = (f"\npacks={sorted(p.name for p in (repo / '.git/objects/pack').iterdir())}"
+                    f"\nrerun rc={probe.returncode} out={probe.stdout!r} err={probe.stderr!r}"
+                    f"\nafter rerun={self._pack_count(repo)}"
+                    f"\ncount={_git(repo, 'count-objects', '-v').stdout}")
+        assert after <= 2, f"expected consolidation, still {after} packs{diag}"
         assert after < made, "pack count must strictly decrease"
 
     def test_noop_below_threshold(self, repo, monkeypatch):
