@@ -202,7 +202,13 @@ describe('reconcileUnifiedDesktopHalves', () => {
     const appRoot = path.join(home, 'desktop-plugins')
     const packageDir = path.join(home, 'plugins', 'media')
     write(path.join(packageDir, 'desktop', 'plugin.js'), 'package half')
-    const copy = vi.spyOn(fs.promises, 'cp').mockRejectedValueOnce(new Error('disk full'))
+    // Simulate a copy that dies partway: the destination already holds a marker-less
+    // partial tree when the failure surfaces. A direct copy into the final target would
+    // leave that half-tree behind; the staged copy must never let it reach `<appRoot>/media`.
+    const copy = vi.spyOn(fs.promises, 'cp').mockImplementationOnce(async (_src, dest) => {
+      write(path.join(String(dest), 'plugin.js'), 'partial')
+      throw new Error('disk full')
+    })
 
     await expect(materializeDesktopHalf(packageDir, appRoot)).rejects.toThrow('disk full')
 
