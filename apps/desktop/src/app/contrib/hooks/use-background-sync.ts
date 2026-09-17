@@ -489,6 +489,7 @@ export function rehydrateLiveSessionStatuses(
 
       if (existing !== stateAtRequest[runtimeSessionId]) {
         seen.add(runtimeSessionId)
+
         continue
       }
 
