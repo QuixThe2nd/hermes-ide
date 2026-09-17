@@ -117,11 +117,9 @@ class UpdateReceipt:
 
 
 def _receipt_dir() -> Path:
-    # ``hermes_constants``, never ``hermes_cli.config``: the receipt is written by the PRE-pull
-    # interpreter after the post-pull module purge, so a ``hermes_cli.config`` import here
-    # re-executes the pulled config.py against whatever is still cached — an ImportError on a
-    # symbol the pull added dropped the whole receipt (#112465, #112558). ``hermes_constants``
-    # is protected from the purge and stdlib-only.
+    # ``hermes_constants`` (stdlib-only), never ``hermes_cli.config``: the receipt must be
+    # writable from the refused/failed paths where config loading itself may be what broke
+    # (#112465, #112558).
     from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "logs" / "update_receipts"
