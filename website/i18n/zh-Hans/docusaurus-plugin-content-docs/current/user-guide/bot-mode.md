@@ -7,7 +7,7 @@ description: "把你的 Hermes profile 变成一支具名的 Bot 团队——每
 
 **Bot 模式**把你的 [Hermes profile](./profiles.md) 变成一支具名 **Bot** 团队。每个 Bot 都有自己的角色、模型、记忆、技能和头像；Bot 之间可以运行周期性的例行任务、在群聊中共同商议，并直接互相发消息。花一次功夫搭建一个专精 Bot，它就永远留在那里，一键可达。
 
-Bot 模式**内置于[桌面应用](./desktop.md)**中，**默认开启**——无需安装。它在左侧边栏中以 **Bots** 标签页的形式出现，紧挨着 Sessions；当 Bots 标签页处于激活状态时，一个 **Routines** 面板会停靠在对话旁边。
+Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无需安装。它在左侧边栏中以 **Bots** 标签页的形式出现，紧挨着 Sessions；当 Bots 标签页处于激活状态时，一个 **Routines** 面板会停靠在对话旁边。
 
 :::tip Bot 就是 profile
 这里没有新概念需要学习：Bot **就是** 一个 Hermes profile——位于 `~/.hermes/profiles/<name>/` 下的独立配置、记忆、技能、凭据和聊天记录。Bot 模式只是这个基本单元之上的一层 UI，所以你在其中做的一切在 CLI 里同样可见：`hermes -p <bot> chat` 打开的是同一个 agent，Bot 的例行任务也会出现在 `hermes cron list` 中。没有核心补丁，没有后台守护进程，也不需要额外的存储。
@@ -54,7 +54,7 @@ Bot 模式**内置于[桌面应用](./desktop.md)**中，**默认开启**——�
 
 ### 选择它运行在哪台机器上（"Create on"）
 
-当[设置 → Connections](./multi-connection-desktop.md) 中注册了不止一个连接时，New Agent 对话框会新增一个 **Create on** 选择器。选定一台设备后，profile 就会在**那台**机器的后端上创建——你的窗口不会切换 gateway。这个新 Bot 随后会以 Connections Bot 的身份出现在花名册中（当同名 Bot 存在于多台机器上时，带有 `@name-device` 形式的 handle），与它对话会路由到它自己所在的机器。
+当[设置 → Connections](./multi-connection-desktop) 中注册了不止一个连接时，New Agent 对话框会新增一个 **Create on** 选择器。选定一台设备后，profile 就会在**那台**机器的后端上创建——你的窗口不会切换 gateway。这个新 Bot 随后会以 Connections Bot 的身份出现在花名册中（当同名 Bot 存在于多台机器上时，带有 `@name-device` 形式的 handle），与它对话会路由到它自己所在的机器。
 
 在只有一个连接的常见情况下，这个选择器会被隐藏，Bot 会在你当前连接的机器上创建——和以前的行为完全一致。
 
@@ -76,7 +76,7 @@ Bot 模式**内置于[桌面应用](./desktop.md)**中，**默认开启**——�
 - **几何脸**——经典的 7 种形状 × 10 种颜色组合。在聚焦的实时轮次进行期间，拥有该轮次的 Bot 会侧身向上看，并显示三个动态的小点，轮次结束后再缓缓回到空闲姿态。所有权包含连接信息，因此不同 gateway 上的同名 Bot 不会借用彼此的姿态。后台 worker 保留原有的工作动画；照片、Blob 脸和印记（sigil）保留各自的渲染方式。
 - **上传的图片**——任何你喜欢的图片。
 - **AI 生成的肖像**——配置了图像后端时，在原地生成（这走的是标准的 `image.generate` RPC，本地和远程 gateway 均可使用）。
-- **像素宠物**——来自 [petdex 图鉴](./features/pets.md) 的伙伴，在 Bot 工作时会在头像旁跳动。在终端中运行 `hermes pets` 即可浏览图鉴。
+- **像素宠物**——来自 [petdex 图鉴](./features/pets) 的伙伴，在 Bot 工作时会在头像旁跳动。在终端中运行 `hermes pets` 即可浏览图鉴。
 
 一个 Bot 的外观、标题和描述都保存在该 profile 的后端元数据中，因此同一个 Bot 在连接到该后端的每台桌面上看起来都一样。
 
@@ -218,7 +218,7 @@ hermes peer stop spark run_abc123
 
 点击一个 Connections Bot **不会**把你的窗口切换到那台机器上——留在你当前的对话里 @提及 它、把它安排进某个群聊，或者用 **Create on** 选择器直接在它所在的机器上创建新的 agent。云端和本地 agent 就这样共用同一个花名册：注册你的 Hermes Cloud 实例和你的桌面（比如通过 Tailscale 或 SSH），它们的 Bot 就能互相发消息、共处同一个房间，每个 agent 的工作都运行在自己的机器上。跨这些机器的 Bot 间私信会自动走 Desktop 中继（见上文*跨已连接机器的消息*）。
 
-完整的多连接指南请参阅[将 Desktop 连接到多个 Hermes 实例](./multi-connection-desktop.md)。
+完整的多连接指南请参阅[将 Desktop 连接到多个 Hermes 实例](./multi-connection-desktop)。
 
 ## Warm Bot Backends（同时运行多少个 Bot）
 
