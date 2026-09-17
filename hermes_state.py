@@ -82,6 +82,9 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _shape_preview,
     _sql_session_last_active,
     _sql_session_last_active_by_id,
+    TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED,
+    TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
+    TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
     escape_like as _escape_like,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
@@ -11473,9 +11476,9 @@ class SessionDB(
     # only replace a title of strictly lower authority, so the instant
     # ``derived`` title upgrades to the model's ``llm`` title exactly once and
     # nothing the agent generates can ever clobber a name the user typed.
-    TITLE_SOURCE_DERIVED = "derived"
-    TITLE_SOURCE_LLM = "llm"
-    TITLE_SOURCE_USER = "user"
+    TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED
+    TITLE_SOURCE_LLM = _TITLE_SOURCE_LLM
+    TITLE_SOURCE_USER = _TITLE_SOURCE_USER
     _TITLE_SOURCE_RANK = {
         TITLE_SOURCE_DERIVED: 0,
         TITLE_SOURCE_LLM: 1,
