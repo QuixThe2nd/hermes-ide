@@ -1697,6 +1697,12 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     for pid in orphans:
         with contextlib.suppress(Exception):
             write_planned_stop_marker(pid)
+        # ``os.kill(..., SIGTERM)`` maps to TerminateProcess on Windows, so it
+        # would kill the gateway before its marker watcher can drain and close
+        # state cleanly. Let the bounded survivor wait below escalate instead.
+        if is_windows():
+            reaped = True
+            continue
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1827,14 +1833,27 @@ def stop_profile_gateway() -> bool:
     if pid is None:
         return _reap_unsupervised_gateway_orphans()
 
-    _mark_planned_stop(pid)
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass  # Already gone
-    except PermissionError:
-        print(f"⚠ Permission denied to kill PID {pid}")
-        return False
+    if is_windows():
+        # Windows maps SIGTERM to TerminateProcess. The marker watcher is the
+        # gateway's graceful-stop IPC, so wait for it before force-killing a
+        # wedged process.
+        from hermes_cli.gateway_windows import (
+            _drain_gateway_pid,
+            _force_terminate_known_gateway_pids,
+            _windows_stop_drain_timeout,
+        )
+
+        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
+            _force_terminate_known_gateway_pids([pid])
+    else:
+        _mark_planned_stop(pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # Already gone
+        except PermissionError:
+            print(f"⚠ Permission denied to kill PID {pid}")
+            return False
 
     # ``_pid_exists``, NOT ``os.kill(pid, 0)`` (TerminateProcess on Windows).
     from gateway.status import _pid_exists
