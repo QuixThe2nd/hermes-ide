@@ -2488,6 +2488,32 @@ def print_systemd_scope_conflict_warning() -> None:
     print_info("    sudo hermes gateway uninstall --system")
 
 
+def refuses_container_user_scope_install(system: bool) -> bool:
+    """True (after printing the guidance) when a fresh USER-scope unit was requested inside a container.
+
+    A systemd container passes ``supports_systemd_services()`` on purpose so ``--system`` keeps working,
+    but a user unit there is not container-scoped: the unit file and its ``default.target.wants`` symlink
+    land in ``~/.config/systemd/user`` — commonly the host's own home bind-mounted in — so the host's
+    ``systemd --user`` enables it too and a second gateway polls the same bot token outside the container.
+    Callers decide between ``sys.exit(1)`` (CLI) and skipping the install (wizard)."""
+    if system or not is_container():
+        return False
+    print_error("Refusing to install a user-scope systemd gateway service inside a container.")
+    _print_info_lines(
+        "The unit file and its enable symlink would be written to the home directory, which is",
+        "commonly the host's own home bind-mounted in — the host's user manager then enables and",
+        "starts the same unit, so a second gateway polls the same bot token outside the container",
+        "(Telegram: 'Conflict: terminated by other getUpdates request').",
+        "",
+        "  hermes gateway run                                # run as the container's main process",
+        "  docker run --restart unless-stopped ...           # container restart policy",
+        "",
+        "If systemd manages this container (systemd as PID 1), install an isolated system service instead:",
+        "  sudo hermes gateway install --system --run-as-user <user>",
+    )
+    return True
+
+
 def _require_root_for_system_service(action: str) -> None:
     if os.geteuid() != 0:  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
         raise SystemScopeRequiresRootError(f"System gateway {action} requires root. Re-run with sudo.", action)
@@ -2573,6 +2599,8 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
         systemd_install(force=force, system=True, run_as_user=run_as_user, enable_on_startup=enable_on_startup)
         return scope, True
 
+    if refuses_container_user_scope_install(system=False):
+        return scope, False
     systemd_install(force=force, system=False, enable_on_startup=enable_on_startup)
     return scope, True
 
@@ -6236,16 +6264,7 @@ def _cmd_install(args):
         _no_backend_exit("install", "termux")
     backend = _service_backend()
     if backend == "systemd":
-        if is_container() and not system:
-            print_error(
-                "Refusing to install a user-scope systemd gateway service inside a container."
-            )
-            _print_info_lines(
-                "A bind-mounted home can make that unit visible to the host user manager.",
-                "If systemd manages this container, install an isolated system service instead:",
-                "  sudo hermes gateway install --system",
-                "Otherwise run the gateway under the container runtime's supervisor.",
-            )
+        if refuses_container_user_scope_install(system):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":

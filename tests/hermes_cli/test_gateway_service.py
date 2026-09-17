@@ -1992,6 +1992,19 @@ class TestDockerAwareGateway:
 
         assert calls == [{"force": False, "system": True, "run_as_user": None}]
 
+    def test_setup_wizard_user_scope_in_container_skips_install(self, monkeypatch, capsys):
+        """The wizard's default "user service" choice is the same host-visible unit (#112323):
+        inside a container it prints the guidance and reports no install instead of writing it."""
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(gateway_cli, "prompt_linux_gateway_install_scope", lambda: "user")
+        monkeypatch.setattr(
+            gateway_cli, "systemd_install",
+            lambda **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        assert gateway_cli.install_linux_gateway_from_setup(force=False, enable_on_startup=True) == ("user", False)
+        assert "--system" in capsys.readouterr().out
+
 
 class TestLegacyHermesUnitDetection:
     """Tests for _find_legacy_hermes_units / has_legacy_hermes_units.
