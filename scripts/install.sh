@@ -296,13 +296,20 @@ discard_update_lockfile_churn() {
                 if [ "$pkg_dir" = "." ]; then
                     root_lock_protected=1
                 else
+                    # Read the globs line by line: an unquoted $(...) would pathname-expand
+                    # them against the caller's CWD before `case` ever sees the pattern.
+                    # `case` globs match across "/", so a manifest nested under a workspace
+                    # also protects the root lock (fail-safe; Python matches one level).
                     local ws_glob
-                    for ws_glob in $(sed -n '/"workspaces"[[:space:]]*:/,/\]/p' "$repo/package.json" 2>/dev/null \
-                            | grep -o '"[^"]*"' | tr -d '"' | grep -v -e '^workspaces$' -e '^packages$'); do
+                    while IFS= read -r ws_glob; do
+                        [ -n "$ws_glob" ] || continue
                         case "$pkg_dir" in
                             $ws_glob) root_lock_protected=1 ;;
                         esac
-                    done
+                    done <<WS_EOF
+$(sed -n '/"workspaces"[[:space:]]*:/,/\]/p' "$repo/package.json" 2>/dev/null \
+        | grep -o '"[^"]*"' | tr -d '"' | grep -v -e '^workspaces$' -e '^packages$')
+WS_EOF
                 fi
                 ;;
         esac

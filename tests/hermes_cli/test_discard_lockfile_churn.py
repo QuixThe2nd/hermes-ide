@@ -53,3 +53,14 @@ def test_manifest_outside_workspace_graph_does_not_protect_root_lock(tmp_path):
     assert _still_dirty_after_cleanup(repo, "vendor/foo/package.json", "package-lock.json") == {
         "vendor/foo/package.json",
     }
+
+
+def test_unsupported_workspaces_glob_still_discards_root_lock_churn(tmp_path):
+    """A string ``workspaces`` (iterated char by char, '/' is a non-relative glob) must not abort
+    the cleanup: the churned root lock is still reverted, the bad entry just owns nothing."""
+    repo = _repo(tmp_path)
+    (repo / "package.json").write_text(json.dumps({"workspaces": "apps/*"}), encoding="utf-8")
+    _git(repo, "commit", "-qam", "string workspaces")
+    assert _still_dirty_after_cleanup(repo, "vendor/foo/package.json", "package-lock.json") == {
+        "vendor/foo/package.json",
+    }

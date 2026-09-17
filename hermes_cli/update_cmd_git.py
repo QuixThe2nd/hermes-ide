@@ -432,10 +432,15 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
         workspaces = package.get("workspaces", [])
         if isinstance(workspaces, dict):
             workspaces = workspaces.get("packages", [])
+        if not isinstance(workspaces, list):
+            return owners
         for pattern in workspaces:
-            for directory in repo_root.glob(str(pattern)):
-                if (directory / "package.json").is_file():
-                    owners.add(directory.relative_to(repo_root))
+            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
+            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
+            with suppress(Exception):
+                for directory in repo_root.glob(str(pattern)):
+                    if (directory / "package.json").is_file():
+                        owners.add(directory.relative_to(repo_root))
     except (OSError, ValueError, TypeError):
         pass
     return owners
