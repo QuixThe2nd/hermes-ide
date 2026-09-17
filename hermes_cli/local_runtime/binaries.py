@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -185,9 +186,11 @@ def _download(url: str, dest: Path,
     """Stream url -> dest. ``progress(done_bytes, total_bytes)`` ticks per chunk (total 0 when
     the server sends no Content-Length) — a several-hundred-MB archive must never look hung."""
     logger.info("downloading %s", url)
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    staging = tempfile.NamedTemporaryFile(
+        mode="wb", dir=dest.parent, prefix=f"{dest.name}.", suffix=".part", delete=False)
+    tmp = Path(staging.name)
     try:
-        with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+        with staging as f, urllib.request.urlopen(url, timeout=120) as r:
             length = r.headers.get("Content-Length")
             total = int(length) if length is not None else 0
             done = 0
