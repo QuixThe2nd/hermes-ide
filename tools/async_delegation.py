@@ -65,6 +65,7 @@ the foreground ``delegate_assistant`` mission wait).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -813,9 +814,9 @@ def _dispatch(
         "inline_result": None,
         "inline_claimed": False,
         "runner_tid": None,
-        # Durable finalization can run on the one unscoped stale-monitor thread;
-        # retain the dispatching profile so that thread updates the same state.db.
-        "_profile_home": str(get_hermes_home()),
+        # The one stale-monitor thread serves every profile and starts with an empty Context;
+        # a forced finalization runs under the dispatcher's so it settles the same state.db.
+        "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -1082,19 +1083,11 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         if result.get(_k):
             evt[_k] = result[_k]
     _stamp_event_provenance(evt, record)
-    token = None
     try:
-        profile_home = record.get("_profile_home")
-        if profile_home:
-            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-            token = set_hermes_home_override(profile_home)
         _persist_completion(evt, result)
     except Exception as exc:  # noqa: BLE001 — a lost durable row is recoverable; a lost result + leaked slot is not
         logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
                      "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
-    finally:
-        if token is not None:
-            reset_hermes_home_override(token)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1301,7 +1294,9 @@ def _stale_monitor_loop() -> None:
                 fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
             _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
         for delegation_id in expired:
-            _finalize(delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            with _records_lock:
+                ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
+            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
         if not any_monitorable:
             return
 
