@@ -459,6 +459,43 @@ export function groupScriptedLine(userText: string, history: string[] = []): str
   return '(pass)'
 }
 
+/**
+ * One scripted tool call driven by the user's own text, for specs that need the
+ * agent to exercise a REAL tool once (e.g. Bot Mode's `message_agent`):
+ * `E2E_CALL(message_agent)[{"target":"scribe","message":"ping"}]`. The first
+ * completion of that turn emits the call; once its tool result is in the
+ * history the turn ends with `E2E_CALL_RESULT: <tool result>` so the spec can
+ * assert on what the tool actually returned. Later turns (a completion
+ * notification waking the same chat) carry a different last user message and
+ * fall through to the canned reply.
+ */
+export function directToolCallTurn(userText: string, messages: any[]): ScriptedTurn | null {
+  const match = /E2E_CALL\(([a-z_][a-z0-9_]*)\)\[(\{.*\})\]/s.exec(userText)
+
+  if (!match) {
+    return null
+  }
+
+  const toolResults = messages.filter(m => m?.role === 'tool')
+
+  if (toolResults.length === 0) {
+    let args: Record<string, unknown> = {}
+
+    try {
+      args = JSON.parse(match[2]) as Record<string, unknown>
+    } catch {
+      return null
+    }
+
+    return { text: '', toolCalls: [{ name: match[1], args }] }
+  }
+
+  const last = toolResults[toolResults.length - 1]
+  const content = typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content ?? '')
+
+  return { text: `E2E_CALL_RESULT: ${content}` }
+}
+
 function includesBlockingClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BLOCKING_CLARIFY_TRIGGER)
@@ -745,6 +782,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
+            }
+
+            return
+          }
+
+          const directCall = directToolCallTurn(userText, messages)
+
+          if (directCall !== null) {
+            if (stream) {
+              streamScriptedTurn(res, model, directCall)
+            } else {
+              nonStreamingScriptedTurn(res, model, directCall)
             }
 
             return
