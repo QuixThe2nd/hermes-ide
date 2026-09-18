@@ -842,16 +842,14 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
     from hermes_cli.goals import judge_goal
 
-    verdict, reason = "done", ""
+    verdict, reason, transport_failed = "done", "", False
     try:
         # Headless handoff checks run outside any agent turn: bind the per-task relay-affinity
         # scope (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task.id}")
         try:
-            # Fail-open on transport failure belongs to the shared gate fix (#73119);
-            # this gate only ensures the headless call carries a scope.
-            verdict, reason, _, _, _ = judge_goal(
+            verdict, reason, _, _, transport_failed = judge_goal(
                 goal=f"{task.title}\n\n{task.body or ''}".strip(),
                 last_response=evidence.strip())
         finally:
@@ -862,6 +860,13 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
         _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
                                              judge_exc, exc_info=True)
+    if transport_failed:
+        # ``judge_goal`` fails open to ``continue`` on transport errors (relay 400, auth, timeout);
+        # an unreachable judge is not a human "not done" and must not reject the handoff (#83610).
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
+        return ("done", None)
     return (verdict, None if verdict == "done" else reason)
 
 

@@ -405,9 +405,7 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{tid}")
         try:
-            # Fail-open on transport failure belongs to the shared gate fix (#73119);
-            # this gate only ensures the headless call carries a scope.
-            verdict, reason, _, _, _ = judge_goal(
+            verdict, reason, _, _, transport_failed = judge_goal(
                 goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
         finally:
             if affinity_token is not None:
@@ -415,6 +413,11 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     except Exception as judge_exc:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
+        return
+    if transport_failed:
+        # ``judge_goal`` fails open to ``continue`` on transport errors (relay 400, auth, timeout);
+        # an unreachable judge is not a human "not done" and must not reject the handoff (#83610).
+        logger.warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
         return
     if verdict == "done":
         return
