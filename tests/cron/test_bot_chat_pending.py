@@ -169,3 +169,26 @@ def test_unreadable_deferred_receipt_does_not_block_siblings(tmp_path, monkeypat
     assert [r for r in caplog.records
             if "Unreadable deferred Bot Chat receipt" in r.message and "Permission denied" in r.message] and \
         sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("payload", ["42", '"oops"', "[1, 2, 3]"])
+def test_non_dict_deferred_receipt_is_skipped_by_the_drain_and_fails_exact_id_reads_closed(
+        tmp_path, monkeypatch, caplog, payload):
+    """A receipt that parses but is not a JSON object is a bad file like any other: the drain
+    and new admissions skip it (warned once, preserved as evidence) and an exact-id read of it
+    never licenses an overwrite."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text(payload, encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    with caplog.at_level("ERROR", logger=queue.logger.name):
+        queue.drain()
+        queue.drain()
+        later = queue.defer("f" * 64, {"id": "job"}, "later", "", tmp_path)
+    assert seen == ["healthy"] and later["status"] == "queued"
+    assert sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
+    with pytest.raises(ValueError):
+        queue.defer("e" * 64, {"id": "job"}, "same id", "", tmp_path)
+    assert bad.read_text(encoding="utf-8") == payload
