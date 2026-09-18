@@ -1,20 +1,15 @@
 """Regression tests for #101416: isolated (compute-host) turns refused their own session.
 
-With ``dashboard.turn_isolation: true`` every lazy (agent-not-yet-built, i.e. every NEW)
-desktop session's turn is routed to the compute-host CHILD process. The parent claims the
-session's active-session lease in ``prompt.submit`` before routing; the child's freshly built
-session record carried NO lease, so ``_admit_prompt_turn`` re-claimed from the child's pid and
-was fenced out by the parent's own registry entry (``_is_same_writer`` requires the same pid
-AND the same live_session_id) — "Session ... already has a live owner (desktop, pid N,
-running 0m)" on every new session's first message, stacking one unreclaimable lease per
-attempt (the owner pid is the immortal dashboard process, so ``_prune_dead`` never reclaims).
+With ``dashboard.turn_isolation: true`` every lazy (agent-not-yet-built, i.e. every NEW) desktop
+session's turn is routed to the compute-host CHILD process. The parent claims the session's
+active-session lease in ``prompt.submit`` before routing; the child's freshly built session record
+carried NO lease, so ``_admit_prompt_turn`` re-claimed from the child's pid and was fenced out by the
+parent's own registry entry (``_is_same_writer`` requires the same pid AND the same live_session_id).
 
-The fix: the parent vouches on the turn frame (``parent_owns_active_session_lease``) and the
-child installs an INERT borrow (``ActiveSessionLease(enabled=False, released=True)``) before
-the turn pipeline runs, so admission sees the slot as held upstream. No second claim, no
-refusal, and the child can never release or transfer the parent's slot. Without the vouch
-(parent predates the field) the legacy self-claim path is preserved and any conflict still
-fails CLOSED with the visible refusal.
+The fix: the parent vouches on the turn frame (``active_session_lease`` = {lease_id, session_id}) and
+the child installs an INERT borrow (``ActiveSessionLease(enabled=False)``) before the turn pipeline
+runs. The REAL lease never leaves the parent: it is re-anchored there on a child-side compression
+rotation and held past ``session.close`` until the child's turn settles.
 """
 
 from __future__ import annotations
@@ -47,39 +42,23 @@ def _wait(out: io.StringIO, predicate, timeout: float = 5.0) -> dict:
 
 
 def _stub_agent(deltas: list[str]) -> types.SimpleNamespace:
-    def run_conversation(
-        prompt, *, conversation_history=None, stream_callback=None, **_kw
-    ):
+    def run_conversation(prompt, *, conversation_history=None, stream_callback=None, **_kw):
         final = "".join(deltas)
         if stream_callback is not None:
             for chunk in deltas:
                 stream_callback(chunk)
-        messages = [
-            *(conversation_history or []),
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": final},
-        ]
+        messages = [*(conversation_history or []), {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": final}]
         return {"final_response": final, "messages": messages}
 
     return types.SimpleNamespace(
-        session_id="s1-key",
-        run_conversation=run_conversation,
-        clear_interrupt=lambda: None,
-        hard_interrupt=lambda *a, **k: None,
-    )
+        session_id="s1-key", run_conversation=run_conversation,
+        clear_interrupt=lambda: None, hard_interrupt=lambda *a, **k: None)
 
 
 def _make_frame(sid: str, **overrides) -> dict:
-    frame = {
-        "type": "turn.start",
-        "sid": sid,
-        "request_id": "turn",
-        "text": "hello",
-        "session_key": "s1-key",
-        "source": "desktop",
-        "cols": 80,
-        "history": [],
-    }
+    frame = {"type": "turn.start", "sid": sid, "request_id": "turn", "text": "hello",
+             "session_key": "s1-key", "source": "desktop", "cols": 80, "history": []}
     frame.update(overrides)
     return frame
 
@@ -89,14 +68,18 @@ def _seed_parent_lease(key: str, live_session_id: str = "parent-sid"):
     from hermes_cli.active_sessions import try_acquire_active_session
 
     lease, message = try_acquire_active_session(
-        session_id=key,
-        surface="desktop",
-        config={},
-        metadata={"live_session_id": live_session_id},
-        track_liveness=True,
-    )
+        session_id=key, surface="desktop", config={},
+        metadata={"live_session_id": live_session_id}, track_liveness=True)
     assert message is None and lease is not None
     return lease
+
+
+def _foreign_acquire(key: str):
+    """A DISTINCT writer (same pid, another live id — the exact _is_same_writer fence)."""
+    from hermes_cli.active_sessions import try_acquire_active_session
+
+    return try_acquire_active_session(
+        session_id=key, surface="cli", config={}, metadata={"live_session_id": "other-writer"})
 
 
 def _registry() -> list[dict]:
@@ -105,44 +88,37 @@ def _registry() -> list[dict]:
         return json.load(fh).get("entries", [])
 
 
+def _parent_session(sid: str, key: str, lease) -> dict:
+    return dict(agent=None, agent_ready=threading.Event(), session_key=key, history=[], history_version=0,
+                history_lock=threading.Lock(), running=True, transport=server._detached_ws_transport,
+                attached_images=[], cols=80, source="desktop", inflight_turn=None, created_at=time.time(),
+                last_active=time.time(), active_session_lease=lease, _compute_host_active=True, _sid=sid)
+
+
 @pytest.fixture()
 def isolated_env(monkeypatch, tmp_path):
-    """Real _build_server_session → _init_session → _run_prompt_submit → _admit_prompt_turn
-    pipeline, with the environment-heavy side paths neutralized. The turn BODY is cut right
-    after admission (``_prepare_turn_input`` → None), so the lease path under test runs REAL
-    against the conftest-sandboxed HERMES_HOME registry while nothing calls a provider."""
+    """Real _build_server_session → _init_session → _run_prompt_submit → _admit_prompt_turn pipeline,
+    with the environment-heavy side paths neutralized. The turn BODY is cut right after admission
+    (``_prepare_turn_input`` → None), so the lease path under test runs REAL against the
+    conftest-sandboxed HERMES_HOME registry while nothing calls a provider."""
     agent = _stub_agent(["a ", "b "])
     monkeypatch.setattr(server, "_make_agent", lambda *a, **kw: agent)
-    # Turn-pipeline side paths (same set as test_compute_host_turn_protocol.py).
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
-    monkeypatch.setattr(
-        server, "_sync_agent_model_with_config", lambda sid, session: None
-    )
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
     monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
     monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
     monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
-    monkeypatch.setattr(
-        server, "_sync_session_key_after_compress", lambda *a, **k: None
-    )
     monkeypatch.setattr(server, "_get_usage", lambda agent_: {})
-    # _init_session services orthogonal to session ownership.
     monkeypatch.setattr(server, "_hydrate_session_cwd", lambda *a, **k: None)
     monkeypatch.setattr(server, "_wire_session_agent", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_session_services", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
-    # Cut the turn AFTER _admit_prompt_turn (admission is the code under test; the body is not).
     import tui_gateway.prompt_turn as prompt_turn
 
     for mod in (server, prompt_turn):
         if hasattr(mod, "_prepare_turn_input"):
             monkeypatch.setattr(mod, "_prepare_turn_input", lambda *a, **k: None)
     yield agent
-
-
-@pytest.fixture()
-def clean_sessions():
-    """Keep the module-global _sessions table clean across tests."""
-    yield
     for sid in [s for s in list(server._sessions) if s.startswith("s1")]:
         server._sessions.pop(sid, None)
 
@@ -159,225 +135,97 @@ def _run_turn(frame: dict, timeout: float = 5.0) -> tuple[list[dict], dict | Non
     return _frames(out), end
 
 
-# ── Unit: the borrow install ────────────────────────────────────────────────
+# ── Fix 1: the child borrows instead of re-claiming ─────────────────────────
 
 
-def test_no_vouch_flag_installs_nothing():
-    session = {"session_key": "s1-key"}
-    server._install_borrowed_lease("s1", session, _make_frame("s1"))
-    assert "active_session_lease" not in session
-
-
-def test_falsy_vouch_flag_installs_nothing():
-    """The parent only vouches when it actually holds the lease; falsy must never borrow."""
-    session = {"session_key": "s1-key"}
-    server._install_borrowed_lease(
-        "s1", session, _make_frame("s1", parent_owns_active_session_lease=False)
-    )
-    assert "active_session_lease" not in session
-
-
-def test_vouch_installs_inert_token():
-    session = {"session_key": "s1-key"}
-    server._install_borrowed_lease(
-        "s1",
-        session,
-        _make_frame("s1", source="desktop", parent_owns_active_session_lease=True),
-    )
-    lease = session["active_session_lease"]
-    assert lease.enabled is False and lease.released is True
-    assert lease.session_id == "s1-key" and lease.surface == "desktop"
-    assert lease.state_path is None and lease.lock_path is None
-
-
-def test_borrow_never_overwrites_an_existing_lease():
-    sentinel = object()
-    session = {"session_key": "s1-key", "active_session_lease": sentinel}
-    server._install_borrowed_lease(
-        "s1", session, _make_frame("s1", parent_owns_active_session_lease=True)
-    )
-    assert session["active_session_lease"] is sentinel
-
-
-def test_inert_token_cannot_release_or_transfer_the_parents_slot():
-    """Release/transfer must be no-ops on the borrow: the slot belongs to the parent process."""
-    from hermes_cli.active_sessions import (
-        release_active_session,
-        transfer_active_session,
-        try_acquire_active_session,
-    )
-
-    parent = _seed_parent_lease("borrow-noop-key")
+def test_isolated_turn_runs_against_parent_leased_session(isolated_env):
+    """THE #101416 repro, fixed: parent holds the lease, child runs the turn end-to-end and the
+    registry still holds exactly the parent's entry."""
+    parent = _seed_parent_lease("s1-key")
     try:
-        session = {"session_key": "borrow-noop-key"}
-        server._install_borrowed_lease(
-            "s1", session, _make_frame("s1", parent_owns_active_session_lease=True)
-        )
-        borrow = session["active_session_lease"]
-        release_active_session(borrow)
-        assert (
-            not borrow.released or True
-        )  # released flag toggles; the registry is what matters
-        assert transfer_active_session(borrow, session_id="other-key") is False
-        entries = _registry()
-        assert [e["session_id"] for e in entries] == ["borrow-noop-key"]
-        assert entries[0]["lease_id"] == parent.lease_id
-        assert entries[0]["metadata"]["live_session_id"] == "parent-sid"
-    finally:
-        release_active_session(parent)
-    assert _registry() == []
-
-
-# ── Registry-level: the exclusivity fence is untouched ─────────────────────
-
-
-def test_same_pid_different_live_session_id_still_fences():
-    """The defect's exact precondition, at the registry level, must stay a refusal: the fix
-    relaxes nothing about _is_same_writer; it prevents the second claim from happening."""
-    from hermes_cli.active_sessions import (
-        release_active_session,
-        try_acquire_active_session,
-    )
-
-    first, message = try_acquire_active_session(
-        session_id="fence-key",
-        surface="desktop",
-        config={},
-        metadata={"live_session_id": "aaa"},
-    )
-    assert message is None and first is not None
-    second, refusal = try_acquire_active_session(
-        session_id="fence-key",
-        surface="desktop",
-        config={},
-        metadata={"live_session_id": "bbb"},
-    )
-    assert second is None
-    assert getattr(refusal, "reason", "") == "SESSION_NOT_OWNED"
-    assert "already has a live owner" in str(refusal)
-    release_active_session(first)
-    third, message2 = try_acquire_active_session(
-        session_id="fence-key",
-        surface="desktop",
-        config={},
-        metadata={"live_session_id": "ccc"},
-    )
-    assert message2 is None and third is not None
-    release_active_session(third)
-    assert _registry() == []
-
-
-# ── Integration: the real child turn path ──────────────────────────────────
-
-
-def test_isolated_turn_runs_against_parent_leased_session(isolated_env, clean_sessions):
-    """THE #101416 repro, fixed: parent holds the lease, child runs the turn end-to-end.
-    Before the fix the child's re-claim was fenced by the parent's own entry and the turn
-    died with SESSION_NOT_OWNED."""
-    parent = _seed_parent_lease("s1-key", live_session_id="parent-sid")
-    try:
-        frames, end = _run_turn(
-            _make_frame("s1", parent_owns_active_session_lease=True)
-        )
-
+        frames, end = _run_turn(_make_frame(
+            "s1", active_session_lease={"lease_id": parent.lease_id, "session_id": "s1-key"}))
         kinds = [f["type"] for f in frames]
-        # session.info (from _init_session) rides the transport first; what matters is that the
-        # turn was ADMITTED (turn.started) and ended cleanly instead of the #101416 refusal.
-        assert "turn.started" in kinds
-        assert kinds[-1] == "turn.end" and end["session_key"] == "s1-key"
-        # The pipeline actually ran past the lease gate: message.start was emitted for the turn.
-        assert any(
-            f["type"] == "rpc"
-            and f["message"]["method"] == "event"
-            and (f["message"].get("params") or {}).get("type") == "message.start"
-            for f in frames
-        )
-        # No ownership refusal anywhere in the stream.
-        errors = [f for f in frames if f["type"] == "rpc" and f["message"].get("error")]
-        assert not errors
-        # The registry still holds exactly the parent's lease — unclaimed twice, unmodified.
+        assert "turn.started" in kinds and kinds[-1] == "turn.end" and end["session_key"] == "s1-key"
+        events = [(f["message"].get("params") or {}).get("type") for f in frames if f["type"] == "rpc"]
+        assert "error" not in events and "message.start" in events  # admitted and ran, no refusal
         entries = _registry()
-        assert len(entries) == 1
-        assert entries[0]["lease_id"] == parent.lease_id
+        assert [e["lease_id"] for e in entries] == [parent.lease_id]
         assert entries[0]["metadata"]["live_session_id"] == "parent-sid"
     finally:
-        from hermes_cli.active_sessions import release_active_session
-
-        release_active_session(parent)
+        parent.release()
 
 
-def test_isolated_turn_without_vouch_still_fails_closed(isolated_env, clean_sessions):
-    """Negative control: a parent that does NOT vouch (predates the field) leaves the child
-    on the legacy self-claim path; against a held slot that must remain a VISIBLE refusal,
-    never a silent second writer."""
-    _seed_parent_lease("s1-key", live_session_id="parent-sid")
+def test_isolated_turn_without_matching_vouch_still_fails_closed(isolated_env):
+    """Negative control: a vouch for another stored id (a lease still keyed on the pre-rotation id)
+    keeps the legacy self-claim, which the parent's entry still fences — nothing about
+    _is_same_writer is relaxed, and a stale lease never authorizes the continuation."""
+    parent = _seed_parent_lease("s1-key")
     try:
-        frames, _end = _run_turn(_make_frame("s1"))
+        frames, _ = _run_turn(_make_frame(
+            "s1", active_session_lease={"lease_id": parent.lease_id, "session_id": "stale-A"}))
+        errors = [f["message"]["params"]["payload"]["message"] for f in frames
+                  if f["type"] == "rpc" and (f["message"].get("params") or {}).get("type") == "error"]
+        assert errors and "open in another Hermes window" in errors[0]
+        assert [e["lease_id"] for e in _registry()] == [parent.lease_id]
     finally:
-        pass
-    refusal_events = [
-        f
-        for f in frames
-        if f["type"] == "rpc"
-        and f["message"].get("method") == "event"
-        and (f["message"].get("params") or {}).get("type") == "error"
-        and "already has a live owner" in json.dumps(f["message"].get("params", {}))
-    ]
-    assert refusal_events, f"expected the fail-closed refusal, saw={frames}"
-    # The parent's entry survived the failed claim.
-    entries = _registry()
-    assert (
-        len(entries) == 1 and entries[0]["metadata"]["live_session_id"] == "parent-sid"
-    )
-    # Cleanup via the production finalize primitive (drop own-pid orphans), so the child's
-    # refused/pending claim and the parent's seeded lease both land cleanly: this test process
-    # owns both registry entries and vouches for none of them here. The sweep spares YOUNG
-    # own-pid leases by a grace window, so backdate first — exactly what upstream's own
-    # orphan-sweep tests do (tests/hermes_cli/test_active_sessions.py::_backdate_leases).
-    from hermes_cli.active_sessions import release_orphaned_leases
-    from pathlib import Path
-
-    registry_path = Path(os.environ["HERMES_HOME"]) / "runtime" / "active_sessions.json"
-    entries = json.load(open(registry_path)).get("entries", [])
-    for entry in entries:
-        entry["started_at"] = time.time() - 600.0
-    with open(registry_path, "w", encoding="utf-8") as fh:
-        json.dump({"entries": entries}, fh)
-    release_orphaned_leases(live_lease_ids=set())
-    assert _registry() == []
+        parent.release()
 
 
-def test_isolated_turn_self_claims_when_no_parent_lease_exists(
-    isolated_env, clean_sessions
-):
-    """Fallback path preserved: an unknown/unvouching parent on an UNOWNED session lets the
-    child claim for itself and run; the claimed lease is the child's own and is releasable."""
-    frames, end = _run_turn(_make_frame("s1"))
-    kinds = [f["type"] for f in frames]
-    assert "turn.started" in kinds and kinds[-1] == "turn.end"
-    errors = [f for f in frames if f["type"] == "rpc" and f["message"].get("error")]
-    assert not errors
-    # The child's own claim is in the registry under this process's pid; release it cleanly
-    # the way the production finalize path would.
-    entries = _registry()
-    assert len(entries) == 1 and entries[0]["session_id"] == "s1-key"
-    # Cleanup the same way the production finalize reclaims a child's own claim: same-writer
-    # re-entrancy (same pid + same live_session_id) releases it from the registry.
-    from hermes_cli.active_sessions import release_active_session
-
-    session = server._sessions.get("s1")
-    lease = session.get("active_session_lease") if session else None
-    assert lease is not None and lease.enabled and not lease.released
-    release_active_session(lease)
-    assert _registry() == []
+# ── Fix 2: compression rotation A->B stays owned by the parent ──────────────
 
 
-def test_borrow_install_sits_before_the_turn_pipeline():
-    """Guard the ordering contract: the borrow must be installed in _run_real_turn before
-    _run_prompt_submit (i.e. before _admit_prompt_turn's claim)."""
-    import inspect
+def test_child_rotation_never_claims_and_parent_reanchors_its_real_lease():
+    parent = _seed_parent_lease("A")
+    try:
+        # Child side: the borrow is retargeted locally; the registry is untouched (no child-pid lease).
+        child = {"session_key": "A", "history_lock": threading.Lock()}
+        server._install_borrowed_lease("sid", child, _make_frame(
+            "sid", session_key="A", active_session_lease={"lease_id": parent.lease_id, "session_id": "A"}))
+        assert server._transfer_active_session_slot("sid", child, new_session_id="B") is True
+        assert child["active_session_lease"].session_id == "B"
+        assert [(e["session_id"], e["pid"]) for e in _registry()] == [("A", os.getpid())]
+        # Parent side: a stale lease vouches for nothing; adopting the rotated key moves the REAL lease.
+        session = _parent_session("sid", "A", parent)
+        session["session_key"] = "B"
+        assert server._active_session_lease_vouch(session) is None
+        session["session_key"] = "A"
+        with session["history_lock"]:
+            server._compute_host_adopt_frame_meta(session, {"sid": "sid", "session_key": "B"})
+        assert session["session_key"] == "B" and parent.session_id == "B"
+        assert [(e["session_id"], e["lease_id"]) for e in _registry()] == [("B", parent.lease_id)]
+        assert server._active_session_lease_vouch(session) == {"lease_id": parent.lease_id, "session_id": "B"}
+    finally:
+        parent.release()
 
-    source = inspect.getsource(ComputeHost._run_real_turn)
-    borrow_at = source.index("_install_borrowed_lease")
-    pipeline_at = source.index("_run_prompt_submit")
-    assert borrow_at < pipeline_at
+
+# ── Fix 3: close keeps the lease until the isolated turn settles ────────────
+
+
+def test_close_holds_lease_until_isolated_turn_settles(monkeypatch):
+    interrupts: list[str] = []
+    monkeypatch.setattr(server, "_get_compute_host_supervisor",
+                        lambda *a, **k: types.SimpleNamespace(interrupt=lambda sid, **k: interrupts.append(sid)))
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda *a: {"turn_isolation": True})
+    monkeypatch.setattr(server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 0.2)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    parent = _seed_parent_lease("A")
+    session = _parent_session("sid", "A", parent)
+    session["_compute_host_turn_id"] = "turn-1"  # the child is still running this turn
+    session["_closing"] = True
+    try:
+        assert server._teardown_popped_session(session, end_reason="tui_close") is True
+        assert interrupts == ["sid"]
+        # Close returned, the child is live: ownership is still ours and still refuses a distinct writer.
+        assert [e["lease_id"] for e in _registry()] == [parent.lease_id]
+        assert parent.lease_id in server._own_live_lease_ids()
+        lease, refusal = _foreign_acquire("A")
+        assert lease is None and getattr(refusal, "reason", "") == "SESSION_NOT_OWNED"
+        # Child settlement (turn.end, or turn.error from _fail_pending_turns on child death) releases it.
+        server._on_compute_host_turn_done("rid", "sid", session, {"type": "turn.end", "sid": "sid", "session_key": "A"})
+        assert _registry() == [] and parent.lease_id not in server._own_live_lease_ids()
+        lease, refusal = _foreign_acquire("A")
+        assert refusal is None and lease is not None
+        lease.release()
+    finally:
+        parent.release()
