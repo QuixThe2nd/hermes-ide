@@ -180,6 +180,10 @@ interface GatewayRegistryState {
   primaryGateway: HermesGateway | null
   /** Registry source currently served by primaryGateway, when known. */
   primaryConnectionId: null | string
+  /** Resolved mode of the primary's descriptor: a `local` primary is ONE
+   *  `hermes serve --profile <primary>` child and can never stand in for a
+   *  pooled profile's own backend. */
+  primaryConnectionMode: 'local' | 'remote' | null
   primaryProfile: string
   activeKey: string
   activationEpoch: number
@@ -201,6 +205,7 @@ function createRegistryState(): GatewayRegistryState {
     config: null,
     primaryGateway: null,
     primaryConnectionId: null,
+    primaryConnectionMode: null,
     primaryProfile: 'default',
     activeKey: 'default',
     activationEpoch: 0,
@@ -316,6 +321,7 @@ export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'defa
 
   if (g.primaryGateway !== gateway) {
     g.primaryConnectionId = null
+    g.primaryConnectionMode = null
   }
 
   // Route identity is exact-scope, never bare-name (#93892 follow-up): when
@@ -336,7 +342,10 @@ export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'defa
   }
 }
 
-export function setPrimaryGatewayConnectionId(connectionId: null | string | undefined): void {
+export function setPrimaryGatewayConnectionId(
+  connectionId: null | string | undefined,
+  mode: 'local' | 'remote' | null | undefined = undefined
+): void {
   // Hardening for #95628: while the active route is a secondary scope, the
   // window is looking at a NON-primary socket — any connection id flowing
   // through presentation-layer code at that moment describes the secondary,
@@ -349,6 +358,7 @@ export function setPrimaryGatewayConnectionId(connectionId: null | string | unde
   }
 
   g.primaryConnectionId = (connectionId ?? '').trim() || null
+  g.primaryConnectionMode = mode === 'local' || mode === 'remote' ? mode : null
 
   if (g.activeKey === g.primaryProfile) {
     setApiRequestConnection(g.primaryConnectionId)
@@ -356,8 +366,8 @@ export function setPrimaryGatewayConnectionId(connectionId: null | string | unde
 }
 
 /** Publish the registry source owned by the window primary socket. */
-export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId'> | null): void {
-  setPrimaryGatewayConnectionId(connection?.connectionId)
+export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId' | 'mode'> | null): void {
+  setPrimaryGatewayConnectionId(connection?.connectionId, connection?.mode)
 }
 
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {
@@ -413,11 +423,18 @@ async function isAttachedSharedRemote(
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
   } catch {
-    // Probe failed. A secondary at this already-attached source is the #96493
-    // ghost WebSocket (accept/close, messages=1). Prefer the primary until a
-    // later probe can prove isolation (`sharedRemote: false`). Isolated SSH
-    // still dials its own socket when getConnectionFor succeeds.
-    return true
+    // Probe failed. On a REMOTE primary a secondary at this already-attached
+    // source is the #96493 ghost WebSocket (accept/close, messages=1), so
+    // prefer the primary until a later probe can prove isolation
+    // (`sharedRemote: false`). A LOCAL primary is a different animal: it is
+    // one `hermes serve --profile <primary>` child and every other local
+    // profile has its own pooled child. The primary would still ACCEPT a
+    // `profile`-tagged session.create (profile_home multiplexing) and mint
+    // the session under its own pid, but the exact-owner route then names the
+    // pool backend — after a renderer reload or a pool respawn the resume
+    // dials that backend and is refused SESSION_NOT_OWNED by a pid of the
+    // same Desktop (#101416). Let the pooled dial surface its own failure.
+    return g.primaryConnectionMode !== 'local'
   }
 }
 
