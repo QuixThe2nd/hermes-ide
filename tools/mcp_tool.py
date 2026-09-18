@@ -317,7 +317,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback")
+        "_ever_connected", "_sse_fallback", "_park_reason")
 
     def __init__(self, name: str):
         self.name = name
@@ -350,6 +350,10 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._sse_fallback: bool = False
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
+        # Why the server is parked (the revival_reason handed to _park), None once healthy again.
+        # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
+        # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
+        self._park_reason: Optional[str] = None
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a

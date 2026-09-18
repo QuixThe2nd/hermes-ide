@@ -175,6 +175,7 @@ class MCPServerRunMixin:
         # (#57129). An explicit _reconnect_event.set() (OAuth recovery, manual /mcp refresh) still wakes us
         # immediately.
         self._was_parked = True
+        self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
         outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)

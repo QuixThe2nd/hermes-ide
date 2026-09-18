@@ -351,6 +351,10 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     return None
 
 
+# (job id, server name) pairs already warned about as reconnecting; see _empty_requested_mcp_toolsets.
+_RECONNECTING_WARNED: set = set()
+
+
 def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     """Reason when an MCP server the job's own ``enabled_toolsets`` names resolves to zero tools.
 
@@ -372,10 +376,19 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     # that did resolve rather than losing a whole tick to a minute of downtime (#112871). Only a
     # server that never connected for this profile is judged below.
     reconnecting = sorted(name for name in missing if mcp_server_reconnecting(name))
-    if reconnecting:
+    job_id = str(job.get("id", "?"))
+    # One WARNING per job+server per outage (like the one-shot blocked_config alert), not one per
+    # tick; the entry drops once the server is back so the next outage warns again.
+    _RECONNECTING_WARNED.difference_update(
+        key for key in list(_RECONNECTING_WARNED) if key[0] == job_id and key[1] not in reconnecting)
+    unwarned = [name for name in reconnecting if (job_id, name) not in _RECONNECTING_WARNED]
+    if unwarned:
+        _RECONNECTING_WARNED.update((job_id, name) for name in unwarned)
         logger.warning(
             "Job '%s': MCP server(s) %s named in enabled_toolsets are reconnecting — running "
-            "without their tools this tick", job.get("id", "?"), ", ".join(reconnecting))
+            "without their tools until they recover (a server parked on a permanent error blocks "
+            "the job instead)", job_id, ", ".join(unwarned))
+    if reconnecting:
         missing = [name for name in missing if name not in reconnecting]
     if not missing:
         return None

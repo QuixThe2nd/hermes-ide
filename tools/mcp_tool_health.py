@@ -202,6 +202,7 @@ class MCPServerHealthMixin:
             return
         self._session_proven = True
         self._reconnect_retries = 0
+        self._park_reason = None
         if self._was_parked:
             self._was_parked = False
             logger.warning("MCP server '%s': revived — session healthy again after "
