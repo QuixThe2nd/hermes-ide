@@ -95,20 +95,27 @@ def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
     same pid AND same live_session_id): every isolated turn failed with "Session ... already
     has a live owner" (#101416). The slot is real and owned upstream, so the child must
     neither claim a second one nor be able to release/transfer the parent's: the token is
-    ``enabled=False`` (release/transfer no-op on it) and ``released=True`` (already "done").
+    ``enabled=False`` — ``release()`` is a no-op and ``transfer_active_session`` only retargets
+    the token locally, so a compression rotation A->B inside the child never reaches the
+    registry (the parent re-anchors its real lease from the reported ``session_key``, see
+    ``_compute_host_adopt_frame_meta``). NOT ``released=True``: a released token makes the
+    transfer fall through to a real registry claim under the child pid.
 
-    Only claimed when the parent vouched via ``parent_owns_active_session_lease`` in the
-    frame. Anything else keeps the legacy behaviour — the child claims for itself and any
-    ownership conflict fails CLOSED with the visible refusal.
+    Only installed when the frame's ``active_session_lease`` vouch names THIS stored session
+    id — a parent lease still keyed on a pre-rotation id must not authorize its continuation.
+    Anything else keeps the legacy behaviour — the child claims for itself and any ownership
+    conflict fails CLOSED with the visible refusal.
     """
-    if frame.get("parent_owns_active_session_lease") is not True:
+    vouch = frame.get("active_session_lease")
+    if not isinstance(vouch, dict) or session.get("active_session_lease") is not None:
         return
-    if session.get("active_session_lease") is not None:
+    key = str(session.get("session_key") or "")
+    if not key or str(vouch.get("session_id") or "") != key:
         return
     from hermes_cli.active_sessions import ActiveSessionLease
     session["active_session_lease"] = ActiveSessionLease(
-        lease_id=f"borrowed:{sid}", session_id=str(session.get("session_key") or ""),
-        surface=str(frame.get("source") or "desktop"), enabled=False, released=True)
+        lease_id=f"borrowed:{vouch.get('lease_id') or sid}", session_id=key,
+        surface=str(frame.get("source") or "desktop"), enabled=False)
 
 
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
