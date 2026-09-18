@@ -91,7 +91,16 @@ Claude Code presents up to two confirmation dialogs on first launch. You MUST ha
 
 ### Dialog 2: Individual Permission Prompts (normal flow)
 
-Answer each prompt on its own — this is different from disabling prompts for the whole run.
+Each tool use that needs approval (file write, shell command, network) shows a prompt. Answer that one prompt — this is different from disabling prompts for the whole run:
+```
+# Read the prompt before answering it
+terminal(command="tmux capture-pane -t <session> -p -S -30")
+# Allow this one action (Enter = default "Yes"); Esc declines it
+terminal(command="tmux send-keys -t <session> Enter")
+```
+Never send a blind `Enter` on a timer to approve prompts you have not read — that is the bypass flag with extra steps.
+
+A narrower opt-in than the full bypass is `--permission-mode acceptEdits`: file edits in the working directory are accepted, shell and other tool calls still prompt. Use it only in a dedicated worktree after reviewing the task.
 
 ### Robust Dialog Handling Pattern
 ```
@@ -274,7 +283,7 @@ Automatically falls back to the specified model when the default is overloaded (
 ### Permission & Safety
 | Flag | Effect |
 |------|--------|
-| `--dangerously-skip-permissions` | Auto-approve ALL tool use (file writes, bash, network, etc.) |
+| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Throwaway worktree / isolated container only — see "Opt-in" above |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
 | `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
 | `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
@@ -719,7 +728,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 ## Pitfalls & Gotchas
 
 1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
-2. **`--dangerously-skip-permissions` dialog defaults to "No, exit"** — you must send Down then Enter to accept. Print mode (`-p`) skips this entirely.
+2. **The `--dangerously-skip-permissions` warning dialog defaults to "No, exit"** — that default is the safe answer; only send Down then Enter when you deliberately opted into the bypass in an isolated environment. Print mode (`-p`) skips the dialog entirely.
 3. **`--max-budget-usd` minimum is ~$0.05** — system prompt cache creation alone costs this much. Setting lower will error immediately.
 4. **`--max-turns` is print-mode only** — ignored in interactive sessions.
 5. **Claude may use `python` instead of `python`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
