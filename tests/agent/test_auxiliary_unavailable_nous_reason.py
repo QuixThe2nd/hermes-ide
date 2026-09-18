@@ -42,9 +42,26 @@ def test_nous_credential_failure_is_remembered_and_warned_once(caplog, monkeypat
         detail = unavailable.record_nous_credential_failure(exc)
         unavailable.record_nous_credential_failure(exc)
 
-    assert detail == ("Nous Portal runtime credentials unavailable: Invalid refresh token "
-                      "Run `hermes model` to re-authenticate. (code: invalid_grant)")
+    assert detail.startswith("Nous Portal runtime credentials unavailable: ")
+    assert "invalid_grant" in detail and "Run `hermes model` to re-authenticate." in detail
+    assert "Invalid refresh token. Run" in detail, detail  # sentence-terminated before the remediation
     assert unavailable.nous_credential_failure_detail() == detail
     assert sum(detail in rec.getMessage() for rec in caplog.records) == 1
     unavailable.clear_nous_credential_failure()
     assert unavailable.nous_credential_failure_detail() is None
+
+
+def test_never_logged_in_is_debug_but_a_dead_credential_warns(caplog, monkeypatch, tmp_path):
+    """The auto-route walk resolves Nous on every pass; users who never chose Nous must not be nagged."""
+    _reset(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    not_logged_in = AuthError("Hermes is not logged into Nous Portal.", provider="nous", relogin_required=True)
+    dead = AuthError("Invalid refresh token", provider="nous", code="invalid_grant", relogin_required=True)
+    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
+        quiet = unavailable.record_nous_credential_failure(not_logged_in)
+        loud = unavailable.record_nous_credential_failure(dead)
+
+    levels = {rec.levelno for rec in caplog.records if quiet in rec.getMessage()}
+    assert levels == {logging.DEBUG}, caplog.records
+    assert {rec.levelno for rec in caplog.records if loud in rec.getMessage()} == {logging.WARNING}
+    assert "hermes model" in quiet  # the goal judge still gets the remediation text
