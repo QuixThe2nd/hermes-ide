@@ -750,6 +750,10 @@ Click a numbered button to answer, or click **Other** to type a free-form respon
 
 The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
+### Prompt layout
+
+Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
+
 ## Proactive Delivery Targets
 
 Cron jobs and reminders deliver to an explicit target you configure per job — for example `hermes cron edit <id> --deliver discord:123456789012345678` (a channel ID copied with Developer Mode on).
