@@ -2059,6 +2059,13 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        # A prior compression attempt may have lowered the live trigger to fit
+        # its auxiliary summarizer. update_model() rightly recalibrates from
+        # the new main model, so immediately reapply that feasibility guard
+        # when it has already been resolved for this session.
+        if getattr(agent, "_compression_feasibility_checked", False):
+            from agent.conversation_compression import check_compression_model_feasibility
+            check_compression_model_feasibility(agent)
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
