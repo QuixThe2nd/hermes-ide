@@ -293,10 +293,12 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id. Real payloads lack it — the injected resolver supplies it
-    # ((session_id, db) tuple; a returned db routes the append to the profile store owning the
-    # key); plain-string slots (runner-level _pending_messages) fall back to resolving the newest
-    # session row for the routing key.
+    # needs the real session_id, which real payloads lack — the resolver supplies it together with
+    # the store owning the key. ``session_db`` (the owned default) serves only payloads that already
+    # carry a session_id; a resolver-resolved payload goes to the resolver's db alone, never the
+    # ambient root store (a None db from the resolver is not a fallback signal — it is "preserve").
+    # Plain-string slots (runner-level _pending_messages) carry no resolver: fall back to the
+    # newest session row for the routing key, behind the same reset fence the durable row uses.
     session_id, target_db = data.get("session_id", ""), session_db
     if not session_id and session_resolver is not None:
         try:
@@ -304,10 +306,9 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
         except Exception as exc:
             logger.debug("Session key->id resolution failed for %s: %s", session_key, exc)
             resolved = None
-        if resolved:
-            session_id, routed_db = resolved
-            target_db = routed_db if routed_db is not None else session_db
-    if not session_id:
+        if resolved and resolved[1] is not None:
+            session_id, target_db = resolved
+    elif not session_id:
         session_id = _resolve_session_id_for_key(session_db, session_key)
     if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
