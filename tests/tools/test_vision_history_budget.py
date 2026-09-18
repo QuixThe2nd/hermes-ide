@@ -74,6 +74,36 @@ class TestRepeatCap:
         assert "already been loaded" in payload["error"] and "max_calls_per_image" in payload["error"]
         assert _embedded(other), "a different image in the same session is not affected"
 
+    def test_parallel_batch_on_one_image_cannot_overshoot_the_cap(self, tmp_path):
+        """The executor runs a tool batch concurrently: 6 simultaneous loads of one image with cap 3
+        must yield exactly 3 embeds — the slot is reserved atomically, not check-then-record."""
+        import contextvars
+        import threading
+
+        shot = _png(tmp_path / "shot.png")
+        results = [None] * 6
+
+        def one(i):
+            results[i] = _embedded(asyncio.new_event_loop().run_until_complete(_vision_analyze_native(shot, "q")))
+
+        with delegated_child_context("child-parallel"):
+            threads = [threading.Thread(target=contextvars.copy_context().run, args=(one, i)) for i in range(6)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        assert sum(results) == 3
+        assert budget._repeat_counts[("child-parallel", budget._image_key(shot))] == 3
+
+    def test_failed_embed_releases_its_reserved_slot(self, tmp_path):
+        """A refused/failed load (missing file) must not burn one of the three slots."""
+        shot = _png(tmp_path / "shot.png")
+        with delegated_child_context("child-release"):
+            for _ in range(3):
+                assert json.loads(_load(str(tmp_path / "missing.png")))["success"] is False
+            assert all(_embedded(_load(shot)) for _ in range(3))
+        assert ("child-release", budget._image_key(str(tmp_path / "missing.png"))) not in budget._repeat_counts
+
     def test_main_agent_is_unlimited_unless_configured(self, tmp_path):
         shot = _png(tmp_path / "shot.png")
         assert all(_embedded(_load(shot)) for _ in range(5))

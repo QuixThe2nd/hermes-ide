@@ -86,14 +86,19 @@ def _count_key(image_url: str) -> tuple[str, str]:
 
 
 def repeat_refusal(image_url: str) -> Optional[str]:
-    """Tool-error JSON when this image already hit its per-session embed cap, else ``None``."""
+    """Reserve one native embed of ``image_url`` for the current session; tool-error JSON when the
+    per-session cap is already spent, else ``None``. Check and count are ONE lock section: a
+    parallel tool batch on the same image (the incident's 4 concurrent calls) must not all pass a
+    check taken before any of them recorded. Callers ``release_embed`` when the embed then fails."""
     cap = resolve_repeat_cap()
     if cap <= 0:
         return None
+    key = _count_key(image_url)
     with _repeat_lock:
-        count = _repeat_counts.get(_count_key(image_url), 0)
-    if count < cap:
-        return None
+        count = _repeat_counts.get(key, 0)
+        if count < cap:
+            _record_embed_locked(key)
+            return None
     return tool_error(
         f"vision_analyze refused: this image has already been loaded into context {count} time(s) "
         "in this session (region crops of the same file count too), and every native load re-sends "
@@ -103,11 +108,26 @@ def repeat_refusal(image_url: str) -> Optional[str]:
     )
 
 
+def _record_embed_locked(key: tuple[str, str]) -> None:
+    _repeat_counts[key] = _repeat_counts.get(key, 0) + 1
+    # Bound long-lived gateway memory: evict the oldest (session, image) entries.
+    while len(_repeat_counts) > _REPEAT_COUNTS_MAX_KEYS:
+        _repeat_counts.pop(next(iter(_repeat_counts)))
+
+
 def record_embed(image_url: str) -> None:
-    """Count one successful native embed of ``image_url`` for the current session."""
+    """Count one successful native embed of ``image_url`` for the current session (uncapped
+    sessions only — capped ones are counted by the reservation in :func:`repeat_refusal`)."""
+    with _repeat_lock:
+        _record_embed_locked(_count_key(image_url))
+
+
+def release_embed(image_url: str) -> None:
+    """Give back a slot reserved by :func:`repeat_refusal` when the embed did not happen."""
     key = _count_key(image_url)
     with _repeat_lock:
-        _repeat_counts[key] = _repeat_counts.get(key, 0) + 1
-        # Bound long-lived gateway memory: evict the oldest (session, image) entries.
-        while len(_repeat_counts) > _REPEAT_COUNTS_MAX_KEYS:
-            _repeat_counts.pop(next(iter(_repeat_counts)))
+        count = _repeat_counts.get(key, 0)
+        if count > 1:
+            _repeat_counts[key] = count - 1
+        else:
+            _repeat_counts.pop(key, None)

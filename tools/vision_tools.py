@@ -38,7 +38,9 @@ from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 from tools.vision_tools_history_budget import (
     record_embed as _record_embed,
+    release_embed as _release_embed,
     repeat_refusal as _repeat_refusal,
+    resolve_repeat_cap as _resolve_repeat_cap,
     resolve_embed_target_bytes as _resolve_embed_target_bytes,
 )
 from tools.vision_tools_image_prep import (
@@ -589,10 +591,13 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    # A cap > 0 RESERVES the slot here (atomic check-and-count); released below if no embed happens.
     refusal = _repeat_refusal(image_url)
     if refusal is not None:
         return refusal
+    reserved = _resolve_repeat_cap() > 0
     prepared: Optional[_PreparedImage] = None
+    embedded = False
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
@@ -619,7 +624,9 @@ async def _vision_analyze_native(
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
-        _record_embed(image_url)
+        embedded = True
+        if not reserved:
+            _record_embed(image_url)
         return _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,
@@ -628,6 +635,8 @@ async def _vision_analyze_native(
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
     finally:
+        if reserved and not embedded:
+            _release_embed(image_url)
         # Only delete temp files we created — never user-provided paths.
         if prepared is not None:
             _unlink_quietly(prepared.path)
