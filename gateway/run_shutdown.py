@@ -330,21 +330,32 @@ class GatewayShutdownMixin:
         )
 
     def _scale_to_zero_active_messaging_platforms(self) -> list:
-        """ENABLED MESSAGING platforms for the relay-only arm gate.
+        """Return every enabled or live messaging platform across served profiles.
 
-        config.platforms is pre-seeded with disabled placeholders, and the api_server is force-enabled
-        on every hosted container (counting it silently disarmed the feature everywhere).
+        ``self.config`` belongs to the launch profile, while ``_profile_adapters`` holds
+        live adapters for multiplexed secondary profiles. A direct secondary connection
+        must block suspension just like a direct primary connection.
         """
-        if not self.config:
-            return []
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        active = []
+
+        def add_platform(platform: Platform) -> None:
+            if platform not in non_messaging and platform not in active:
+                active.append(platform)
+
         try:
-            return [
-                p for p, pc in self.config.platforms.items()
-                if getattr(pc, "enabled", False) and p not in non_messaging
-            ]
-        except Exception:  # noqa: BLE001
-            return []
+            if self.config:
+                for platform, platform_config in self.config.platforms.items():
+                    if getattr(platform_config, "enabled", False):
+                        add_platform(platform)
+            for platform in getattr(self, "adapters", {}) or {}:
+                add_platform(platform)
+            for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
+                for platform in profile_adapters:
+                    add_platform(platform)
+        except Exception:  # noqa: BLE001 - diagnostics must not block gateway startup
+            return active
+        return active
 
     @staticmethod
     def _relay_wake_url_or_none():

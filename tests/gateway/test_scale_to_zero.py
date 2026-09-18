@@ -65,6 +65,22 @@ def test_no_platform_is_true():
     assert messaging_is_relay_only_or_absent([]) is True
 
 
+def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkeypatch):
+    # A direct adapter in a served profile owns an inbound socket too; the process
+    # must stay awake even when the launch profile itself is relay-only.
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    monkeypatch.setenv("HERMES_SCALE_TO_ZERO", "1")
+    monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "https://wake.example.test/instance")
+    runner = object.__new__(GatewayShutdownMixin)
+    runner.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
+    runner.adapters = {Platform.RELAY: object()}
+    runner._profile_adapters = {"imessage": {Platform("photon"): object()}}
+
+    assert runner._scale_to_zero_should_arm() is False
+
+
 # ── should_arm (D1/D11/§3.4(1)) ──────────────────────────────────────────────
 
 
