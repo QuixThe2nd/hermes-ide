@@ -28,8 +28,12 @@ from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.stale_modules import drop_stale_root_modules
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
+# Drop a pre-pull ``utils`` cache (narrow purge left root modules) before the
+# import below — see hermes_cli.stale_modules. Bridge for ≤v2026.9.14 → HEAD.
+drop_stale_root_modules()
 from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
