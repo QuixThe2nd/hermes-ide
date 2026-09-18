@@ -560,6 +560,44 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
     assert spawned[0][1]["cwd"] == str(repo_root)
 
 
+def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
+    tmp_path, monkeypatch,
+):
+    """The pin prepends the checkout to the PYTHONPATH the shared sanitizer *kept*; it
+    must not rebuild from raw ``os.environ`` (which would resurrect entries
+    ``build_subprocess_env`` stripped). Under a wheel/pipx install the checkout IS
+    purelib, already importable -- pinning it would hoist site-packages above the stdlib,
+    so the pin is skipped there."""
+    import cron.scheduler as scheduler
+    import cron.scheduler_worker_env as worker_env_mod
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("degraded", command),
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "raw-environ-only"))
+    monkeypatch.setattr(
+        "tools.environments.local.build_subprocess_env",
+        lambda **_: {"PATH": os.environ.get("PATH", ""),
+                     "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
+    )
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    repo_root = Path(scheduler.__file__).resolve().parent.parent
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
+    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+
+    # Wheel / pipx layout: repo_root == purelib -> untouched.
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
+    untouched = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
+    assert worker_env_mod.pin_hermes_tree_on_pythonpath(dict(untouched), repo_root) == untouched
+    assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 

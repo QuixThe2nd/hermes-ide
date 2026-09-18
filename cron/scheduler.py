@@ -3240,17 +3240,11 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
-    # The worker's entry module is `cron.scheduler`, not `hermes_cli.main`, so nothing
-    # bootstraps this checkout onto its sys.path the way the gateway got it: a venv whose
-    # editable install maps a moved checkout, or a host that sets PYTHONSAFEPATH (`-m` then
-    # ignores cwd), dies with "No module named 'cron'" before the ack (#112729). The shared
-    # sanitizer strips Hermes-owned PYTHONPATH entries because user children must not see
-    # our tree; this child IS Hermes, so it gets the gateway's own tree back explicitly.
+    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
+    # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
     repo_root = Path(__file__).resolve().parent.parent
-    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([
-        str(repo_root),
-        *filter(None, os.environ.get("PYTHONPATH", "").split(os.pathsep)),
-    ]))
+    worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
