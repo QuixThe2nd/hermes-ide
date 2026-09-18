@@ -175,6 +175,8 @@ Deny rules are a shell-command policy, not a complete shell interpreter or an OS
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
 
+An expired prompt cannot be reopened: the pending entry is discarded and the agent is told not to retry on its own within that turn. To run the operation after all, send a new message asking for it (for example "go ahead and run that now") — the agent issues a fresh tool call, which raises a fresh approval card, and a "once" approval applies only to that call. A timeout is not counted as a denial, so asking again is never penalized.
+
 Configure the timeout in `~/.hermes/config.yaml`:
 
 ```yaml
