@@ -24,6 +24,8 @@ The `read_file` tool automatically converts common document formats to readable 
 
 Conversion output is Markdown, paginated through `read_file`'s normal `offset`/`limit` window. East Asian phonetic guides (XLSX `rPh`, DOCX ruby text) annotate cell or run text and are not part of the extracted value: a cell holding 東京 with the guide トウキョウ reads as `東京`. Documents over 50 MB are refused to keep tool turns bounded.
 
+Notebook cell outputs longer than 20,000 characters are truncated; the truncation marker carries a `jq` command that names the notebook's full, shell-quoted path so the omitted output can be pulled from the original file.
+
 Extraction works with remote terminal backends (Docker, Modal, SSH): the file's bytes are transferred across the backend boundary and converted host-side, so a document inside a sandbox reads the same as a local one.
 
 ## Scanned PDFs: the coverage warning
