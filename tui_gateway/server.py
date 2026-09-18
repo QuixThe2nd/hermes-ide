@@ -2353,6 +2353,9 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
         return resolution.selected_model, resolution.runtime
+    if resolution.runtime.get("source") == "local-runtime":
+        # Live supervisor beat any persisted loopback URL for this identity.
+        overrides.pop("base_url", None)
     if not overrides and not explicit_model_override and not _has_explicit_model_config():
         # Silent-default re-spell: with no explicit pick, the default model must use the
         # credential-resolved provider's vendor-prefixed spelling, not the native xAI id.
