@@ -257,10 +257,47 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
 # ── OAuth token endpoint ──
 
 
+# OAuth ``error`` codes (RFC 6749 §5.2 + the provider's reuse detection) after which replaying the
+# same refresh token can never succeed; only a fresh login recovers.
+_OAUTH_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
+
+
+class AnthropicOAuthError(ValueError):
+    """Token endpoint rejected the request. ``code`` is the OAuth ``error`` field of the response body."""
+
+    def __init__(self, status: int, code: str, description: str, *, what: str) -> None:
+        self.status = status
+        self.code = code
+        detail = f" ({description})" if description else ""
+        super().__init__(f"Anthropic token {what} failed: HTTP {status} {code or 'error'}{detail}")
+
+    @property
+    def relogin_required(self) -> bool:
+        return self.status in (400, 401) and self.code in _OAUTH_GRANT_DEAD_CODES
+
+
+def is_terminal_anthropic_refresh_error(exc: BaseException) -> bool:
+    """True when retrying the same Anthropic refresh token cannot succeed (dead grant)."""
+    return isinstance(exc, AnthropicOAuthError) and exc.relogin_required
+
+
+def _oauth_http_error(exc: Any, *, what: str) -> AnthropicOAuthError:
+    """``urllib.error.HTTPError`` -> structured error carrying the body's OAuth ``error`` code."""
+    code, description = "", ""
+    try:
+        payload = json.loads(exc.read().decode() or "{}")
+        code = str(payload.get("error") or "")
+        description = str(payload.get("error_description") or "")
+    except Exception:
+        pass
+    return AnthropicOAuthError(int(exc.code), code, description, what=what)
+
+
 def _post_oauth_token(
     data: bytes, *, content_type: str, timeout: int, what: str, user_agent: str = _OAUTH_TOKEN_USER_AGENT
 ) -> Dict[str, Any]:
     """POST to the token endpoints in order; raise the last error if all fail."""
+    import urllib.error
     import urllib.request
     last_error = None
     for endpoint in _OAUTH_TOKEN_URLS:
@@ -270,6 +307,11 @@ def _post_oauth_token(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            last_error = _oauth_http_error(exc, what=what)
+            logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, last_error)
+            if last_error.relogin_required:
+                break  # a dead grant is dead at every endpoint; do not replay it
         except Exception as exc:
             last_error = exc
             logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, exc)
@@ -331,7 +373,12 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             try:
                 refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
             except Exception as e:
-                logger.debug("Failed to refresh Claude Code token: %s", e)
+                if is_terminal_anthropic_refresh_error(e):
+                    logger.warning(
+                        "Claude Code OAuth refresh token is terminally invalid (%s); Hermes cannot use this "
+                        "login. Run 'hermes auth add anthropic' to give Hermes its own login.", e)
+                else:
+                    logger.debug("Failed to refresh Claude Code token: %s", e)
                 return None
             # The POST spent ``refresh_token``; this write is the commit step. On failure, fail closed and
             # mark the pre-rotation pair as spent.
