@@ -147,6 +147,48 @@ class TestCheckFnTransientFailureSuppression:
         assert raised[0].exc_info is not None
 
 
+    def test_core_tool_drop_warns_once_but_optional_tool_drop_stays_info(self, monkeypatch, caplog):
+        """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member logs at WARNING naming the tool
+        (#112649 atom 4): core tools are non-deferrable, so a dropped one leaves neither the schema
+        nor the tool_search catalog and the model's "no such tool" is accurate. Optional toolsets
+        keep the INFO verdict of ae5666f7fc4; the WARNING fires once per probe per process, not
+        on every TTL re-probe."""
+        import tools.registry as reg
+
+        def core_gate():
+            return False
+
+        def optional_gate():
+            return False
+
+        import toolsets
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(toolsets, "_HERMES_CORE_TOOLS", [*toolsets._HERMES_CORE_TOOLS, "core_probe_tool"])
+        reg.registry.register(name="core_probe_tool", toolset="core_probe", schema={"name": "core_probe_tool"},
+                              handler=lambda **kw: None, check_fn=core_gate)
+        reg.registry.register(name="optional_probe_tool", toolset="optional_probe", schema={"name": "x"},
+                              handler=lambda **kw: None, check_fn=optional_gate)
+        reg.invalidate_check_fn_cache()
+        try:
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                assert reg._check_fn_cached(core_gate) is False
+                assert reg._check_fn_cached(optional_gate) is False
+                clock["now"] += reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+        finally:
+            reg.registry.deregister("core_probe_tool")
+            reg.registry.deregister("optional_probe_tool")
+            reg.invalidate_check_fn_cache()
+
+        core = [r for r in caplog.records if "core_gate" in r.getMessage()]
+        optional = [r for r in caplog.records if "optional_gate" in r.getMessage()]
+        assert [r.levelno for r in core] == [logging.WARNING, logging.INFO]
+        assert "core_probe_tool" in core[0].getMessage() and "dependent tools will be unavailable" in core[0].getMessage()
+        assert [r.levelno for r in optional] == [logging.INFO]
+        assert "core tool" not in optional[0].getMessage()
+
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg
 

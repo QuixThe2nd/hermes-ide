@@ -903,6 +903,27 @@ class TestCatalogProviderAlias:
         assert ctx == 128000
         assert info is not None and info.provider_id == "deepseek" and info.context_window == 128000
 
+    def test_mistyped_alias_warns_once_and_keeps_the_configured_slug(self, caplog):
+        """``catalog_provider: deepsek`` is neither a Hermes provider id nor a models.dev id: warn
+        once (per process, like the unknown-key warning) and keep ``ModelInfo.provider_id`` on the
+        configured slug instead of leaking the typo as a vendor id."""
+        import logging
+
+        import agent.models_dev as md
+
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepsek"}},
+                  "model_overrides": {"925llm": {"deepseek-v4.1-flash": {"context_window": 1000000}}}}
+        md._UNKNOWN_CATALOG_PROVIDER_WARNED.clear()
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={"deepseek": {"models": {}}}), \
+                caplog.at_level(logging.WARNING, logger="agent.models_dev"):
+            info = get_model_info("925llm", "deepseek-v4.1-flash")
+            assert get_model_capabilities("925llm", "deepseek-v4.1-flash").supports_vision is None
+            get_model_info("925llm", "deepseek-v4.1-flash")
+
+        assert info is not None and info.provider_id == "925llm"
+        warned = [r for r in caplog.records if "catalog_provider" in r.getMessage()]
+        assert len(warned) == 1 and "deepsek" in warned[0].getMessage() and "925llm" in warned[0].getMessage()
+
     def test_without_alias_custom_provider_stays_unknown(self):
         """Control: no alias → no vendor inheritance, and a legacy ``custom_providers`` row can alias too."""
         config = {"providers": {"925llm": {"api": "http://gw.internal/v1"}},

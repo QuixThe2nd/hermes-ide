@@ -175,7 +175,18 @@ def _models_dev_id(provider: str) -> Optional[str]:
     if mdev_id is None:
         alias = _configured_catalog_provider(key)
         mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
+        if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
+                and mdev_id not in fetch_models_dev(allow_network=False):
+            # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
+            if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
+                _UNKNOWN_CATALOG_PROVIDER_WARNED.add((key, alias))
+                logger.warning("providers.%s: catalog_provider %r is neither a Hermes provider id nor a "
+                               "models.dev id; ignoring", key, alias)
+            mdev_id = None
     return mdev_id
+
+
+_UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once per process
 
 
 def _cfg_get(*keys: str, default: Any) -> Any:
