@@ -4895,12 +4895,18 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             custom_base = custom_base.rstrip("/") + "/v1"
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
-        custom_key = (
-            (req.explicit_api_key or "").strip()
-            or _scoped_key_env("OPENAI_API_KEY")
-            or _read_main_api_key_if_same_host(custom_base)
-            or "no-key-required"  # local servers don't need auth
-        )
+        if req.original_provider in _LOCAL_SERVER_ALIASES:
+            # SECURITY: a local-server alias never borrows OPENAI_API_KEY or the main key —
+            # the alias means "this is my own server"; sending an OpenAI secret to whatever
+            # host base_url names is never intended. Explicit api_key or the placeholder only.
+            custom_key = (req.explicit_api_key or "").strip() or "no-key-required"
+        else:
+            custom_key = (
+                (req.explicit_api_key or "").strip()
+                or _scoped_key_env("OPENAI_API_KEY")
+                or _read_main_api_key_if_same_host(custom_base)
+                or "no-key-required"  # local servers don't need auth
+            )
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
