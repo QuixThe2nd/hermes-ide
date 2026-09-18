@@ -1596,21 +1596,8 @@ def _adapter_can_edit_progress(adapter: Any) -> bool:
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
-    ``ambiguous`` == the scheduling future timed out. The card may well have
-    posted: the connector may only ack after the deadline (slow platform API
-    call, transient backpressure, event-loop stall), and treating that timeout
-    as a failure has been observed in live relay testing to re-send the card
-    repeatedly, leaving the user's tap resolving a prompt whose turn had moved
-    on. Callers must treat
-    ``ambiguous`` as possibly-delivered: keep the prompt registration alive
-    and do NOT re-send or fall back — the boundary rule is that only a
-    DEFINITIVE failure (error result / non-timeout exception / no future)
-    re-asks.
-
-    Definitive failures log their detail here (scheduling exception text or
-    the SendResult error) so callers sharing this classifier keep the
-    diagnostic breadcrumb the old inline code had.
-    """
+    ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
+    Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks; logged here."""
     if future is None:
         logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
         return "failed"
@@ -1623,56 +1610,42 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "failed"
     if getattr(result, "success", False):
         return "sent"
-    logger.warning(
-        "Prompt send failed: %s", getattr(result, "error", None) or "unknown error"
-    )
-    return "failed"
+    # P5(b): a connector DECLINE is not a lane failure. The connector
+    # authorized the destination and refused it; re-sending the same content as
+    # plain text into that same chat is the exfiltration the egress guard
+    # exists to stop. `failed` is the cue to fall back, so a decline needs its
+    # own verdict — callers must surface it and send nothing further.
+    #
+    # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
+    # preserves the connector's own dict in `raw_response`; rebuilding a dict
+    # from `error` alone loses two things review demonstrated:
+    #   * a decline carrying `code: egress_declined` and NO text renders as
+    #     "relay egress declined" — no marker colon — so the string check
+    #     missed it and the fallback fired into the refused chat;
+    #   * `ambiguous: True` (lost ack, mid-write drop) was flattened into a
+    #     DEFINITE failure, which re-sends a card that may well have posted.
+    # I fixed the text-marker path and tested only the text-marker path.
+    from gateway.relay.egress import declined_send
 
-
-def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
-    """Decide whether a clarify prompt send aborts the wait, per the boundary rule.
-
-    Same physics as the exec-approval card: the scheduling future can hit its
-    deadline while the clarify card HAS already posted (late connector ack).
-    Treating that timeout as a definitive failure cleared the session out from
-    under a rendered card — the user answers a question whose registration is
-    gone. Only a DEFINITIVE failure (error result / non-timeout exception /
-    no future) tears down the registration and aborts; ``ambiguous`` keeps the
-    registration armed and proceeds to the normal bounded wait, which already
-    handles the truly-lost-card case via its response timeout.
-
-    Returns the abort sentinel string on definitive failure, else ``None``
-    (proceed to ``wait_for_response``).
-    """
-    outcome = _approval_send_outcome(fut, timeout=15)
-    if outcome == "failed":
-        # Couldn't deliver the prompt — clean up and return the sentinel so
-        # the agent can fall back to a sensible default rather than hanging.
-        logger.warning("Clarify send failed definitively; clearing registration")
-        clarify_mod.clear_session(session_key)
-        return "[clarify prompt could not be delivered]"
-    if outcome == "ambiguous":
+    _raw = getattr(result, "raw_response", None)
+    if isinstance(_raw, dict) and _raw.get("ambiguous"):
+        # The frame may have been applied. Same physics as a scheduling
+        # timeout: possibly-delivered, so never re-send. Checked BEFORE the
+        # decline classification because an ambiguous result is a transport
+        # outcome, not an authorization one, and this lane has three verdicts
+        # rather than the boolean the shared helper answers.
+        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        return "ambiguous"
+    if declined_send(result):
+        # Both shapes, one classifier: a structured body, or the uniform
+        # decline sentence from an older connector.
         logger.warning(
-            "Clarify prompt send timed out — treating as possibly-delivered "
-            "(no teardown; the registration stays armed for a late reply)"
+            "Prompt send DECLINED by connector egress guard: %s",
+            getattr(result, "error", None),
         )
-    return None
-
-
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
-    """Resolve a clarify prompt: send disposition, then the bounded wait.
-
-    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
-    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
-    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
-    if abort is not None:
-        return abort, False
-    timeout = clarify_mod.get_clarify_timeout()
-    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-    if response is None or response == "":
-        # Timeout or session-boundary cancellation
-        return f"[user did not respond within {int(timeout / 60)}m]", False
-    return response, True
+        return "declined"
+    logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
+    return "failed"
 
 
 def _resolve_progress_thread_id(
@@ -8400,9 +8373,13 @@ class TurnRunner:
         def _clarify_callback_sync(question: str, choices, multi_select: bool = False) -> str:
             from tools import clarify_gateway as _clarify_mod
             import uuid as _uuid
+            from gateway.run_turn_runner_clarify_delivery import (
+                UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
 
             if not ctx._status_adapter:
-                return ""
+                # Nothing can render the question: say so, or the caller's
+                # blank answers read as user inactivity (#112684).
+                return UNDELIVERED_NO_SURFACE
 
             clarify_id = _uuid.uuid4().hex[:10]
             # Registration-time owner identity for read-only status
@@ -8481,15 +8458,27 @@ class TurnRunner:
             if _requester_id.isdigit():
                 send_metadata.setdefault("mention_user_id", _requester_id)
 
+            send_kwargs = dict(
+                chat_id=ctx._status_chat_id,
+                question=question,
+                choices=list(choices) if choices else None,
+                clarify_id=clarify_id,
+                session_key=ctx.session_key or "",
+                metadata=send_metadata,
+            )
+
+            def _text_fallback():
+                """Schedule the plain-text prompt when the native card cannot render; None = no such path."""
+                coro = text_fallback_coro(ctx._status_adapter, **send_kwargs)
+                return None if coro is None else safe_schedule_threadsafe(
+                    coro,
+                    ctx._loop_for_step,
+                    logger=logger,
+                    log_message="Clarify text fallback failed to schedule",
+                )
+
             fut = safe_schedule_threadsafe(
-                ctx._status_adapter.send_clarify(
-                    chat_id=ctx._status_chat_id,
-                    question=question,
-                    choices=list(choices) if choices else None,
-                    clarify_id=clarify_id,
-                    session_key=ctx.session_key or "",
-                    metadata=send_metadata,
-                ),
+                ctx._status_adapter.send_clarify(**send_kwargs),
                 ctx._loop_for_step,
                 logger=logger,
                 log_message="Clarify send failed to schedule",
@@ -8498,11 +8487,14 @@ class TurnRunner:
             # AMBIGUOUS — the card may have posted with a late ack. Only a
             # definitive failure tears down the registration; ambiguous
             # falls through to the bounded wait so a late reply resolves.
+            # A definitive failure — immediate or late — retries once as plain
+            # text before giving up; a DECLINE never re-asks (egress guard).
             _clarify_response, _clarify_answered = _clarify_send_then_wait(
                 fut,
                 clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
                 clarify_mod=_clarify_mod,
+                fallback=_text_fallback,
             )
             # Branch on the explicit answered flag, never on the text: a
             # real answer can start with '[' (a "[A] staging" label, free
