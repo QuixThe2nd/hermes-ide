@@ -221,6 +221,14 @@ def test_xai_streaming_prefers_explicit_api_key(monkeypatch):
     ts.XAIStreamer.available()
     assert calls and all(c.get("prefer_api_key") is True for c in calls)
 
+    # The tts_tool availability probe (wired as _BUILTIN_REQUIREMENTS["xai"]) must
+    # resolve key-first too, or a configured key still spends the OAuth pool (#113727).
+    from tools import tts_tool
+
+    calls.clear()
+    assert tts_tool._xai_requirements() is True
+    assert calls and all(c.get("prefer_api_key") is True for c in calls)
+
     # _async_frames resolves before websockets.connect; an empty key raises first.
     calls.clear()
     ws_fake = types.ModuleType("websockets")
