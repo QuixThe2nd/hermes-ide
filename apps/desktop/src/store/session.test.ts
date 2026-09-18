@@ -935,12 +935,14 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('')
   })
 
-  it('clears a stale remote workspace when switching to a gateway with none remembered (#114306)', async () => {
-    // Repro from the issue: gateway A has a remembered workspace, gateway B has
-    // none. Switching A -> B (no active session) must not leave A's path live —
-    // ensureDefaultWorkspaceCwd is the shared reseed path for boot + soft switch
-    // (use-gateway-boot.ts's seedDefaultCwd), so it alone must clear the stale
-    // value rather than relying on a truthy-only seed.
+  it('reseeding a remote gateway with no remembered workspace clears a folder left by another backend (#114306)', async () => {
+    // The door the switch wipe does not cover: `$currentCwd` is initialised from
+    // whatever key is current at module load (the LOCAL memory when the app
+    // boots straight into a remote gateway), and boot reseeds through
+    // ensureDefaultWorkspaceCwd alone — no beginGatewaySwitch runs. An empty
+    // remembered value for the incoming gateway must therefore publish as a
+    // clear, not skip via the truthy-only seed, so seedDefaultCwd can apply
+    // that gateway's own default.
     const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
 
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
