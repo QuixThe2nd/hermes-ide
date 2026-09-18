@@ -1213,6 +1213,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
         ``GatewayRunner._running_agents``): exactly the set the drain waits on. Returns count."""
+        run_ids = {
+            run_id for run_id, task in self._active_run_tasks.items() if not task.done()
+        } | set(self._active_run_agents)
+        _api_runs._mark_shutdown_interrupted_runs(self, run_ids)
         # Dedupe by identity: an agent in both registries must be interrupted once.
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())

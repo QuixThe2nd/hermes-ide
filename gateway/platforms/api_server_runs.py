@@ -188,6 +188,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    self._shutdown_interrupted_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -272,6 +273,21 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         except Exception:
             logger.exception("[api_server] failed to persist idempotent run status %s", run_id)
     return current
+
+
+def _mark_shutdown_interrupted_runs(self, run_ids) -> None:
+    """Publish the shutdown outcome before cooperative interruption can race teardown."""
+    for run_id in run_ids:
+        self._shutdown_interrupted_run_ids.add(run_id)
+        try:
+            self._set_run_status(
+                run_id,
+                "interrupted",
+                error="Gateway shutdown interrupted the run.",
+                last_event="run.interrupted",
+            )
+        except Exception:
+            logger.exception("[api_server] failed to record shutdown for run %s", run_id)
 
 
 def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server):
@@ -776,7 +792,7 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -1037,6 +1053,10 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
+        if run_id in self._shutdown_interrupted_run_ids:
+            status = "interrupted"
+            fields = {"error": "Gateway shutdown interrupted the run."}
+            extra = {}
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
