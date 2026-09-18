@@ -101,6 +101,7 @@ _INHERITED_DISCORD_GATE_VARS = (
     "DISCORD_IGNORED_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
     "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_THREAD_FREE_RESPONSE_CHANNELS",
     "DISCORD_AUTO_THREAD",
 )
 
@@ -477,6 +478,101 @@ async def test_auto_thread_env_false_overrides_config_true(monkeypatch):
     adapter.handle_message.assert_awaited_once()
 
 
+# ── thread_free_response_channels ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_not_in_thread_free_list_still_skips_auto_thread(adapter, monkeypatch):
+    """The override is per-channel opt-in: a free-response channel NOT also listed
+    in thread_free_response_channels keeps the inline, thread-skipping behaviour."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=700), content="casual chat")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    # Mention-free ingest is untouched: dispatched under require_mention with no @mention.
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_thread_free_response_channel_auto_threads_and_stays_mention_free(monkeypatch):
+    """A channel in BOTH free_response_channels and thread_free_response_channels:
+    mention-free ingest AND one thread per message — the relay-outbox shape.
+
+    Config-extra lists carry YAML-shaped int channel IDs (YAML parses bare numerics
+    as int), pinning the str() coercion both resolvers apply before comparing keys.
+    """
+    adapter = _make_extra_adapter(
+        monkeypatch,
+        extra={
+            "free_response_channels": [1531993451980263688],
+            "thread_free_response_channels": [1531993451980263688],
+        },
+    )
+    for var in _INHERITED_DISCORD_GATE_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter._auto_create_thread = AsyncMock(
+        return_value=FakeThread(channel_id=_AUTO_THREAD_THREAD_CHANNEL_ID)
+    )
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=1531993451980263688), content="relay ping",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    # require_mention=true + a mention-less message: only the untouched
+    # free-response bypass can explain the dispatch.
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_thread_free_response_channel_not_free_requires_mention_and_threads(adapter, monkeypatch):
+    """thread_free_response_channels never makes a channel free-response on its own.
+
+    Listed ONLY there, the channel behaves as a normal one: unmentioned messages
+    are dropped, and @mentions still auto-thread.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999, name="auto-thread"))
+
+    unmentioned = make_message(channel=FakeTextChannel(channel_id=700), content="no mention here")
+    await adapter._handle_message(unmentioned)
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+    bot_user = adapter._client.user
+    mentioned = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{bot_user.id}> task ping",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(mentioned)
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.text == "task ping"
+
+
 # ── auto-thread failure must not silently fall back to inline (#20243) ──
 
 
@@ -583,6 +679,29 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_thread_free_response_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.thread_free_response_channels to env var.
+
+    The YAML list carries bare numeric IDs as ints; the bridge must emit them
+    as strings so they compare equal to the channel keys the adapter builds.
+    """
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "thread_free_response_channels": [1531993451980263688],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS") == "1531993451980263688"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
