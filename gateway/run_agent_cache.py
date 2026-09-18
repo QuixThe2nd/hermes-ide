@@ -410,13 +410,16 @@ class GatewayAgentCacheMixin:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
         return generation
 
+    def _current_session_run_generation(self, session_key: str) -> int:
+        """Current run generation for ``session_key`` (0 when the key tracks no run)."""
+        state = self._peek_session_state(session_key)
+        return int(state.persistent.run_generation) if state is not None else 0
+
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:
         """Return True when ``generation`` is still current for ``session_key``."""
         if not session_key:
             return True
-        state = self._peek_session_state(session_key)
-        current = state.persistent.run_generation if state is not None else 0
-        return int(current) == int(generation)
+        return self._current_session_run_generation(session_key) == int(generation)
 
     def _bind_adapter_run_generation(self, adapter: Any, session_key: str, generation: int | None) -> None:
         """Bind a gateway run generation to the adapter's active-session event."""

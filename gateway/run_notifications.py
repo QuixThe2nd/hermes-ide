@@ -215,6 +215,9 @@ class GatewayNotificationsMixin:
             )
             return None
         pinned_row = None
+        # Snapshot the run generation before the row lookup awaits: a /stop or /new landing while
+        # the lookup is pending must not let this completion re-point the route afterwards.
+        run_generation = self._current_session_run_generation(session_entry.session_key)
         try:
             pinned_row = await session_db.get_session(pinned_session_id)
         except Exception:
@@ -254,16 +257,28 @@ class GatewayNotificationsMixin:
         if target_session_id == session_entry.session_id:
             return session_entry
         prior_session_id = session_entry.session_id
+        if not self._is_session_run_current(session_entry.session_key, run_generation):
+            logger.warning(
+                "Async-delegation completion for routing key %s was invalidated while resolving pinned "
+                "session %s; leaving the route on %s and dropping injection.",
+                session_entry.session_key, pinned_session_id, prior_session_id,
+            )
+            return None
         if follows_compression:
             switched = await self.async_session_store.advance_compression_session(
                 session_entry.session_key, prior_session_id, target_session_id,
             )
         else:
-            switched = await self.async_session_store.switch_session(session_entry.session_key, target_session_id)
+            # CAS on the session this completion resolved against: a route replaced meanwhile
+            # (/new, /resume) wins over the stale completion.
+            switched = await self.async_session_store.switch_session(
+                session_entry.session_key, target_session_id, expected_session_id=prior_session_id,
+            )
         if switched is None:
             logger.warning(
                 "Async-delegation completion could not bind routing key %s to "
-                "owning session %s; dropping injection.", session_entry.session_key, target_session_id,
+                "owning session %s (route moved or unknown); dropping injection.",
+                session_entry.session_key, target_session_id,
             )
             return None
         logger.info(
