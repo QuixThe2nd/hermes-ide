@@ -347,7 +347,6 @@ discord:
 ```
 
 The existing `DISCORD_BOTS_REQUIRE_INLINE_MENTION=false` environment override is also supported when the YAML option is unset. With this opt-out, `mentions` accepts Discord's resolved mentions, including reply pings, and `all` removes the bot-specific mention requirement; other channel mention rules still apply. An admitted reply ping can also open the continuation window in this compatibility mode. Use it only for trusted relays because it restores the accidental reply-loop risk.
->>>>>>> 94d8ccfe3bd (docs(discord): clarify deployed bot handoff behavior and verify ingress)
 
 ### Config File (`config.yaml`)
 
