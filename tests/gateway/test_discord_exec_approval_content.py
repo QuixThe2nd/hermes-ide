@@ -48,11 +48,24 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert "script execution via -c flag" in prompt_text
     assert "it will NOT run" in prompt_text
 
-    # Content is the canonical, accessible approval payload. The embed retains
-    # its visual state but must not repeat either user-facing value.
+    # Content is the canonical, accessible approval payload (embeds may not render, #33681);
+    # the embed is a header-only card so the command and reason appear exactly once.
     embed = sent["embed"]
-    assert command not in (embed.description or "")
-    assert "script execution via -c flag" not in (embed.description or "")
-    assert all(command not in (field.value or "") for field in embed.fields)
-    assert all("script execution via -c flag" not in (field.value or "") for field in embed.fields)
+    embed_text = (embed.description or "") + "".join(field.value or "" for field in embed.fields)
+    assert command not in embed_text
+    assert "script execution via -c flag" not in embed_text
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
+    """The reason shares the 2000-char content cap with the command preview."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="x" * 5000, session_key="discord:555", description="r" * 5000)
+
+    assert result.success is True
+    assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
+    assert "xxx" in sent["content"]  # the command preview is not starved to zero
 

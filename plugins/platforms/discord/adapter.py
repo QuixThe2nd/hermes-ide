@@ -6961,6 +6961,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     _EA_CODE_CLOSE = "\n```\n"
     _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    # The reason shares the 2000-char content cap with the command; unbounded it would starve
+    # the command preview to zero and push the content past the cap.
+    _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
