@@ -138,6 +138,14 @@ test('gh rung: argv-only spawn, stdin closed, bounded, cached for the process, a
 
   assert.equal(await resolveGitHubCredential({ env, platform: 'darwin', exists, execFileFn: loggedOut.execFileFn }), null)
 
+  // "none" is not cached: a `gh auth login` after launch is picked up by the next check without a restart.
+  const nowLogged = fakeExecFile({ stdout: 'gho_after_login\n' })
+
+  assert.deepEqual(await resolveGitHubCredential({ env, platform: 'darwin', exists, execFileFn: nowLogged.execFileFn }), {
+    token: 'gho_after_login',
+    source: 'gh-cli'
+  })
+
   forgetGhCliToken()
   assert.equal(await resolveGitHubCredential({ env, platform: 'darwin', exists: () => false, execFileFn: logged.execFileFn }), null)
   assert.equal(logged.calls.length, 1)

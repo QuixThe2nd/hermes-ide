@@ -150,9 +150,19 @@ export function readGhCliToken({
 
 let ghCliTokenPromise: Promise<string | null> | null = null
 
-/** `gh auth token`, asked at most once per process; the outcome (including "none") is cached. */
+/**
+ * `gh auth token`, cached for the process once it answers with a token. A "none" answer (gh missing,
+ * logged out, hung) is not cached: a `gh auth login` after launch is honoured by the next check, and
+ * the check is passive and hourly, so re-asking costs one bounded spawn per check at most.
+ */
 export function githubTokenFromGhCli(options: GhCliOptions = {}): Promise<string | null> {
-  ghCliTokenPromise ??= readGhCliToken(options)
+  ghCliTokenPromise ??= readGhCliToken(options).then(token => {
+    if (token === null) {
+      ghCliTokenPromise = null
+    }
+
+    return token
+  })
 
   return ghCliTokenPromise
 }
