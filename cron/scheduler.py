@@ -3230,12 +3230,33 @@ def _launch_external_cron_worker(job: dict) -> bool:
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
+    # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
+    # the other two), and an inherited presence var makes every env-fallback consumer in the
+    # child (`_is_interactive_cli`, sudo prompting, `check_cronjob_requirements`) believe a
+    # human is present to answer (#110932).
+    for _presence_var in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+    ):
+        worker_env.pop(_presence_var, None)
+    # The worker's entry module is `cron.scheduler`, not `hermes_cli.main`, so nothing
+    # bootstraps this checkout onto its sys.path the way the gateway got it: a venv whose
+    # editable install maps a moved checkout, or a host that sets PYTHONSAFEPATH (`-m` then
+    # ignores cwd), dies with "No module named 'cron'" before the ack (#112729). The shared
+    # sanitizer strips Hermes-owned PYTHONPATH entries because user children must not see
+    # our tree; this child IS Hermes, so it gets the gateway's own tree back explicitly.
+    repo_root = Path(__file__).resolve().parent.parent
+    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([
+        str(repo_root),
+        *filter(None, os.environ.get("PYTHONPATH", "").split(os.pathsep)),
+    ]))
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             process = subprocess.Popen(
                 dispatch.argv,
-                cwd=str(Path(__file__).resolve().parent.parent),
+                cwd=str(repo_root),
                 env=worker_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
