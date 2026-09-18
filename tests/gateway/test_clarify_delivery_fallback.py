@@ -78,10 +78,14 @@ def _runner(adapter, loop, monkeypatch, timeout=5):
 
 
 def _answer_once_text_prompt_is_seen(adapter, text):
+    """Answer ONLY after the plain-text prompt was observed — never on a deadline, so a missing
+    fallback leaves the waiter blocked and the test fails on elapsed time / sent_text, not luck."""
     def _wait_then_answer():
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not adapter.sent_text:
             time.sleep(0.02)
+        if not adapter.sent_text:
+            return
         time.sleep(0.1)
         cm.resolve_text_response_for_session("sk-fallback", text)
     threading.Thread(target=_wait_then_answer, daemon=True).start()
@@ -130,8 +134,44 @@ def test_card_failing_after_the_ack_window_falls_back_to_text_instead_of_waiting
     _answer_once_text_prompt_is_seen(adapter, "beta")
     started = time.monotonic()
     response = _runner(adapter, loop, monkeypatch, timeout=30)._clarify_callback_sync("Pick?", ["alpha", "beta"])
+    elapsed = time.monotonic() - started
     assert response == "beta"
-    assert time.monotonic() - started < 10  # never the full clarify_timeout
+    assert len(adapter.sent_text) == 1  # the plain-text prompt was actually sent, once
+    assert elapsed < 0.2 + 2  # released right after the ack window + late failure, never clarify_timeout
+
+
+def test_card_resolving_ambiguous_after_the_ack_window_stays_armed_for_a_button_tap(loop, monkeypatch):
+    """A relay lost-ack (``raw_response.ambiguous``) after the window means the card MAY have posted:
+    the registration must stay armed so the user's later button tap still answers — the same
+    invariant ``_abort_for_outcome`` keeps for an immediate ambiguous outcome. Before: the late watch
+    treated it like a definitive failure, released the wait with the delivery notice and the tap was
+    lost (no pending entry)."""
+    from gateway import run_turn_runner_clarify_delivery as delivery
+
+    monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
+
+    async def late_ambiguous():
+        await asyncio.sleep(0.6)
+        return SendResult(success=False, raw_response={"ambiguous": True})
+
+    adapter = _CardAdapter(late_ambiguous)
+    pending_at_tap = []
+
+    def _tap_button():
+        time.sleep(1.5)
+        entry = cm.get_pending_for_session("sk-fallback", include_choice_prompts=True)
+        pending_at_tap.append(entry)
+        if entry is not None:
+            cm.resolve_gateway_clarify(entry.clarify_id, "beta")
+    tap = threading.Thread(target=_tap_button, daemon=True)
+    tap.start()
+
+    response, answered = _runner(adapter, loop, monkeypatch, timeout=30)._ask_clarify_question(
+        "Pick?", ["alpha", "beta"], False)
+    tap.join(timeout=5)  # never let a late tap leak into the next test's registration
+    assert pending_at_tap and pending_at_tap[0] is not None  # still armed when the tap arrived
+    assert (response, answered) == ("beta", True)
+    assert adapter.sent_text == []  # possibly-delivered: never re-sent as text
 
 
 def test_card_and_text_both_failing_late_release_the_wait_with_the_delivery_notice(loop, monkeypatch):
@@ -158,6 +198,24 @@ def test_card_and_text_both_failing_late_release_the_wait_with_the_delivery_noti
     assert (response, answered) == (UNDELIVERED + "]", False)
     assert time.monotonic() - started < 10
     assert len(adapter.sent_text) == 1  # the text fallback was tried exactly once
+
+
+def test_card_declined_after_the_ack_window_releases_with_the_declined_notice(loop, monkeypatch):
+    """A late connector DECLINE is as definitive as an immediate one: no text retry, and the
+    notice names the refusal (``UNDELIVERED_DECLINED``) instead of the generic delivery failure."""
+    from gateway import run_turn_runner_clarify_delivery as delivery
+
+    monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
+
+    async def late_decline():
+        await asyncio.sleep(0.6)
+        return SendResult(success=False, error="egress declined: destination not allowed")
+
+    adapter = _CardAdapter(late_decline)
+    response, answered = _runner(adapter, loop, monkeypatch, timeout=30)._ask_clarify_question(
+        "Pick?", ["alpha", "beta"], False)
+    assert (response, answered) == (delivery.UNDELIVERED_DECLINED, False)
+    assert adapter.sent_text == []
 
 
 # --- Atom: no chat surface at all -----------------------------------------------------------

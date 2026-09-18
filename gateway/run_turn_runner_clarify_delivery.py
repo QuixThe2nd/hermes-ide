@@ -94,7 +94,10 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     if outcome == "failed" and fallback is not None:
         # The text prompt is the last resort: a late failure of ITS send has nothing to retry.
         fut, fallback = fallback(), None
-        outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
+        # ``None`` = the fallback could not even be scheduled; the card failure already stands,
+        # so re-classifying would only log a misleading "no scheduling future".
+        if fut is not None:
+            outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
         if outcome == "sent":
             logger.info("Clarify card undeliverable; plain-text prompt sent instead (id=%s)", clarify_id)
     abort = _abort_for_outcome(outcome, session_key=session_key, clarify_mod=clarify_mod)
@@ -106,7 +109,7 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     late.disarm()
     if late.undeliverable:
-        return UNDELIVERED, False
+        return late.undeliverable, False
     if response is None or response == "":
         return f"[user did not respond within {int(timeout / 60)}m]", False
     return response, True
@@ -117,11 +120,12 @@ class _LateFailureWatch:
     ack window, try the text fallback once, then release the waiter with the delivery notice.
 
     Callbacks run on the gateway loop thread (the send future completes there); ``clear_session``
-    wakes the agent thread blocked in ``wait_for_response`` and ``undeliverable`` tells it why.
+    wakes the agent thread blocked in ``wait_for_response`` and ``undeliverable`` (the delivery
+    sentinel, or ``None`` while nothing definitive happened) tells it why.
     Armed only while the future is still pending: a sent card needs no watch."""
 
     def __init__(self, fut, *, clarify_id: str, session_key: str, clarify_mod, fallback) -> None:
-        self.undeliverable = False
+        self.undeliverable: Optional[str] = None
         self._armed = False
         self._clarify_id = clarify_id
         self._session_key = session_key
@@ -149,7 +153,17 @@ class _LateFailureWatch:
         if outcome == "sent":
             return
         logger.warning("Clarify card send resolved %s after the ack window (id=%s)", outcome, self._clarify_id)
-        fallback_fut = self._fallback() if outcome == "failed" and self._fallback is not None else None
+        if outcome == "ambiguous":
+            # Lost ack (``raw_response.ambiguous``): the card may well have posted. Same invariant as
+            # ``_abort_for_outcome`` — stay armed for the late button tap, never re-send, never
+            # release; the bounded wait's own timeout covers a card that truly never arrived.
+            return
+        if outcome == "declined":
+            # Refused destination: no text retry (see ``_clarify_send_then_wait``), and the notice
+            # says so rather than the generic delivery failure.
+            self._release(UNDELIVERED_DECLINED)
+            return
+        fallback_fut = self._fallback() if self._fallback is not None else None
         if fallback_fut is None:
             self._release()
             return
@@ -163,6 +177,6 @@ class _LateFailureWatch:
             return
         self._release()
 
-    def _release(self) -> None:
-        self.undeliverable = True
+    def _release(self, notice: str = UNDELIVERED) -> None:
+        self.undeliverable = notice
         self._clarify_mod.clear_session(self._session_key)
