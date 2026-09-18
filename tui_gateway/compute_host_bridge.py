@@ -237,6 +237,8 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
     _apply_compute_host_metadata_mirror(session, frame)
+    # Settlement of a turn whose session was closed mid-flight: the real lease was held for it.
+    _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
         _emit("session.info", sid, info)

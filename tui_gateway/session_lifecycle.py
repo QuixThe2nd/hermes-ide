@@ -232,10 +232,12 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
 
 
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
-    """Snapshot leases still backed by this process's live session records."""
+    """Snapshot leases still backed by this process's live session records (plus leases deferred past a
+    close for an unsettled isolated turn — still ours until the child settles)."""
     with _sessions_lock:
         return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
+                } | set(_deferred_active_session_leases)
 
 
 @contextlib.contextmanager
@@ -511,8 +513,47 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
                     "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
         except Exception:
             logger.debug("failed waiting for session turn thread", exc_info=True)
+    if end_reason != "tui_shutdown":
+        _settle_isolated_turn_before_close(session)
     _teardown_session(session, end_reason=end_reason)
     return True
+
+
+# lease_id -> REAL lease of a closed session whose isolated child turn has not settled yet. Still live
+# authority for the orphan sweep (``_own_live_lease_ids``); released by ``_release_deferred_active_session_lease``.
+_deferred_active_session_leases: dict[str, Any] = {}
+
+
+def _settle_isolated_turn_before_close(session: dict) -> None:
+    """An isolated turn runs in the compute-host child, not on ``_run_thread``: interrupt it and give it the
+    same close grace, and if it still has not settled keep the REAL lease out of finalize's release — the
+    completion callback releases it on the correlated turn.end/turn.error (child death fails pending turns
+    the same way). The RPC close is bounded; ownership ends with the child's last write, never with the
+    grace timer, else a second backend acquires the stored session while the child is still writing."""
+    if not session.get("_compute_host_turn_id") or not _session_uses_compute_host(session):
+        return
+    with contextlib.suppress(Exception):
+        _interrupt_session_turn(_lifecycle_own_sid(session), session)
+    deadline = time.monotonic() + _TURN_SETTLE_BEFORE_CLOSE_SECONDS
+    while session.get("_compute_host_turn_id") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    with session["history_lock"]:
+        if not session.get("_compute_host_turn_id") or (lease := session.pop("active_session_lease", None)) is None:
+            return
+        session["_deferred_active_session_lease"] = lease
+        _deferred_active_session_leases[str(lease.lease_id)] = lease
+    logger.warning("isolated turn still live after %.1fs close grace; holding lease for %s until the child settles",
+                   _TURN_SETTLE_BEFORE_CLOSE_SECONDS, session.get("session_key"))
+
+
+def _release_deferred_active_session_lease(session: dict) -> None:
+    """Settlement half of ``_settle_isolated_turn_before_close``; a no-op for sessions that never deferred."""
+    lease = session.pop("_deferred_active_session_lease", None)
+    if lease is None:
+        return
+    _deferred_active_session_leases.pop(str(lease.lease_id), None)
+    if (err := _lease_retry(3, lease.release)) is not None:
+        logger.warning("Failed to release deferred active session slot", exc_info=err)
 
 
 def _close_session_by_id(
