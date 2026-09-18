@@ -567,12 +567,14 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     job_id = job.get("id", "?")
     profile_label = profile or "(own)"
     # Outward lane: this text becomes an inbound turn in another profile's Bot Chat — via the
-    # live owner or the CLI fallback — so it gets the same fail-closed scrub as the chat message
-    # and the session mirror. Redact here, above both lanes, so neither can be added back unscanned.
+    # live owner, the CLI fallback, or a deferred record replayed later — so it gets the same
+    # fail-closed scrub as the chat message and the session mirror. Rebind ``content`` itself so
+    # the durable deferred record below also carries the scrubbed copy, not the raw output.
+    content = _redact_cron_payload(content, "bot-chat payload")
     message = (
         f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
         f"scheduled job, not the user. Review it, act on anything that needs action, and "
-        f"summarize for the chat.]\n\n{_redact_cron_payload(content, 'bot-chat payload')}"
+        f"summarize for the chat.]\n\n{content}"
     )
     try:
         source_home = get_hermes_home().resolve()

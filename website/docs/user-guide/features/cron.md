@@ -531,6 +531,15 @@ On installs with a provisioned inbox channel (the `hermes_starts` plugin's chann
 
 The same convention is enforced at creation time: a job created from a Discord session in the inbox's guild whose delivery would otherwise default to `origin` (rooting it in whatever chat the job was created from) is automatically created with `deliver: "inbox"` instead. Jobs that name an explicit target — `platform:chat_id[:thread_id]`, `thread:...`, `bot-chat...`, `local` — are never rewritten, and installs without a provisioned inbox are unaffected. Set `cron.inbox_delivery_enforce: false` in config to opt out of the rewrite.
 
+Delivered output is secret-redacted on the way out, on every lane: the platform message, the
+session mirror (payload and the job name spliced around it), and a `bot-chat` turn. Credential
+shapes (vendor-prefixed API keys, tokens, `KEY=value` assignments) are masked even when
+`security.redact_secrets: false` — that setting governs your own logs, not what leaves the
+machine — and a redactor failure replaces the payload rather than sending it unscanned.
+Credential-named URL query parameters are not stripped (magic links and pre-signed URLs are
+legitimate cron output), and user-chosen secrets with no recognisable shape are not detected.
+The run document under `cron/output/<job_id>/` keeps the agent's response as written.
+
 ### Delivery failures are a distinct status
 
 Execution and delivery are tracked separately. When the agent run succeeds but
