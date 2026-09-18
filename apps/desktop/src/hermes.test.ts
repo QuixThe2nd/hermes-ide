@@ -509,9 +509,8 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
-  // An explicit profile/connection scope is a user action (opening another
-  // profile's session, deleting a profile), so the request also carries the
-  // foreground dial tag (#111651).
+  // Explicit profile/connection writes (deleting a profile) carry the foreground
+  // dial tag; session reads stay on the ambient default (#111651).
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 
@@ -519,7 +518,6 @@ describe('Hermes REST helpers', () => {
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
-      priority: 'foreground',
       profile: 'xiaoxuxu'
     })
   })
@@ -534,13 +532,11 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenNthCalledWith(1, {
       connectionId: 'source-a',
       path: '/api/sessions/session-1?profile=backend-default',
-      priority: 'foreground',
       profile: 'backend-default'
     })
     expect(api).toHaveBeenNthCalledWith(2, {
       connectionId: 'source-a',
       path: '/api/sessions/session-1/messages?profile=backend-default',
-      priority: 'foreground',
       profile: 'backend-default'
     })
   })
@@ -575,7 +571,6 @@ describe('Hermes REST helpers', () => {
     expect(LATEST_SESSION_MESSAGES_LIMIT).toBe(120)
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&order=latest&include_compacted=true',
-      priority: 'foreground',
       profile: 'xiaoxuxu'
     })
   })
@@ -601,7 +596,6 @@ describe('Hermes REST helpers', () => {
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&offset=240&order=latest&include_compacted=true',
-      priority: 'foreground',
       profile: 'xiaoxuxu'
     })
   })
@@ -617,7 +611,6 @@ describe('Hermes REST helpers', () => {
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=1000&order=latest',
-      priority: 'foreground',
       profile: 'xiaoxuxu'
     })
   })
@@ -640,12 +633,10 @@ describe('Hermes REST helpers', () => {
     expect(result.messages).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
     expect(api).toHaveBeenNthCalledWith(1, {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest&include_compacted=true',
-      priority: 'foreground',
       profile: 'xiaoxuxu'
     })
     expect(api).toHaveBeenNthCalledWith(2, {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=2&order=oldest&include_compacted=true',
-      priority: 'foreground',
       profile: 'xiaoxuxu'
     })
   })
