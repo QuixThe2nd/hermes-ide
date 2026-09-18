@@ -312,7 +312,8 @@ class TestProvidersDictApiModeAnthropicMessages:
 
     def test_resolve_provider_client_returns_anthropic_client(self, tmp_path, monkeypatch):
         """Named custom provider with api_mode=anthropic_messages must
-        route through AnthropicAuxiliaryClient."""
+        route through AnthropicAuxiliaryClient, carrying the entry's extra_headers
+        like the OpenAI-wire arms do (#109595)."""
         monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
         _write_config(tmp_path, {
             "providers": {
@@ -322,6 +323,7 @@ class TestProvidersDictApiModeAnthropicMessages:
                     "key_env": "MYRELAY_API_KEY",
                     "api_mode": "anthropic_messages",
                     "default_model": "claude-opus-4-7",
+                    "extra_headers": {"X-Gateway-Token": "gw-1"},
                 },
             },
         })
@@ -335,6 +337,9 @@ class TestProvidersDictApiModeAnthropicMessages:
             f"expected AnthropicAuxiliaryClient, got {type(sync_client).__name__}"
         )
         assert sync_model == "claude-opus-4-7"
+        sdk_headers = sync_client._real_client._custom_headers
+        assert sdk_headers.get("X-Gateway-Token") == "gw-1"
+        assert "anthropic-beta" in sdk_headers, "entry headers must merge onto, not replace, the builder's headers"
 
         async_client, async_model = resolve_provider_client("myrelay", async_mode=True)
         assert isinstance(async_client, AsyncAnthropicAuxiliaryClient), (
