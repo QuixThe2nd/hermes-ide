@@ -858,7 +858,9 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Buzz edit needs a message id")
         if not content:
             return SendResult(success=False, error="Empty message")
-        args = ["messages", "edit", "--event", str(message_id), "--content", content]
+        # Unlike ``messages send``, the CLI's ``messages edit`` takes ``--content`` literally (no ``-``/stdin
+        # expansion); the ``=`` form keeps clap from reading hyphen-leading text as a flag.
+        args = ["messages", "edit", "--event", str(message_id), f"--content={content}"]
         code, out, err = await self._run_cli(args)
         if code != 0:
             return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
