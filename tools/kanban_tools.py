@@ -862,6 +862,24 @@ def _handle_attachments(args: dict, **kw) -> str:
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
 
 
+def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Return a session id only when it is present in this profile's state.db."""
+    if not session_id:
+        return None
+    try:
+        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
+
+        state = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+    except Exception:  # state.db may not exist for a CLI/dashboard invocation
+        logger.debug("Could not open state.db to verify Kanban provenance", exc_info=True)
+        return None
+    try:
+        return session_id if state.get_session(session_id) else None
+    finally:
+        state.close()
+
+
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
@@ -890,8 +908,10 @@ def _handle_create(args: dict, **kw) -> str:
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
-        session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
-                      or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
+        session_id = (_persisted_session_id(args.get("session_id"))
+                      or (self_task.session_id if self_task else None)
+                      or _persisted_session_id(_current_origin_session_id())
+                      or _persisted_session_id(os.environ.get("HERMES_SESSION_ID")))
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id

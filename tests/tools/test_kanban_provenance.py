@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from hermes_state import SessionDB
+
 
 @pytest.mark.parametrize("linked,explicit", [(False, None), (True, None), (False, "override")])
 def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, explicit):
@@ -19,6 +21,10 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
                           user_id="user", notifier_profile="default", delivery_mode="notify",
                           delivery_metadata={"scope_id": "guild", "parent_chat_id": "forum"})
         expected = kn.list_notify_subs(conn, owner)[0]
+    if explicit:
+        state = SessionDB(db_path=tmp_path / "state.db")
+        state.create_session(explicit, source="cli")
+        state.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
     monkeypatch.setenv("HERMES_SESSION_ID", "ephemeral")
     monkeypatch.setattr(async_delegation, "_current_origin_session_id", lambda: "api-origin")
@@ -59,3 +65,27 @@ def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
         metadata = kn.list_notify_subs(conn, result["task_id"])[0]["delivery_metadata"]
         assert metadata["scope_id"] == "guild"
         assert metadata["parent_chat_id"] == "forum"
+
+
+@pytest.mark.parametrize(("session_id", "persisted"), [
+    ("phantom-session", False),
+    ("persisted-session", True),
+])
+def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch, session_id, persisted):
+    """Ambient worker ids are provenance only after their state.db row exists."""
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", session_id)
+    kb.init_db()
+    state = SessionDB(db_path=tmp_path / "state.db")
+    if persisted:
+        state.create_session(session_id, source="cli")
+    state.close()
+
+    result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, result["task_id"])
+    assert task.session_id == (session_id if persisted else None)
