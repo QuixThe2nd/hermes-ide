@@ -123,7 +123,9 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         owner = find_canonical_live_owner(owner_home)
         if owner is not None:
             deliver_to_live_owner(owner_home, owner, message, author=author)
-            reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
+            # The owner's poller admits the mailbox record at its next idle boundary; this
+            # process only queued it, so say so (the in-process branch above really submitted).
+            reply = f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply will appear there."
             return _ok(rid, {"reply": reply})
 
         def _detail(p) -> str:
