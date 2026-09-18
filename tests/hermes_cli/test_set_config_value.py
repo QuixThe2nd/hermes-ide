@@ -1029,3 +1029,41 @@ class TestConfigGetRedaction:
         else:
             assert out == {"TERMINAL_SSH_HOST": self.SECRET, "mcp_servers.s.auth": "oauth"}.get(
                 key, "${UNSET_THING_API_KEY}")
+
+
+class TestContainerTypeRefusal:
+    """A value of the wrong shape for a list/mapping key is refused, never warn-and-stored
+    (#114471): every isinstance-gated reader would ignore the string while ``config get``
+    echoed it back."""
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    def test_string_where_schema_wants_list_is_refused(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers", "plainstring")
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers", '- name: x\n  model: "C:\\models\\x"')
+
+        err = capsys.readouterr().err
+        assert "must be a list, got a string" in err
+        assert "not valid YAML/JSON" in err
+        assert "custom_providers" not in _read_config(_isolated_hermes_home)
+
+    def test_valid_literal_and_scalar_keys_still_write(self, _isolated_hermes_home):
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m", "aliases": {"a": "p/m"}}})
+
+        set_config_value("custom_providers", "[{name: ok, base_url: http://h/v1}]")
+        set_config_value("model.default", "bar")
+        with pytest.raises(SystemExit):
+            set_config_value("model.aliases", "notamap")
+        # --force keeps its documented meaning: replace a whole mapping section.
+        set_config_value("model.aliases", "replaced", force=True)
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom_providers"] == [{"name": "ok", "base_url": "http://h/v1"}]
+        assert saved["model"] == {"default": "bar", "aliases": "replaced"}
