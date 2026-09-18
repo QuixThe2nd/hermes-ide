@@ -26,10 +26,14 @@ def _root() -> Path:
 
 
 def read_pending(key: str) -> dict | None:
+    """Exact-id read: fails closed on anything but a JSON object, never licensing an overwrite."""
     try:
-        return json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
+        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        raise ValueError(f"deferred Bot Chat receipt {key} is not a JSON object ({type(record).__name__})")
+    return record
 
 
 def _records(root: Path) -> list[tuple[Path, dict]]:
