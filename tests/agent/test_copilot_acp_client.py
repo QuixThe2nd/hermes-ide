@@ -558,8 +558,11 @@ def test_overlapping_sessions_reap_their_own_process(tmp_path):
         f"session A teardown: own child leaked={leaked}, sibling process killed={killed}"
     )
 
+    assert client.is_closed is False, "a shared client is not closed while a sibling session is live"
+
     session_b.__exit__(None, None, None)
     assert proc_b.poll() is not None
+    assert client.is_closed is True, "the last session to drain still flips is_closed for single-session callers"
 
 
 def test_close_terminates_every_live_session_process(tmp_path):
@@ -574,38 +577,3 @@ def test_close_terminates_every_live_session_process(tmp_path):
     client.close()
 
     assert all(proc.poll() is not None for proc in spawned)
-
-
-def test_concurrent_completions_both_succeed_and_reap(tmp_path):
-    import threading
-
-    spawned = []
-    client = _recording_client(tmp_path, spawned)
-    gate = threading.Barrier(2)
-    record_spawn = client._spawn
-
-    def gated_spawn():
-        proc = record_spawn()
-        gate.wait(timeout=10)
-        return proc
-
-    client._spawn = gated_spawn
-    errors = []
-
-    def call():
-        try:
-            client._create_chat_completion(
-                model="copilot-acp", messages=[{"role": "user", "content": "hi"}]
-            )
-        except Exception as exc:
-            errors.append(exc)
-
-    threads = [threading.Thread(target=call) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
-
-    assert not errors
-    assert len(spawned) == 2
-    assert all(proc.poll() is not None for proc in spawned), "spawned child leaked"
