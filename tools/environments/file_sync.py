@@ -48,58 +48,56 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_MAX_BYTES_ENV = "HERMES_SYNC_BACK_MAX_BYTES"
 _SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
-# a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs). Entries embed the owning
-# PID and an entry whose owner is dead is reclaimed immediately, whatever its age, so this
-# cutoff only governs names without an embedded PID (leftovers from before the ownership
-# scheme — no live process still creates them, so a short window suffices) and Windows hosts,
-# where an arbitrary PID cannot be probed. The old 6 h window let a crash loop accumulate
-# tens of GB before anything was reclaimed (#114437).
+# a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs). Entry names embed the
+# owning PID, so a dead owner's entry is reclaimed at once; the age cutoff covers the rest
+# (live or recycled PIDs, pre-ownership names, Windows where a PID cannot be probed). The
+# download is bounded by a 120 s subprocess timeout, so a live transfer is minutes old at
+# most; the old 6 h window let a crash loop pile up tens of GB before anything was reclaimed.
 _SYNC_BACK_STALE_SECONDS = 30 * 60
 
 
-def _sync_back_temp_prefix() -> str:
-    """Temp prefix embedding the owning PID, mirroring daytona's PID-suffixed remote temp.
+def _sync_back_max_bytes() -> int:
+    """Extraction cap; ``HERMES_SYNC_BACK_MAX_BYTES`` overrides it for trees that legitimately
+    exceed 2 GiB (a skipped extraction silently discards the whole download)."""
+    raw = os.environ.get(_SYNC_BACK_MAX_BYTES_ENV, "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("sync_back: ignoring non-integer %s=%r", _SYNC_BACK_MAX_BYTES_ENV, raw)
+    return _SYNC_BACK_MAX_BYTES
 
-    Ownership lets the stale sweep reclaim an entry the moment its owner process is gone
-    (age-independent, and safe between concurrent gateway processes, which hold distinct
-    PIDs) instead of guessing liveness from mtime — a staging dir's mtime does not move
-    while content streams into its subdirectories.
-    """
+
+def _sync_back_temp_prefix() -> str:
+    """Temp prefix embedding the owning PID so the stale sweep can tell a hard-killed
+    process's leftovers from another live gateway's in-flight transfer without guessing
+    from mtime (a staging dir's mtime does not move while content streams into it)."""
     return f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-"
 
 
-def _temp_entry_owner_pid(name: str) -> int | None:
-    """Return the PID embedded in a sync-back temp entry name, or None for legacy names."""
-    if not name.startswith(_SYNC_BACK_TEMP_PREFIX):
-        return None
+def _temp_entry_owner_alive(name: str) -> bool:
+    """Whether the process that created a sync-back temp entry may still be running.
+    Names without a PID (and hosts without psutil) count as alive: the age cutoff applies."""
     pid_part = name[len(_SYNC_BACK_TEMP_PREFIX):].split("-", 1)[0]
-    return int(pid_part) if pid_part.isdigit() else None
-
-
-def _pid_alive(pid: int) -> bool:
-    """Whether *pid* names a live process (POSIX signal-0 probe; callers guard for Windows)."""
+    if not pid_part.isdigit():
+        return True
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # exists but is owned by another user
+        import psutil
+    except ImportError:
         return True
-    except OSError:
-        return True
-    return True
+    return psutil.pid_exists(int(pid_part))
 
 
 def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
     """Remove sync-back tars and staging dirs left behind by a hard-killed process.
 
-    An entry whose embedded owner PID is no longer alive is reclaimed immediately —
-    age-independent, and never touching another live process's transfer even though the
-    file lock is per ``HERMES_HOME`` while the temp directory is shared. Entries without
-    an embedded PID (pre-ownership leftovers) and Windows hosts fall back to the
-    ``_SYNC_BACK_STALE_SECONDS`` cutoff. Returns the number of entries removed; a
-    permission error or a race with another sync-back must not prevent the current one.
+    Only entries carrying this module's prefix are touched: at once when their owner PID
+    is dead, otherwise only past ``_SYNC_BACK_STALE_SECONDS``. Returns the number of
+    entries removed; a permission error or a race with another sync-back must not prevent
+    the current one.
     """
     directory = temp_dir or Path(tempfile.gettempdir())
     cutoff = time.time() - _SYNC_BACK_STALE_SECONDS
@@ -111,13 +109,9 @@ def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
         return 0
     for candidate in candidates:
         try:
-            owner = _temp_entry_owner_pid(candidate.name)
-            if owner is not None and os.name != "nt":
-                if _pid_alive(owner):
-                    continue  # a live process owns this entry — leave it alone
-            elif candidate.is_symlink() or candidate.lstat().st_mtime >= cutoff:
-                continue
             if candidate.is_symlink():
+                continue
+            if _temp_entry_owner_alive(candidate.name) and candidate.lstat().st_mtime >= cutoff:
                 continue
             if candidate.is_dir():
                 shutil.rmtree(candidate)
@@ -407,10 +401,11 @@ class FileSyncManager:
                 tar_size = os.path.getsize(tar_path)
             except OSError:
                 tar_size = 0
-            if tar_size > _SYNC_BACK_MAX_BYTES:
+            max_bytes = _sync_back_max_bytes()
+            if tar_size > max_bytes:
                 logger.warning(
-                    "sync_back: remote tar is %d bytes (cap %d) — skipping extraction",
-                    tar_size, _SYNC_BACK_MAX_BYTES)
+                    "sync_back: remote tar is %d bytes (cap %d, override with %s) — skipping extraction",
+                    tar_size, max_bytes, _SYNC_BACK_MAX_BYTES_ENV)
                 return
 
             with tempfile.TemporaryDirectory(prefix=_sync_back_temp_prefix()) as staging:

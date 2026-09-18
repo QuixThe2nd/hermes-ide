@@ -4,6 +4,8 @@ import io
 import logging
 import os
 import signal
+import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -28,6 +30,13 @@ from tools.environments.file_sync import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _dead_pid() -> int:
+    """PID of a child that has already been reaped."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+    proc.wait()
+    return proc.pid
 
 def _make_tar(files: dict[str, bytes], dest: Path):
     """Write a tar archive containing the given arcname->content pairs."""
@@ -137,49 +146,28 @@ class TestStaleSyncBackTempCleanup:
         mgr = _make_manager(tmp_path, bulk_download_fn=download)
         mgr.sync_back()
 
-        assert seen["tar"].name.startswith(_SYNC_BACK_TEMP_PREFIX)
+        assert seen["tar"].name.startswith(f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-")
         assert not leaked.exists()
         assert list(tmp_root.iterdir()) == []
 
-    def test_dead_owner_entry_reclaimed_regardless_of_age(self, tmp_path, monkeypatch):
-        """#114437: an entry whose owner PID is gone is reclaimed immediately — age (and the
-        staging-dir mtime freeze during extraction) must not keep a leaked multi-GB tar around."""
-        entry = tmp_path / f"hermes-sync-back-{os.getpid()}-xyz.tar"
-        entry.write_bytes(b"x")
-        fresh = time.time()
-        os.utime(entry, (fresh, fresh))
-        monkeypatch.setattr("tools.environments.file_sync._pid_alive", lambda pid: False)
+    def test_owner_liveness_decides_before_age(self, tmp_path):
+        """A hard-killed owner's fresh entry is reclaimed at once; a live owner's fresh entry and
+        a legacy (no-PID) fresh entry are kept; a live owner's entry past the cutoff still goes
+        (a recycled PID must not pin a leak forever)."""
+        dead_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{_dead_pid()}-a.tar"
+        live_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-b"
+        legacy_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}legacy.tar"
+        live_old = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-c.tar"
+        for path in (dead_fresh, legacy_fresh, live_old):
+            path.write_bytes(b"x")
+        live_fresh.mkdir()
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(live_old, (old, old))
 
-        assert _cleanup_stale_sync_back_temp(tmp_path) == 1
-        assert not entry.exists()
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
 
-    def test_live_owner_entry_survives_any_age(self, tmp_path, monkeypatch):
-        """An entry owned by a live process (this one, or a concurrent gateway under a
-        different HERMES_HOME) is never reclaimed, however old its mtime looks."""
-        entry = tmp_path / f"hermes-sync-back-{os.getpid()}-xyz.tar"
-        entry.write_bytes(b"x")
-        os.utime(entry, (0, 0))
-        monkeypatch.setattr("tools.environments.file_sync._pid_alive", lambda pid: True)
-
-        assert _cleanup_stale_sync_back_temp(tmp_path) == 0
-        assert entry.exists()
-
-    def test_new_temp_entries_embed_the_owner_pid(self, tmp_path):
-        """Fresh temp entries carry the owning PID so the sweep can judge ownership (#114437)."""
-        seen = {}
-
-        def download(dest: Path):
-            seen["tar"] = dest
-            _make_tar({"root/.hermes/x.txt": b"hi"}, dest)
-
-        mgr = _make_manager(tmp_path, bulk_download_fn=download)
-        mgr.sync_back()
-
-        name = seen["tar"].name
-        assert name.startswith(f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-")
-        from tools.environments.file_sync import _temp_entry_owner_pid
-        assert _temp_entry_owner_pid(name) == os.getpid()
-        assert _temp_entry_owner_pid("hermes-sync-back-legacy.tar") is None
+        assert not dead_fresh.exists() and not live_old.exists()
+        assert live_fresh.exists() and legacy_fresh.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -551,14 +539,23 @@ class TestSyncBackSizeCap:
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
 
-    def test_stale_sweep_window_is_bounded_to_half_an_hour(self):
-        """A hard-kill crash loop must not accumulate tars for hours before reclaim (#114437).
+    def test_cap_override_env_raises_the_cap(self, tmp_path, monkeypatch, caplog):
+        """HERMES_SYNC_BACK_MAX_BYTES overrides the 2 GiB default; a non-integer value is
+        ignored with a warning and the default applies."""
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+        files = {"root/.hermes/skill.md": b"remote_version"}
+        mgr = _make_manager(tmp_path, file_mapping=[(host_file, "/root/.hermes/skill.md")],
+                            bulk_download_fn=_make_download_fn(files))
 
-        The cutoff only governs legacy (pre-PID) names and Windows hosts — owned entries
-        are reclaimed by owner liveness instead — but it still bounds a crash loop's
-        leftovers from an older build.
-        """
-        assert _SYNC_BACK_STALE_SECONDS <= 30 * 60
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"original"  # 1-byte cap: skipped
+
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "lots")
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"remote_version"  # default cap applies
+        assert any("HERMES_SYNC_BACK_MAX_BYTES" in r.message for r in caplog.records)
 
 
 class TestSyncBackWindowsHost:
