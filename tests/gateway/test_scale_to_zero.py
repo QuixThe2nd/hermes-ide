@@ -80,6 +80,14 @@ def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkey
 
     assert runner._scale_to_zero_should_arm() is False
 
+    # Mid-reconnect the adapter is popped from _profile_adapters and parked in
+    # _profile_failed_platforms (retryable fatal); it is still served and must
+    # keep the process awake or the reconnect can never complete.
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {"imessage": {Platform("photon"): object()}}
+
+    assert runner._scale_to_zero_should_arm() is False
+
 
 def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
     # Arming is a boot-time snapshot. A direct adapter hot-added afterwards (profile reconcile)

@@ -334,7 +334,10 @@ class GatewayShutdownMixin:
 
         ``self.config`` belongs to the launch profile, while ``_profile_adapters`` holds
         live adapters for multiplexed secondary profiles. A direct secondary connection
-        must block suspension just like a direct primary connection.
+        must block suspension just like a direct primary connection. A secondary adapter
+        parked in ``_profile_failed_platforms`` (popped from ``_profile_adapters`` while a
+        retryable fatal reconnects) is still served: suspending mid-reconnect would leave
+        that reconnect unable to complete, so pending reconnects count as active too.
 
         config.platforms is pre-seeded with disabled placeholders, and the api_server is
         force-enabled on every hosted container (counting it silently disarmed the feature).
@@ -355,6 +358,9 @@ class GatewayShutdownMixin:
                 add_platform(platform)
             for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
                 for platform in profile_adapters:
+                    add_platform(platform)
+            for profile_pending in (getattr(self, "_profile_failed_platforms", {}) or {}).values():
+                for platform in profile_pending or {}:
                     add_platform(platform)
         except Exception:  # noqa: BLE001 - unreadable state must keep the gateway awake
             logger.debug(
