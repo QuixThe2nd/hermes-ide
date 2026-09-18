@@ -84,6 +84,14 @@ client (`mcp_tool_*.py`: config, discovery, transport, registration, content, er
 never an `elif` on a backend name (root shape rules). Remote-backend file visibility problems are
 fixed at the mount, not by adding a tool.
 
+**Native vision embeds are history, not one-shot payloads.** `vision_tools.py::_vision_analyze_native`
+(and the browser screenshot twins in `browser_tool_vision.py` / `browser_use_cli.py`) bake the image
+into a tool result that is re-sent on every later API call. Size and repeat policy live in
+`vision_tools_history_budget.py` (config section `vision`: `embed_target_bytes`, `max_calls_per_image`);
+the repeat counter is keyed on (session id, resolved source) so region crops share their file's count,
+and its default cap applies only inside `agent.delegation_context.is_delegated_child_process_context()`.
+Put new embed-cost rules there, never a second counter in a tool.
+
 **Every spawn goes through one env builder.** `environments/local.py::build_subprocess_env` (+
 `hermes_constants.apply_subprocess_home_env`, `env_passthrough.py::resolve_passthrough_value`) is
 how a terminal, `execute_code`, background process, delegation child, ACP or MCP stdio child gets

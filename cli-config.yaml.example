@@ -831,6 +831,19 @@ prompt_caching:
 # uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
 # Other providers pick a sensible default automatically.
 #
+# Native vision embeds (vision_analyze / browser screenshots when the MAIN model
+# is vision-capable) ride conversation history and are re-sent on every later
+# API call, so both knobs below bound recurring cost:
+#
+# vision:
+#   # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for
+#   # dense phone screenshots of tables that read as "unreadable" at 256 KB.
+#   embed_target_bytes: 262144
+#   # How often vision_analyze may embed the SAME image (region crops included)
+#   # per session. Unset = 3 inside delegated subagents, unlimited for the main
+#   # agent; a number applies everywhere; 0 = unlimited.
+#   max_calls_per_image: 3
+#
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:
