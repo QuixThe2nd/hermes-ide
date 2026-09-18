@@ -360,21 +360,77 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
     assert not server_requests._open
 
 
-def test_server_request_error_response_fails_fast(capture):
-    """A shared-channel client without a handler answers -32601 instead of waiting for the deadline."""
+def _silent_ws():
+    """A WebSocket client build that predates server→client requests: receives the frame, never answers."""
+    from tui_gateway.ws import WSTransport
+
+    class _SilentWS(WSTransport):
+        def __init__(self):
+            self._ws, self._loop, self._peer, self._auth_identity = object(), None, "test", None
+            self.frames: list[dict] = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            pass
+
+    return _SilentWS()
+
+
+def _ws_session(server, sid, peer):
+    server._sessions[sid] = {"session_key": sid, "transport": peer, "history": [], "history_lock": threading.Lock(),
+                             "agent_ready": None}
+
+
+def test_server_request_fails_fast_for_a_ws_client_that_never_advertised(server):
+    """A WebSocket client that never sent ``client.capabilities`` cannot answer, so send() returns the
+    error-response shape (None) at once instead of stalling the agent for the deadline (#112548).
+    The frame is never written; nothing is left open for a reconnect replay."""
     from tui_gateway import server_requests
 
+    peer = _silent_ws()
+    _ws_session(server, "ws-old", peer)
+    t0 = time.monotonic()
+    assert server_requests.send("clarify", "ws-old", {"question": "q?", "choices": None, "multi_select": False},
+                                timeout=5) is None
+    assert time.monotonic() - t0 < 1
+    assert peer.frames == []
+    assert server_requests.open_requests("ws-old") == []
+    settled = []
+    server_requests.send_async("approval", "ws-old", {"request_id": "r1", "command": "rm", "description": "",
+                                                      "pattern_key": "", "pattern_keys": []}, settled.append)
+    assert settled == [None]
+
+
+def test_server_request_waits_for_a_ws_client_that_advertised(server):
+    """``client.capabilities {server_requests: true}`` on the connection marks it answerable: the frame is
+    written and the wait is a real one (here: answered by the response frame)."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-new", peer)
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert "clarify" in response["result"]["server_requests"]
+
     box = {}
-    thread = threading.Thread(
-        target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
-        daemon=True,
-    )
+    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
+                              daemon=True)
     thread.start()
     req = _wait_open(server_requests)
-    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
-    thread.join(timeout=1)
-    assert not thread.is_alive()
-    assert box["result"] is None
+    assert peer.frames[-1]["id"] == req.id
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "yes"}
+    # Disconnect forgets the advertisement; the next connection must advertise again.
+    server.unregister_live_transport(peer)
+    assert server_requests.answers_requests(peer) is False
 
 
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])

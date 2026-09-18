@@ -468,10 +468,26 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.method === 'event' && frame.params && typeof (frame.params as GatewayEvent).type === 'string') {
+      if ((frame.params as GatewayEvent).type === 'gateway.ready') {
+        this.advertiseCapabilities()
+      }
+
       this.options.onEvent?.(frame.params as GatewayEvent)
     }
 
     return frame
+  }
+
+  /**
+   * Tell the backend, once per connection generation, that this client answers
+   * server→client requests (a handler result or `-32601`). Without it a
+   * backend treats a WebSocket client as a build that predates server requests
+   * and fails every clarify/approval/… for it immediately instead of stalling
+   * the agent for the full deadline. An older backend answers `-32601` here;
+   * that is ignored.
+   */
+  private advertiseCapabilities(): void {
+    this.request('client.capabilities', { server_requests: true }).catch(() => undefined)
   }
 
   /**

@@ -166,8 +166,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
-    def _drop_entry(reason: str) -> None:
+    def _drop_entry(state: str) -> str | None:
+        """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
+        removing the entry are one critical section under the approval lock: ``resolve_gateway_approval``
+        commits under the same lock, so a choice that landed after the deadline check but before this
+        removal is still ours to honour, and one arriving later finds no entry (the client is told
+        nothing was pending instead of being acked "ok" while the agent denies)."""
         with _approval._lock:
+            choice = entry.result
             queue = _approval._gateway_queues.get(session_key, [])
             if entry in queue:
                 queue.remove(entry)
@@ -176,9 +182,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             settle, entry.settle = entry.settle, None
         if settle is not None:
             try:
-                settle(reason)
+                settle("answered" if choice is not None and state != "interrupted" else state)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
+        return choice
 
     # Plugins hear about the request before the gateway does (real-time observers).
     _ctx._fire_approval_hook("pre_approval_request", **payload)
@@ -195,12 +202,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     state = _poll_event(entry.event, session_key,
                         interrupt_log="Approval wait interrupted — returning deny for session %s")
     cancelled = _cancel_cause(state, entry)
-    choice = entry.result
     if state == "interrupted":
-        # Our own decision stays a fail-closed deny; coalesced followers wake with the
-        # cause instead of a deny nobody issued.
-        choice, entry.cancelled = "deny", cancelled
+        # Coalesced followers wake with the cause instead of a deny nobody issued.
+        entry.cancelled = cancelled
         entry.event.set()
-    _drop_entry("answered" if state == "set" else state)
+    choice = _drop_entry(state)
+    if state == "interrupted":
+        # Our own decision stays a fail-closed deny.
+        choice = "deny"
+    # A choice that landed in the gap between the deadline check and leaving the queue is an answer,
+    # not a timeout (#112548) — the same first-settlement rule as server_requests.send().
+    resolved = state != "timeout" or choice is not None
     extra = {"cancelled": cancelled} if cancelled else {}
-    return _finish(payload, state != "timeout", choice, entry.reason, **extra)
+    return _finish(payload, resolved, choice, entry.reason, **extra)

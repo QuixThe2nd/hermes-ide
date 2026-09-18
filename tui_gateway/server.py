@@ -645,7 +645,8 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
+                            lambda sid: _session_client_answers_requests(sid))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -665,6 +666,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+    _server_requests.forget(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:

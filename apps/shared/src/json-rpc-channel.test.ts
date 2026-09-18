@@ -173,6 +173,25 @@ describe('JsonRpcRequestChannel', () => {
 
   // Server→client requests (tui_gateway/server_requests.py): the backend asks,
   // the client answers with a RESPONSE frame carrying the same id.
+  it('advertises server-request support once per gateway.ready and shrugs off an older backend', () => {
+    // A backend that never hears client.capabilities treats a WebSocket client as a build older than
+    // server→client requests and fails every clarify/approval for it at once (tui_gateway/server_requests.py).
+    const channel = new JsonRpcRequestChannel({ requestIdPrefix: 'c' })
+    const { sent, transport, last } = spyTransport()
+
+    channel.attach(transport)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', session_id: 's' } }))
+    expect(sent).toHaveLength(0)
+
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+    expect(sent).toHaveLength(1)
+    expect(JSON.parse(sent[0])).toMatchObject({ method: 'client.capabilities', params: { server_requests: true } })
+
+    // An older backend answers -32601: nothing rejects out of the channel.
+    channel.handleFrame(JSON.stringify({ error: { code: -32601, message: 'unknown method' }, id: last().id, jsonrpc: '2.0' }))
+    expect(sent).toHaveLength(1)
+  })
+
   it('routes a server request to the first accepting handler and answers -32601 when nobody accepts', () => {
     const unhandled: string[] = []
     const channel = new JsonRpcRequestChannel({ onUnhandledRequest: req => void unhandled.push(req.method) })
