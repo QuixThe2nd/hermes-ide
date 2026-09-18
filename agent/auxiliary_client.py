@@ -993,9 +993,13 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
         return True, None
 
 
-def _peek_pool_entry(provider: str) -> Optional[Any]:
-    """Best-effort current/next pool entry without mutating selection order."""
-    pool = _load_pool_with_credentials(provider, " (peek)")
+def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:
+    """Best-effort current/next pool entry without mutating selection order.
+
+    ``pool`` skips the disk re-read when the caller already loaded it.
+    """
+    if pool is None:
+        pool = _load_pool_with_credentials(provider, " (peek)")
     if pool is None:
         return None
     try:
@@ -3391,19 +3395,52 @@ def _evict_cached_client_instance(target: Any) -> bool:
     return evicted
 
 
+def _pool_credential_digest(pool: Any) -> str:
+    """Secret-safe digest over the runtime keys of every pool entry.
+
+    Taken WITHOUT availability filters (``pool.entries()``, not ``peek()``): an entry benched by a
+    per-model cooldown still contributes, so a token rotated while the cooldown is active changes
+    the digest too (#113022 point 5). Only the blake2b of the keys enters the cache key.
+    """
+    try:
+        entries_fn = getattr(pool, "entries", None)
+        entries = entries_fn() if callable(entries_fn) else []
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not list pool entries for digest: %s", exc)
+        return ""
+    keys = sorted(k for k in (_pool_runtime_api_key(e) for e in entries or ()) if k)
+    if not keys:
+        return ""
+    digest = hashlib.blake2b(digest_size=16)
+    for key in keys:
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = None) -> str:
-    """Return a stable cache discriminator for pooled providers."""
+    """Return a cache discriminator that follows the pooled credential, not just its entry id.
+
+    ``<provider>:<entry id>:<digest>`` when ``peek()`` names an entry, ``<provider>::<digest>``
+    when every entry is filtered out (cooldown) but keyed entries exist. A token rotated or
+    refreshed by another process yields a new client instead of a 401 round trip on the cached
+    one; the stale entry ages out through the non-closing FIFO cap (#113022).
+    """
     normalized = _normalize_aux_provider(provider)
     if normalized == "auto":
         runtime = _normalize_main_runtime(main_runtime)
         normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
     if normalized in {"", "auto", "custom"}:
         return ""
-    entry = _peek_pool_entry(normalized)
-    if entry is None:
+    pool = _load_pool_with_credentials(normalized, " (cache hint)")
+    if pool is None:
         return ""
-    entry_id = str(getattr(entry, "id", "") or "").strip()
-    return f"{normalized}:{entry_id}" if entry_id else ""
+    digest = _pool_credential_digest(pool)
+    entry = _peek_pool_entry(normalized, pool)
+    entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
+    if not entry_id and not digest:
+        return ""
+    return f"{normalized}:{entry_id}:{digest}"
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL.

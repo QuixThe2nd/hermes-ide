@@ -81,6 +81,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with a closed loop should be evicted."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -94,7 +95,7 @@ class TestCleanupStaleAsyncClients:
         mock_client._client = MagicMock()
         mock_client._client.is_closed = False
 
-        key = ("test_stale", True, "", "", "", (), False)
+        key = _client_cache_key("test_stale", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -347,6 +348,7 @@ class TestClientCacheBoundedGrowth:
         """Cache should not exceed _CLIENT_CACHE_MAX_SIZE."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _CLIENT_CACHE_MAX_SIZE,
         )
@@ -356,13 +358,16 @@ class TestClientCacheBoundedGrowth:
             saved = dict(_client_cache)
             _client_cache.clear()
 
+        def key_for(i: int) -> tuple:
+            return _client_cache_key(f"evict_test_{i}", async_mode=False)
+
         try:
             # Fill to max + 5
             for i in range(_CLIENT_CACHE_MAX_SIZE + 5):
                 mock_client = MagicMock()
                 mock_client._client = MagicMock()
                 mock_client._client.is_closed = False
-                key = (f"evict_test_{i}", False, "", "", "", (), False)
+                key = key_for(i)
                 with _client_cache_lock:
                     # Inline the eviction logic (same as _get_cached_client)
                     while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
@@ -374,9 +379,9 @@ class TestClientCacheBoundedGrowth:
                 assert len(_client_cache) <= _CLIENT_CACHE_MAX_SIZE, \
                     f"Cache size {len(_client_cache)} exceeds max {_CLIENT_CACHE_MAX_SIZE}"
                 # The earliest entries should have been evicted
-                assert ("evict_test_0", False, "", "", "", (), False) not in _client_cache
+                assert key_for(0) not in _client_cache
                 # The latest entries should be present
-                assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", (), False) in _client_cache
+                assert key_for(_CLIENT_CACHE_MAX_SIZE + 4) in _client_cache
         finally:
             with _client_cache_lock:
                 _client_cache.clear()
