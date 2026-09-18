@@ -6948,11 +6948,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.warning("[%s] %s failed: %s", self.name, fail_log, e)
             return SendResult(success=False, error=str(e))
 
-    @staticmethod
-    def _embed_body(text: str, limit: int = 4088) -> str:
-        """Trim to Discord's 4096-char embed description limit (conservatively)."""
-        return text if len(text) <= limit else text[: limit - 3] + "..."
-
     # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
     _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
                   "Do you want Hermes to run this command?\n\n"
@@ -7008,9 +7003,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Send a three-button slash-command confirmation prompt."""
         def _build(_channel):
-            embed = discord.Embed(
-                title=title or "Confirm", description=self._embed_body(message), color=discord.Color.orange(),
-            )
+            # Header-only card (same rule as the exec approval prompt): the message lives in
+            # content only, so embed-rendering clients don't see it twice (#114693).
+            embed = discord.Embed(title=title or "Confirm", color=discord.Color.orange())
             content = self._self_contained_prompt_content(f"**{title or 'Confirm'}**", message)
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
@@ -7063,17 +7058,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; trim conservatively.
-            max_desc = 4088
-            body = str(question or "").strip()
-            if len(body) > max_desc:
-                body = body[: max_desc - 3] + "..."
-
-            embed = discord.Embed(
-                title="❓ Hermes needs your input",
-                description=body,
-                color=discord.Color.orange(),
-            )
+            # Header-only card (same rule as the exec approval prompt): the question and choices
+            # live in content only, so embed-rendering clients don't see them twice (#114693).
+            embed = discord.Embed(title="❓ Hermes needs your input", color=discord.Color.orange())
 
             # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
             # instead of bare strings, which would render as raw Python repr in
@@ -7146,37 +7133,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 f"{i}. {c}" for i, c in enumerate(clean_choices, start=1)
             ]
 
-            def _pack_choice_field(lines: List[str], hint: str) -> str:
-                """Pack the numbered list + hint into one embed field value.
-
-                Embed field values cap at 1024 chars and Discord rejects the
-                whole message when they overrun, so drop whole trailing lines
-                rather than cutting an option in half — a "+N more" note beats
-                a half-rendered choice, and the full list always lives in the
-                plain ``content`` alongside.
-                """
-                suffix = f"\n\n{hint}"
-                budget = _DISCORD_EMBED_FIELD_LIMIT - utf16_len(suffix)
-                kept: List[str] = []
-                for line in lines:
-                    candidate = "\n".join(kept + [line])
-                    if utf16_len(candidate) > budget:
-                        break
-                    kept.append(line)
-                dropped = len(lines) - len(kept)
-                if dropped:
-                    kept.append(f"… +{dropped} more in the message above")
-                return "\n".join(kept) + suffix
-
-            embed.add_field(
-                name="Choices" if choice_lines else "Reply",
-                value=(
-                    _pack_choice_field(choice_lines, reply_hint)
-                    if choice_lines
-                    else reply_hint
-                ),
-                inline=False,
-            )
 
             # Mirror the question and the numbered choices in plain content —
             # embeds are invisible on some clients (see send_exec_approval).
