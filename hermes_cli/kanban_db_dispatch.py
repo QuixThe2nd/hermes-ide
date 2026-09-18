@@ -1375,9 +1375,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
+    handoff event followed the comment: the named profile must work on that
+    PR). The review lane skips the last two: they are the *inputs* to a review
+    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
+    passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1444,13 +1446,28 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
+    #    reviewer changes_requested, review reopen) names the profile that must
+    #    now work on THAT PR — a closer or the implementer finishing it, not a
+    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
+    #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+            continue
+        handed_off = conn.execute(
+            # Strictly after: a same-second tie stays guarded (fail closed).
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened') "
+            "LIMIT 1",
+            (task_id, int(c["created_at"] or 0)),
+        ).fetchone()
+        return None if handed_off else "active_pr"
 
     return None
 
