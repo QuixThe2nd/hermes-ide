@@ -933,9 +933,12 @@ def _cmd_block(args: argparse.Namespace) -> int:
             where = landed.status if landed else "blocked"
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
+            if kind == "dependency" and where == "blocked":
+                return f"Blocked {tid} as needs_input (no open parent to wait on){suffix}"
             if where == "triage":
                 # Only a typed owner-input block carries a question for a human.
-                verdict = "needs a human decision" if kind == "needs_input" else "orchestration attention needed"
+                verdict = ("needs a human decision" if (landed.block_kind if landed else kind) == "needs_input"
+                           else "orchestration attention needed")
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 

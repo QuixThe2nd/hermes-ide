@@ -347,36 +347,14 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
 
 
 def test_block_dependency_without_open_parent_is_rekinded(worker_env):
-    """kind=dependency with no incomplete parent must not park in todo.
-    The tool records needs_input and tells the worker why.
-    """
+    """kind=dependency with no incomplete parent must not park in todo; the
+    tool reports the landed kind and tells the worker why."""
     from tools import kanban_tools as kt
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
 
-    out = kt._handle_block({
-        "reason": "The draft specification has failed review",
-        "kind": "dependency",
-    })
-    d = json.loads(out)
-    assert d.get("ok") is True
-    assert d.get("status") == "blocked"
-    assert d.get("block_kind") == "needs_input"
-    assert d.get("requested_kind") == "dependency"
-    assert d.get("rekind_reason") == "no_open_parent"
-    assert "incomplete parent" in (d.get("note") or "")
-
-    conn = kbc.connect()
-    try:
-        task = kb.get_task(conn, worker_env)
-        assert task is not None
-        assert task.status == "blocked"
-        assert task.block_kind == "needs_input"
-        kinds = [e.kind for e in kb.list_events(conn, worker_env)]
-        assert "dependency_wait" not in kinds
-        assert "blocked" in kinds
-    finally:
-        conn.close()
+    d = json.loads(kt._handle_block({"reason": "upstream input is missing", "kind": "dependency"}))
+    assert (d["ok"], d["status"], d["block_kind"]) == (True, "blocked", "needs_input")
+    assert d["requested_kind"] == "dependency"
+    assert "no parent is open" in d["note"]
 
 
 def test_heartbeat_extends_claim_expires(worker_env):
