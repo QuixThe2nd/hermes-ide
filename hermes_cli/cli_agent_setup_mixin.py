@@ -323,6 +323,14 @@ class CLIAgentSetupMixin:
                     platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
+                if getattr(self, "_explicit_reasoning_config", None) is None:
+                    try:
+                        from cli import CLI_CONFIG
+                        from hermes_constants import resolve_reasoning_config
+                        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+                    except Exception:
+                        # Fallback routing must remain available when optional config refresh fails.
+                        pass
                 return runtime
             except Exception:
                 continue

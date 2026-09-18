@@ -532,6 +532,61 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert shell.model != "should-be-ignored"
 
 
+@pytest.mark.parametrize(
+    ("reasoning_flag", "expected_reasoning"),
+    [
+        (None, {"enabled": True, "effort": "low"}),
+        ("medium", {"enabled": True, "effort": "medium"}),
+    ],
+    ids=["fallback_model_override", "explicit_cli_override_wins"],
+)
+def test_startup_fallback_re_resolves_reasoning_for_selected_model(
+    monkeypatch, reasoning_flag, expected_reasoning,
+):
+    """Startup fallback must use its model's config without replacing --reasoning."""
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    config = {
+        "reasoning_effort": "high",
+        "reasoning_overrides": {
+            "primary-model": "high",
+            "fallback-model": "low",
+        },
+    }
+    shell = SimpleNamespace(
+        _fallback_model=[{"provider": "fallback", "model": "fallback-model"}],
+        requested_provider="primary",
+        model="primary-model",
+        reasoning_config={"enabled": True, "effort": "high"}
+        if reasoning_flag is None else {"enabled": True, "effort": reasoning_flag},
+        _explicit_reasoning_config=None
+        if reasoning_flag is None else {"enabled": True, "effort": reasoning_flag},
+    )
+    monkeypatch.setitem(sys.modules, "cli", SimpleNamespace(
+        CLI_CONFIG={"agent": config},
+        _cprint=lambda _message: None,
+        logger=SimpleNamespace(warning=lambda *_args, **_kwargs: None),
+    ))
+    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda _entry: None)
+
+    def resolve_runtime(**kwargs):
+        return {
+            "provider": "fallback",
+            "api_mode": "chat_completions",
+            "base_url": "https://fallback.example/v1",
+            "api_key": "fallback-key",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve_runtime)
+
+    runtime = CLIAgentSetupMixin._resolve_fallback_runtime(
+        shell, AuthError("primary credentials rejected"),
+    )
+    assert runtime["provider"] == "fallback"
+    assert shell.model == "fallback-model"
+    assert shell.reasoning_config == expected_reasoning
+
+
 
 
 
@@ -781,5 +836,4 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
 
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
-
 
