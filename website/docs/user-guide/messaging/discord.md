@@ -371,6 +371,7 @@ discord:
     window_seconds: 21600         # Look back at most 6 hours
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
+    max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
@@ -556,9 +557,12 @@ discord:
     window_seconds: 3600
     limit: 100
     max_dispatches: 10
+    max_attempts: 3
 ```
 
-If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart.
+If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart. A message counts as answered once its turn delivered a final reply, whether or not that reply carried a Discord reply reference (`reply_to_mode: "off"`, streamed replies and media-only replies included).
+
+`max_dispatches` caps one scan; `max_attempts` (default 3) caps how many times a single message can ever be re-dispatched, so a message whose turn keeps failing is not re-run on every reconnect. `window_seconds` is always honoured: the per-channel scan cursor can narrow a scan but never reaches further back than the window.
 
 #### `group_sessions_per_user`
 

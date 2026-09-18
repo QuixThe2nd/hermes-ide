@@ -1603,6 +1603,7 @@ DEFAULT_CONFIG = {
             "window_seconds": 21600,  # only inspect messages from the last 6 hours
             "limit": 100,  # global cap on messages scanned per reconnect
             "max_dispatches": 10,  # cap on recovered messages dispatched per reconnect
+            "max_attempts": 3,  # lifetime re-dispatch cap for one message, whatever its outcome
         },
         "reactions": True,  # add 👀/✅/❌ reactions to messages during processing
         # Gateway transport health probe: inspects the WebSocket's ready/open/heartbeat state (never
