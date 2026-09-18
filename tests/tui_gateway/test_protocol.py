@@ -30,6 +30,12 @@ def server():
     # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
+    #
+    # Import server_requests (pure stdlib) BEFORE the window: the patch drops every module first imported
+    # inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
+    # unbound copy whose default sinks drop frames and treat every client as answerable.
+    import tui_gateway.server_requests  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -431,6 +437,23 @@ def test_server_request_waits_for_a_ws_client_that_advertised(server):
     # Disconnect forgets the advertisement; the next connection must advertise again.
     server.unregister_live_transport(peer)
     assert server_requests.answers_requests(peer) is False
+
+
+def test_server_request_error_response_fails_fast(server):
+    """A client that advertised but has no handler for the method answers -32601: that error frame settles
+    send() to None at once instead of the agent waiting for the deadline."""
+    from tui_gateway import server_requests
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    t0 = time.monotonic()
+    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
+    thread.join(timeout=1)
+    assert not thread.is_alive() and time.monotonic() - t0 < 1
+    assert box["result"] is None
 
 
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
@@ -1545,3 +1568,30 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(server, monkeypatch):
+    """The approval wait is owned by ``tools.approval``'s queue, not by ``server_requests``. When the request
+    cannot be sent (the only client predates server→client requests) the queue entry must be withdrawn too,
+    otherwise ``_await_gateway_decision`` idles for the whole approvals.timeout with no prompt anywhere
+    (#112548). The decision is a withdrawal (``cancelled`` cause), never a user deny."""
+    from tools import approval as approval_mod
+    from tools import approval_gateway_wait as wait_mod
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old-approval", peer)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
+    try:
+        t0 = time.monotonic()
+        decision = wait_mod._await_gateway_decision(
+            "ws-old-approval", approval_mod._gateway_notify_cbs["ws-old-approval"],
+            {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]})
+        waited = time.monotonic() - t0
+    finally:
+        approval_mod.unregister_gateway_notify("ws-old-approval")
+    assert waited < 1, decision
+    assert decision["choice"] is None and decision["cancelled"]
+    assert peer.frames == []
+    assert "ws-old-approval" not in approval_mod._gateway_queues

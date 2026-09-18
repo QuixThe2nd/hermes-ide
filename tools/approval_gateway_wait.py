@@ -181,8 +181,15 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
         if settle is not None:
+            # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
+            # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
+            # cannot answer) is ``session_closed``; never the raw poll-state token "set".
+            if state == "set":
+                reason = "resolved" if choice is not None else "session_closed"
+            else:
+                reason = state
             try:
-                settle("answered" if choice is not None and state != "interrupted" else state)
+                settle(reason)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
         return choice
