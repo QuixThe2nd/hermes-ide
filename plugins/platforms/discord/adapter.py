@@ -6961,7 +6961,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     _EA_CODE_CLOSE = "\n```\n"
     _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
-    _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
@@ -6972,7 +6971,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Button view + embed mirror; buttons call ``resolve_gateway_approval()`` (not /approve)."""
+        """Send an approval with content as its canonical payload and an embed for state."""
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -6980,10 +6979,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
                 title=f"⚠️ {EA_HEADER_TEXT}",
-                description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name=EA_REASON_LABEL_TEXT, value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(

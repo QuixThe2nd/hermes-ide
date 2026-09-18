@@ -48,4 +48,11 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert "script execution via -c flag" in prompt_text
     assert "it will NOT run" in prompt_text
 
+    # Content is the canonical, accessible approval payload. The embed retains
+    # its visual state but must not repeat either user-facing value.
+    embed = sent["embed"]
+    assert command not in (embed.description or "")
+    assert "script execution via -c flag" not in (embed.description or "")
+    assert all(command not in (field.value or "") for field in embed.fields)
+    assert all("script execution via -c flag" not in (field.value or "") for field in embed.fields)
 
