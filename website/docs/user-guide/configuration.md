@@ -1810,10 +1810,15 @@ agent:
 The key matching is **spelling-tolerant** — any reasonable spelling will match:
 - `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
 - `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- A key prefixed with a named custom provider (`ollama-local/qwen3.6:27b-q4_k_m`) also applies when the request carries only the bare model id (`qwen3.6:27b-q4_k_m`), which is what fallback entries and `providers:` routes send
 - Exact matches take precedence over variants
 
 :::note
-There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+Model ids contain dots (`claude-opus-4.5`, `qwen3.6:27b`), which `hermes config set` treats as nesting separators. Escape them with a backslash to write the literal key — `hermes config set 'agent.reasoning_overrides.ollama-local/qwen3\.6:27b-q4_k_m' low` — or edit the YAML directly. See [Dots inside key names](/reference/cli-commands#dots-inside-key-names).
+:::
+
+:::note Local OpenAI-compatible endpoints
+Hermes only sends the `reasoning` request field to endpoints known to accept it (Nous Portal, OpenRouter reasoning-capable models, GitHub Models, LM Studio, Ollama Cloud) because arbitrary OpenAI-compatible servers reject unknown fields with HTTP 400. A plain local `base_url` (`http://localhost:11434/v1`, a vLLM or router endpoint) therefore receives neither `agent.reasoning_effort` nor a per-model override, and the server's own default budget applies. To pin the budget for such an endpoint, put the field your server documents under the custom provider's [`extra_body`](/integrations/providers#named-custom-providers), which is merged into every request routed there.
 :::
 
 **Resolution priority:**
